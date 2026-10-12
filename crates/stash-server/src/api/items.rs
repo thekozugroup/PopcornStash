@@ -735,4 +735,355 @@ mod tests {
             serde_json::json!({"mode": "hls", "url": "/u", "session_id": "s"})
         );
     }
+
+    // ---- integration tests through the full router ----
+
+    use axum::http::StatusCode;
+    use stash_core::models::{Category, ItemStatus, MediaKind};
+
+    use crate::api::library::testing::{TestApp, request};
+
+    fn with_header(mut req: Request, name: header::HeaderName, value: &str) -> Request {
+        req.headers_mut()
+            .insert(name, HeaderValue::from_str(value).unwrap());
+        req
+    }
+
+    #[tokio::test]
+    async fn downloads_only_tokens_cannot_browse() {
+        let app = TestApp::new().await;
+        let (user_id, _) = app.user("member").await;
+        let token = app
+            .device_token(&user_id, &["downloads:create", "downloads:read"])
+            .await;
+        let (status, json) = app.json("/api/items", &token).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+        assert_eq!(json["error"]["code"], "forbidden");
+        let (status, _) = app.json("/api/library/summary", &token).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = app.get("/api/items", None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn lists_inserted_items_and_rejects_bad_filters() {
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        let a = app
+            .item(
+                "Movies/Heat (1995)/Heat (1995).mkv",
+                MediaKind::Video,
+                Category::Movie,
+                ItemStatus::Ready,
+                None,
+            )
+            .await;
+        let b = app
+            .item(
+                "Photos/2024/06/IMG_0001.jpg",
+                MediaKind::Photo,
+                Category::Photo,
+                ItemStatus::Ready,
+                None,
+            )
+            .await;
+        let gone = app
+            .item(
+                "Other/old.bin",
+                MediaKind::Other,
+                Category::Other,
+                ItemStatus::Trashed,
+                None,
+            )
+            .await;
+        let (status, json) = app.json("/api/items?limit=10", &token).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let ids: Vec<&str> = json["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            ids.contains(&a.as_str()) && ids.contains(&b.as_str()),
+            "{json}"
+        );
+        assert!(!ids.contains(&gone.as_str()));
+        assert!(json.get("next_cursor").is_some());
+
+        let (status, json) = app
+            .json("/api/items?category=photo&category=", &token)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let (status, json) = app.json("/api/items?category=photo", &token).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["items"].as_array().unwrap().len(), 1);
+        assert_eq!(json["items"][0]["id"], b.as_str());
+
+        for bad in [
+            "/api/items?sort=sideways",
+            "/api/items?category=films",
+            "/api/items?favorite=maybe",
+            "/api/items?status=trashed",
+        ] {
+            let (status, json) = app.json(bad, &token).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {json}");
+            assert_eq!(json["error"]["code"], "bad_request");
+        }
+
+        let (status, json) = app.json(&format!("/api/items/{a}"), &token).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["id"], a.as_str());
+        let (status, _) = app.json(&format!("/api/items/{gone}"), &token).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = app.json("/api/items/does-not-exist", &token).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn thumbnails_404_until_written() {
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        let id = app
+            .item(
+                "Photos/2024/06/a.jpg",
+                MediaKind::Photo,
+                Category::Photo,
+                ItemStatus::Ready,
+                None,
+            )
+            .await;
+        let (status, headers, body) = app
+            .get(&format!("/api/items/{id}/thumb?size=sm"), Some(&token))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(
+            headers[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("application/json")
+        );
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "not_found");
+
+        let path = app.state.media.thumb_path(&id, ThumbSize::Lg);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"RIFFxxxxWEBP").unwrap();
+        let (status, headers, body) = app
+            .get(&format!("/api/items/{id}/thumb?size=lg&v=1"), Some(&token))
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CONTENT_TYPE], "image/webp");
+        assert_eq!(headers[header::CACHE_CONTROL], THUMB_CACHE);
+        assert_eq!(&body[..], b"RIFFxxxxWEBP");
+        let (status, _, _) = app
+            .get(&format!("/api/items/{id}/thumb?size=huge"), Some(&token))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn files_support_ranges_and_downloads() {
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        let id = app
+            .item(
+                "Home Videos/2024/06/Beach été.mp4",
+                MediaKind::Video,
+                Category::HomeVideo,
+                ItemStatus::Ready,
+                Some(b"0123456789"),
+            )
+            .await;
+        let uri = format!("/api/items/{id}/file");
+
+        let (status, headers, body) = app.get(&uri, Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&body[..], b"0123456789");
+        assert_eq!(headers[header::ACCEPT_RANGES], "bytes");
+        assert_eq!(headers[header::CACHE_CONTROL], FILE_CACHE);
+        assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert!(
+            headers[header::CONTENT_DISPOSITION]
+                .to_str()
+                .unwrap()
+                .starts_with("inline; ")
+        );
+        let etag = headers[header::ETAG].to_str().unwrap().to_string();
+
+        let req = with_header(
+            request("GET", &uri, Some(&token), None),
+            header::RANGE,
+            "bytes=2-5",
+        );
+        let (status, headers, body) = app.send(req).await;
+        assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(&body[..], b"2345");
+        assert_eq!(headers[header::CONTENT_RANGE], "bytes 2-5/10");
+
+        // A stale If-Range validator gets the whole file instead of a mismatched range.
+        let req = with_header(
+            request("GET", &uri, Some(&token), None),
+            header::RANGE,
+            "bytes=2-5",
+        );
+        let req = with_header(req, header::IF_RANGE, "\"stale\"");
+        let (status, _, body) = app.send(req).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.len(), 10);
+        let req = with_header(
+            request("GET", &uri, Some(&token), None),
+            header::RANGE,
+            "bytes=8-",
+        );
+        let req = with_header(req, header::IF_RANGE, &etag);
+        let (status, _, body) = app.send(req).await;
+        assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(&body[..], b"89");
+
+        let req = with_header(
+            request("GET", &uri, Some(&token), None),
+            header::IF_NONE_MATCH,
+            &etag,
+        );
+        let (status, _, body) = app.send(req).await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+        assert!(body.is_empty());
+
+        let (status, headers, _) = app.get(&format!("{uri}?download=1"), Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        let disposition = headers[header::CONTENT_DISPOSITION].to_str().unwrap();
+        assert!(disposition.starts_with("attachment; "), "{disposition}");
+        assert!(
+            disposition.contains("filename*=UTF-8''Beach%20%C3%A9t%C3%A9.mp4"),
+            "{disposition}"
+        );
+
+        let (status, headers, body) = app.send(request("HEAD", &uri, Some(&token), None)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CONTENT_LENGTH], "10");
+        assert!(body.is_empty());
+
+        std::fs::remove_file(
+            app.state
+                .config
+                .stash_root
+                .join("Home Videos/2024/06/Beach été.mp4"),
+        )
+        .unwrap();
+        let (status, _, body) = app.get(&uri, Some(&token)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn stored_paths_cannot_escape_the_stash() {
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        // A file right next to the stash folder that must never be served.
+        let outside = app.state.config.stash_root.parent().unwrap().join("x");
+        std::fs::write(&outside, b"secret").unwrap();
+        for rel in ["../x", "Movies/../../x", "/etc/passwd"] {
+            let id = app
+                .item(
+                    rel,
+                    MediaKind::Video,
+                    Category::Movie,
+                    ItemStatus::Ready,
+                    None,
+                )
+                .await;
+            for suffix in ["file", "view"] {
+                let (status, _, body) = app
+                    .get(&format!("/api/items/{id}/{suffix}"), Some(&token))
+                    .await;
+                assert!(
+                    status == StatusCode::NOT_FOUND || status == StatusCode::BAD_REQUEST,
+                    "{rel}: {status}"
+                );
+                assert!(!body.windows(6).any(|w| w == b"secret"), "{rel}");
+            }
+        }
+        #[cfg(unix)]
+        {
+            let link = app.state.config.stash_root.join("Movies/link.mkv");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            let id = app
+                .item(
+                    "Movies/link.mkv",
+                    MediaKind::Video,
+                    Category::Movie,
+                    ItemStatus::Ready,
+                    None,
+                )
+                .await;
+            let (status, _, body) = app
+                .get(&format!("/api/items/{id}/file"), Some(&token))
+                .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            assert!(!body.windows(6).any(|w| w == b"secret"));
+        }
+    }
+
+    #[tokio::test]
+    async fn playback_refuses_non_video_items() {
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        let id = app
+            .item(
+                "Photos/2024/06/a.jpg",
+                MediaKind::Photo,
+                Category::Photo,
+                ItemStatus::Ready,
+                Some(b"jpg"),
+            )
+            .await;
+        let body =
+            serde_json::json!({"video_codecs": ["h264"], "audio_codecs": ["aac"], "hdr": false});
+        let (status, _, _) = app
+            .send(request(
+                "POST",
+                &format!("/api/items/{id}/playback"),
+                Some(&token),
+                Some(body),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _, _) = app
+            .send(request(
+                "PUT",
+                &format!("/api/items/{id}/progress"),
+                Some(&token),
+                Some(serde_json::json!({"position_s": -1, "duration_s": 10})),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn members_cannot_delete_items() {
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        let id = app
+            .item(
+                "Other/a.bin",
+                MediaKind::Other,
+                Category::Other,
+                ItemStatus::Ready,
+                Some(b"x"),
+            )
+            .await;
+        let (status, _, body) = app
+            .send(request(
+                "DELETE",
+                &format!("/api/items/{id}"),
+                Some(&token),
+                None,
+            ))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "forbidden");
+    }
 }

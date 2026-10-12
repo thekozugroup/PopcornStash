@@ -6,6 +6,8 @@ pub mod handlers;
 pub mod pairing;
 pub mod passkeys;
 pub mod sessions;
+#[cfg(test)]
+mod tests;
 pub mod tokens;
 pub mod users;
 

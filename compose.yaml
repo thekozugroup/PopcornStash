@@ -1,0 +1,56 @@
+# PopcornStash: one container.
+#
+#   cp .env.example .env    # then set STASH_PUBLIC_URL, APPDATA_PATH and STASH_PATH
+#   docker compose up -d
+#   docker compose logs popcornstash | grep -i "setup code"
+#
+# See docs/deployment.md for HTTPS, Unraid and first run, and docs/vpn.md for torrents.
+services:
+  popcornstash:
+    image: ghcr.io/thekozugroup/popcornstash:latest
+    build: .
+    container_name: popcornstash
+    restart: unless-stopped
+    ports:
+      - "${STASH_PORT:-8788}:8788"
+    environment:
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+      STASH_PUBLIC_URL: "${STASH_PUBLIC_URL:?Set STASH_PUBLIC_URL in .env to the HTTPS address you will open, for example https://stash.example.com (passkeys need it; http://localhost:8788 works for a test on this computer)}"
+      STASH_TRUST_PROXY: "${STASH_TRUST_PROXY:-false}"
+      STASH_HWACCEL: "${STASH_HWACCEL:-none}"
+      STASH_TORRENT_UID: "${STASH_TORRENT_UID:-6881}"
+      STASH_EXTRA_ORIGINS: "${STASH_EXTRA_ORIGINS:-}"
+      STASH_LOG: "${STASH_LOG:-info}"
+    volumes:
+      - type: bind
+        source: "${APPDATA_PATH:?Set APPDATA_PATH in .env to an existing folder for the database and settings}"
+        target: /config
+        bind: {create_host_path: false}
+      - type: bind
+        source: "${STASH_PATH:?Set STASH_PATH in .env to the existing folder that holds your library}"
+        target: /stash
+        bind: {create_host_path: false}
+    # The container starts as root so its supervisor can set up the VPN and the
+    # kill switch. It runs the web server as PUID:PGID and the torrent engine as
+    # STASH_TORRENT_UID, both without any capabilities.
+    #   NET_ADMIN       VPN tunnel, policy routing, nftables kill switch
+    #   CHOWN, FOWNER   give finished downloads and app data to PUID:PGID
+    #   DAC_OVERRIDE    reach folders owned by PUID or the engine user
+    #   SETUID, SETGID  start the web server and the engine as their own users
+    #   KILL            stop and restart them
+    # Without NET_ADMIN or /dev/net/tun the web app still runs; torrents are off.
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
+    devices:
+      - /dev/net/tun
+      # Hardware video encoding (Intel/AMD VAAPI or Intel QSV): uncomment and set
+      # STASH_HWACCEL=vaapi or qsv. See "Hardware acceleration" in docs/deployment.md.
+      # - /dev/dri:/dev/dri
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s

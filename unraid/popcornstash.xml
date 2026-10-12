@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>PopcornStash</Name>
+  <Repository>ghcr.io/thekozugroup/popcornstash:latest</Repository>
+  <Registry>https://github.com/thekozugroup/PopcornStash/pkgs/container/popcornstash</Registry>
+  <Network>bridge</Network>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/thekozugroup/PopcornStash/issues</Support>
+  <Project>https://github.com/thekozugroup/PopcornStash</Project>
+  <Overview>A private home for your family's videos, photos and downloads. Everything lives in one share: PopcornStash sorts new files into Movies, Shows, Home Videos and Photos, plays them in any browser, and brings files in from torrents, web links, uploads and an Inbox folder. Torrents only ever travel through your VPN (NordVPN in two steps, or any WireGuard or OpenVPN file). Everyone signs in with a passkey, and passkeys need an HTTPS address with a domain name: set the public address to the HTTPS name you will open (Tailscale, a reverse proxy or a Cloudflare Tunnel). On the first start, copy the setup code from the container log.</Overview>
+  <Category>MediaServer:Video MediaServer:Photos Downloaders: Network:VPN</Category>
+  <WebUI>http://[IP]:[PORT:8788]/</WebUI>
+  <Icon>https://raw.githubusercontent.com/thekozugroup/PopcornStash/main/web/public/icons/icon-512.png</Icon>
+  <ExtraParams>--cap-drop=ALL --cap-add=NET_ADMIN --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER --cap-add=SETUID --cap-add=SETGID --cap-add=KILL --device=/dev/net/tun --security-opt=no-new-privileges:true --read-only --tmpfs /tmp --tmpfs /run --stop-timeout=30</ExtraParams>
+  <Config Name="Web interface" Target="8788" Default="8788" Mode="tcp" Description="Port for the web app. Point your HTTPS reverse proxy, Tailscale Serve or tunnel here." Type="Port" Display="always" Required="true" Mask="false">8788</Config>
+  <Config Name="Public address" Target="STASH_PUBLIC_URL" Default="" Mode="" Description="The HTTPS address everyone will open, for example https://stash.example.com. Passkeys only work on HTTPS with a domain name, not on a bare IP address." Type="Variable" Display="always" Required="true" Mask="false"></Config>
+  <Config Name="App data" Target="/config" Default="/mnt/user/appdata/popcornstash" Mode="rw" Description="Database, thumbnails, settings and VPN files. Keep it on the cache pool." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/popcornstash</Config>
+  <Config Name="Library" Target="/stash" Default="/mnt/user/PopcornStash" Mode="rw" Description="The share that holds your library. PopcornStash creates Movies, Shows, Home Videos, Photos, Other, Inbox and Downloads inside it." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/PopcornStash</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User that owns every file PopcornStash writes. 99 is Unraid's nobody." Type="Variable" Display="always" Required="true" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group that owns every file PopcornStash writes. 100 is Unraid's users." Type="Variable" Display="always" Required="true" Mask="false">100</Config>
+  <Config Name="Behind a reverse proxy" Target="STASH_TRUST_PROXY" Default="false" Mode="" Description="true when SWAG, Nginx Proxy Manager, Caddy or a Cloudflare Tunnel sits in front, so sign-in limits see real visitor addresses." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
+  <Config Name="Hardware encoding" Target="STASH_HWACCEL" Default="none" Mode="" Description="none, vaapi, qsv or nvenc. vaapi and qsv also need the device /dev/dri added to this template." Type="Variable" Display="advanced" Required="false" Mask="false">none</Config>
+  <Config Name="Torrent engine user" Target="STASH_TORRENT_UID" Default="6881" Mode="" Description="User number the torrent engine runs as. Must not be 0 or PUID. Change it only if 6881 is already in use." Type="Variable" Display="advanced" Required="false" Mask="false">6881</Config>
+</Container>

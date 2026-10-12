@@ -39,18 +39,6 @@ pub(crate) enum Flow {
     Login { auth: Box<DiscoverableAuthentication> },
 }
 
-impl Flow {
-    pub(crate) fn kind(&self) -> &'static str {
-        match self {
-            Flow::Setup { .. } => "setup",
-            Flow::Invite { .. } => "invite",
-            Flow::Recover { .. } => "recover",
-            Flow::Add { .. } => "add",
-            Flow::Login { .. } => "login",
-        }
-    }
-}
-
 struct PendingFlow {
     created: Instant,
     flow: Flow,

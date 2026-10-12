@@ -4,14 +4,16 @@
 //! Every connection subscribes to the in-process [`EventBus`](stash_core::events::EventBus)
 //! and receives only the events its scopes allow: downloads need
 //! `downloads:read`; library, inbox and job events need `library:read`;
-//! VPN status goes to everyone.
+//! VPN status goes to everyone. The caller's session or device token is
+//! checked again every minute, so signing out or revoking a device also ends
+//! its open streams.
 
 use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::Router;
 use axum::extract::State;
-use axum::http::{HeaderName, HeaderValue};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, header};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -20,12 +22,14 @@ use stash_core::events::Event;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::auth::{AuthUser, Scope};
-use crate::error::ApiResult;
+use crate::error::{ApiResult, ErrorCode};
 use crate::state::AppState;
 
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
 /// How long a new connection waits for the initial VPN status.
 const INITIAL_VPN_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often an open stream re-checks that its caller is still signed in.
+const REVALIDATE: Duration = Duration::from_secs(60);
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/api/events", get(events))
@@ -61,8 +65,43 @@ fn to_sse(event: &Event) -> SseEvent {
         .data(event.data().to_string())
 }
 
-async fn events(State(state): State<AppState>, user: AuthUser) -> ApiResult<Response> {
+/// The headers that identify the caller, kept to re-check the session later.
+fn credentials(headers: &HeaderMap) -> HeaderMap {
+    let mut kept = HeaderMap::new();
+    for name in [header::AUTHORIZATION, header::COOKIE] {
+        for value in headers.get_all(&name) {
+            kept.append(name.clone(), value.clone());
+        }
+    }
+    kept
+}
+
+/// False once the session or device token behind `headers` is gone.
+/// Transient failures (for example a busy database) keep the stream open.
+async fn still_signed_in(state: &AppState, headers: &HeaderMap) -> bool {
+    let Ok(request) = Request::builder().uri("/api/events").body(()) else {
+        return true;
+    };
+    let (mut parts, ()) = request.into_parts();
+    parts.headers = headers.clone();
+    match crate::auth::sessions::authenticate(&mut parts, state).await {
+        Ok(_) => true,
+        Err(e) => e.code != ErrorCode::Unauthorized,
+    }
+}
+
+enum Step {
+    Received(Result<Event, RecvError>),
+    Revalidate,
+}
+
+async fn events(
+    State(state): State<AppState>,
+    user: AuthUser,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
     let filter = Filter::for_user(&user);
+    let credentials = credentials(&headers);
     // Subscribe before anything else so no event published from here on is missed.
     let mut rx = state.events.subscribe();
     // The VPN status comes from another service; fetch it on its own task so a
@@ -80,17 +119,29 @@ async fn events(State(state): State<AppState>, user: AuthUser) -> ApiResult<Resp
                 Err(_) => tracing::debug!("VPN status was slow; the event stream starts without it"),
             }
         }
+        let mut check = tokio::time::interval_at(tokio::time::Instant::now() + REVALIDATE, REVALIDATE);
+        check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            match rx.recv().await {
-                Ok(event) => {
+            let step = tokio::select! {
+                received = rx.recv() => Step::Received(received),
+                _ = check.tick() => Step::Revalidate,
+            };
+            match step {
+                Step::Received(Ok(event)) => {
                     if filter.allows(&event) {
                         yield Ok(to_sse(&event));
                     }
                 }
-                Err(RecvError::Lagged(skipped)) => {
+                Step::Received(Err(RecvError::Lagged(skipped))) => {
                     tracing::debug!(skipped, "event stream fell behind; continuing");
                 }
-                Err(RecvError::Closed) => break,
+                Step::Received(Err(RecvError::Closed)) => break,
+                Step::Revalidate => {
+                    if !still_signed_in(&state, &credentials).await {
+                        tracing::debug!("closing an event stream whose session has ended");
+                        break;
+                    }
+                }
             }
         }
     };
@@ -257,5 +308,25 @@ mod tests {
         let seen = read_until(&mut body, "visible").await;
         assert!(seen.contains("event: vpn"), "{seen}");
         assert!(!seen.contains("hidden"), "{seen}");
+    }
+
+    #[tokio::test]
+    async fn revoked_sessions_fail_revalidation() {
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+        headers.insert(header::USER_AGENT, "test".parse().unwrap());
+        let kept = credentials(&headers);
+        assert_eq!(kept.len(), 1);
+        assert!(still_signed_in(&app.state, &kept).await);
+        sqlx::query("DELETE FROM sessions")
+            .execute(&app.state.db)
+            .await
+            .unwrap();
+        assert!(!still_signed_in(&app.state, &kept).await);
     }
 }

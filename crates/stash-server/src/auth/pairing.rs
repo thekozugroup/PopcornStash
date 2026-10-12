@@ -54,11 +54,12 @@ async fn cleanup(db: &Db) -> ApiResult<()> {
     Ok(())
 }
 
-/// An approved token nobody collected is revoked and its plaintext wiped.
+/// An approved token nobody collected is revoked and its plaintext wiped. The row ends
+/// as `delivered` (nothing left to deliver), so later polls answer `expired`.
 async fn expire_undelivered(db: &Db, id: &str, token_id: Option<&str>) -> ApiResult<()> {
     let mut tx = db.begin().await?;
     let done = sqlx::query(
-        "UPDATE pairing_requests SET status = 'denied', pending_token = NULL WHERE id = ? AND status = 'approved'",
+        "UPDATE pairing_requests SET status = 'delivered', pending_token = NULL WHERE id = ? AND status = 'approved'",
     )
     .bind(id)
     .execute(&mut *tx)

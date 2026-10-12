@@ -165,13 +165,24 @@ pub fn apply_security_headers(headers: &mut HeaderMap, https: bool) {
     }
 }
 
+/// Device-flow endpoints called by the Chrome extension (Origin `chrome-extension://…`)
+/// and native apps (no Origin). They never read the session cookie, so a forged
+/// cross-site request gains nothing; their own rate limits and secrets protect them.
+pub const CSRF_EXEMPT: [&str; 2] = ["/api/pairing/request", "/api/pairing/poll"];
+
+/// True when an unsafe request to `path` must prove it comes from an allowed origin.
+pub fn needs_origin_check(method: &Method, path: &str, headers: &HeaderMap) -> bool {
+    let unsafe_method = matches!(*method, Method::POST | Method::PUT | Method::PATCH | Method::DELETE);
+    unsafe_method && path.starts_with("/api") && !CSRF_EXEMPT.contains(&path) && !has_bearer(headers)
+}
+
 /// Rejects cookie-authenticated unsafe requests whose Origin/Referer is not allowed.
 ///
 /// Applies to POST/PUT/PATCH/DELETE under `/api` without an `Authorization: Bearer`
 /// header, including public endpoints: setup and sign-in must come from our own origin.
+/// Only the cookie-free device pairing endpoints ([`CSRF_EXEMPT`]) are skipped.
 pub async fn csrf_guard(State(state): State<AppState>, request: Request, next: Next) -> Result<Response, ApiError> {
-    let unsafe_method = matches!(*request.method(), Method::POST | Method::PUT | Method::PATCH | Method::DELETE);
-    if unsafe_method && request.uri().path().starts_with("/api") && !has_bearer(request.headers()) {
+    if needs_origin_check(request.method(), request.uri().path(), request.headers()) {
         let allowed = state.config.allowed_origins();
         if !origin_allowed(request.headers(), &allowed) {
             tracing::warn!(path = %request.uri().path(), "blocked a cross-site request");
@@ -241,6 +252,21 @@ mod tests {
         ));
         // Nothing allowed when no public URL is configured.
         assert!(!origin_allowed(&headers(&[("origin", "https://stash.example.com")]), &[]));
+    }
+
+    #[test]
+    fn which_requests_need_an_origin() {
+        let none = HeaderMap::new();
+        let bearer = headers(&[("authorization", "Bearer pst_abc")]);
+        assert!(needs_origin_check(&Method::POST, "/api/auth/login/start", &none));
+        assert!(needs_origin_check(&Method::DELETE, "/api/me/sessions/x", &none));
+        assert!(needs_origin_check(&Method::PATCH, "/api/users/x", &none));
+        assert!(needs_origin_check(&Method::PUT, "/api/settings", &none));
+        assert!(!needs_origin_check(&Method::GET, "/api/me", &none));
+        assert!(!needs_origin_check(&Method::POST, "/api/downloads", &bearer));
+        assert!(!needs_origin_check(&Method::POST, "/api/pairing/request", &none));
+        assert!(!needs_origin_check(&Method::POST, "/api/pairing/poll", &none));
+        assert!(needs_origin_check(&Method::POST, "/api/pairing/approve", &none));
     }
 
     #[test]

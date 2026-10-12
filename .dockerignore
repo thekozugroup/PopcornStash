@@ -1,0 +1,30 @@
+# Build context for the Dockerfile: sources only.
+.git
+.github
+.claude
+.agents
+.impeccable
+**/target
+**/node_modules
+web/dist
+extension
+evidence
+test-results
+playwright-report
+dev-data
+docs
+unraid
+scripts
+*.md
+!web/**/*.md
+
+# Never send secrets or personal files to the builder.
+.env
+.env.*
+*.ovpn
+wireguard.conf
+*.db
+*.db-shm
+*.db-wal
+*.zip
+.DS_Store
