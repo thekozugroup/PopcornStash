@@ -7,9 +7,9 @@ Ship the Docker server for PopcornStash: a passkey-gated, private family library
 - Rust backend (axum, SQLite, webauthn-rs, librqbit); web UI in React + Astryx with the Popcorn design world.
 - Passkey-only access, first-run setup code, invites, device pairing, CSRF/origin checks, rate limits.
 - `Downloads/In Progress` → `Downloads/Completed` → sorted library for torrents, links, uploads and Inbox drops. Files outside Inbox/Downloads never moved implicitly.
-- Torrent engine isolated in a VPN container with nftables kill switch and device-bound sockets; WireGuard (kernel or boringtun) and OpenVPN; NordVPN token setup.
+- One container. A root supervisor runs the web server as PUID:PGID and the torrent engine as its own user; only the engine user is routed into the VPN (policy routing + nftables kill switch + device-bound sockets + DNS forced through the tunnel + Landlock). WireGuard (kernel or boringtun) and OpenVPN; NordVPN token setup.
 - Direct play when possible; HLS transcoding otherwise; thumbnails for video and photos (HEIC included).
-- Docker image, compose, Unraid templates, CI, Chrome extension.
+- One Docker image and one service (compose and a single Unraid template), CI, Chrome extension.
 - Verified by Rust tests, Playwright with a virtual authenticator, Docker smoke, and a VPN kill-switch test against a local WireGuard peer.
 
 ## Status

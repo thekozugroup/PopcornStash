@@ -1,19 +1,35 @@
-//! Types shared by the main server and the torrent engine's internal API
-//! (docs/architecture.md section 9), plus files in the shared `torrent/` dir.
+//! Types and constants shared by the supervisor (`popcornstash run`), the web
+//! server and the torrent engine (docs/architecture.md sections 3, 5 and 9).
 
 use serde::{Deserialize, Serialize};
 
-/// File in the shared torrent dir holding the internal bearer token.
+/// Development fallback: token file in the torrent dir, used only when
+/// `STASH_INTERNAL_TOKEN` is unset (serve and engine started by hand).
 pub const INTERNAL_TOKEN_FILE: &str = "internal.token";
-/// Supervisor status file in the shared torrent dir.
+/// Runtime directory created by the supervisor (tmpfs).
+pub const RUN_DIR: &str = "/run/popcornstash";
+/// Tunnel status written by the supervisor, read by the engine (inside RUN_DIR).
 pub const STATUS_FILE: &str = "status.json";
+/// Adopt socket (inside RUN_DIR), owner PUID, 0600.
+pub const SUPERVISOR_SOCKET: &str = "supervisor.sock";
+/// Engine API and proxy addresses (loopback only).
+pub const ENGINE_API_ADDR: &str = "127.0.0.1:9091";
+pub const ENGINE_PROXY_ADDR: &str = "127.0.0.1:9092";
+/// Supervisor DNS forwarder that only resolves through the tunnel.
+pub const DNS_FORWARDER_ADDR: &str = "127.0.0.54:5354";
+/// Routing table for the engine user and the forwarder's marked sockets.
+pub const ROUTE_TABLE: u32 = 51820;
+/// Socket mark used by the supervisor's DNS forwarder upstream sockets.
+pub const FWMARK: u32 = 0x5150;
+/// nftables table name (family inet).
+pub const NFT_TABLE: &str = "popcornstash";
 /// VPN directory inside the shared torrent dir.
 pub const VPN_DIR: &str = "vpn";
 pub const VPN_META_FILE: &str = "vpn.json";
 pub const WIREGUARD_FILE: &str = "wireguard.conf";
 pub const OPENVPN_FILE: &str = "openvpn.ovpn";
 pub const OPENVPN_AUTH_FILE: &str = "openvpn.auth";
-/// Engine persistence directory inside the shared torrent dir.
+/// Engine persistence directory inside the torrent dir (owned by the engine user).
 pub const ENGINE_DIR: &str = "engine";
 /// Name of the tunnel interface inside the VPN container.
 pub const TUNNEL_IF: &str = "psw0";
@@ -169,4 +185,19 @@ pub struct AddTorrentResponse {
 pub struct LimitsRequest {
     pub down_kbps: u64,
     pub up_kbps: u64,
+}
+
+/// One request line on the supervisor's adopt socket.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum SupervisorRequest {
+    /// Re-own `Downloads/In Progress/<name>` (a single path component) as PUID:PGID.
+    Adopt { name: String },
+}
+
+/// One response line on the supervisor's adopt socket.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SupervisorResponse {
+    pub ok: bool,
+    pub error: Option<String>,
 }

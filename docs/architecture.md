@@ -4,78 +4,86 @@ This document is the contract between the Rust backend, the web UI, the Chrome e
 
 ## 1. Shape of the system
 
+One container, one binary (`popcornstash`), three processes.
+
 ```
-                    HTTPS (reverse proxy, Tailscale, or built-in TLS)
-                                     │
-┌────────────────────────────────────▼─────────────────────────────────────┐
-│ popcornstash  (container 1: unprivileged, cap_drop ALL, read-only rootfs) │
-│  popcornstash serve                                                       │
-│   ├─ HTTP API + embedded web UI (axum)                                    │
-│   ├─ passkey auth, sessions, device tokens, invites                        │
-│   ├─ library index (SQLite), watcher, sorter                               │
-│   ├─ probe / thumbnails / HLS transcoding (ffmpeg, vips)                   │
-│   ├─ HTTP download manager, resumable uploads                              │
-│   └─ torrent client ──► internal HTTP API ─┐                               │
-└──────────────────── /config (appdata) ─────┼───── /stash (library root) ───┘
-                                             │ compose network only
-┌────────────────────────────────────────────▼─────────────────────────────┐
-│ popcornstash-vpn  (container 2: NET_ADMIN + /dev/net/tun, own netns)       │
-│  popcornstash torrentd   (root supervisor: tunnel, routes, kill switch)    │
-│   └─ popcornstash torrent-engine  (drops to PUID:PGID)                     │
-│       ├─ librqbit session, every socket bound to the tunnel device         │
-│       ├─ internal API :9091   (bearer = internal token)                    │
-│       └─ HTTP CONNECT proxy :9092 (optional: web downloads via VPN)        │
-│  mounts: <appdata>/torrent → /data,  <stash>/Downloads → /stash/Downloads  │
-└───────────────────────────────────────────────────────────────────────────┘
+                 HTTPS (reverse proxy, Tailscale, or built-in TLS)
+                                    │ :8788
+┌───────────────────────────────────▼────────────────────────────────────────────┐
+│ popcornstash container  (NET_ADMIN, /dev/net/tun, read-only rootfs)              │
+│                                                                                  │
+│  popcornstash run   PID 1 under tini, root: the supervisor                       │
+│   ├─ VPN tunnel psw0 (kernel WireGuard → boringtun fallback, or OpenVPN)         │
+│   ├─ policy routing: only the engine user is routed into psw0                    │
+│   ├─ nftables kill switch: the engine user may only send through psw0            │
+│   ├─ DNS forwarder 127.0.0.54:5354 → VPN DNS through psw0 (engine DNS DNAT'd)   │
+│   ├─ adopt socket /run/popcornstash/supervisor.sock (re-own finished torrents)   │
+│   │                                                                              │
+│   ├─ popcornstash serve           PUID:PGID, no capabilities                     │
+│   │    API + embedded web UI, passkeys, library, sorter, ffmpeg, web downloads   │
+│   │    reaches the engine on 127.0.0.1:9091                                      │
+│   │                                                                              │
+│   └─ popcornstash torrent-engine  STASH_TORRENT_UID:PGID, no capabilities,       │
+│        Landlock: writes only Downloads/In Progress and its state directory       │
+│        librqbit with every socket bound to psw0; API 127.0.0.1:9091;             │
+│        CONNECT proxy 127.0.0.1:9092 (web downloads through the VPN)              │
+└──────────────── /config (appdata) ─────────────── /stash (library root) ────────┘
 ```
 
-One image, one binary (`popcornstash`), two roles. The internet-facing web app never holds network privileges. The VPN container can only see `Downloads/`, never the family library.
+The web app's own traffic (sign-in, the NordVPN API, web downloads unless they use the proxy) uses the normal network, so the UI stays reachable on the LAN whatever the VPN does. Only the engine's user is routed into the tunnel. When the tunnel is down the engine has no route and the kill switch drops its packets.
+
+Isolation inside one container: the engine runs as its own user with no capabilities and cannot read the database, secrets or VPN files. Where the kernel supports Landlock it can only write to `Downloads/In Progress` and its state directory. The web server runs as `PUID:PGID` with no capabilities. Only the supervisor keeps root, and it does not parse network input apart from DNS packets on loopback and one-line requests on its owner-only Unix socket.
+
+Degraded modes, each shown in the UI as a plain sentence:
+- Started without `NET_ADMIN` or `/dev/net/tun`: the supervisor runs only `serve`; torrents are unavailable ("Torrents need the container to have NET_ADMIN and /dev/net/tun.").
+- Started as a non-root user (`--user`): `run` behaves like `serve`; torrents are unavailable.
 
 ### Binary subcommands (`crates/popcornstash`)
 
-| Command | Runs in | Purpose |
+| Command | Runs as | Purpose |
 |---|---|---|
-| `serve` | container 1 | Web app, API, library, media, downloads |
-| `torrentd` | container 2 (root) | Applies VPN + kill switch, supervises the engine |
-| `torrent-engine` | container 2 (PUID) | librqbit + internal API + CONNECT proxy. Spawned by `torrentd` only |
+| `run` | root (default CMD) | Supervisor: VPN, routing, kill switch, DNS forwarder, adopt socket. Spawns `serve` and `torrent-engine` with dropped privileges and restarts them |
+| `serve` | PUID:PGID | Web app, API, library, media, downloads. Also runs alone for development (torrents disabled) |
+| `torrent-engine` | engine user | librqbit + internal API + CONNECT proxy. Spawned by `run` only |
 | `admin reset-owner` | `docker exec` | Prints a one-time owner recovery link (lost passkeys) |
 | `admin setup-code` | `docker exec` | Prints the current first-run setup code |
-| `healthcheck` | Docker HEALTHCHECK | Exit 0 when `/api/health` (or engine `/health`) answers |
+| `healthcheck` | Docker HEALTHCHECK | Exit 0 when the web server's `/api/health` answers |
 
 ### Crates
 
 | Crate | Responsibility |
 |---|---|
 | `stash-core` | Config, DB pool + migrations, models, library scanner/watcher/classifier/organizer, media probe/thumbnail/transcode, job queue, filename parser |
-| `stash-server` | axum router, auth (webauthn-rs), sessions/tokens, security middleware, API handlers, download manager, uploads, torrentd client, NordVPN API client, SSE events, embedded UI |
-| `stash-torrentd` | VPN config parsing (wg-quick, ovpn), tunnel bring-up (kernel WireGuard → boringtun fallback, OpenVPN), routes, nftables kill switch, DNS, privilege drop, librqbit engine, internal API, CONNECT proxy |
+| `stash-server` | axum router, auth (webauthn-rs), sessions/tokens, security middleware, API handlers, download manager, uploads, engine client, supervisor client, NordVPN API client, SSE events, embedded UI |
+| `stash-torrentd` | Supervisor (VPN config parsing, tunnel bring-up, policy routing, nftables kill switch, DNS forwarder, adopt socket, privilege drop, child processes) and the engine (librqbit, Landlock, internal API, CONNECT proxy) |
 | `popcornstash` | clap CLI wiring the above |
 
 ## 2. Configuration
 
-Environment variables (container 1 unless noted):
+Environment variables:
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `STASH_ROOT` | `/stash` | The PopcornStash folder (any directory or Unraid share) |
-| `STASH_CONFIG` | `/config` | Appdata: database, caches, secrets, torrent dir |
+| `STASH_CONFIG` | `/config` | Appdata: database, caches, secrets, torrent state |
 | `STASH_PUBLIC_URL` | none | `https://stash.example.com`. Required for passkeys: sets the WebAuthn origin and RP ID. `http://localhost:8788` allowed for local testing |
 | `STASH_EXTRA_ORIGINS` | none | Comma-separated extra allowed origins (same RP ID) |
 | `STASH_BIND` | `0.0.0.0:8788` | Listen address |
 | `STASH_TLS_CERT`, `STASH_TLS_KEY` | none | Optional PEM files for built-in HTTPS (rustls) |
 | `STASH_TRUST_PROXY` | `false` | Use `X-Forwarded-For` for client IPs (rate limits, audit) |
-| `STASH_TORRENTD_URL` | `http://popcornstash-vpn:9091` | Internal engine API. Empty disables torrents |
-| `STASH_TORRENTD_PROXY` | `http://popcornstash-vpn:9092` | Internal CONNECT proxy for web downloads via VPN |
 | `STASH_HWACCEL` | `none` | `none`, `vaapi`, `qsv`, `nvenc` |
 | `STASH_LOG` | `info` | tracing filter |
-| `PUID`, `PGID` (container 2) | `99`, `100` | Owner of files the engine writes (Unraid nobody:users) |
-| `STASH_ALLOW_NO_VPN` (container 2) | `false` | Only for users whose router already tunnels everything. Engine runs without a tunnel; UI shows a permanent warning |
+| `PUID`, `PGID` | `99`, `100` | User and group for the web server and for every file PopcornStash creates (Unraid nobody:users) |
+| `STASH_TORRENT_UID` | `6881` | User the torrent engine runs as. Must differ from `PUID` and 0 |
+| `STASH_ALLOW_NO_VPN` | `false` | Only for users whose router already tunnels everything. The engine runs without a tunnel; the UI shows a permanent warning |
+
+Set by the supervisor for its children (not for users): `STASH_TORRENTD_URL=http://127.0.0.1:9091`, `STASH_TORRENTD_PROXY=http://127.0.0.1:9092`, `STASH_INTERNAL_TOKEN` (random per start), `STASH_SUPERVISOR_SOCKET=/run/popcornstash/supervisor.sock`, `STASH_TUNNEL_IF=psw0` (engine only). When `serve` runs without the supervisor these are unset and torrents are disabled.
 
 Persistent settings that the UI edits live in the `settings` table (section 6).
 
 ## 3. Folder layout
 
-Created at startup if missing (container 1). Names are fixed.
+Created at startup if missing. Names are fixed.
 
 ```
 <STASH_ROOT>/
@@ -98,15 +106,18 @@ Created at startup if missing (container 1). Names are fixed.
   cache/thumbs/ab/<item>-sm.webp, -lg.webp
   cache/renditions/<item>.webp     Browser-friendly photo renditions (HEIC/RAW/TIFF)
   cache/transcode/<session>/       Live HLS segments (deleted on session end)
-  torrent/                    Shared with container 2 (mounted there as /data)
-    internal.token            Created by container 1 (0640), read by torrentd
-    vpn/vpn.json              { provider, protocol, label, server, country, created_at }
+  torrent/
+    vpn/vpn.json              { provider, protocol, label, server, country, created_at }   written by serve (0600)
     vpn/wireguard.conf        wg-quick format (0600)
     vpn/openvpn.ovpn          (0600)
     vpn/openvpn.auth          username\npassword (0600)
-    engine/                   librqbit persistence and fastresume
-    status.json               Written by torrentd supervisor: tunnel state
+    engine/                   librqbit persistence and fastresume (engine user, 0700)
+/run/popcornstash/            tmpfs, created by the supervisor
+  status.json                 Tunnel state, written by the supervisor, read by the engine
+  supervisor.sock             Adopt socket (owner PUID, 0600)
 ```
+
+Ownership: `/config` and everything `serve` writes belong to `PUID:PGID` (database and secrets 0600). `Downloads/In Progress` is `PUID:PGID` mode 2775 so the engine (primary group `PGID`, umask 0002) can create torrent folders the web server can move. When a torrent finishes, `serve` asks the supervisor to adopt its folder: the supervisor changes ownership of that tree to `PUID:PGID` without following symlinks (an `openat`/`O_NOFOLLOW` walk that stays on one filesystem), so library files never end up owned by the engine user.
 
 ### Movement rules (safety)
 - Only files under `Inbox/` and `Downloads/Completed/` are moved automatically.
@@ -140,7 +151,7 @@ Auto-sort (setting `auto_sort`, default on) moves High-confidence results immedi
 
 ## 5. Processes and pipelines
 
-### Ingest pipeline (container 1)
+### Ingest pipeline
 ```
 torrent / web link / upload / Chrome / Android share
         │
@@ -169,35 +180,46 @@ A DB-backed queue (`jobs` table) with a worker pool: `scan`, `probe`, `thumb`, `
 - **Playback decision:** client sends codec support. Direct play when container is mp4/m4v/mov/webm, video codec is supported (h264 always; hevc/av1/vp9 when the client says so), audio is aac/mp3/opus/flac (or absent), and the file is not HDR for an SDR-only client. Otherwise HLS.
 - **HLS transcoding:** session per playback. A full VOD playlist with fixed 6s segments is generated up front. ffmpeg runs from the requested segment (`-ss`, `-force_key_frames expr:gte(t,n_forced*6)`, `-start_number`, `-output_ts_offset`), H.264 (libx264 veryfast CRF 23, or `h264_vaapi`/`h264_qsv`/`h264_nvenc`) + AAC stereo 160k, fMP4 or MPEG-TS segments in `cache/transcode/<session>/`. A segment request outside the produced range (behind the start, or more than 3 segments past the newest) restarts ffmpeg at that segment; requests just ahead wait up to 20s for the segment to appear. ffmpeg runs ahead without throttling in v1. Sessions idle for 60s are killed and their folder deleted. HDR sources are tone mapped to SDR (zscale + tonemap hable). Max 2 concurrent transcodes (setting).
 
-### Web downloads (container 1)
+### Web downloads
 reqwest streaming into `In Progress/<name>.part`, resume with `Range`, retry 3× with backoff, concurrency 3. Filename from `Content-Disposition`, else URL path, sanitized. Optional request headers from the extension (`Cookie`, `Referer`, `User-Agent`) are held in memory only and never written to the DB or logs. Setting `http_via_vpn`: `never` | `when_available` (default) | `always` (fails if the VPN is down). Magnet links and `.torrent` URLs are handed to the torrent client.
 
-### Torrents (container 2 engine, container 1 client)
-- Adding a torrent while the VPN is down creates the download in `queued` with the message "Waiting for the VPN to connect"; the poller adds it to the engine once the engine is `running`. With torrents disabled (`STASH_TORRENTD_URL` empty) the API answers `vpn_unavailable`.
-- Container 1 polls `GET /torrents` every 2s while any torrent is active (10s otherwise) and mirrors state into `downloads`.
-- Engine downloads into `/stash/Downloads/In Progress/<torrent name>`.
-- When a torrent finishes: if `seed_after_complete` is off (default), container 1 calls `DELETE /torrents/:id?delete_files=false`, then moves the folder to `Completed/` and calls `Library::enqueue_sort` (download state `sorting`; the sorter sets `sorted` and links `download_items`). If on, it seeds until `seed_ratio` (default 1.0) or `seed_hours` (default 24), then the same.
+### Torrents (engine process, web server client)
+- Adding a torrent while the VPN is down creates the download in `queued` with the message "Waiting for the VPN to connect"; the poller adds it to the engine once the engine is `running`. With torrents disabled (`STASH_TORRENTD_URL` unset) the API answers `vpn_unavailable`.
+- The web server polls `GET /torrents` every 2s while any torrent is active (10s otherwise) and mirrors state into `downloads`.
+- The engine downloads into `<STASH_ROOT>/Downloads/In Progress/<torrent name>` (same path in both processes).
+- When a torrent finishes: if `seed_after_complete` is off (default), the web server calls `DELETE /torrents/:id?delete_files=false`, asks the supervisor to adopt the folder (section 3, Ownership), moves it to `Completed/` and calls `Library::enqueue_sort` (download state `sorting`; the sorter sets `sorted` and links `download_items`). If on, it seeds until `seed_ratio` (default 1.0) or `seed_hours` (default 24), then the same.
 - DHT, PEX, uTP enabled. LSD disabled. Upload/download limits from settings.
 
-### VPN (container 2)
-`torrentd` (root) loop:
-1. Wait for `/data/internal.token`.
-2. Read `/data/vpn/vpn.json`. If absent: kill switch with no tunnel, start the engine in "VPN not configured" state (it refuses to add torrents unless `STASH_ALLOW_NO_VPN=true`).
-3. Resolve the endpoint(s) using Docker DNS, remember the default gateway, apply the nftables kill switch:
-   - table `inet popcornstash`; output policy drop. Allow: `lo`; the tunnel interface; established/related; `eth0` to the container's own subnets; `eth0` to each VPN endpoint IP:port/proto.
-   - input policy drop. Allow: `lo`; established/related; from local subnets to tcp 9091/9092; tunnel established.
-   - IPv6: drop everything except `lo` (no IPv6 tunnelling in v1).
-4. Bring up the tunnel:
-   - **WireGuard:** `ip link add psw0 type wireguard`; if the kernel lacks WireGuard, spawn bundled `boringtun-cli psw0 --foreground --disable-drop-privileges` and wait for its UAPI socket. Then `wg setconf psw0 <stripped conf>`, add the address, MTU 1420, link up, route endpoint via the original gateway, `ip route replace default dev psw0`.
-   - **OpenVPN:** `openvpn --config openvpn.ovpn --auth-user-pass openvpn.auth --dev psw0 --dev-type tun --auth-nocache --script-security 2 --up/--down <torrentd hook>`; redirect-gateway from the provider config sets routes; the hook reports pushed DNS.
-5. Write `/etc/resolv.conf` with the tunnel DNS (WireGuard `DNS=`, OpenVPN pushed DNS, NordVPN 103.86.96.100 / 103.86.99.100 fallback).
-6. Spawn `popcornstash torrent-engine` with uid/gid PUID/PGID, env `STASH_TUNNEL_IF=psw0`. librqbit uses `bind_device_name = psw0`, so even a routing mistake cannot reach `eth0`.
-7. Monitor: WireGuard latest-handshake < 180s, OpenVPN process alive. Write `/data/status.json` `{state, provider, protocol, server, interface, since, error}` every 5s. On failure: keep the kill switch, tear down, retry with backoff (5s → 5 min).
-8. Reload: the engine exits with code 75 when container 1 calls `POST /vpn/reload`; torrentd tears down and restarts from step 2.
+### VPN (supervisor, `popcornstash run`)
+Three independent layers keep torrent traffic in the tunnel: policy routing by user, an nftables kill switch by user, and librqbit binding every socket to `psw0`. DNS is forced through the tunnel as well.
+
+Let `E` = `STASH_TORRENT_UID`, mark `0x5150`, routing table `51820`.
+
+1. **Preflight.** Running as root, `NET_ADMIN` usable (an nftables dry run succeeds), `/dev/net/tun` present, `PUID` and `E` distinct and non-zero. Otherwise degraded mode (section 1).
+2. **Prepare.** Random internal token (32 bytes hex) kept in memory. `/run/popcornstash` (0755). Ownership per section 3: `/config` tree `PUID:PGID`, `/config/torrent/engine` `E:PGID` 0700, `Downloads/In Progress` `PUID:PGID` 2775.
+3. **Base policy, before any child starts** (IPv4 and IPv6 where applicable):
+   - `ip rule add priority 100 uidrange E-E lookup 51820` and `ip rule add priority 101 uidrange E-E prohibit`. With no tunnel, table 51820 is empty and the engine has no route at all.
+   - `ip rule add priority 99 fwmark 0x5150 lookup 51820` and `ip rule add priority 102 fwmark 0x5150 prohibit` for the supervisor's own DNS forwarder.
+   - nftables table `inet popcornstash` (replaced atomically, Docker's tables untouched):
+     - `nat_output` (type nat, hook output, priority -110): `meta skuid E udp/tcp dport 53 → dnat ip to 127.0.0.54:5354`.
+     - `output` (filter, priority 0, policy accept): for `meta skuid E`: accept `oifname "lo"` with `ct state established,related`; accept `oifname "lo"` to `127.0.0.54` port 5354; accept `oifname "psw0"`; drop everything else (IPv4 and IPv6).
+     - `input` (filter, policy accept): `iifname "psw0"` accept only `ct state established,related` and the engine's listen port; drop the rest, so nothing on the VPN side can reach the web server.
+4. **DNS forwarder** on `127.0.0.54:5354` (UDP and TCP) inside the supervisor. Upstream sockets carry mark `0x5150`, so they can only leave through `psw0`; with the tunnel down every query answers SERVFAIL. Upstreams: WireGuard `DNS=`, OpenVPN pushed DNS, else NordVPN 103.86.96.100 / 103.86.99.100.
+5. **Tunnel** from `/config/torrent/vpn` (absent → no tunnel; the engine stays blocked):
+   - **WireGuard:** `ip link add psw0 type wireguard`; if the kernel lacks WireGuard, spawn bundled `boringtun-cli --foreground --disable-drop-privileges psw0` and wait for its UAPI socket. `wg setconf psw0 <stripped conf>`, address, MTU 1420, link up. The encrypted UDP comes from the kernel or the root-owned boringtun process, so it uses the normal routes.
+   - **OpenVPN:** `openvpn --config openvpn.ovpn --auth-user-pass openvpn.auth --auth-nocache --dev psw0 --dev-type tun --route-noexec --pull-filter ignore redirect-gateway --pull-filter ignore route-ipv6 --pull-filter ignore ifconfig-ipv6 --script-security 2 --up/--down <hook>`; the hook reports pushed DNS. OpenVPN must never change the main routing table.
+   - Then `ip route replace default dev psw0 table 51820`.
+6. **Children.** `popcornstash serve` as `PUID:PGID` and `popcornstash torrent-engine` as `E:PGID` (umask 0002), both with supplementary groups cleared, `PR_SET_NO_NEW_PRIVS`, and the environment from section 2. The engine applies Landlock to itself (best effort) and binds librqbit to `psw0`.
+7. **Monitor** every 5s: WireGuard latest-handshake < 180s, OpenVPN process alive. Write `/run/popcornstash/status.json` (`TunnelStatus`). On failure the rules stay in place; tear down and retry with backoff (5s → 5 min). A crashed child restarts after 2s (backoff up to 1 min).
+8. **Reload.** The engine exits with code 75 when the web server calls `POST /vpn/reload`; the supervisor tears the tunnel down, re-reads the files and repeats steps 5–6 for the engine only.
+9. **Adopt socket** `/run/popcornstash/supervisor.sock` (owner `PUID`, 0600; peer uid checked with `SO_PEERCRED`). One JSON line per request: `{"op":"adopt","name":"<torrent folder or file name>"}` → `{"ok":true}` or `{"ok":false,"error":"..."}`. `name` is a single path component under `Downloads/In Progress`.
+10. **Shutdown** on SIGTERM: stop children, tear down the tunnel, remove the rules.
+
+`STASH_ALLOW_NO_VPN=true` skips steps 3–5 for the engine (no rules, no tunnel) and the engine runs unblocked; the UI shows a permanent warning.
 
 Proof of protection: the engine checks its public IP through the tunnel every 10 minutes (NordVPN `https://api.nordvpn.com/v1/helpers/ips/insights` → `{ip, country, protected}`; other providers `https://api.ipify.org?format=json`).
 
-### NordVPN setup (container 1)
+### NordVPN setup (web server)
 - `GET https://api.nordvpn.com/v1/users/services/credentials` with basic auth `token:<access token>` → `nordlynx_private_key`, `username`, `password` (service credentials).
 - Countries: `GET https://api.nordvpn.com/v1/servers/countries` (cached 24h).
 - Server: `GET https://api.nordvpn.com/v1/servers/recommendations?filters[servers_technologies][identifier]=wireguard_udp&filters[country_id]=<id>&limit=1` → `hostname`, `station`, technology metadata `public_key`.
@@ -264,11 +286,11 @@ Settings keys and defaults:
 - **Rate limits:** auth start/finish and pairing request/poll: 10/min per IP, burst 20. Failed auth is audit-logged.
 - **Headers:** CSP `default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Permissions-Policy: camera=(), microphone=(), geolocation=()`, `Cross-Origin-Opener-Policy: same-origin`, HSTS when https.
 - **Paths:** every filesystem path from a request is resolved under its root and rejected if it escapes (canonicalize + prefix check, no symlink escape). Uploaded filenames are sanitized (no separators, no control chars, no leading dots, max 200 bytes).
-- **Internal API:** container 2 accepts only `Authorization: Bearer <internal token>` from local subnets; the token is 32 random bytes hex, file mode 0640.
+- **Internal API:** the engine listens on 127.0.0.1 only and requires `Authorization: Bearer <internal token>`; the token is 32 random bytes hex, generated by the supervisor at each start and passed to both children in the environment, never written to disk.
 - **Secrets at rest:** VPN files 0600. Device token plaintext is shown once (pairing delivers it once, then the row is wiped).
 - **Roles:** owner can do everything. Member can browse, play, upload, add downloads, review Inbox, manage own passkeys/sessions/devices. Owner-only: VPN, settings, people/invites, trash emptying, deleting items, audit log.
 
-## 8. HTTP API (container 1)
+## 8. HTTP API
 
 JSON, snake_case. Errors: `{"error": {"code": "not_found", "message": "Human readable sentence."}}` with matching HTTP status. Codes: `bad_request`, `unauthorized`, `forbidden`, `not_found`, `conflict`, `rate_limited`, `setup_required`, `passkeys_unavailable`, `vpn_unavailable`, `internal`.
 
@@ -370,9 +392,9 @@ VpnStatus { configured: bool, reachable: bool /* torrentd answered */, state: "c
 
 Non-API routes: `/` and all client routes serve the SPA (`index.html`, `Cache-Control: no-cache`); `/assets/*` immutable; `/manifest.webmanifest`; `/sw.js`; `/share` (PWA share target, GET `?url&text&title`, handled client-side); `/.well-known/assetlinks.json` (from `STASH_ANDROID_ASSETLINKS`, future Android passkeys).
 
-## 9. Internal engine API (container 2, port 9091)
+## 9. Internal engine API (127.0.0.1:9091)
 
-Bearer internal token on every route except `/livez`. Requests are only accepted from loopback and private addresses.
+Bearer internal token on every route except `/livez`. The engine binds to 127.0.0.1 only.
 
 | Method | Path | Body → Response |
 |---|---|---|
@@ -384,7 +406,7 @@ Bearer internal token on every route except `/livez`. Requests are only accepted
 | DELETE | `/torrents/:id?delete_files=bool` | → 204 |
 | PUT | `/limits` | `{down_kbps, up_kbps}` → 204 |
 | POST | `/vpn/reload` | → 202, then the engine exits 75 and torrentd re-applies the VPN |
-| CONNECT | `:9092` | HTTP CONNECT proxy, `Proxy-Authorization: Basic base64("stash:<internal token>")`, only to ports 80/443 |
+| CONNECT | `127.0.0.1:9092` | HTTP CONNECT proxy, `Proxy-Authorization: Basic base64("stash:<internal token>")`, only to ports 80/443 |
 
 ## 10. Clients
 
@@ -394,7 +416,7 @@ Bearer internal token on every route except `/livez`. Requests are only accepted
 
 ## 11. Packaging
 
-- Dockerfile: Node stage builds `web/` → Rust stage builds `popcornstash` (release, embeds `web/dist`) and `boringtun-cli` → runtime `debian:trixie-slim` with `ffmpeg`, `libvips-tools`, `wireguard-tools`, `openvpn`, `nftables`, `iproute2`, `ca-certificates`, `tini`. Multi-arch amd64/arm64. Images pulled from `mirror.gcr.io` in CI-unfriendly environments.
-- `compose.yaml`: services `popcornstash` and `popcornstash-vpn`, shared network, appdata and stash binds, `PUID/PGID`.
-- `unraid/popcornstash.xml`, `unraid/popcornstash-vpn.xml`.
+- Dockerfile: Node stage builds `web/` → Rust stage builds `popcornstash` (release, embeds `web/dist`) and `boringtun-cli` → runtime `debian:trixie-slim` with `ffmpeg`, `libvips-tools`, `wireguard-tools`, `openvpn`, `nftables`, `iproute2`, `ca-certificates`, `tini`. `ENTRYPOINT ["tini", "--", "popcornstash"]`, `CMD ["run"]`. Multi-arch amd64/arm64. The base registry is a build argument (CI uses Docker Hub; restricted environments use `mirror.gcr.io/library`).
+- `compose.yaml`: one service `popcornstash`: ports 8788, `cap_drop: [ALL]` plus `cap_add: [NET_ADMIN, CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]`, `devices: [/dev/net/tun]`, `read_only: true` with tmpfs `/tmp` and `/run`, `no-new-privileges`, volumes appdata → `/config` and stash → `/stash`, env `PUID/PGID/STASH_PUBLIC_URL`.
+- `unraid/popcornstash.xml`: one template (`--cap-add=NET_ADMIN --device=/dev/net/tun`, PUID 99 / PGID 100).
 - GitHub Actions: `ci.yml` (fmt, clippy, tests, web check/build, extension check, Docker build + smoke), `publish.yml` (GHCR on tags), extension zip artifact.

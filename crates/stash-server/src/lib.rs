@@ -8,6 +8,7 @@ pub mod error;
 pub mod nordvpn;
 pub mod security;
 pub mod state;
+pub mod supervisor_client;
 pub mod torrentd_client;
 pub mod uploads;
 pub mod web;

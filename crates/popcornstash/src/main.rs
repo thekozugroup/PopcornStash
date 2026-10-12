@@ -15,35 +15,36 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the web server, library and downloads (container 1).
-    Serve,
-    /// Apply the VPN and kill switch, then supervise the torrent engine (container 2, root).
-    Torrentd {
-        #[arg(long, env = "STASH_TORRENT_DATA", default_value = "/data")]
-        data_dir: PathBuf,
-        #[arg(long, env = "STASH_DOWNLOADS", default_value = "/stash/Downloads")]
-        downloads_dir: PathBuf,
+    /// Start everything (default in the container): the root supervisor applies the VPN
+    /// and kill switch, then runs the web server and torrent engine with dropped privileges.
+    Run {
         #[arg(long, env = "PUID", default_value_t = 99)]
         puid: u32,
         #[arg(long, env = "PGID", default_value_t = 100)]
         pgid: u32,
+        #[arg(long, env = "STASH_TORRENT_UID", default_value_t = 6881)]
+        engine_uid: u32,
         #[arg(long, env = "STASH_ALLOW_NO_VPN", default_value_t = false)]
         allow_no_vpn: bool,
     },
-    /// The unprivileged torrent engine. Started by `torrentd`; not for direct use.
+    /// Run only the web server, library and downloads (development, or started by `run`).
+    Serve,
+    /// The unprivileged torrent engine. Started by `run`; not for direct use.
     #[command(hide = true)]
     TorrentEngine {
-        #[arg(long, env = "STASH_TORRENT_DATA", default_value = "/data")]
-        data_dir: PathBuf,
-        #[arg(long, env = "STASH_DOWNLOADS", default_value = "/stash/Downloads")]
+        #[arg(long, env = "STASH_ENGINE_STATE")]
+        state_dir: PathBuf,
+        #[arg(long, env = "STASH_ENGINE_DOWNLOADS")]
         downloads_dir: PathBuf,
+        #[arg(long, env = "STASH_ENGINE_STATUS", default_value = "/run/popcornstash/status.json")]
+        status_file: PathBuf,
         #[arg(long, env = "STASH_TUNNEL_IF")]
         tunnel_if: Option<String>,
         #[arg(long, env = "STASH_ALLOW_NO_VPN", default_value_t = false)]
         allow_no_vpn: bool,
-        #[arg(long, default_value = "0.0.0.0:9091")]
+        #[arg(long, default_value = stash_core::internal_api::ENGINE_API_ADDR)]
         api_bind: SocketAddr,
-        #[arg(long, default_value = "0.0.0.0:9092")]
+        #[arg(long, default_value = stash_core::internal_api::ENGINE_PROXY_ADDR)]
         proxy_bind: SocketAddr,
     },
     /// Maintenance commands, run with `docker exec`.
@@ -51,11 +52,8 @@ enum Command {
         #[command(subcommand)]
         command: AdminCommand,
     },
-    /// Exit 0 when the local server (or engine with --engine) answers its health check.
-    Healthcheck {
-        #[arg(long)]
-        engine: bool,
-    },
+    /// Exit 0 when the web server answers its health check.
+    Healthcheck,
 }
 
 #[derive(Subcommand)]
@@ -75,30 +73,37 @@ fn init_tracing() {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Run { puid, pgid, engine_uid, allow_no_vpn } => {
+            init_tracing();
+            let config = stash_core::config::Config::from_env()?;
+            stash_torrentd::run_supervisor(stash_torrentd::SupervisorOptions {
+                config_dir: config.config_dir.clone(),
+                stash_root: config.stash_root.clone(),
+                puid,
+                pgid,
+                engine_uid,
+                allow_no_vpn,
+                exe: std::env::current_exe()?,
+                run_dir: PathBuf::from(stash_core::internal_api::RUN_DIR),
+            })
+            .await
+        }
         Command::Serve => {
             init_tracing();
             let config = stash_core::config::Config::from_env()?;
             stash_server::serve(config).await
         }
-        Command::Torrentd { data_dir, downloads_dir, puid, pgid, allow_no_vpn } => {
+        Command::TorrentEngine { state_dir, downloads_dir, status_file, tunnel_if, allow_no_vpn, api_bind, proxy_bind } => {
             init_tracing();
-            stash_torrentd::run_supervisor(stash_torrentd::SupervisorOptions {
-                data_dir,
-                downloads_dir,
-                puid,
-                pgid,
-                allow_no_vpn,
-                engine_exe: std::env::current_exe()?,
-            })
-            .await
-        }
-        Command::TorrentEngine { data_dir, downloads_dir, tunnel_if, allow_no_vpn, api_bind, proxy_bind } => {
-            init_tracing();
+            let internal_token = std::env::var("STASH_INTERNAL_TOKEN")
+                .map_err(|_| anyhow::anyhow!("STASH_INTERNAL_TOKEN is not set; the engine is started by `popcornstash run`"))?;
             let code = stash_torrentd::run_engine(stash_torrentd::EngineOptions {
-                data_dir,
+                state_dir,
                 downloads_dir,
+                status_file,
                 tunnel_if,
                 allow_no_vpn,
+                internal_token,
                 api_bind,
                 proxy_bind,
             })
@@ -123,19 +128,15 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::Healthcheck { engine } => healthcheck(engine).await,
+        Command::Healthcheck => healthcheck().await,
     }
 }
 
-async fn healthcheck(engine: bool) -> anyhow::Result<()> {
+async fn healthcheck() -> anyhow::Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let (addr, path) = if engine {
-        ("127.0.0.1:9091".to_string(), "/livez")
-    } else {
-        let bind = std::env::var("STASH_BIND").unwrap_or_else(|_| "0.0.0.0:8788".into());
-        let port = bind.rsplit(':').next().unwrap_or("8788").to_string();
-        (format!("127.0.0.1:{port}"), "/api/health")
-    };
+    let bind = std::env::var("STASH_BIND").unwrap_or_else(|_| "0.0.0.0:8788".into());
+    let port = bind.rsplit(':').next().unwrap_or("8788").to_string();
+    let (addr, path) = (format!("127.0.0.1:{port}"), "/api/health");
     let mut stream = tokio::time::timeout(std::time::Duration::from_secs(3), tokio::net::TcpStream::connect(&addr)).await??;
     stream
         .write_all(format!("GET {path} HTTP/1.0\r\nHost: localhost\r\n\r\n").as_bytes())
