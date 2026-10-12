@@ -2,6 +2,7 @@
 //! decisions and live HLS transcoding (section 5, Media).
 
 pub mod exif;
+pub mod filters;
 pub mod playback;
 pub mod probe;
 pub mod thumbs;
