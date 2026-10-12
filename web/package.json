@@ -1,0 +1,50 @@
+{
+  "name": "popcornstash-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PopcornStash web UI",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && eslint . && npm run -s theme:check",
+    "theme:build": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs theme build src/themes/popcorn/popcornTheme.ts",
+    "theme:check": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs theme build src/themes/popcorn/popcornTheme.ts --check",
+    "astryx": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs"
+  },
+  "browserslist": [
+    "chrome >= 123",
+    "firefox >= 120",
+    "safari >= 17.5"
+  ],
+  "dependencies": {
+    "@astryxdesign/core": "^0.6.8",
+    "@astryxdesign/theme-neutral": "^0.6.8",
+    "@stylexjs/stylex": "^0.19.1",
+    "hls.js": "^1.7.3",
+    "lucide-react": "^1.55.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router": "^7.18.4"
+  },
+  "devDependencies": {
+    "@astryxdesign/build": "^0.6.8",
+    "@astryxdesign/cli": "^0.6.8",
+    "@babel/core": "^7.29.7",
+    "@eslint/js": "^10.0.1",
+    "@stylexjs/babel-plugin": "^0.19.1",
+    "@stylexjs/unplugin": "^0.19.1",
+    "@types/node": "^22.20.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "eslint": "^10.12.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.13.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.2",
+    "vite": "^8.3.4"
+  }
+}
