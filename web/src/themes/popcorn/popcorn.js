@@ -558,6 +558,16 @@ export const popcornTheme = {
         "fontWeight": "500"
       }
     },
+    "app-shell": {
+      "variant:section": {
+        "backgroundColor": "var(--color-background-body)"
+      }
+    },
+    "tab-indicator": {
+      "selected": {
+        "backgroundColor": "var(--color-text-primary)"
+      }
+    },
     "progress-bar-track": {
       "base": {
         "borderRadius": "var(--popcorn-radius-progress)"

@@ -70,6 +70,7 @@ const styles = stylex.create({
   quickNav: {
     display: 'grid',
     gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+    maxWidth: 560,
     marginBottom: 24,
     marginInline: -8,
   },

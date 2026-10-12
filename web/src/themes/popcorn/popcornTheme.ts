@@ -254,6 +254,17 @@ export const popcornTheme = defineTheme({
       },
     },
 
+    // Shell: the page canvas behind content, the surface on the sidebar and
+    // compact top bar (AppShell paints those itself in auto height).
+    'app-shell': {
+      'variant:section': {backgroundColor: 'var(--color-background-body)'},
+    },
+
+    // Tabs are navigation: the selected marker is ink, not the action blue.
+    'tab-indicator': {
+      selected: {backgroundColor: 'var(--color-text-primary)'},
+    },
+
     // Cards are flat panels: surface, thin border, panel radius, no shadow.
     card: {
       base: {

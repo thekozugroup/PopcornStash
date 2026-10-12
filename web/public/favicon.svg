@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="PopcornStash">
+  <style>
+    .mark { fill: #18181b; }
+    .glyph { fill: none; stroke: #fafafa; }
+    .stem { fill: #fafafa; }
+    @media (prefers-color-scheme: dark) {
+      .mark { fill: #fafafa; }
+      .glyph { stroke: #18181b; }
+      .stem { fill: #18181b; }
+    }
+  </style>
+  <rect class="mark" width="32" height="32" rx="10"/>
+  <rect class="stem" x="10" y="10.5" width="3.4" height="15.5" rx="1.7"/>
+  <circle class="glyph" cx="17.4" cy="15.4" r="5" stroke-width="3.4"/>
+</svg>

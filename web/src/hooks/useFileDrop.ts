@@ -27,11 +27,7 @@ export function useFileDrop({onFiles, enabled = true}: FileDropOptions): {isDrag
   });
 
   useEffect(() => {
-    if (!enabled) {
-      depth.current = 0;
-      setIsDragging(false);
-      return;
-    }
+    if (!enabled) return;
 
     const onDragEnter = (event: DragEvent) => {
       if (!hasFiles(event)) return;
@@ -70,6 +66,8 @@ export function useFileDrop({onFiles, enabled = true}: FileDropOptions): {isDrag
     window.addEventListener('drop', onDrop);
     window.addEventListener('keydown', onKeyDown);
     return () => {
+      depth.current = 0;
+      setIsDragging(false);
       window.removeEventListener('dragenter', onDragEnter);
       window.removeEventListener('dragover', onDragOver);
       window.removeEventListener('dragleave', onDragLeave);
@@ -78,5 +76,5 @@ export function useFileDrop({onFiles, enabled = true}: FileDropOptions): {isDrag
     };
   }, [enabled]);
 
-  return {isDragging};
+  return {isDragging: enabled && isDragging};
 }

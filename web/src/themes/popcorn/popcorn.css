@@ -702,6 +702,14 @@
     font-weight: 500;
   }
 
+  .astryx-app-shell[data-variant="section"] {
+    background-color: var(--color-background-body);
+  }
+
+  .astryx-tab-indicator[data-selected="selected"] {
+    background-color: var(--color-text-primary);
+  }
+
   .astryx-progress-bar-track {
     border-radius: var(--popcorn-radius-progress);
   }

@@ -1,6 +1,7 @@
 //! Passkey authentication, sessions, device tokens, invites, pairing and the
 //! request extractor every protected handler uses (section 7).
 
+pub mod codes;
 pub mod handlers;
 pub mod pairing;
 pub mod passkeys;
@@ -32,6 +33,51 @@ pub enum Scope {
     DownloadsRead,
     #[serde(rename = "library:read")]
     LibraryRead,
+}
+
+impl Scope {
+    pub const ALL: [Scope; 4] = [Scope::Full, Scope::DownloadsCreate, Scope::DownloadsRead, Scope::LibraryRead];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Scope::Full => "full",
+            Scope::DownloadsCreate => "downloads:create",
+            Scope::DownloadsRead => "downloads:read",
+            Scope::LibraryRead => "library:read",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.as_str() == value)
+    }
+
+    /// Scopes from the JSON array stored in `api_tokens.scopes`. Unknown entries are ignored.
+    pub fn parse_json(value: &str) -> Vec<Scope> {
+        serde_json::from_str::<Vec<String>>(value)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|s| Self::parse(s))
+            .collect()
+    }
+
+    /// JSON array text for `api_tokens.scopes`.
+    pub fn to_json(scopes: &[Scope]) -> String {
+        serde_json::to_string(&scopes.iter().map(|s| s.as_str()).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into())
+    }
+}
+
+/// `User` (section 8).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow)]
+pub struct UserView {
+    pub id: String,
+    pub display_name: String,
+    pub role: Role,
+    pub created_at: i64,
+}
+
+/// The public URL without a trailing slash, used to build links.
+pub fn public_base(config: &Config) -> Option<String> {
+    config.public_url.as_ref().map(|u| u.as_str().trim_end_matches('/').to_string())
 }
 
 /// The authenticated caller. Extracting it rejects unauthenticated requests with 401.

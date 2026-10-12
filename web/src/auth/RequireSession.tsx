@@ -36,7 +36,11 @@ export function RequireSession() {
     return (
       <AuthLayout
         title="PopcornStash is not answering"
-        subtitle={error?.message ?? 'The server could not be reached. Check that the container is running, then try again.'}>
+        subtitle={
+          error?.code === 'network' || (error?.status ?? 0) >= 500
+            ? 'PopcornStash did not respond. Check that the container is running, then try again.'
+            : (error?.message ?? 'PopcornStash did not respond. Try again in a moment.')
+        }>
         <Button variant="primary" label="Try again" onClick={() => void refresh()} width="100%" />
       </AuthLayout>
     );
