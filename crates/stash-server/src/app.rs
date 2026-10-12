@@ -38,7 +38,7 @@ pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
     let events = EventBus::new();
     let jobs = JobQueue::new(db.clone(), events.clone());
     let settings = SettingsStore::load(db.clone(), config.hwaccel).await?;
-    let media = Arc::new(MediaService::new(config.clone(), db.clone(), settings.clone(), layout.clone()));
+    let media = Arc::new(MediaService::new(config.clone(), db.clone(), settings.clone(), layout.clone(), events.clone()));
     let library = Arc::new(Library::new(
         db.clone(),
         layout.clone(),
@@ -85,6 +85,16 @@ pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
         rate_limiter: Arc::new(RateLimiter::new()),
         http,
     })
+}
+
+/// A fully built state rooted in `dir` (`dir/stash`, `dir/config`) for integration tests.
+/// Background tasks are not started.
+#[doc(hidden)]
+pub async fn test_state(dir: &std::path::Path) -> anyhow::Result<AppState> {
+    let stash = dir.join("stash");
+    let config_dir = dir.join("config");
+    tokio::fs::create_dir_all(&stash).await?;
+    build_state(Config::for_tests(&stash, &config_dir)).await
 }
 
 /// Register job handlers and spawn every background task.
@@ -143,6 +153,9 @@ pub async fn start_background(state: &AppState, cancel: CancellationToken) -> an
     state.library.spawn_watcher(cancel.clone());
     state.transcoder.spawn_reaper(cancel.clone());
     state.downloads.start(cancel.clone());
+    if state.torrentd.enabled() {
+        state.torrentd.spawn_status_watch(state.events.clone(), cancel.clone());
+    }
     state.uploads.spawn_cleanup(cancel.clone());
     if let Some(code) = state.auth.ensure_setup_code().await.map_err(|e| anyhow::anyhow!("{e}"))? {
         log_setup_code(&state.config, &code);

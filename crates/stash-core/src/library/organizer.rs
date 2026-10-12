@@ -10,6 +10,11 @@ pub fn destination_for(classification: &Classification, file_name: &str) -> Stri
     todo!("library agent: Movies/Title (Year)/Title (Year).ext, Shows/…, Home Videos/YYYY/MM/…, Photos/YYYY/MM/…, Other/…")
 }
 
+pub async fn enqueue_sort(lib: &Library, rel_path: &str, download_id: Option<&str>) -> Result<()> {
+    let _ = (lib, rel_path, download_id);
+    todo!("library agent: dedupe on json_extract(payload, '$.rel_path') for queued/running sort jobs")
+}
+
 pub async fn sort_path(lib: &Library, rel_path: &str, download_id: Option<&str>) -> Result<Vec<String>> {
     let _ = (lib, rel_path, download_id);
     todo!("library agent")

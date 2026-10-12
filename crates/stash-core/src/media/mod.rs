@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::db::Db;
+use crate::events::EventBus;
 use crate::models::{ItemRow, MediaSummary};
 use crate::paths::StashLayout;
 use crate::settings::SettingsStore;
@@ -49,11 +50,12 @@ pub struct MediaService {
     pub db: Db,
     pub settings: SettingsStore,
     pub layout: Arc<StashLayout>,
+    pub events: EventBus,
 }
 
 impl MediaService {
-    pub fn new(config: Arc<Config>, db: Db, settings: SettingsStore, layout: Arc<StashLayout>) -> Self {
-        Self { config, db, settings, layout }
+    pub fn new(config: Arc<Config>, db: Db, settings: SettingsStore, layout: Arc<StashLayout>, events: EventBus) -> Self {
+        Self { config, db, settings, layout, events }
     }
 
     /// Run ffprobe on a file.

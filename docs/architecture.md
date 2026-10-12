@@ -173,9 +173,10 @@ A DB-backed queue (`jobs` table) with a worker pool: `scan`, `probe`, `thumb`, `
 reqwest streaming into `In Progress/<name>.part`, resume with `Range`, retry 3× with backoff, concurrency 3. Filename from `Content-Disposition`, else URL path, sanitized. Optional request headers from the extension (`Cookie`, `Referer`, `User-Agent`) are held in memory only and never written to the DB or logs. Setting `http_via_vpn`: `never` | `when_available` (default) | `always` (fails if the VPN is down). Magnet links and `.torrent` URLs are handed to the torrent client.
 
 ### Torrents (container 2 engine, container 1 client)
+- Adding a torrent while the VPN is down creates the download in `queued` with the message "Waiting for the VPN to connect"; the poller adds it to the engine once the engine is `running`. With torrents disabled (`STASH_TORRENTD_URL` empty) the API answers `vpn_unavailable`.
 - Container 1 polls `GET /torrents` every 2s while any torrent is active (10s otherwise) and mirrors state into `downloads`.
 - Engine downloads into `/stash/Downloads/In Progress/<torrent name>`.
-- When a torrent finishes: if `seed_after_complete` is off (default), container 1 calls `DELETE /torrents/:id?delete_files=false`, then moves the folder to `Completed/`. If on, it seeds until `seed_ratio` (default 1.0) or `seed_hours` (default 24), then the same.
+- When a torrent finishes: if `seed_after_complete` is off (default), container 1 calls `DELETE /torrents/:id?delete_files=false`, then moves the folder to `Completed/` and calls `Library::enqueue_sort` (download state `sorting`; the sorter sets `sorted` and links `download_items`). If on, it seeds until `seed_ratio` (default 1.0) or `seed_hours` (default 24), then the same.
 - DHT, PEX, uTP enabled. LSD disabled. Upload/download limits from settings.
 
 ### VPN (container 2)
@@ -261,7 +262,7 @@ Settings keys and defaults:
 - **Bearer tokens:** `pst_` + 43 base64url chars. Stored as sha256 with an 8-char display prefix. Scopes: `full`, `downloads:create`, `downloads:read`, `library:read`. Created by device pairing (Chrome → `downloads:create downloads:read`; Android → `full`) or manually in Settings → Devices.
 - **CSRF:** cookie-authenticated unsafe methods require `Origin` (or `Referer`) to match an allowed origin and `Content-Type: application/json` or multipart/octet-stream on upload routes. Bearer requests skip the Origin check.
 - **Rate limits:** auth start/finish and pairing request/poll: 10/min per IP, burst 20. Failed auth is audit-logged.
-- **Headers:** CSP `default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Permissions-Policy: camera=(), microphone=(), geolocation=()`, `Cross-Origin-Opener-Policy: same-origin`, HSTS when https.
+- **Headers:** CSP `default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Permissions-Policy: camera=(), microphone=(), geolocation=()`, `Cross-Origin-Opener-Policy: same-origin`, HSTS when https.
 - **Paths:** every filesystem path from a request is resolved under its root and rejected if it escapes (canonicalize + prefix check, no symlink escape). Uploaded filenames are sanitized (no separators, no control chars, no leading dots, max 200 bytes).
 - **Internal API:** container 2 accepts only `Authorization: Bearer <internal token>` from local subnets; the token is 32 random bytes hex, file mode 0640.
 - **Secrets at rest:** VPN files 0600. Device token plaintext is shown once (pairing delivers it once, then the row is wiped).
@@ -371,10 +372,11 @@ Non-API routes: `/` and all client routes serve the SPA (`index.html`, `Cache-Co
 
 ## 9. Internal engine API (container 2, port 9091)
 
-Bearer internal token on every route.
+Bearer internal token on every route except `/livez`. Requests are only accepted from loopback and private addresses.
 
 | Method | Path | Body → Response |
 |---|---|---|
+| GET | `/livez` | No auth. → `ok` (Docker healthcheck) |
 | GET | `/health` | → `{vpn: TunnelStatus, engine: {state:"running"|"blocked", reason|null, allow_no_vpn}, public_ip|null, country|null, protected|null, checked_at|null}` |
 | GET | `/torrents` | → `[{id, info_hash, name, state:"initializing"|"downloading"|"paused"|"seeding"|"error", progress, total_bytes, done_bytes, uploaded_bytes, down_bps, up_bps, peers, eta_s, error, output_dir}]` |
 | POST | `/torrents` | `{magnet?: string, torrent_base64?: string}` → `{id, info_hash, name}` (409 when blocked by VPN state) |

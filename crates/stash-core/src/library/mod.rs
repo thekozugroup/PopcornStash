@@ -94,6 +94,14 @@ impl Library {
         organizer::sort_path(self, rel_path, download_id).await
     }
 
+    /// Queue a Sort job for a path under `Inbox/` or `Downloads/Completed/`, unless one is
+    /// already queued or running for the same path. Used by the watcher, rescans and the
+    /// download manager. When `download_id` is set, the sorter marks that download `sorted`
+    /// and links the resulting items in `download_items`.
+    pub async fn enqueue_sort(&self, rel_path: &str, download_id: Option<&str>) -> Result<()> {
+        organizer::enqueue_sort(self, rel_path, download_id).await
+    }
+
     /// Explicit user action: move an item into the library structure.
     pub async fn organize(&self, item_id: &str, request: OrganizeRequest) -> Result<ItemRow> {
         organizer::organize(self, item_id, request).await

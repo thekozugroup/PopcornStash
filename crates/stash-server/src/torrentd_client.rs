@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use stash_core::config::Config;
 use stash_core::internal_api::{AddTorrentRequest, AddTorrentResponse, EngineHealth, EngineTorrent, LimitsRequest};
+use stash_core::events::EventBus;
 use stash_core::models::VpnStatus;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TorrentdError {
@@ -78,6 +80,12 @@ impl TorrentdClient {
 
     /// UI status: combines `vpn/vpn.json` with the engine's health.
     pub async fn vpn_status(&self) -> VpnStatus {
+        todo!("vpn agent")
+    }
+
+    /// Poll engine health and publish `Event::Vpn` whenever the UI-visible status changes.
+    pub fn spawn_status_watch(self: &Arc<Self>, events: EventBus, cancel: CancellationToken) {
+        let _ = (events, cancel);
         todo!("vpn agent")
     }
 
