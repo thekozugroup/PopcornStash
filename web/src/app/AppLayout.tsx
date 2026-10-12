@@ -175,15 +175,13 @@ function PopcornSideNav() {
 export function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
-  const firstRender = useRef(true);
+  const lastPath = useRef(location.pathname);
 
   // Move focus to the main region on every in-app navigation so keyboard and
   // screen reader users start at the new page, not in the sidebar.
   useEffect(() => {
-    if (firstRender.current) {
-      firstRender.current = false;
-      return;
-    }
+    if (lastPath.current === location.pathname) return;
+    lastPath.current = location.pathname;
     window.scrollTo({top: 0});
     document.getElementById(MAIN_ID)?.focus({preventScroll: true});
   }, [location.pathname]);

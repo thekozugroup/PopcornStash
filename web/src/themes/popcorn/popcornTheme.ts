@@ -171,7 +171,7 @@ export const popcornTheme = defineTheme({
     // Lines
     '--color-border': [zinc[200], zinc[800]],
     '--color-border-emphasized': [zinc[300], zinc[700]],
-    '--color-skeleton': [zinc[100], zinc[800]],
+    '--color-skeleton': [zinc[200], zinc[800]],
     '--color-track': [zinc[100], zinc[800]],
     '--color-shadow': [alpha(zinc[950], 0.1), alpha(zinc[950], 0.5)],
 

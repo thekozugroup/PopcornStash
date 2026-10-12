@@ -133,7 +133,7 @@ export const popcornTheme = {
     "--color-warning-muted": "light-dark(oklch(76.9% 0.188 70.08 / 0.18), oklch(76.9% 0.188 70.08 / 0.22))",
     "--color-border": "light-dark(oklch(92% 0.004 286.32), oklch(27.4% 0.006 286.033))",
     "--color-border-emphasized": "light-dark(oklch(87.1% 0.006 286.286), oklch(37% 0.013 285.805))",
-    "--color-skeleton": "light-dark(oklch(96.7% 0.001 286.375), oklch(27.4% 0.006 286.033))",
+    "--color-skeleton": "light-dark(oklch(92% 0.004 286.32), oklch(27.4% 0.006 286.033))",
     "--color-shadow": "light-dark(oklch(14.1% 0.005 285.823 / 0.1), oklch(14.1% 0.005 285.823 / 0.5))",
     "--color-tint-hover": "light-dark(black, white)",
     "--color-background-red": "light-dark(#ffc4be, #5b2b28)",
