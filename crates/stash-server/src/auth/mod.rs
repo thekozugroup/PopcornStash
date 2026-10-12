@@ -1,0 +1,128 @@
+//! Passkey authentication, sessions, device tokens, invites, pairing and the
+//! request extractor every protected handler uses (section 7).
+
+pub mod handlers;
+pub mod pairing;
+pub mod passkeys;
+pub mod sessions;
+pub mod tokens;
+pub mod users;
+
+use std::sync::Arc;
+
+use axum::extract::FromRequestParts;
+use axum::http::request::Parts;
+use axum::Router;
+use serde::{Deserialize, Serialize};
+use stash_core::config::Config;
+use stash_core::db::Db;
+use stash_core::models::Role;
+
+use crate::error::{ApiError, ApiResult};
+use crate::state::AppState;
+
+/// Token scopes (section 7). `Full` implies every other scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Scope {
+    #[serde(rename = "full")]
+    Full,
+    #[serde(rename = "downloads:create")]
+    DownloadsCreate,
+    #[serde(rename = "downloads:read")]
+    DownloadsRead,
+    #[serde(rename = "library:read")]
+    LibraryRead,
+}
+
+/// The authenticated caller. Extracting it rejects unauthenticated requests with 401.
+#[derive(Debug, Clone)]
+pub struct AuthUser {
+    pub user_id: String,
+    pub display_name: String,
+    pub role: Role,
+    pub scopes: Vec<Scope>,
+    /// Set for cookie and bearer sessions.
+    pub session_id: Option<String>,
+    /// Set for device tokens.
+    pub token_id: Option<String>,
+}
+
+impl AuthUser {
+    pub fn has(&self, scope: Scope) -> bool {
+        self.scopes.contains(&Scope::Full) || self.scopes.contains(&scope)
+    }
+
+    pub fn require(&self, scope: Scope) -> ApiResult<()> {
+        if self.has(scope) {
+            Ok(())
+        } else {
+            Err(ApiError::forbidden("This device is not allowed to do that."))
+        }
+    }
+
+    pub fn is_owner(&self) -> bool {
+        self.role == Role::Owner && self.has(Scope::Full)
+    }
+
+    pub fn require_owner(&self) -> ApiResult<()> {
+        if self.is_owner() { Ok(()) } else { Err(ApiError::owner_only()) }
+    }
+}
+
+impl FromRequestParts<AppState> for AuthUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        sessions::authenticate(parts, state).await
+    }
+}
+
+/// Like [`AuthUser`] but never rejects.
+#[derive(Debug, Clone)]
+pub struct MaybeAuthUser(pub Option<AuthUser>);
+
+impl FromRequestParts<AppState> for MaybeAuthUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        match sessions::authenticate(parts, state).await {
+            Ok(user) => Ok(Self(Some(user))),
+            Err(e) if e.code == crate::error::ErrorCode::Unauthorized => Ok(Self(None)),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// Owns the WebAuthn relying party and in-flight ceremony state.
+pub struct AuthService {
+    pub config: Arc<Config>,
+    pub db: Db,
+    pub(crate) inner: passkeys::PasskeyState,
+}
+
+impl AuthService {
+    pub fn new(config: Arc<Config>, db: Db) -> anyhow::Result<Self> {
+        let inner = passkeys::PasskeyState::new(&config)?;
+        Ok(Self { config, db, inner })
+    }
+
+    /// When no users exist, make sure a valid setup code exists and return it for logging.
+    pub async fn ensure_setup_code(&self) -> ApiResult<Option<String>> {
+        users::ensure_setup_code(self).await
+    }
+
+    /// Append to the audit log. Never fails the caller.
+    pub async fn audit(&self, user_id: Option<&str>, event: &str, detail: serde_json::Value, ip: Option<&str>) {
+        users::audit(&self.db, user_id, event, detail, ip).await
+    }
+}
+
+/// One-time owner recovery link for `popcornstash admin reset-owner`.
+pub async fn create_owner_reset_link(db: &Db, config: &Config) -> anyhow::Result<String> {
+    users::create_owner_reset_link(db, config).await
+}
+
+/// All auth, account, device, people and audit routes.
+pub fn routes() -> Router<AppState> {
+    handlers::routes()
+}

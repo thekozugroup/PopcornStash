@@ -1,0 +1,20 @@
+[package]
+name = "popcornstash"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+stash-core = { path = "../stash-core" }
+stash-server = { path = "../stash-server" }
+stash-torrentd = { path = "../stash-torrentd" }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,241 @@
+//! Environment configuration. See docs/architecture.md section 2.
+
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use url::Url;
+
+use crate::{CoreError, Result};
+
+/// Hardware acceleration for transcoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HwAccel {
+    #[default]
+    None,
+    Vaapi,
+    Qsv,
+    Nvenc,
+}
+
+impl std::str::FromStr for HwAccel {
+    type Err = CoreError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "" | "none" | "cpu" => Ok(Self::None),
+            "vaapi" => Ok(Self::Vaapi),
+            "qsv" => Ok(Self::Qsv),
+            "nvenc" | "nvidia" => Ok(Self::Nvenc),
+            other => Err(CoreError::invalid(format!(
+                "STASH_HWACCEL must be none, vaapi, qsv or nvenc, not {other:?}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    /// The PopcornStash folder.
+    pub stash_root: PathBuf,
+    /// Appdata: database, caches, secrets.
+    pub config_dir: PathBuf,
+    /// Public HTTPS origin. Required for passkeys.
+    pub public_url: Option<Url>,
+    /// Additional allowed origins (same RP ID).
+    pub extra_origins: Vec<Url>,
+    pub bind: SocketAddr,
+    pub tls_cert: Option<PathBuf>,
+    pub tls_key: Option<PathBuf>,
+    pub trust_proxy: bool,
+    /// Internal torrent engine API. None disables torrents.
+    pub torrentd_url: Option<Url>,
+    /// Internal CONNECT proxy through the VPN.
+    pub torrentd_proxy: Option<Url>,
+    pub hwaccel: HwAccel,
+    /// Optional assetlinks.json body for future Android passkeys.
+    pub android_assetlinks: Option<String>,
+}
+
+fn env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn env_url(name: &str) -> Result<Option<Url>> {
+    env(name)
+        .map(|v| Url::parse(&v).map_err(|e| CoreError::invalid(format!("{name} is not a valid URL: {e}"))))
+        .transpose()
+}
+
+fn env_bool(name: &str) -> bool {
+    matches!(
+        env(name).as_deref().map(str::to_ascii_lowercase).as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
+}
+
+impl Config {
+    /// Read configuration from `STASH_*` environment variables.
+    pub fn from_env() -> Result<Self> {
+        let public_url = env_url("STASH_PUBLIC_URL")?;
+        if let Some(url) = &public_url {
+            validate_public_url(url)?;
+        }
+        let extra_origins = env("STASH_EXTRA_ORIGINS")
+            .map(|list| {
+                list.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| Url::parse(s).map_err(|e| CoreError::invalid(format!("STASH_EXTRA_ORIGINS entry {s:?}: {e}"))))
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let bind = env("STASH_BIND")
+            .unwrap_or_else(|| "0.0.0.0:8788".to_string())
+            .parse()
+            .map_err(|e| CoreError::invalid(format!("STASH_BIND: {e}")))?;
+        let torrentd_url = match std::env::var("STASH_TORRENTD_URL") {
+            Ok(v) if v.trim().is_empty() => None,
+            Ok(v) => Some(Url::parse(v.trim()).map_err(|e| CoreError::invalid(format!("STASH_TORRENTD_URL: {e}")))?),
+            Err(_) => Some(Url::parse("http://popcornstash-vpn:9091").expect("static url")),
+        };
+        let torrentd_proxy = match std::env::var("STASH_TORRENTD_PROXY") {
+            Ok(v) if v.trim().is_empty() => None,
+            Ok(v) => Some(Url::parse(v.trim()).map_err(|e| CoreError::invalid(format!("STASH_TORRENTD_PROXY: {e}")))?),
+            Err(_) if torrentd_url.is_some() => Some(Url::parse("http://popcornstash-vpn:9092").expect("static url")),
+            Err(_) => None,
+        };
+        Ok(Self {
+            stash_root: PathBuf::from(env("STASH_ROOT").unwrap_or_else(|| "/stash".into())),
+            config_dir: PathBuf::from(env("STASH_CONFIG").unwrap_or_else(|| "/config".into())),
+            public_url,
+            extra_origins,
+            bind,
+            tls_cert: env("STASH_TLS_CERT").map(PathBuf::from),
+            tls_key: env("STASH_TLS_KEY").map(PathBuf::from),
+            trust_proxy: env_bool("STASH_TRUST_PROXY"),
+            torrentd_url,
+            torrentd_proxy,
+            hwaccel: env("STASH_HWACCEL").unwrap_or_default().parse()?,
+            android_assetlinks: env("STASH_ANDROID_ASSETLINKS"),
+        })
+    }
+
+    /// A configuration rooted in temporary directories, for tests.
+    pub fn for_tests(stash_root: &Path, config_dir: &Path) -> Self {
+        Self {
+            stash_root: stash_root.to_path_buf(),
+            config_dir: config_dir.to_path_buf(),
+            public_url: Some(Url::parse("http://localhost:8788").expect("static url")),
+            extra_origins: Vec::new(),
+            bind: "127.0.0.1:0".parse().expect("static addr"),
+            tls_cert: None,
+            tls_key: None,
+            trust_proxy: false,
+            torrentd_url: None,
+            torrentd_proxy: None,
+            hwaccel: HwAccel::None,
+            android_assetlinks: None,
+        }
+    }
+
+    pub fn db_path(&self) -> PathBuf {
+        self.config_dir.join("popcornstash.db")
+    }
+    pub fn secrets_dir(&self) -> PathBuf {
+        self.config_dir.join("secrets")
+    }
+    pub fn cache_dir(&self) -> PathBuf {
+        self.config_dir.join("cache")
+    }
+    pub fn thumbs_dir(&self) -> PathBuf {
+        self.cache_dir().join("thumbs")
+    }
+    pub fn renditions_dir(&self) -> PathBuf {
+        self.cache_dir().join("renditions")
+    }
+    pub fn transcode_dir(&self) -> PathBuf {
+        self.cache_dir().join("transcode")
+    }
+    /// Directory shared with the VPN container (mounted there as `/data`).
+    pub fn torrent_dir(&self) -> PathBuf {
+        self.config_dir.join("torrent")
+    }
+    pub fn vpn_dir(&self) -> PathBuf {
+        self.torrent_dir().join("vpn")
+    }
+    pub fn internal_token_path(&self) -> PathBuf {
+        self.torrent_dir().join(crate::internal_api::INTERNAL_TOKEN_FILE)
+    }
+
+    /// True when the public URL is HTTPS (or plain-HTTP localhost, which browsers treat as secure).
+    pub fn passkeys_ready(&self) -> bool {
+        self.public_url.as_ref().is_some_and(|u| validate_public_url(u).is_ok())
+    }
+
+    pub fn is_https(&self) -> bool {
+        self.public_url.as_ref().is_some_and(|u| u.scheme() == "https")
+    }
+
+    /// WebAuthn relying-party id: the host of the public URL.
+    pub fn rp_id(&self) -> Option<String> {
+        self.public_url.as_ref().and_then(|u| u.host_str()).map(str::to_string)
+    }
+
+    /// Every origin allowed to make cookie-authenticated requests.
+    pub fn allowed_origins(&self) -> Vec<String> {
+        self.public_url
+            .iter()
+            .chain(self.extra_origins.iter())
+            .map(|u| u.origin().ascii_serialization())
+            .collect()
+    }
+}
+
+/// Passkeys need HTTPS on a domain name, or plain HTTP on localhost.
+pub fn validate_public_url(url: &Url) -> Result<()> {
+    let host = url
+        .host()
+        .ok_or_else(|| CoreError::invalid("STASH_PUBLIC_URL needs a host name"))?;
+    match host {
+        url::Host::Ipv4(_) | url::Host::Ipv6(_) => Err(CoreError::invalid(
+            "Passkeys cannot use an IP address. Use a domain name, for example https://stash.example.com",
+        )),
+        url::Host::Domain(name) => {
+            let local = name == "localhost" || name.ends_with(".localhost");
+            match url.scheme() {
+                "https" => Ok(()),
+                "http" if local => Ok(()),
+                _ => Err(CoreError::invalid("Passkeys need HTTPS. Use an https:// address")),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_url_rules() {
+        let ok = |s: &str| validate_public_url(&Url::parse(s).unwrap()).is_ok();
+        assert!(ok("https://stash.example.com"));
+        assert!(ok("http://localhost:8788"));
+        assert!(ok("https://nas.tail1234.ts.net"));
+        assert!(!ok("http://stash.example.com"));
+        assert!(!ok("https://192.168.1.20:8788"));
+        assert!(!ok("http://192.168.1.20:8788"));
+    }
+
+    #[test]
+    fn hwaccel_parse() {
+        assert_eq!("".parse::<HwAccel>().unwrap(), HwAccel::None);
+        assert_eq!("VAAPI".parse::<HwAccel>().unwrap(), HwAccel::Vaapi);
+        assert!("cuda-magic".parse::<HwAccel>().is_err());
+    }
+}

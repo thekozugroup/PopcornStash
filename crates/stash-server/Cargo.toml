@@ -1,0 +1,49 @@
+[package]
+name = "stash-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+stash-core = { path = "../stash-core" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+uuid = { version = "1", features = ["v7", "serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["io", "rt"] }
+rand = "0.9"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+url = "2"
+bytes = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "derive", "json"] }
+axum = { version = "0.8", features = ["macros", "multipart"] }
+axum-extra = { version = "0.10", features = ["cookie", "typed-header"] }
+tower = { version = "0.5", features = ["util", "limit", "timeout"] }
+tower-http = { version = "0.6", features = ["fs", "trace", "compression-gzip", "set-header", "limit", "catch-panic"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+webauthn-rs = { version = "0.5", features = ["conditional-ui", "danger-allow-state-serialisation"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "json"] }
+rust-embed = { version = "8", features = ["mime-guess"] }
+mime_guess = "2"
+governor = "0.10"
+dashmap = "6"
+async-stream = "0.3"
+percent-encoding = "2"
+http-body-util = "0.1"
+nix = { version = "0.30", features = ["fs"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true
