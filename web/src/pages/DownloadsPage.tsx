@@ -322,7 +322,7 @@ export default function DownloadsPage() {
               ) : data.status === 'loading' ? (
                 <ListSkeleton label="Loading downloads" rows={3} />
               ) : (
-                <Text as="p" color="secondary" xstyle={styles.quiet}>
+                <Text as="p" display="block" color="secondary" xstyle={styles.quiet}>
                   Nothing is downloading right now. Paste a link above or drop files anywhere to start.
                 </Text>
               )}

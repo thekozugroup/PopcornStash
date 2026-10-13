@@ -18,7 +18,7 @@ export interface VpnView {
 }
 
 /** `serve` without the supervisor reports `unreachable` with this message. */
-function isTorrentsTurnedOff(status: VpnStatus): boolean {
+export function isTorrentsTurnedOff(status: VpnStatus): boolean {
   return status.state === 'unreachable' && /turned off/i.test(status.error ?? '');
 }
 

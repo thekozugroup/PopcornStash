@@ -120,7 +120,7 @@ export function Wrap({children}: {children: ReactNode}) {
 export function EmptyRows({children}: {children: ReactNode}) {
   return (
     <div {...stylex.props(styles.panel)}>
-      <Text as="p" type="supporting" color="secondary" xstyle={styles.quiet}>
+      <Text as="p" display="block" type="supporting" color="secondary" xstyle={styles.quiet}>
         {children}
       </Text>
     </div>

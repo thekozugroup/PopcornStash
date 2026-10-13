@@ -132,12 +132,16 @@ interface StartOptions {
   autoplay: boolean;
 }
 
-/** Where to pick up: a partly watched item that is not almost over. */
+/**
+ * Where to pick up: a partly watched item. "Almost over" is the server's
+ * `finished` (90% watched), the same rule that keeps an item off "Continue
+ * watching", so every item on that shelf resumes, short clips included.
+ */
 export function resumePosition(item: Pick<ItemDetail, 'progress' | 'duration_s'>): number {
   const progress = item.progress;
   if (!progress || progress.finished) return 0;
   const duration = progress.duration_s || item.duration_s || 0;
-  if (progress.position_s < 15 || (duration && progress.position_s > duration - 20)) return 0;
+  if (progress.position_s < 15 || (duration && progress.position_s > duration - 2)) return 0;
   return progress.position_s;
 }
 

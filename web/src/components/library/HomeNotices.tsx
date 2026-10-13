@@ -92,7 +92,7 @@ export function HomeNotices({needsReview, downloadsInProgress}: {needsReview: nu
       href: '/inbox',
       icon: Inbox,
       lead: needsReview === 1 ? '1 file needs a quick look' : `${formatCount(needsReview, 'file')} need a quick look`,
-      rest: 'before they are sorted.',
+      rest: needsReview === 1 ? 'before it is sorted.' : 'before they are sorted.',
       action: 'Review in Inbox',
     });
   }

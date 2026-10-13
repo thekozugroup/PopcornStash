@@ -23,9 +23,11 @@ import {LoadError, LoadingRows, RowsPanel} from '../../components/settings/Secti
 import {SettingsGroup} from '../../components/settings/SettingsGroup';
 import {useResource} from '../../components/settings/useResource';
 import {useSettingsDraft} from '../../components/settings/useSettingsDraft';
+import {useVpnStatus} from '../../hooks/useVpnStatus';
 import {errorMessage} from '../../lib/errors';
 import {formatBytes, formatCount} from '../../lib/format';
 import {SettingsSectionHeader} from './SettingsSectionHeader';
+import {isTorrentsTurnedOff} from './vpn/vpnView';
 
 const styles = stylex.create({
   groups: {
@@ -115,6 +117,9 @@ function useFactLabels() {
 
 function ServerGroup({info}: {info: SystemInfo}) {
   const labels = useFactLabels();
+  // Without the supervisor there is no engine on purpose; say that rather than "not reachable".
+  const {status: vpnStatus} = useVpnStatus(!info.torrentd.reachable);
+  const isTurnedOff = vpnStatus !== null && isTorrentsTurnedOff(vpnStatus);
   return (
     <SettingsGroup title="This server" description="What is running and whether it is ready.">
       <RowsPanel>
@@ -142,7 +147,7 @@ function ServerGroup({info}: {info: SystemInfo}) {
                 <StatusTag tone="connected">Running</StatusTag>
               ) : (
                 <StatusTag tone="error" wrap>
-                  Not reachable. Torrents are stopped.
+                  {isTurnedOff ? 'Turned off on this server. Torrents are unavailable.' : 'Not reachable. Torrents are stopped.'}
                 </StatusTag>
               )}
             </MetadataListItem>
