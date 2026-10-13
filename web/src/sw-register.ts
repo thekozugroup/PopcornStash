@@ -1,7 +1,8 @@
 /**
- * Registers the minimal service worker (public/sw.js) in production builds.
- * The worker never caches API or media responses; it exists so browsers
- * offer "Install app" and the Android share target.
+ * Registers the service worker (public/sw.js) in production builds. The
+ * worker never caches API or media responses; it exists so browsers offer
+ * "Install app", and to receive Android shares: it keeps shared files on
+ * the device until they are uploaded or cancelled on the share page.
  */
 export function registerServiceWorker(): void {
   if (!import.meta.env.PROD || !('serviceWorker' in navigator) || !window.isSecureContext) return;

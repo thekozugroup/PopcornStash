@@ -1,26 +1,64 @@
 /**
- * Share target (`/share?url&text&title`, from the PWA manifest). Takes the
- * first web link or magnet out of what another app shared, asks once, then
- * adds it to Downloads. The session gate in front of this route sends
- * signed-out visitors to sign in and back here with the same query.
+ * Share target. Android's share sheet posts what another app shared to
+ * /share (the manifest's `share_target`), and the service worker
+ * (public/sw.js) answers with one of these:
+ *
+ * - `/share?url&text&title`: a link or text. Takes the first web link or
+ *   magnet out of it, asks once, then adds it to Downloads.
+ * - `/share?files=<id>`: photos, videos or other files, kept on this device
+ *   by the service worker. The page lists them and, once the person
+ *   confirms, sends them to Downloads exactly like dropped files (the upload
+ *   queue). Cancel deletes the kept copies.
+ * - `/share?failed=files`: the files could not be kept (usually no room).
+ *
+ * The session gate in front of this route sends signed-out visitors to sign
+ * in and back here with the same query; shared files wait on the device.
  */
 import * as stylex from '@stylexjs/stylex';
 import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {Banner} from '@astryxdesign/core/Banner';
 import {Button} from '@astryxdesign/core/Button';
 import {Heading} from '@astryxdesign/core/Heading';
+import {Skeleton} from '@astryxdesign/core/Skeleton';
 import {Text} from '@astryxdesign/core/Text';
-import {CircleCheck, FileUp, Globe, Link2Off, Magnet, type LucideIcon} from 'lucide-react';
-import {useState} from 'react';
+import {
+  CircleCheck,
+  FileArchive,
+  FileIcon,
+  FilesIcon,
+  FileText,
+  FileUp,
+  FileX,
+  Film,
+  Globe,
+  ImageIcon,
+  ImagesIcon,
+  Link2Off,
+  Magnet,
+  Music,
+  type LucideIcon,
+} from 'lucide-react';
+import {useEffect, useId, useState, type ReactNode} from 'react';
 import {useNavigate, useSearchParams} from 'react-router';
 import {ApiError, downloads as downloadsApi} from '../api/client';
 import type {Download} from '../api/types';
 import {useAuth} from '../auth/AuthProvider';
+import {BreakableName} from '../components/BreakableName';
 import {findLink, isTorrentLink, type DetectedLink} from '../components/downloads/linkDetect';
+import {MediaThumb} from '../components/downloads/MediaThumb';
 import {torrentsAffected, torrentsOff, VpnLine} from '../components/downloads/VpnLine';
 import {PageHeader} from '../components/PageHeader';
+import {
+  deleteOldShares,
+  discardShare,
+  isShareId,
+  loadShare,
+  releaseSharedCopy,
+  type Share,
+} from '../components/uploads/sharedFiles';
 import {useVpnStatus} from '../hooks/useVpnStatus';
 import {errorMessage} from '../lib/errors';
+import {formatBytes, formatCount} from '../lib/format';
 
 const styles = stylex.create({
   card: {
@@ -100,6 +138,63 @@ const styles = stylex.create({
     borderTopStyle: 'solid',
     borderTopColor: colorVars['--color-border'],
   },
+  note: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopStyle: 'solid',
+    borderTopColor: colorVars['--color-border'],
+  },
+  noteText: {
+    lineHeight: 1.55,
+    maxWidth: '62ch',
+    textWrap: 'pretty',
+  },
+  files: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+  },
+  fileList: {
+    margin: 0,
+    padding: 0,
+    listStyle: 'none',
+    borderTopWidth: 1,
+    borderTopStyle: 'solid',
+    borderTopColor: colorVars['--color-border'],
+    borderBottomWidth: 1,
+    borderBottomStyle: 'solid',
+    borderBottomColor: colorVars['--color-border'],
+  },
+  fileRow: {
+    display: 'grid',
+    gridTemplateColumns: 'auto minmax(0, 1fr)',
+    columnGap: 14,
+    alignItems: 'center',
+    paddingBlock: 10,
+    borderTopWidth: {default: 1, ':first-child': 0},
+    borderTopStyle: 'solid',
+    borderTopColor: colorVars['--color-border'],
+  },
+  fileText: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+    minWidth: 0,
+  },
+  fileName: {
+    overflowWrap: 'break-word',
+  },
+  meta: {
+    fontVariantNumeric: 'tabular-nums',
+  },
+  loading: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+  },
 });
 
 const KIND: Record<DetectedLink['kind'], {icon: LucideIcon; words: (link: DetectedLink) => string}> = {
@@ -118,7 +213,298 @@ function cleanTitle(value: string | null, link: DetectedLink | null): string | n
   return trimmed.length > 160 ? `${trimmed.slice(0, 157)}...` : trimmed;
 }
 
+/** How a shared file is described in the list. */
+interface FileKind {
+  label: string;
+  icon: LucideIcon;
+  group: 'photo' | 'video' | 'other';
+}
+
+const PHOTO_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif', 'avif', 'dng', 'tif', 'tiff']);
+const VIDEO_EXTENSIONS = new Set(['mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', '3gp', 'mts', 'm2ts', 'wmv']);
+const AUDIO_EXTENSIONS = new Set(['mp3', 'm4a', 'aac', 'flac', 'wav', 'ogg', 'opus']);
+const ARCHIVE_EXTENSIONS = new Set(['zip', 'rar', '7z', 'tar', 'gz']);
+/** Shared files listed by name; the rest are counted. */
+const SHOWN_FILES = 6;
+
+function extensionOf(name: string): string {
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+}
+
+function isTorrentFile(file: File): boolean {
+  return extensionOf(file.name) === 'torrent';
+}
+
+function kindOf(file: File): FileKind {
+  const ext = extensionOf(file.name);
+  const type = file.type.toLowerCase();
+  if (ext === 'torrent') return {label: 'Torrent file', icon: FileUp, group: 'other'};
+  if (type.startsWith('image/') || PHOTO_EXTENSIONS.has(ext)) return {label: 'Photo', icon: ImageIcon, group: 'photo'};
+  if (type.startsWith('video/') || VIDEO_EXTENSIONS.has(ext)) return {label: 'Video', icon: Film, group: 'video'};
+  if (type.startsWith('audio/') || AUDIO_EXTENSIONS.has(ext)) return {label: 'Audio', icon: Music, group: 'other'};
+  if (type === 'application/pdf' || ext === 'pdf') return {label: 'PDF', icon: FileText, group: 'other'};
+  if (ARCHIVE_EXTENSIONS.has(ext)) return {label: 'Archive', icon: FileArchive, group: 'other'};
+  return {label: 'File', icon: FileIcon, group: 'other'};
+}
+
+/** Pictures the browser can draw (not HEIC or RAW) get a thumbnail. */
+function canPreview(file: File): boolean {
+  return /^image\/(jpeg|png|gif|webp|avif|bmp)$/.test(file.type);
+}
+
+/**
+ * "2 photos", "1 video", "3 photos and 1 video", or "4 files", plus the word
+ * for the ones not listed ("And 2 more photos").
+ */
+function describeFiles(files: readonly File[]): {title: string; icon: LucideIcon; noun: string} {
+  const groups = files.map(file => kindOf(file).group);
+  const photos = groups.filter(group => group === 'photo').length;
+  const videos = groups.filter(group => group === 'video').length;
+  if (photos + videos < files.length) return {title: formatCount(files.length, 'file'), icon: FilesIcon, noun: 'file'};
+  if (videos === 0) {
+    return {title: formatCount(photos, 'photo'), icon: photos === 1 ? ImageIcon : ImagesIcon, noun: 'photo'};
+  }
+  if (photos === 0) return {title: formatCount(videos, 'video'), icon: Film, noun: 'video'};
+  return {title: `${formatCount(photos, 'photo')} and ${formatCount(videos, 'video')}`, icon: FilesIcon, noun: 'file'};
+}
+
 export default function SharePage() {
+  const [params] = useSearchParams();
+  const filesId = params.get('files');
+  if (params.get('failed') === 'files') return <SharedFilesFailed />;
+  if (filesId !== null) return <SharedFiles key={filesId} id={filesId} />;
+  return <SharedLink />;
+}
+
+/** How to get PopcornStash into Android's share sheet. */
+function AndroidNote() {
+  const headingId = useId();
+  return (
+    <section aria-labelledby={headingId} {...stylex.props(styles.note)}>
+      <Heading level={3} id={headingId}>
+        On Android
+      </Heading>
+      <Text as="p" type="supporting" color="secondary" xstyle={styles.noteText}>
+        Install PopcornStash from Chrome’s menu (Install app or Add to Home screen). Then, in any app, choose
+        Share, then PopcornStash, to send links, photos and videos.
+      </Text>
+    </section>
+  );
+}
+
+/** A card that names a state in one heading and a sentence or two, with one way on. */
+function ShareNotice({
+  icon: Icon,
+  title,
+  children,
+  action,
+}: {
+  icon: LucideIcon;
+  title: string;
+  children: ReactNode;
+  action: ReactNode;
+}) {
+  const headingId = useId();
+  return (
+    <section {...stylex.props(styles.card)} aria-labelledby={headingId}>
+      <div {...stylex.props(styles.summary)}>
+        <span {...stylex.props(styles.icon)} aria-hidden="true">
+          <Icon size={22} strokeWidth={1.75} />
+        </span>
+        <div {...stylex.props(styles.text)}>
+          <Heading level={2} id={headingId}>
+            {title}
+          </Heading>
+          <Text as="p" color="secondary">
+            {children}
+          </Text>
+        </div>
+      </div>
+      <div {...stylex.props(styles.actions)}>{action}</div>
+    </section>
+  );
+}
+
+function SharedFilesFailed() {
+  return (
+    <>
+      <PageHeader title="Add shared files" subtitle="Shared from another app." />
+      <ShareNotice
+        icon={FileX}
+        title="The shared files did not arrive"
+        action={<Button label="Open Downloads" variant="secondary" href="/downloads" />}>
+        This phone could not keep them for PopcornStash, usually because it is short of space. Free some space and
+        share them again, or upload them from Downloads.
+      </ShareNotice>
+    </>
+  );
+}
+
+interface LoadedShare {
+  share: Share | null;
+  /** Object URLs of the pictures shown in the list. */
+  previews: ReadonlyMap<File, string>;
+}
+
+function SharedFiles({id}: {id: string}) {
+  const navigate = useNavigate();
+  const [loaded, setLoaded] = useState<LoadedShare | null>(null);
+  const [isSending, setIsSending] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+
+  useEffect(() => {
+    let isCurrent = true;
+    const made: string[] = [];
+    void (async () => {
+      await deleteOldShares();
+      const share = isShareId(id) ? await loadShare(id) : null;
+      if (!isCurrent) return;
+      const previews = new Map<File, string>();
+      for (const {file} of share?.files.slice(0, SHOWN_FILES) ?? []) {
+        if (!canPreview(file)) continue;
+        const url = URL.createObjectURL(file);
+        made.push(url);
+        previews.set(file, url);
+      }
+      setLoaded({share, previews});
+    })();
+    return () => {
+      isCurrent = false;
+      for (const url of made) URL.revokeObjectURL(url);
+    };
+  }, [id]);
+
+  if (!loaded) {
+    return (
+      <>
+        <PageHeader title="Add shared files" subtitle="Check the files, then upload them to Downloads." />
+        <section {...stylex.props(styles.card, styles.loading)} aria-busy="true" aria-label="Loading shared files">
+          <Skeleton width="45%" height={24} />
+          <Skeleton height={60} index={1} />
+          <Skeleton height={60} index={2} />
+        </section>
+      </>
+    );
+  }
+
+  const {share, previews} = loaded;
+  if (!share) {
+    return (
+      <>
+        <PageHeader title="Add shared files" subtitle="Shared from another app." />
+        <ShareNotice
+          icon={CircleCheck}
+          title="Nothing left to upload"
+          action={<Button label="Open Downloads" variant="secondary" href="/downloads" />}>
+          These files were already uploaded or cancelled. Uploads still on their way are in Downloads.
+        </ShareNotice>
+      </>
+    );
+  }
+
+  const files = share.files.map(shared => shared.file);
+  const total = files.reduce((sum, file) => sum + file.size, 0);
+  const summary = describeFiles(files);
+  const SummaryIcon = summary.icon;
+  const hidden = files.length - SHOWN_FILES;
+
+  const upload = async () => {
+    if (isSending) return;
+    setIsSending(true);
+    const handOff: File[] = [];
+    for (const {record, file} of share.files) {
+      if (!isTorrentFile(file)) {
+        handOff.push(file);
+        continue;
+      }
+      // Added as a torrent, not through the upload queue: read it now, so its kept copy can go.
+      try {
+        const bytes = await file.arrayBuffer();
+        handOff.push(new File([bytes], file.name, {type: file.type, lastModified: file.lastModified}));
+        void releaseSharedCopy(record);
+      } catch {
+        handOff.push(file);
+      }
+    }
+    // Downloads uploads them exactly like dropped files; each kept copy goes once its upload is done.
+    navigate('/downloads', {replace: true, state: {droppedFiles: handOff}});
+  };
+
+  const cancel = async () => {
+    setIsCancelling(true);
+    await discardShare(share.id);
+    navigate('/', {replace: true});
+  };
+
+  return (
+    <>
+      <PageHeader title="Add shared files" subtitle="Check the files, then upload them to Downloads." />
+      <section {...stylex.props(styles.card)} aria-labelledby="share-files-title">
+        <div {...stylex.props(styles.summary)}>
+          <span {...stylex.props(styles.icon)} aria-hidden="true">
+            <SummaryIcon size={22} strokeWidth={1.75} />
+          </span>
+          <div {...stylex.props(styles.text)}>
+            <Heading level={2} id="share-files-title">
+              {summary.title}
+            </Heading>
+            <Text as="p" color="secondary">
+              {files.length === 1
+                ? `${formatBytes(total)}. Once it is uploaded, it is sorted into your library.`
+                : `${formatBytes(total)} in all. Once each one is uploaded, it is sorted into your library.`}
+            </Text>
+          </div>
+        </div>
+
+        <div {...stylex.props(styles.files)}>
+          <ul aria-label="Shared files" {...stylex.props(styles.fileList)}>
+            {share.files.slice(0, SHOWN_FILES).map(({record, file}) => {
+              const kind = kindOf(file);
+              return (
+                <li key={record.key} {...stylex.props(styles.fileRow)}>
+                  <MediaThumb src={previews.get(file)} icon={kind.icon} width="40px" height="40px" iconSize={18} />
+                  <div {...stylex.props(styles.fileText)}>
+                    <Text weight="medium" xstyle={styles.fileName}>
+                      <BreakableName name={file.name} />
+                    </Text>
+                    <Text type="supporting" color="secondary" xstyle={styles.meta}>
+                      {kind.label} · {formatBytes(file.size)}
+                    </Text>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          {hidden > 0 ? (
+            <Text as="p" type="supporting" color="secondary">
+              And {formatCount(hidden, `more ${summary.noun}`, `more ${summary.noun}s`)}.
+            </Text>
+          ) : null}
+        </div>
+
+        <div {...stylex.props(styles.actions)}>
+          <Button
+            label="Upload to Downloads"
+            variant="primary"
+            isLoading={isSending}
+            isDisabled={isCancelling}
+            onClick={() => void upload()}
+          />
+          <Button
+            label="Cancel"
+            variant="secondary"
+            isLoading={isCancelling}
+            isDisabled={isSending}
+            onClick={() => void cancel()}
+          />
+        </div>
+      </section>
+    </>
+  );
+}
+
+function SharedLink() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const {isOwner} = useAuth();
@@ -200,7 +586,8 @@ export default function SharePage() {
                 Nothing to download in what was shared
               </Heading>
               <Text as="p" color="secondary">
-                PopcornStash can take web links and magnet links. What arrived did not include one.
+                PopcornStash takes web links, magnet links, photos, videos and other files. What arrived did not
+                include any of them.
               </Text>
             </div>
           </div>
@@ -215,6 +602,7 @@ export default function SharePage() {
           <div {...stylex.props(styles.actions)}>
             <Button label="Open Downloads" variant="secondary" href="/downloads" />
           </div>
+          <AndroidNote />
         </section>
       </>
     );

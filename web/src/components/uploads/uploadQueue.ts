@@ -8,6 +8,9 @@
  * Interrupted uploads are remembered in localStorage by file name, size and
  * modification time. Choosing the same file again (after a reload, a lost
  * connection or a closed tab) continues from what the server already holds.
+ * Files shared from Android are kept on the device until uploaded
+ * (sharedFiles.ts), so those continue by themselves, and their kept copies
+ * are deleted once each upload finishes or is cancelled.
  * While anything is sending, closing or reloading the tab asks first.
  */
 import {useSyncExternalStore} from 'react';
@@ -15,6 +18,13 @@ import {ApiError, uploads} from '../../api/client';
 import type {Download} from '../../api/types';
 import {ResumableUpload, type UploadProgress} from '../../api/upload';
 import {errorMessage} from '../../lib/errors';
+import {
+  deleteOldShares,
+  findSharedCopy,
+  releaseSharedCopy,
+  sharedRecordOf,
+  type SharedFileRecord,
+} from './sharedFiles';
 
 export type UploadEntryState =
   | 'waiting'
@@ -75,6 +85,8 @@ const SENDING: ReadonlySet<UploadEntryState> = new Set(['waiting', 'starting', '
 let entries: UploadEntry[] = [];
 const runners = new Map<string, ResumableUpload>();
 const files = new Map<string, File>();
+/** Entries sending a file shared from Android, with the kept copy to delete once done. */
+const sharedRecords = new Map<string, SharedFileRecord>();
 const listeners = new Set<Listener>();
 const uploadedListeners = new Set<UploadedListener>();
 let restored = false;
@@ -147,6 +159,7 @@ function update(key: string, patch: Partial<UploadEntry>) {
 
 function removeEntry(key: string) {
   samples.delete(key);
+  sharedRecords.delete(key);
   entries = entries.filter(entry => entry.key !== key);
   runners.delete(key);
   files.delete(key);
@@ -273,6 +286,7 @@ async function run(key: string) {
     const download = await runner.start();
     const entry = find(key);
     forget(entry?.fileKey ?? fileKeyOf(runner.file));
+    releaseShared(key);
     if (entry) {
       for (const listener of uploadedListeners) listener(download, entry);
     }
@@ -331,14 +345,64 @@ function makeRunner(key: string, file: File, resumeId: string | undefined): Resu
   return runner;
 }
 
+/** Deletes the kept copy of a shared file once its upload is done or cancelled. */
+function releaseShared(key: string) {
+  const record = sharedRecords.get(key);
+  if (!record) return;
+  sharedRecords.delete(key);
+  void releaseSharedCopy(record);
+}
+
+/**
+ * An interrupted upload of a file shared from Android continues from the copy
+ * kept on this device. Resolves false when there is no such copy.
+ */
+async function continueFromSharedCopy(entry: UploadEntry): Promise<boolean> {
+  const file = await findSharedCopy(entry.fileKey);
+  if (!file) return false;
+  // Unless it was discarded or chosen again meanwhile. A server that no longer
+  // has the partial upload gets a new one (ResumableUpload starts over).
+  const current = find(entry.key);
+  if (current && !current.hasFile) addFiles([file]);
+  return true;
+}
+
+/** Asks the server whether an interrupted upload can still continue, and drops it when not. */
+function checkWithServer(entry: UploadEntry) {
+  if (!entry.uploadId) return;
+  uploads
+    .status(entry.uploadId)
+    .then(status => {
+      if (find(entry.key)?.hasFile) return;
+      if (status.state !== 'receiving' || status.size !== entry.size) {
+        forget(entry.fileKey);
+        removeEntry(entry.key);
+        return;
+      }
+      update(entry.key, {loaded: status.received});
+    })
+    .catch((error: unknown) => {
+      // Gone on the server: nothing left to continue.
+      if (find(entry.key)?.hasFile) return;
+      if (error instanceof ApiError && (error.status === 404 || error.status === 410)) {
+        forget(entry.fileKey);
+        removeEntry(entry.key);
+      }
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/** Loads interrupted uploads remembered from earlier visits and checks them with the server. */
+/**
+ * Loads interrupted uploads remembered from earlier visits and checks them
+ * with the server. Shared files kept on this device continue by themselves.
+ */
 export function restoreInterrupted(): void {
   if (restored || typeof window === 'undefined') return;
   restored = true;
+  void deleteOldShares();
   const stored = readStored();
   if (stored.length === 0) return;
   const known = new Set(entries.map(entry => entry.fileKey));
@@ -362,24 +426,9 @@ export function restoreInterrupted(): void {
   entries = [...entries, ...fresh];
   emit();
   for (const entry of fresh) {
-    if (!entry.uploadId) continue;
-    uploads
-      .status(entry.uploadId)
-      .then(status => {
-        if (status.state !== 'receiving' || status.size !== entry.size) {
-          forget(entry.fileKey);
-          removeEntry(entry.key);
-          return;
-        }
-        update(entry.key, {loaded: status.received});
-      })
-      .catch((error: unknown) => {
-        // Gone on the server: nothing left to continue.
-        if (error instanceof ApiError && (error.status === 404 || error.status === 410)) {
-          forget(entry.fileKey);
-          removeEntry(entry.key);
-        }
-      });
+    void continueFromSharedCopy(entry).then(continued => {
+      if (!continued) checkWithServer(entry);
+    });
   }
 }
 
@@ -390,7 +439,10 @@ export function addFiles(list: File[]): AddResult {
   for (const file of list) {
     const fileKey = fileKeyOf(file);
     const existing = entries.find(entry => entry.fileKey === fileKey);
+    const sharedRecord = sharedRecordOf(file);
     if (existing && existing.hasFile) {
+      // The same file shared again: its kept copy goes once the upload already running is done.
+      if (sharedRecord && !sharedRecords.has(existing.key)) sharedRecords.set(existing.key, sharedRecord);
       result.duplicates += 1;
       continue;
     }
@@ -412,6 +464,7 @@ export function addFiles(list: File[]): AddResult {
       addedAt: existing?.addedAt ?? Date.now(),
     };
     makeRunner(key, file, resumeId);
+    if (sharedRecord) sharedRecords.set(key, sharedRecord);
     if (existing) {
       entries = entries.map(current => (current.key === key ? entry : current));
     } else {
@@ -465,6 +518,7 @@ export async function cancelUpload(key: string): Promise<void> {
   if (!entry) return;
   const runner = runners.get(key);
   forget(entry.fileKey);
+  releaseShared(key);
   removeEntry(key);
   if (runner && entry.state === 'starting') {
     // Still being created: cancel once it exists, so the server copy is deleted too.
