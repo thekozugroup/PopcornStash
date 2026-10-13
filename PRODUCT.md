@@ -25,7 +25,10 @@ Taste + Impeccable, built from Astryx components. Same world as Popcorn SR: rest
 - Torrents stop when the VPN is down. There is no silent fallback to the home connection.
 - Files outside `Inbox/` and `Downloads/` are indexed where they are and never moved without an explicit action.
 - Libraries are views of folders. Making, renaming, reordering or deleting a library never moves, renames or deletes a file; a library's folder is chosen once and stays. A library's type changes only while it is empty.
-- Only the owner manages libraries. A library shown to "only selected people" is invisible to everyone else everywhere: pages, search, Home, downloads, live updates. Hiding it stops new access at once, but a device keeps what it has already loaded.
-- Other files (music, documents) are private: each file is seen by the person who added it and the owner. Folders on the share that are not a library are seen by the owner only, until the owner makes them a library.
+- Only owners manage libraries. A library shown to "only selected people" is invisible to everyone else everywhere in PopcornStash: pages, search, Home, downloads, live updates. Hiding it stops new access at once, but a device keeps what it has already loaded.
+- Library access lives in the app, not on the disk. Anyone who can open the share or the server's disk reads every folder, hidden libraries included. Give family members no share access, or write access to `Inbox/` only.
+- Owners decide where each kind of file goes. A file you add can be sorted into a library you cannot see; it then leaves your view, and your download says only that it was sorted.
+- Downloads, uploads and shares are seen by the person who added them and the owners. Other people see a download only once it is sorted into something they can see.
+- Other files (music, documents) are private: each file is seen by the person who added it and the owners. Folders on the share that are not a library are seen by owners only, until an owner makes them a library.
 - No online metadata scraping by default: nothing about the library leaves the server.
 - The Android app has three tabs (Downloads, Home, Settings); library management is native, the other admin areas open the web settings for now.
