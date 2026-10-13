@@ -31,13 +31,21 @@ const styles = stylex.create({
   disclosureBody: {
     paddingTop: 16,
   },
+  note: {
+    lineHeight: 1.55,
+    maxWidth: '62ch',
+    textWrap: 'pretty',
+  },
 });
 
 function VpnSettings() {
   const live = useLiveVpn();
   const status = live.status;
   const isConfigured = Boolean(status?.configured);
-  const isDegraded = status !== null && vpnView(status, false).isDegraded;
+  const view = status === null ? null : vpnView(status, false);
+  const isDegraded = view?.isDegraded === true;
+  // STASH_ALLOW_NO_VPN: a VPN set up here would not be used, so the forms are not offered.
+  const isNoVpn = view?.isNoVpn === true;
   const panelRef = useRef<HTMLElement>(null);
 
   // After a setup the form collapses; bring the live status into view and
@@ -57,7 +65,11 @@ function VpnSettings() {
     <>
       <SettingsSectionHeader
         title="VPN"
-        subtitle="Torrents only run through this VPN. Set it up once and PopcornStash keeps it connected."
+        subtitle={
+          isNoVpn
+            ? 'Where torrent traffic goes on this server.'
+            : 'Torrents only run through this VPN. Set it up once and PopcornStash keeps it connected.'
+        }
       />
       <VpnStatusPanel
         status={status}
@@ -72,6 +84,13 @@ function VpnSettings() {
         {status === null ? (
           <SettingsGroup title="Set up the VPN" description="Checking what is set up now.">
             <LoadingRows rows={2} label="Checking the VPN" />
+          </SettingsGroup>
+        ) : isNoVpn ? (
+          <SettingsGroup title="Set up the VPN" description="Not used while STASH_ALLOW_NO_VPN is on.">
+            <Text as="p" color="secondary" xstyle={styles.note}>
+              To send torrents through a VPN, remove STASH_ALLOW_NO_VPN from the container settings and restart the
+              container. The NordVPN and file setup then appear here.
+            </Text>
           </SettingsGroup>
         ) : (
           <SettingsGroup
@@ -108,7 +127,7 @@ function VpnSettings() {
           </SettingsGroup>
         )}
 
-        <TorrentSettings isPrimary={isConfigured} />
+        <TorrentSettings isPrimary={isConfigured} isNoVpn={isNoVpn} />
       </div>
     </>
   );

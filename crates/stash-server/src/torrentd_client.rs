@@ -491,9 +491,23 @@ fn with_saved_vpn(configured: bool, state: VpnState) -> VpnState {
     }
 }
 
+/// The state shown for a tunnel state. With STASH_ALLOW_NO_VPN no tunnel is ever used,
+/// whatever `vpn.json` holds, so the state is always "not configured" and the UI shows
+/// its permanent no-VPN warning instead of "connecting".
+fn shown_state(configured: bool, tunnel: TunnelState, allow_no_vpn: bool) -> VpnState {
+    if allow_no_vpn {
+        VpnState::NotConfigured
+    } else {
+        with_saved_vpn(configured, vpn_state(tunnel))
+    }
+}
+
 /// UI status while the engine is not answering but the supervisor is alive.
 pub fn status_from_supervisor(meta: Option<&VpnMeta>, tunnel: TunnelStatus) -> VpnStatus {
-    let state = with_saved_vpn(meta.is_some(), vpn_state(tunnel.state));
+    // Only STASH_ALLOW_NO_VPN turns the supervisor's kill switch off (it reports it on in
+    // every other state), so this tells the mode apart while the engine restarts.
+    let allow_no_vpn = !tunnel.kill_switch;
+    let state = shown_state(meta.is_some(), tunnel.state, allow_no_vpn);
     let error = match (tunnel.error, state) {
         (Some(error), _) => Some(error),
         (None, VpnState::Connected) => Some(MSG_ENGINE_STARTING.to_string()),
@@ -513,7 +527,7 @@ pub fn status_from_supervisor(meta: Option<&VpnMeta>, tunnel: TunnelStatus) -> V
         since: tunnel.since,
         error,
         kill_switch: tunnel.kill_switch,
-        allow_no_vpn: false,
+        allow_no_vpn,
         torrents_off: false,
     }
 }
@@ -547,7 +561,8 @@ pub fn combine_status(
     match health {
         Ok(health) => {
             let tunnel = health.vpn;
-            let state = with_saved_vpn(configured, vpn_state(tunnel.state));
+            let allow_no_vpn = health.engine.allow_no_vpn;
+            let state = shown_state(configured, tunnel.state, allow_no_vpn);
             VpnStatus {
                 configured,
                 reachable: true,
@@ -563,9 +578,10 @@ pub fn combine_status(
                 public_ip: health.public_ip,
                 protected: health.protected,
                 since: tunnel.since,
-                error: tunnel.error,
+                // No tunnel is used in this mode, so a tunnel problem is not one.
+                error: tunnel.error.filter(|_| !allow_no_vpn),
                 kill_switch: tunnel.kill_switch,
-                allow_no_vpn: health.engine.allow_no_vpn,
+                allow_no_vpn,
                 torrents_off: false,
             }
         }
@@ -1234,6 +1250,57 @@ mod tests {
         let unreachable = combine_status(Some(&meta), Err(TorrentdError::Unreachable("x".into())));
         assert!(unreachable.configured && !unreachable.reachable);
         assert_eq!(unreachable.label.as_deref(), Some("WireGuard · home"));
+    }
+
+    /// With STASH_ALLOW_NO_VPN the supervisor never applies a VPN, so a saved one stays
+    /// unused and torrents run on this network. The status must say exactly that (no VPN,
+    /// allowed) and never "connecting" because a vpn.json is lying around.
+    #[test]
+    fn allow_no_vpn_with_a_saved_vpn_reports_no_vpn() {
+        let meta = VpnMeta {
+            provider: VpnProvider::Nordvpn,
+            protocol: VpnProtocol::Wireguard,
+            label: None,
+            server: Some("nl812.nordvpn.com".into()),
+            country: Some("Netherlands".into()),
+            created_at: 1,
+        };
+        let no_vpn = |tunnel: TunnelState| {
+            let mut health = sample_health(tunnel);
+            health.engine.allow_no_vpn = true;
+            health.vpn.kill_switch = false;
+            health.vpn.interface = None;
+            health.protected = None;
+            health
+        };
+        // The supervisor's own status in this mode is "not configured" (kill switch off);
+        // an engine that has not read it yet reports its stand-in "disconnected".
+        for tunnel in [TunnelState::NotConfigured, TunnelState::Disconnected] {
+            for saved in [Some(&meta), None] {
+                let status = combine_status(saved, Ok(no_vpn(tunnel)));
+                assert_eq!(
+                    status.state,
+                    VpnState::NotConfigured,
+                    "{tunnel:?} {saved:?}"
+                );
+                assert!(status.allow_no_vpn && status.reachable && !status.kill_switch);
+                assert_eq!(status.configured, saved.is_some());
+            }
+        }
+        // While the engine restarts, the supervisor's status file still tells this mode
+        // apart: its kill switch is off, which only STASH_ALLOW_NO_VPN does.
+        let mut tunnel = no_vpn(TunnelState::NotConfigured).vpn;
+        tunnel.updated_at = stash_core::now();
+        let status = status_from_supervisor(Some(&meta), tunnel);
+        assert_eq!(status.state, VpnState::NotConfigured);
+        assert!(status.allow_no_vpn && status.configured && !status.reachable);
+        assert_eq!(status.error, None);
+        // A normal supervisor (kill switch on) keeps the saved-VPN rule.
+        let mut tunnel = sample_health(TunnelState::NotConfigured).vpn;
+        tunnel.updated_at = stash_core::now();
+        let status = status_from_supervisor(Some(&meta), tunnel);
+        assert_eq!(status.state, VpnState::Connecting);
+        assert!(!status.allow_no_vpn);
     }
 
     /// Under the supervisor the token comes from `STASH_INTERNAL_TOKEN` and must never be

@@ -33,6 +33,11 @@ use crate::torrentd_client::{TorrentdClient, TorrentdError};
 pub const MAX_TORRENT_FILE: usize = 10 * 1024 * 1024;
 /// Shown while a torrent waits for the engine.
 pub const MSG_WAITING_FOR_VPN: &str = "Waiting for the VPN to connect.";
+
+/// Shown while a torrent waits in line for "Torrents at once" (`torrent.max_active`).
+pub fn slot_message(max_active: u32) -> String {
+    format!("Waiting for a free slot ({max_active} at once).")
+}
 /// Web downloads set to `always` use the VPN and it is down.
 pub const MSG_VPN_REQUIRED: &str =
     "Downloads are set to use the VPN, and the VPN is not connected.";
@@ -189,6 +194,9 @@ pub struct DownloadManager {
     reserved: Mutex<HashSet<String>>,
     pub(crate) http_wake: Notify,
     pub(crate) torrent_wake: Notify,
+    /// Held while deciding whether a torrent may take a slot and starting it, so two
+    /// starts never both take the last free slot ("Torrents at once").
+    pub(crate) torrent_slots: tokio::sync::Mutex<()>,
     tuning: RwLock<Tuning>,
 }
 
@@ -241,6 +249,7 @@ impl DownloadManager {
             reserved: Mutex::new(HashSet::new()),
             http_wake: Notify::new(),
             torrent_wake: Notify::new(),
+            torrent_slots: tokio::sync::Mutex::new(()),
             tuning: RwLock::new(Tuning::default()),
         }
     }
@@ -655,12 +664,35 @@ impl DownloadManager {
             },
             DownloadKind::Torrent => match (row.state, row.engine_id.as_deref()) {
                 (DownloadState::Paused, Some(engine_id)) => {
-                    self.torrentd
-                        .resume(engine_id)
-                        .await
-                        .map_err(|e| engine_error(&e))?;
-                    self.set_state_if(id, DownloadState::Downloading, &["paused"])
-                        .await?;
+                    let _slots = self.torrent_slots.lock().await;
+                    match self.torrent_slot(id).await? {
+                        Ok(()) => {
+                            self.torrentd
+                                .resume(engine_id)
+                                .await
+                                .map_err(|e| engine_error(&e))?;
+                            sqlx::query(
+                                "UPDATE downloads SET state = 'downloading', error = NULL, updated_at = ?
+                                 WHERE id = ? AND state = 'paused'",
+                            )
+                            .bind(now())
+                            .bind(id)
+                            .execute(&self.db)
+                            .await?;
+                        }
+                        // Every slot is taken: back in line; the poller resumes it later.
+                        Err(waiting) => {
+                            sqlx::query(
+                                "UPDATE downloads SET state = 'queued', error = ?, updated_at = ?
+                                 WHERE id = ? AND state = 'paused'",
+                            )
+                            .bind(waiting)
+                            .bind(now())
+                            .bind(id)
+                            .execute(&self.db)
+                            .await?;
+                        }
+                    }
                     self.torrent_wake.notify_one();
                 }
                 (DownloadState::Paused, None) => {
@@ -742,6 +774,29 @@ impl DownloadManager {
         }
         tracing::info!(download = %id, delete_files, "download removed");
         Ok(())
+    }
+
+    /// Whether torrent `id` may run now under "Torrents at once" (`torrent.max_active`):
+    /// the torrents running in the engine plus those waiting in line ahead of it (added
+    /// earlier) must leave a slot. `Err` carries the message for a torrent that waits.
+    /// Seeding and paused torrents take no slot. Call with `torrent_slots` held.
+    pub(crate) async fn torrent_slot(&self, id: &str) -> ApiResult<Result<(), String>> {
+        let max = self.settings.get().await.torrent.max_active.max(1);
+        let (taken,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM downloads AS d
+             WHERE d.kind = 'torrent' AND d.id != ?1
+               AND ((d.state = 'downloading' AND d.engine_id IS NOT NULL)
+                 OR (d.state = 'queued'
+                     AND (d.created_at, d.id) < (SELECT created_at, id FROM downloads WHERE id = ?1)))",
+        )
+        .bind(id)
+        .fetch_one(&self.db)
+        .await?;
+        Ok(if taken < i64::from(max) {
+            Ok(())
+        } else {
+            Err(slot_message(max))
+        })
     }
 
     /// True while a sort job for this download (or its path) is queued or running.

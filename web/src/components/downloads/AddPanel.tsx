@@ -17,8 +17,9 @@ import {useState, type ChangeEvent, type FormEvent, type RefObject} from 'react'
 import {ApiError, downloads as downloadsApi} from '../../api/client';
 import type {Download, VpnStatus} from '../../api/types';
 import {errorMessage} from '../../lib/errors';
+import {isNoVpnMode} from '../../lib/vpn';
 import {checkLink, describeLink, isTorrentLink} from './linkDetect';
-import {torrentsAffected, torrentsOff, VpnLine} from './VpnLine';
+import {torrentsAffected, torrentsOff, torrentsWait, VpnLine} from './VpnLine';
 
 const styles = stylex.create({
   panel: {
@@ -136,7 +137,8 @@ export function AddPanel({
   const torrentInputId = 'downloads-torrent-input';
 
   const check = checkLink(value);
-  const vpnBlocked = torrentsAffected(vpnStatus, vpnUnavailable);
+  const torrentsQueue = torrentsWait(vpnStatus, vpnUnavailable);
+  const noVpn = isNoVpnMode(vpnStatus);
 
   let feedback: {text: string; icon: LucideIcon; isError: boolean};
   if (serverError) {
@@ -149,16 +151,19 @@ export function AddPanel({
       check.extracted ? 'Found a link in the pasted text.' : null,
       isTorrent && torrentsOff(vpnStatus)
         ? 'A torrent. Torrents are off on this server, so it cannot be added.'
-        : describeLink(check.link),
+        : describeLink(check.link, {viaVpn: !noVpn}),
     ];
-    if (isTorrent && vpnBlocked && !torrentsOff(vpnStatus)) parts.push('It waits until the VPN is ready.');
+    if (isTorrent && torrentsQueue) parts.push('It waits until the VPN is ready.');
     feedback = {text: parts.filter(Boolean).join(' '), icon: KIND_ICON[check.link.kind], isError: false};
   } else {
     // Never promise magnets on a server where torrents are off.
     feedback = {
+      // Without a VPN the line below already says where torrents go.
       text: torrentsOff(vpnStatus)
         ? 'Web links download right away. Magnet links cannot start while torrents are off.'
-        : 'Web links and magnet links both work. Torrents only ever run through the VPN.',
+        : noVpn
+          ? 'Web links and magnet links both work.'
+          : 'Web links and magnet links both work. Torrents only ever run through the VPN.',
       icon: Link2,
       isError: false,
     };

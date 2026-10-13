@@ -44,9 +44,14 @@ use crate::vpn::killswitch::{ENGINE_DHT_PORT, ENGINE_LISTEN_PORT};
 /// Public IP check interval while running (section 5, "Proof of protection").
 pub const IP_CHECK_INTERVAL: Duration = Duration::from_secs(600);
 const POLL: Duration = Duration::from_secs(1);
-const NORDVPN_INSIGHTS: &str = "https://api.nordvpn.com/v1/helpers/ips/insights";
-const IPIFY: &str = "https://api.ipify.org?format=json";
+pub const NORDVPN_INSIGHTS: &str = "https://api.nordvpn.com/v1/helpers/ips/insights";
+pub const IPIFY: &str = "https://api.ipify.org?format=json";
 pub const MSG_NOT_CONFIGURED: &str = "The VPN is not set up yet.";
+/// The public-address check said the address is not a VPN address (NordVPN `protected: false`).
+pub const MSG_NOT_PROTECTED: &str = "The VPN is connected, but the public address is not a VPN address. Torrents stay stopped until a later check passes.";
+/// Between public-address checks while an earlier check said the address is not a VPN
+/// address, so torrents start again soon after a check passes.
+const UNPROTECTED_RECHECK: Duration = Duration::from_secs(60);
 /// Wait between failed attempts to start the torrent session on the same interface.
 const START_RETRY: Duration = Duration::from_secs(60);
 const PENDING_FILE: &str = "pending.json";
@@ -57,6 +62,42 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Where and how often the engine checks its public address through the tunnel (the
+/// proof of protection). The services are fixed in production; tests point them at
+/// local fakes with [`Engine::with_ip_check`].
+#[derive(Debug, Clone)]
+pub struct IpCheck {
+    /// NordVPN's insights service: `{ip, country, protected}`.
+    pub nordvpn_url: String,
+    /// Any other provider: `{ip}`.
+    pub other_url: String,
+    /// Between checks while torrents run.
+    pub interval: Duration,
+    /// Between checks while torrents are stopped because the last one failed the proof.
+    pub recheck_unprotected: Duration,
+}
+
+impl Default for IpCheck {
+    fn default() -> Self {
+        Self {
+            nordvpn_url: NORDVPN_INSIGHTS.into(),
+            other_url: IPIFY.into(),
+            interval: IP_CHECK_INTERVAL,
+            recheck_unprotected: UNPROTECTED_RECHECK,
+        }
+    }
+}
+
+impl IpCheck {
+    fn url(&self, provider: Option<VpnProvider>) -> &str {
+        if provider == Some(VpnProvider::Nordvpn) {
+            &self.nordvpn_url
+        } else {
+            &self.other_url
+        }
+    }
 }
 
 /// Run the engine. Landlock restricts the calling thread and the threads it
@@ -225,6 +266,9 @@ struct Inner {
     running: bool,
     reason: Option<String>,
     ip: Option<IpInfo>,
+    /// The last public-address check said the address is not a VPN address: torrents
+    /// stay stopped until a later check passes.
+    unprotected: bool,
     limits: LimitsRequest,
     pending: BTreeMap<String, PendingAdd>,
     last_known: HashMap<String, EngineTorrent>,
@@ -237,6 +281,7 @@ pub struct Engine {
     status_file: PathBuf,
     tunnel_if: Option<String>,
     allow_no_vpn: bool,
+    ip_check: IpCheck,
     session: RwLock<Option<Live>>,
     inner: Mutex<Inner>,
     running_tx: watch::Sender<bool>,
@@ -388,12 +433,14 @@ impl Engine {
             status_file: options.status_file.clone(),
             tunnel_if: options.tunnel_if.clone(),
             allow_no_vpn: options.allow_no_vpn,
+            ip_check: IpCheck::default(),
             session: RwLock::new(None),
             inner: Mutex::new(Inner {
                 tunnel: None,
                 running: false,
                 reason: Some(MSG_VPN_WAIT.into()),
                 ip: None,
+                unprotected: false,
                 limits: LimitsRequest::default(),
                 pending: BTreeMap::new(),
                 last_known: HashMap::new(),
@@ -406,6 +453,12 @@ impl Engine {
         };
         engine.load_saved_state();
         engine
+    }
+
+    /// Check the public address against other services (tests).
+    pub fn with_ip_check(mut self, ip_check: IpCheck) -> Self {
+        self.ip_check = ip_check;
+        self
     }
 
     /// `true` while the torrent session runs.
@@ -497,6 +550,22 @@ impl Engine {
         self.running_tx.send_replace(running);
     }
 
+    /// Stop torrents because the public address is not a VPN address. The check's answer
+    /// stays, so the status shows the address and `protected: false`.
+    fn block_unprotected(&self) {
+        let changed = {
+            let mut inner = lock(&self.inner);
+            let changed = inner.running || inner.reason.as_deref() != Some(MSG_NOT_PROTECTED);
+            inner.running = false;
+            inner.reason = Some(MSG_NOT_PROTECTED.into());
+            changed
+        };
+        if changed {
+            tracing::warn!("the public address is not a VPN address; torrents are blocked");
+        }
+        self.running_tx.send_replace(false);
+    }
+
     /// Main loop: follow the tunnel state until shutdown or reload.
     pub async fn supervise(self: Arc<Self>, shutdown: CancellationToken) -> i32 {
         let mut last_ip_check: Option<Instant> = None;
@@ -511,11 +580,22 @@ impl Engine {
             self.tunnel_tx.send_replace(decision.is_ok());
             match decision {
                 Ok(ifindex) => {
+                    // The tunnel is up but the last check said the address is not a VPN
+                    // address: no torrents until a later check passes.
+                    let unprotected = !self.allow_no_vpn && lock(&self.inner).unprotected;
                     let current = self.session.read().await.as_ref().map(|live| live.ifindex);
                     let wait_retry = failed_start.is_some_and(|(failed, at)| {
                         failed == ifindex && at.elapsed() < START_RETRY
                     });
-                    if current != Some(ifindex) && !wait_retry {
+                    if unprotected {
+                        if current.is_some() {
+                            tracing::warn!(
+                                "the public address is not a VPN address; stopping torrents"
+                            );
+                            self.stop_session().await;
+                        }
+                        self.block_unprotected();
+                    } else if current != Some(ifindex) && !wait_retry {
                         self.stop_session().await;
                         // Starting can take several seconds; a reload or shutdown must not wait for it.
                         let started = tokio::select! {
@@ -539,8 +619,13 @@ impl Engine {
                     }
                     // Magnets added since the last tick (or left over from a stopped session).
                     self.spawn_resolutions().await;
-                    let due = last_ip_check.is_none_or(|t| t.elapsed() >= IP_CHECK_INTERVAL);
-                    if due && lock(&self.inner).running {
+                    let interval = if unprotected {
+                        self.ip_check.recheck_unprotected
+                    } else {
+                        self.ip_check.interval
+                    };
+                    let due = last_ip_check.is_none_or(|t| t.elapsed() >= interval);
+                    if due && (unprotected || lock(&self.inner).running) {
                         last_ip_check = Some(Instant::now());
                         let engine = self.clone();
                         tokio::spawn(async move { engine.check_public_ip(provider).await });
@@ -770,11 +855,14 @@ impl Engine {
     }
 
     async fn check_public_ip(&self, provider: Option<VpnProvider>) {
-        match fetch_public_ip(self.tunnel_if.as_deref(), provider).await {
+        let url = self.ip_check.url(provider);
+        match fetch_public_ip(self.tunnel_if.as_deref(), url).await {
             Ok(info) => {
                 tracing::info!(ip = %info.ip, country = ?info.country, protected = ?info.protected, "public IP through the tunnel");
                 let mut inner = lock(&self.inner);
-                if inner.running {
+                // Only a clear "not protected" blocks; no answer (ipify) or an error does not.
+                inner.unprotected = info.protected == Some(false);
+                if inner.running || inner.unprotected {
                     inner.ip = Some(info);
                 }
             }
@@ -936,10 +1024,8 @@ struct IpAnswer {
     protected: Option<bool>,
 }
 
-async fn fetch_public_ip(
-    interface: Option<&str>,
-    provider: Option<VpnProvider>,
-) -> anyhow::Result<IpInfo> {
+/// Ask `url` (an [`IpCheck`] service) for the public address, through `interface` when set.
+async fn fetch_public_ip(interface: Option<&str>, url: &str) -> anyhow::Result<IpInfo> {
     #[allow(unused_mut)]
     let mut builder = reqwest::Client::builder()
         .no_proxy()
@@ -949,11 +1035,6 @@ async fn fetch_public_ip(
         builder = builder.interface(interface);
     }
     let client = builder.build()?;
-    let url = if provider == Some(VpnProvider::Nordvpn) {
-        NORDVPN_INSIGHTS
-    } else {
-        IPIFY
-    };
     let answer: IpAnswer = client
         .get(url)
         .send()
@@ -1235,6 +1316,7 @@ impl TorrentBackend for Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicU32;
 
     fn options(dir: &Path) -> EngineOptions {
         let downloads = dir.join("In Progress");
@@ -1611,6 +1693,155 @@ mod tests {
         );
         leecher.stop().await;
         seeder.stop().await;
+    }
+
+    /// A fake public-address service on 127.0.0.1 that answers `/nordvpn` like NordVPN's
+    /// insights and `/ipify` like ipify, with whatever `answer` currently holds.
+    async fn fake_ip_service(answer: Arc<Mutex<serde_json::Value>>) -> (String, Arc<AtomicU32>) {
+        let hits = Arc::new(AtomicU32::new(0));
+        let reply = |answer: Arc<Mutex<serde_json::Value>>, hits: Arc<AtomicU32>| {
+            move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+                let body = lock(&answer).clone();
+                std::future::ready(axum::Json(body))
+            }
+        };
+        let app = axum::Router::new()
+            .route(
+                "/nordvpn",
+                axum::routing::get(reply(answer.clone(), hits.clone())),
+            )
+            .route("/ipify", axum::routing::get(reply(answer, hits.clone())))
+            .route(
+                "/broken",
+                axum::routing::get(|| async { (axum::http::StatusCode::BAD_GATEWAY, "no") }),
+            );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        (format!("http://{addr}"), hits)
+    }
+
+    /// The proof of protection reads NordVPN's insights and ipify's answers, and refuses
+    /// an answer that is not an address or a service that fails.
+    #[tokio::test]
+    async fn public_ip_answers_are_read_and_checked() {
+        let answer = Arc::new(Mutex::new(serde_json::json!({
+            "ip": "185.153.177.12", "country": "Netherlands", "protected": true, "isp": "NordVPN"
+        })));
+        let (base, _) = fake_ip_service(answer.clone()).await;
+        let check = IpCheck {
+            nordvpn_url: format!("{base}/nordvpn"),
+            other_url: format!("{base}/ipify"),
+            ..IpCheck::default()
+        };
+        assert_eq!(check.url(Some(VpnProvider::Nordvpn)), check.nordvpn_url);
+        assert_eq!(check.url(Some(VpnProvider::Wireguard)), check.other_url);
+        assert_eq!(check.url(None), check.other_url);
+        assert_eq!(IpCheck::default().nordvpn_url, NORDVPN_INSIGHTS);
+        assert_eq!(IpCheck::default().other_url, IPIFY);
+
+        let nord = fetch_public_ip(None, check.url(Some(VpnProvider::Nordvpn)))
+            .await
+            .unwrap();
+        assert_eq!(nord.ip, "185.153.177.12");
+        assert_eq!(nord.country.as_deref(), Some("Netherlands"));
+        assert_eq!(nord.protected, Some(true));
+        assert!(nord.checked_at > 0);
+
+        *lock(&answer) = serde_json::json!({"ip": "2001:db8::7"});
+        let ipify = fetch_public_ip(None, check.url(None)).await.unwrap();
+        assert_eq!(ipify.ip, "2001:db8::7");
+        assert_eq!((ipify.country, ipify.protected), (None, None));
+
+        *lock(&answer) = serde_json::json!({"ip": "<script>"});
+        assert!(fetch_public_ip(None, &check.other_url).await.is_err());
+        *lock(&answer) = serde_json::json!({"address": "203.0.113.5"});
+        assert!(fetch_public_ip(None, &check.other_url).await.is_err());
+        assert!(
+            fetch_public_ip(None, &format!("{base}/broken"))
+                .await
+                .is_err()
+        );
+    }
+
+    /// When the check says the address is not a VPN address (NordVPN `protected: false`),
+    /// torrents stop and stay stopped until a later check passes, as the UI says.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unprotected_address_blocks_torrents_until_a_check_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut opts = options(dir.path());
+        opts.tunnel_if = Some("lo".into());
+        let answer = Arc::new(Mutex::new(serde_json::json!({
+            "ip": "198.51.100.23", "country": "Netherlands", "protected": false
+        })));
+        let (base, hits) = fake_ip_service(answer.clone()).await;
+        let engine = Arc::new(Engine::new(&opts).with_ip_check(IpCheck {
+            nordvpn_url: format!("{base}/nordvpn"),
+            other_url: format!("{base}/ipify"),
+            interval: Duration::from_secs(600),
+            recheck_unprotected: Duration::from_millis(300),
+        }));
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(engine.clone().supervise(shutdown.clone()));
+        // The status file is rewritten like the supervisor does, so it never goes stale.
+        let status_file = opts.status_file.clone();
+        let writer_stop = shutdown.clone();
+        tokio::spawn(async move {
+            while !writer_stop.is_cancelled() {
+                let mut status = TunnelStatus::not_configured(now_unix());
+                status.state = TunnelState::Connected;
+                status.provider = Some(VpnProvider::Nordvpn);
+                crate::status::write(&status_file, &status).unwrap();
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+        async fn wait_for(what: &str, mut ready: impl AsyncFnMut() -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !ready().await {
+                assert!(Instant::now() < deadline, "timed out waiting for {what}");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+
+        wait_for("the not-protected answer to block torrents", async || {
+            let health = engine.health().await;
+            health.protected == Some(false) && health.engine.state == EngineRunState::Blocked
+        })
+        .await;
+        let health = engine.health().await;
+        assert_eq!(health.engine.reason.as_deref(), Some(MSG_NOT_PROTECTED));
+        assert_eq!(health.public_ip.as_deref(), Some("198.51.100.23"));
+        assert_eq!(health.vpn.state, TunnelState::Connected);
+        assert!(engine.live_session().await.is_none(), "the session stopped");
+        assert!(matches!(
+            engine
+                .add(NewTorrent::Magnet(
+                    "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056".into()
+                ))
+                .await,
+            Err(BackendError::Blocked(_))
+        ));
+        // It keeps checking while blocked, and stays blocked while the answer stays.
+        let seen = hits.load(Ordering::SeqCst);
+        wait_for("another check", async || hits.load(Ordering::SeqCst) > seen).await;
+        assert_eq!(engine.health().await.engine.state, EngineRunState::Blocked);
+
+        // A later check passes: torrents run again.
+        *lock(&answer) = serde_json::json!({
+            "ip": "185.153.177.12", "country": "Netherlands", "protected": true
+        });
+        wait_for("torrents to run again", async || {
+            engine.health().await.engine.state == EngineRunState::Running
+        })
+        .await;
+        wait_for("the passing answer", async || {
+            engine.health().await.protected == Some(true)
+        })
+        .await;
+        assert!(engine.live_session().await.is_some());
+        shutdown.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(10), task).await;
     }
 
     #[test]

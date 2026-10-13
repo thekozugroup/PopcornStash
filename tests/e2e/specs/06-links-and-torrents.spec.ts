@@ -101,6 +101,60 @@ test('Settings say plainly that torrents are off', async ({page}) => {
   await expect(page.getByText('Off on this server', {exact: true})).toBeVisible();
 });
 
+test('with STASH_ALLOW_NO_VPN every VPN surface warns that torrents use this network', async ({page}) => {
+  // The server runs here without an engine, so the status of a server started with
+  // STASH_ALLOW_NO_VPN and an old saved VPN is played back to the page. Whatever the
+  // tunnel state says, torrents run on this network: nothing may claim they are paused
+  // or waiting for the VPN, and the unused VPN setup must not look like it matters.
+  const noVpn = {
+    configured: true,
+    reachable: true,
+    state: 'connecting',
+    provider: 'nordvpn',
+    protocol: 'wireguard',
+    label: null,
+    server: 'nl812.nordvpn.com',
+    country: 'Netherlands',
+    public_ip: '198.51.100.23',
+    protected: null,
+    since: null,
+    error: null,
+    kill_switch: false,
+    allow_no_vpn: true,
+    torrents_off: false,
+  };
+  await page.route('**/api/vpn/status', route => route.fulfill({json: noVpn}));
+  const WARNING = 'No VPN: torrents use this network';
+
+  await page.goto('/downloads');
+  await expect(page.getByRole('status', {name: WARNING})).toHaveText(WARNING);
+  const panel = page.getByRole('region', {name: 'Add to downloads'});
+  await expect(panel.getByText(WARNING, {exact: true})).toBeVisible();
+  await expect(panel.getByText('Torrents use this home connection because STASH_ALLOW_NO_VPN is on.')).toBeVisible();
+  const magnet = 'magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&dn=Holiday';
+  await page.getByRole('textbox', {name: 'Paste a link or magnet'}).fill(magnet);
+  await expect(panel.getByText('Magnet link. Downloads as a torrent.', {exact: true})).toBeVisible();
+  await expect(panel.getByText(/paused|connecting|waits until the VPN|through the VPN/i)).toHaveCount(0);
+  await page.getByRole('textbox', {name: 'Paste a link or magnet'}).fill('');
+  await expect(panel.getByText('Web links and magnet links both work.', {exact: true})).toBeVisible();
+  await expect(panel.getByText(/paused|connecting|waits until the VPN|through the VPN/i)).toHaveCount(0);
+
+  await page.goto('/settings/vpn');
+  const vpn = page.getByRole('region', {name: 'VPN status'});
+  await expect(vpn.getByText(WARNING, {exact: true})).toBeVisible();
+  await expect(vpn.getByText(/the saved VPN \(NordVPN · Netherlands\) is not used/)).toBeVisible();
+  // Nothing about a tunnel or kill switch protecting torrents, and no way to reconnect it.
+  await expect(vpn.getByText(/kill switch stops torrents/)).toHaveCount(0);
+  await expect(vpn.getByRole('button', {name: 'Reconnect'})).toHaveCount(0);
+  await expect(vpn.getByRole('button', {name: 'Remove'})).toBeVisible();
+  // The setup forms are not offered while they would have no effect.
+  await expect(page.getByRole('button', {name: 'Connect NordVPN'})).toHaveCount(0);
+  await expect(page.getByText('Use a WireGuard or OpenVPN file instead')).toHaveCount(0);
+  await expect(page.getByText('Not used while STASH_ALLOW_NO_VPN is on', {exact: false})).toBeVisible();
+  await expect(vpn.getByText(/paused|connecting/i)).toHaveCount(0);
+  await expect(page.getByRole('status', {name: WARNING})).toHaveText(WARNING);
+});
+
 test('a shared magnet says plainly that it cannot be added while torrents are off', async ({page}) => {
   const magnet = 'magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&dn=Holiday';
   await page.goto(`/share?text=${encodeURIComponent(magnet)}`);

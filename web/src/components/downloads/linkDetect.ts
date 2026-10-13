@@ -120,12 +120,14 @@ export function checkLink(raw: string): LinkCheck {
 }
 
 /** Short description of a recognised link for the field's helper line. */
-export function describeLink(link: DetectedLink): string {
+export function describeLink(link: DetectedLink, options: {viaVpn?: boolean} = {}): string {
+  // Torrents run only through the VPN, unless the server allows them without one.
+  const route = options.viaVpn === false ? '' : ', only through the VPN';
   switch (link.kind) {
     case 'magnet':
-      return 'Magnet link. Downloads as a torrent, only through the VPN.';
+      return `Magnet link. Downloads as a torrent${route}.`;
     case 'torrent-url':
-      return `Link to a .torrent file on ${link.host ?? 'the web'}. Downloads as a torrent, only through the VPN.`;
+      return `Link to a .torrent file on ${link.host ?? 'the web'}. Downloads as a torrent${route}.`;
     case 'http':
     default:
       return `Web link from ${link.host ?? 'the web'}. Downloads straight to PopcornStash.`;

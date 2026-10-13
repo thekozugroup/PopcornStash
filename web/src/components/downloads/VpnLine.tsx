@@ -1,14 +1,14 @@
 /**
  * One line about the VPN when it affects torrents: blocked, connecting, not
- * set up or unavailable. The owner gets a link to Settings, VPN; family
- * members get an explanation of what still works. Renders nothing while
- * torrents are protected.
+ * set up, unavailable, or allowed to run without a VPN (a permanent warning).
+ * The owner gets a link to Settings, VPN; family members get an explanation
+ * of what still works. Renders nothing while torrents are protected.
  */
 import * as stylex from '@stylexjs/stylex';
 import {Button} from '@astryxdesign/core/Button';
 import {Text} from '@astryxdesign/core/Text';
 import type {VpnStatus} from '../../api/types';
-import {describeVpn, torrentsOffReason} from '../../lib/vpn';
+import {describeVpn, isNoVpnMode, torrentsOffReason} from '../../lib/vpn';
 import {StatusTag} from '../StatusTag';
 
 const styles = stylex.create({
@@ -38,12 +38,24 @@ export function torrentsOff(status: VpnStatus | null): boolean {
   return status?.torrents_off === true;
 }
 
-/** True when torrents cannot run right now (or the state cannot be read). */
+/**
+ * True when the VPN line belongs on screen: torrents cannot run right now (or
+ * the state cannot be read), or they run without a VPN.
+ */
 export function torrentsAffected(status: VpnStatus | null, isUnavailable: boolean): boolean {
   if (isUnavailable) return true;
   if (!status) return false;
-  if (status.allow_no_vpn && status.state === 'not_configured') return true;
+  if (isNoVpnMode(status)) return true;
   return !(status.state === 'connected' && status.protected !== false);
+}
+
+/**
+ * True when a new torrent waits for the VPN instead of starting. Never while
+ * torrents are off (nothing waits) or allowed without a VPN (they start at once).
+ */
+export function torrentsWait(status: VpnStatus | null, isUnavailable: boolean): boolean {
+  if (torrentsOff(status) || isNoVpnMode(status)) return false;
+  return torrentsAffected(status, isUnavailable);
 }
 
 /** Off on purpose: the tag already says "Torrents off", so only a real reason is added. */
@@ -54,7 +66,7 @@ function offDetail(status: VpnStatus): string {
 function memberDetail(status: VpnStatus | null, isUnavailable: boolean): string {
   if (isUnavailable || !status) return 'The VPN status could not be read. Web links and uploads still work.';
   if (torrentsOff(status)) return offDetail(status);
-  if (status.allow_no_vpn && status.state === 'not_configured') {
+  if (isNoVpnMode(status)) {
     return 'Torrents use this home connection because the server is set up that way.';
   }
   switch (status.state) {
@@ -71,7 +83,7 @@ function memberDetail(status: VpnStatus | null, isUnavailable: boolean): string 
 function ownerDetail(status: VpnStatus | null, isUnavailable: boolean): string {
   if (isUnavailable || !status) return 'The VPN status could not be read. Web links and uploads still work.';
   if (torrentsOff(status)) return offDetail(status);
-  if (status.allow_no_vpn && status.state === 'not_configured') {
+  if (isNoVpnMode(status)) {
     return 'Torrents use this home connection because STASH_ALLOW_NO_VPN is on.';
   }
   switch (status.state) {
@@ -96,7 +108,9 @@ export interface VpnLineProps {
 export function VpnLine({status, isUnavailable, isOwner}: VpnLineProps) {
   if (!torrentsAffected(status, isUnavailable)) return null;
   const summary = describeVpn(status, {isUnavailable});
-  const needsSettings = isOwner && !(status?.state === 'connecting');
+  const noVpn = isNoVpnMode(status);
+  // While the VPN connects there is nothing to do but wait.
+  const needsSettings = isOwner && (noVpn || status?.state !== 'connecting');
   return (
     <div {...stylex.props(styles.line)}>
       <StatusTag tone={summary.tone} live>
@@ -107,7 +121,7 @@ export function VpnLine({status, isUnavailable, isOwner}: VpnLineProps) {
       </Text>
       {needsSettings ? (
         <Button
-          label={status?.state === 'not_configured' ? 'Set up the VPN' : 'Open VPN settings'}
+          label={status?.state === 'not_configured' && !noVpn ? 'Set up the VPN' : 'Open VPN settings'}
           variant="ghost"
           href="/settings/vpn"
           xstyle={styles.settings}

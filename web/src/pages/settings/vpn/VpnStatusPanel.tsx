@@ -135,7 +135,8 @@ export function VpnStatusPanel({status, error, isLoading, onReload, onChange, pa
   const provider =
     providerLabel && ![view.title, view.detail].some(line => line?.includes(providerLabel)) ? providerLabel : null;
   const protocol = status.provider === 'nordvpn' ? protocolName(status.protocol) : null;
-  const canReconnect = status.configured && !view.isDegraded;
+  // Without a VPN in use there is no tunnel to reconnect; a saved VPN can still be removed.
+  const canReconnect = status.configured && !view.isDegraded && !view.isNoVpn;
 
   const reconnect = async () => {
     try {
@@ -175,7 +176,7 @@ export function VpnStatusPanel({status, error, isLoading, onReload, onChange, pa
               {view.detail}
             </Text>
           ) : null}
-          {view.isDegraded ? null : (
+          {view.isDegraded || view.isNoVpn ? null : (
             <Text as="p" type="supporting" color="secondary" xstyle={styles.explain}>
               Only torrent traffic goes through the VPN, so streaming and this page stay on your own network. A kill
               switch stops torrents the moment the tunnel drops, and their DNS lookups go through the tunnel too.
@@ -197,16 +198,23 @@ export function VpnStatusPanel({status, error, isLoading, onReload, onChange, pa
         ) : null}
       </div>
 
-      {status.configured && !view.isDegraded ? (
+      {(status.configured || view.isNoVpn) && !view.isDegraded ? (
         <div {...stylex.props(styles.facts)}>
           <MetadataList orientation="horizontal">
             {status.public_ip ? (
               <MetadataListItem label="Public address" xstyle={styles.fact}>{status.public_ip}</MetadataListItem>
             ) : null}
-            {provider ? <MetadataListItem label="Provider" xstyle={styles.fact}>{provider}</MetadataListItem> : null}
-            {status.server ? <MetadataListItem label="Server" xstyle={styles.fact}>{status.server}</MetadataListItem> : null}
-            {protocol ? <MetadataListItem label="Protocol" xstyle={styles.fact}>{protocol}</MetadataListItem> : null}
-            {status.state === 'connected' && status.since ? (
+            {/* Without a VPN in use, a saved VPN's facts would describe a tunnel nothing goes through. */}
+            {provider && !view.isNoVpn ? (
+              <MetadataListItem label="Provider" xstyle={styles.fact}>{provider}</MetadataListItem>
+            ) : null}
+            {status.server && !view.isNoVpn ? (
+              <MetadataListItem label="Server" xstyle={styles.fact}>{status.server}</MetadataListItem>
+            ) : null}
+            {protocol && !view.isNoVpn ? (
+              <MetadataListItem label="Protocol" xstyle={styles.fact}>{protocol}</MetadataListItem>
+            ) : null}
+            {status.state === 'connected' && status.since && !view.isNoVpn ? (
               <MetadataListItem label="Connected" xstyle={styles.fact}>
                 <Timestamp value={status.since} format="relative" type="inherit" color="inherit" />
               </MetadataListItem>

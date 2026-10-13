@@ -4,8 +4,9 @@
  * Playback starts on demand (so opening a page never starts a transcode):
  * the browser's codec support goes to `POST /api/items/:id/playback`, which
  * answers with the original file (direct play) or an HLS stream. HLS uses
- * the browser's own player where it has one and hls.js (loaded on demand)
- * everywhere else. The stream session is ended when the player goes away.
+ * hls.js (loaded on demand) wherever Media Source Extensions work, and the
+ * browser's own player only where they do not (iOS without them). The stream
+ * session is ended when the player goes away.
  *
  * Progress is saved every 10 seconds while playing, on pause, at the end,
  * and when the page is hidden or closed, so "Continue watching" and resume
@@ -224,13 +225,17 @@ export function VideoPlayer({item, autoPlay = false, onNext = null}: VideoPlayer
       resumeRef.current = startAt;
       if (response.mode === 'hls') {
         sessionRef.current = response.session_id;
-        if (!hasNativeHls(video)) {
-          const {default: Hls} = await import('hls.js');
-          if (token !== requestRef.current) return;
-          if (!Hls.isSupported()) {
-            fail('This browser cannot play streamed video. Try another browser, or download the original file.');
-            return;
-          }
+        // hls.js wherever Media Source Extensions work, native HLS only where they do not
+        // (iOS without them). Chrome also claims native HLS now, but its own player loads
+        // the start of the stream before it seeks, which makes the server restart the
+        // conversion twice on every resume; hls.js starts at the resume point.
+        const {default: Hls} = await import('hls.js');
+        if (token !== requestRef.current) return;
+        if (!Hls.isSupported() && !hasNativeHls(video)) {
+          fail('This browser cannot play streamed video. Try another browser, or download the original file.');
+          return;
+        }
+        if (Hls.isSupported()) {
           const hls = new Hls({startPosition: startAt > 0 ? startAt : -1});
           let recovered = false;
           hls.on(Hls.Events.ERROR, (_event, data) => {
