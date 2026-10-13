@@ -71,7 +71,10 @@ pub async fn run_ok(cmd: Command, program: &str, timeout: Duration) -> Result<Ou
     if output.status.success() {
         Ok(output)
     } else {
-        Err(CoreError::external(format!("{program} failed: {}", stderr_summary(&output.stderr))))
+        Err(CoreError::external(format!(
+            "{program} failed: {}",
+            stderr_summary(&output.stderr)
+        )))
     }
 }
 
@@ -94,13 +97,19 @@ pub fn stderr_summary(stderr: &[u8]) -> String {
 /// `ffmpeg version 6.1.1-3ubuntu5`), or None when ffmpeg is missing. Cached.
 pub async fn ffmpeg_version() -> Option<String> {
     static VERSION: OnceCell<Option<String>> = OnceCell::const_new();
-    VERSION.get_or_init(|| tool_version(FFMPEG, &["-hide_banner", "-version"])).await.clone()
+    VERSION
+        .get_or_init(|| tool_version(FFMPEG, &["-hide_banner", "-version"]))
+        .await
+        .clone()
 }
 
 /// `vipsthumbnail --vips-version` (for example `libvips 8.15.1`), or None when vips is missing. Cached.
 pub async fn vips_version() -> Option<String> {
     static VERSION: OnceCell<Option<String>> = OnceCell::const_new();
-    VERSION.get_or_init(|| tool_version(VIPSTHUMBNAIL, &["--vips-version"])).await.clone()
+    VERSION
+        .get_or_init(|| tool_version(VIPSTHUMBNAIL, &["--vips-version"]))
+        .await
+        .clone()
 }
 
 /// True when `vipsthumbnail` can be run. Cached.
@@ -112,7 +121,9 @@ async fn tool_version(program: &str, args: &[&str]) -> Option<String> {
     let mut cmd = command(program);
     cmd.args(args);
     match run(cmd, program, VERSION_TIMEOUT).await {
-        Ok(output) if output.status.success() => parse_version_line(&String::from_utf8_lossy(&output.stdout)),
+        Ok(output) if output.status.success() => {
+            parse_version_line(&String::from_utf8_lossy(&output.stdout))
+        }
         Ok(output) => {
             tracing::warn!(program, error = %stderr_summary(&output.stderr), "version query failed");
             None
@@ -161,7 +172,11 @@ async fn detect_hwaccels() -> Vec<String> {
             false
         }
     };
-    let (vaapi, qsv, nvenc) = tokio::join!(vaapi, test_encode(HwAccel::Qsv), test_encode(HwAccel::Nvenc));
+    let (vaapi, qsv, nvenc) = tokio::join!(
+        vaapi,
+        test_encode(HwAccel::Qsv),
+        test_encode(HwAccel::Nvenc)
+    );
     let found: Vec<String> = [(vaapi, "vaapi"), (qsv, "qsv"), (nvenc, "nvenc")]
         .into_iter()
         .filter(|(ok, _)| *ok)
@@ -173,15 +188,34 @@ async fn detect_hwaccels() -> Vec<String> {
 
 /// Arguments for a one-frame test encode with a hardware encoder.
 pub fn test_encode_args(hw: HwAccel) -> Vec<String> {
-    let mut args: Vec<String> = vec!["-hide_banner".into(), "-nostdin".into(), "-loglevel".into(), "error".into()];
+    let mut args: Vec<String> = vec![
+        "-hide_banner".into(),
+        "-nostdin".into(),
+        "-loglevel".into(),
+        "error".into(),
+    ];
     if hw == HwAccel::Vaapi {
         args.extend(["-vaapi_device".into(), VAAPI_DEVICE.into()]);
     }
-    args.extend(["-f", "lavfi", "-i", "color=c=black:s=256x256:r=25:d=1", "-frames:v", "1"].map(String::from));
+    args.extend(
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=256x256:r=25:d=1",
+            "-frames:v",
+            "1",
+        ]
+        .map(String::from),
+    );
     match hw {
-        HwAccel::Vaapi => args.extend(["-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi"].map(String::from)),
+        HwAccel::Vaapi => {
+            args.extend(["-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi"].map(String::from))
+        }
         HwAccel::Qsv => args.extend(["-pix_fmt", "nv12", "-c:v", "h264_qsv"].map(String::from)),
-        HwAccel::Nvenc => args.extend(["-pix_fmt", "yuv420p", "-c:v", "h264_nvenc"].map(String::from)),
+        HwAccel::Nvenc => {
+            args.extend(["-pix_fmt", "yuv420p", "-c:v", "h264_nvenc"].map(String::from))
+        }
         HwAccel::None => args.extend(["-c:v", "libx264"].map(String::from)),
     }
     args.extend(["-f", "null", "-"].map(String::from));
@@ -211,14 +245,23 @@ mod tests {
     #[test]
     fn version_line_drops_copyright() {
         let out = "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers\nbuilt with gcc\n";
-        assert_eq!(parse_version_line(out).as_deref(), Some("ffmpeg version 6.1.1-3ubuntu5"));
-        assert_eq!(parse_version_line("libvips 8.15.1\n").as_deref(), Some("libvips 8.15.1"));
+        assert_eq!(
+            parse_version_line(out).as_deref(),
+            Some("ffmpeg version 6.1.1-3ubuntu5")
+        );
+        assert_eq!(
+            parse_version_line("libvips 8.15.1\n").as_deref(),
+            Some("libvips 8.15.1")
+        );
         assert_eq!(parse_version_line("\n\n"), None);
     }
 
     #[test]
     fn stderr_summary_takes_last_line() {
-        assert_eq!(stderr_summary(b"first\nsecond problem\n\n"), "second problem");
+        assert_eq!(
+            stderr_summary(b"first\nsecond problem\n\n"),
+            "second problem"
+        );
         assert_eq!(stderr_summary(b""), "no error output");
         let long = "x".repeat(400);
         assert_eq!(stderr_summary(long.as_bytes()).chars().count(), 301);
@@ -226,8 +269,14 @@ mod tests {
 
     #[test]
     fn input_is_file_prefixed() {
-        assert_eq!(ffmpeg_input(Path::new("/stash/a:b.mkv")), OsString::from("file:/stash/a:b.mkv"));
-        assert_eq!(ffmpeg_input(Path::new("-rf.mkv")), OsString::from("file:-rf.mkv"));
+        assert_eq!(
+            ffmpeg_input(Path::new("/stash/a:b.mkv")),
+            OsString::from("file:/stash/a:b.mkv")
+        );
+        assert_eq!(
+            ffmpeg_input(Path::new("-rf.mkv")),
+            OsString::from("file:-rf.mkv")
+        );
     }
 
     #[test]
@@ -243,7 +292,9 @@ mod tests {
     #[tokio::test]
     async fn ffmpeg_is_found_and_cached() {
         let first = ffmpeg_version().await;
-        let version = first.clone().expect("ffmpeg is installed in the test environment");
+        let version = first
+            .clone()
+            .expect("ffmpeg is installed in the test environment");
         assert!(version.starts_with("ffmpeg version"), "{version}");
         assert_eq!(ffmpeg_version().await, first);
     }
@@ -252,15 +303,23 @@ mod tests {
     async fn no_hardware_here() {
         // The CI host has no GPU; detection must come back empty without errors.
         let hw = available_hwaccels().await;
-        assert!(hw.iter().all(|h| ["vaapi", "qsv", "nvenc"].contains(&h.as_str())));
+        assert!(
+            hw.iter()
+                .all(|h| ["vaapi", "qsv", "nvenc"].contains(&h.as_str()))
+        );
         assert_eq!(available_hwaccels().await, hw);
     }
 
     #[tokio::test]
     async fn missing_tool_is_a_plain_error() {
         let cmd = command("popcornstash-no-such-tool");
-        let err = run(cmd, "popcornstash-no-such-tool", Duration::from_secs(1)).await.unwrap_err();
-        assert_eq!(err.to_string(), "popcornstash-no-such-tool is not installed on this server.");
+        let err = run(cmd, "popcornstash-no-such-tool", Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "popcornstash-no-such-tool is not installed on this server."
+        );
     }
 
     #[tokio::test]
@@ -268,7 +327,9 @@ mod tests {
         let mut cmd = command("sleep");
         cmd.arg("5");
         let started = std::time::Instant::now();
-        let err = run(cmd, "sleep", Duration::from_millis(200)).await.unwrap_err();
+        let err = run(cmd, "sleep", Duration::from_millis(200))
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("took longer"));
         assert!(started.elapsed() < Duration::from_secs(3));
     }

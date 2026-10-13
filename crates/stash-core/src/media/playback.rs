@@ -29,7 +29,8 @@ pub enum PlaybackMode {
 /// Containers browsers play natively (by extension).
 const DIRECT_EXTENSIONS: [&str; 4] = ["mp4", "m4v", "mov", "webm"];
 /// Audio-only files browsers play natively (by extension).
-const DIRECT_AUDIO_EXTENSIONS: [&str; 8] = ["mp3", "m4a", "aac", "flac", "opus", "ogg", "oga", "wav"];
+const DIRECT_AUDIO_EXTENSIONS: [&str; 8] =
+    ["mp3", "m4a", "aac", "flac", "opus", "ogg", "oga", "wav"];
 /// Audio codecs every supported browser decodes.
 const BASELINE_AUDIO: [&str; 4] = ["aac", "mp3", "opus", "flac"];
 /// 8-bit 4:2:0 pixel formats; anything else (10-bit, 4:2:2, 4:4:4) H.264 will not play in browsers.
@@ -59,27 +60,43 @@ fn first_blocker(media: &MediaSummary, ext: &str, caps: &ClientCaps) -> Option<S
         DIRECT_EXTENSIONS.contains(&ext.as_str())
     };
     if !ext_ok {
-        return Some(format!("{} files cannot play directly in a browser", display_ext(&ext)));
+        return Some(format!(
+            "{} files cannot play directly in a browser",
+            display_ext(&ext)
+        ));
     }
-    if let Some(container) = media.container.as_deref() {
-        if !container_ok(container, &ext, audio_only) {
-            return Some(format!("This {} file holds a format browsers cannot open", display_ext(&ext)));
-        }
+    if let Some(container) = media.container.as_deref()
+        && !container_ok(container, &ext, audio_only)
+    {
+        return Some(format!(
+            "This {} file holds a format browsers cannot open",
+            display_ext(&ext)
+        ));
     }
 
     if let Some(video) = &media.video {
         let codec = normalize_codec(&video.codec);
-        let supported = codec == "h264" || caps.video_codecs.iter().any(|c| normalize_codec(c) == codec);
+        let supported = codec == "h264"
+            || caps
+                .video_codecs
+                .iter()
+                .any(|c| normalize_codec(c) == codec);
         if !supported {
-            return Some(format!("This browser cannot play {} video", codec_label(&codec)));
+            return Some(format!(
+                "This browser cannot play {} video",
+                codec_label(&codec)
+            ));
         }
-        if codec == "h264" {
-            if let Some(pix_fmt) = video.pix_fmt.as_deref() {
-                if !BROWSER_H264_PIX_FMTS.contains(&pix_fmt) {
-                    let what = if pix_fmt.contains("10") || pix_fmt.contains("12") { "10-bit" } else { "high-colour" };
-                    return Some(format!("Browsers cannot play {what} H.264 video"));
-                }
-            }
+        if codec == "h264"
+            && let Some(pix_fmt) = video.pix_fmt.as_deref()
+            && !BROWSER_H264_PIX_FMTS.contains(&pix_fmt)
+        {
+            let what = if pix_fmt.contains("10") || pix_fmt.contains("12") {
+                "10-bit"
+            } else {
+                "high-colour"
+            };
+            return Some(format!("Browsers cannot play {what} H.264 video"));
         }
     }
 
@@ -87,15 +104,21 @@ fn first_blocker(media: &MediaSummary, ext: &str, caps: &ClientCaps) -> Option<S
     if let Some(audio) = selected {
         let codec = normalize_codec(&audio.codec);
         let supported = BASELINE_AUDIO.contains(&codec.as_str())
-            || caps.audio_codecs.iter().any(|c| normalize_codec(c) == codec);
+            || caps
+                .audio_codecs
+                .iter()
+                .any(|c| normalize_codec(c) == codec);
         if !supported {
-            return Some(format!("This browser cannot play {} audio", codec_label(&codec)));
+            return Some(format!(
+                "This browser cannot play {} audio",
+                codec_label(&codec)
+            ));
         }
     }
-    if let (Some(audio), Some(default)) = (selected, media.audio.first()) {
-        if audio.index != default.index {
-            return Some("Switching to another audio track needs conversion".to_string());
-        }
+    if let (Some(audio), Some(default)) = (selected, media.audio.first())
+        && audio.index != default.index
+    {
+        return Some("Switching to another audio track needs conversion".to_string());
     }
 
     if let Some(video) = &media.video {
@@ -180,7 +203,11 @@ pub fn codec_label(codec: &str) -> String {
 }
 
 fn display_ext(ext: &str) -> String {
-    if ext.is_empty() { "These".to_string() } else { ext.to_ascii_uppercase() }
+    if ext.is_empty() {
+        "These".to_string()
+    } else {
+        ext.to_ascii_uppercase()
+    }
 }
 
 #[cfg(test)]
@@ -200,7 +227,12 @@ mod tests {
     }
 
     fn audio(index: i64, codec: &str) -> AudioStream {
-        AudioStream { index, codec: codec.into(), channels: Some(2), ..AudioStream::default() }
+        AudioStream {
+            index,
+            codec: codec.into(),
+            channels: Some(2),
+            ..AudioStream::default()
+        }
     }
 
     fn mp4(v: VideoStream, a: Vec<AudioStream>) -> MediaSummary {
@@ -222,7 +254,9 @@ mod tests {
     }
 
     fn hls(reason: &str) -> PlaybackMode {
-        PlaybackMode::Hls { reason: reason.to_string() }
+        PlaybackMode::Hls {
+            reason: reason.to_string(),
+        }
     }
 
     #[test]
@@ -237,7 +271,10 @@ mod tests {
         webm.container = Some("matroska,webm".into());
         let ac3 = mp4(video("h264", 1920, 1080), vec![audio(1, "ac3")]);
         let silent = mp4(video("h264", 640, 360), vec![]);
-        let two_tracks = mp4(video("h264", 1920, 1080), vec![audio(1, "aac"), audio(2, "aac")]);
+        let two_tracks = mp4(
+            video("h264", 1920, 1080),
+            vec![audio(1, "aac"), audio(2, "aac")],
+        );
         let mut hi10 = h264.clone();
         hi10.video.as_mut().unwrap().pix_fmt = Some("yuv420p10le".into());
         let mut avi = h264.clone();
@@ -246,43 +283,193 @@ mod tests {
 
         let none = ClientCaps::default();
         let chrome = caps(&["h264", "vp9", "av1"], &["aac", "mp3", "opus", "flac"]);
-        let safari = ClientCaps { hdr: true, ..caps(&["h264", "hevc"], &["aac", "mp3", "ac3", "eac3", "flac"]) };
+        let safari = ClientCaps {
+            hdr: true,
+            ..caps(&["h264", "hevc"], &["aac", "mp3", "ac3", "eac3", "flac"])
+        };
         let hevc_sdr = caps(&["h264", "hevc"], &[]);
 
-        let table: Vec<(&str, &MediaSummary, &str, &ClientCaps, PlaybackMode)> = vec![
-            ("h264 mp4 plays anywhere", &h264, "mp4", &none, PlaybackMode::Direct),
-            ("m4v and mov are fine", &h264, "m4v", &none, PlaybackMode::Direct),
-            ("mov", &h264, "mov", &chrome, PlaybackMode::Direct),
-            ("extension case is ignored", &h264, "MP4", &none, PlaybackMode::Direct),
-            ("mkv never direct", &mkv, "mkv", &chrome, hls("MKV files cannot play directly in a browser")),
-            ("avi never direct", &avi, "avi", &chrome, hls("AVI files cannot play directly in a browser")),
-            ("mp4 name but avi inside", &avi, "mp4", &chrome, hls("This MP4 file holds a format browsers cannot open")),
-            ("hevc without support", &hevc, "mp4", &chrome, hls("This browser cannot play HEVC video")),
-            ("hevc with support", &hevc, "mp4", &hevc_sdr, PlaybackMode::Direct),
-            ("hevc alias h265", &hevc, "mov", &caps(&["h265"], &[]), PlaybackMode::Direct),
-            ("hdr on sdr client", &hdr, "mov", &hevc_sdr, hls("This screen cannot show HDR, so the colours are converted")),
-            ("hdr on hdr client", &hdr, "mov", &safari, PlaybackMode::Direct),
-            ("webm vp9 with support", &webm, "webm", &chrome, PlaybackMode::Direct),
-            ("webm vp9 without support", &webm, "webm", &none, hls("This browser cannot play VP9 video")),
-            ("ac3 without support", &ac3, "mp4", &chrome, hls("This browser cannot play Dolby Digital (AC-3) audio")),
-            ("ac3 with support", &ac3, "mp4", &safari, PlaybackMode::Direct),
-            ("no audio is fine", &silent, "mp4", &none, PlaybackMode::Direct),
-            ("10-bit h264", &hi10, "mp4", &chrome, hls("Browsers cannot play 10-bit H.264 video")),
-            ("old mpeg4 part 2", &mpeg4, "mp4", &chrome, hls("This browser cannot play MPEG-4 video")),
-            ("default track", &two_tracks, "mp4", &ClientCaps { audio_index: Some(1), ..chrome.clone() }, PlaybackMode::Direct),
+        let table: Vec<(&str, &MediaSummary, &str, ClientCaps, PlaybackMode)> = vec![
+            (
+                "h264 mp4 plays anywhere",
+                &h264,
+                "mp4",
+                none.clone(),
+                PlaybackMode::Direct,
+            ),
+            (
+                "m4v and mov are fine",
+                &h264,
+                "m4v",
+                none.clone(),
+                PlaybackMode::Direct,
+            ),
+            ("mov", &h264, "mov", chrome.clone(), PlaybackMode::Direct),
+            (
+                "extension case is ignored",
+                &h264,
+                "MP4",
+                none.clone(),
+                PlaybackMode::Direct,
+            ),
+            (
+                "mkv never direct",
+                &mkv,
+                "mkv",
+                chrome.clone(),
+                hls("MKV files cannot play directly in a browser"),
+            ),
+            (
+                "avi never direct",
+                &avi,
+                "avi",
+                chrome.clone(),
+                hls("AVI files cannot play directly in a browser"),
+            ),
+            (
+                "mp4 name but avi inside",
+                &avi,
+                "mp4",
+                chrome.clone(),
+                hls("This MP4 file holds a format browsers cannot open"),
+            ),
+            (
+                "hevc without support",
+                &hevc,
+                "mp4",
+                chrome.clone(),
+                hls("This browser cannot play HEVC video"),
+            ),
+            (
+                "hevc with support",
+                &hevc,
+                "mp4",
+                hevc_sdr.clone(),
+                PlaybackMode::Direct,
+            ),
+            (
+                "hevc alias h265",
+                &hevc,
+                "mov",
+                caps(&["h265"], &[]),
+                PlaybackMode::Direct,
+            ),
+            (
+                "hdr on sdr client",
+                &hdr,
+                "mov",
+                hevc_sdr.clone(),
+                hls("This screen cannot show HDR, so the colours are converted"),
+            ),
+            (
+                "hdr on hdr client",
+                &hdr,
+                "mov",
+                safari.clone(),
+                PlaybackMode::Direct,
+            ),
+            (
+                "webm vp9 with support",
+                &webm,
+                "webm",
+                chrome.clone(),
+                PlaybackMode::Direct,
+            ),
+            (
+                "webm vp9 without support",
+                &webm,
+                "webm",
+                none.clone(),
+                hls("This browser cannot play VP9 video"),
+            ),
+            (
+                "ac3 without support",
+                &ac3,
+                "mp4",
+                chrome.clone(),
+                hls("This browser cannot play Dolby Digital (AC-3) audio"),
+            ),
+            (
+                "ac3 with support",
+                &ac3,
+                "mp4",
+                safari.clone(),
+                PlaybackMode::Direct,
+            ),
+            (
+                "no audio is fine",
+                &silent,
+                "mp4",
+                none.clone(),
+                PlaybackMode::Direct,
+            ),
+            (
+                "10-bit h264",
+                &hi10,
+                "mp4",
+                chrome.clone(),
+                hls("Browsers cannot play 10-bit H.264 video"),
+            ),
+            (
+                "old mpeg4 part 2",
+                &mpeg4,
+                "mp4",
+                chrome.clone(),
+                hls("This browser cannot play MPEG-4 video"),
+            ),
+            (
+                "default track",
+                &two_tracks,
+                "mp4",
+                ClientCaps {
+                    audio_index: Some(1),
+                    ..chrome.clone()
+                },
+                PlaybackMode::Direct,
+            ),
             (
                 "second track needs hls",
                 &two_tracks,
                 "mp4",
-                &ClientCaps { audio_index: Some(2), ..chrome.clone() },
+                ClientCaps {
+                    audio_index: Some(2),
+                    ..chrome.clone()
+                },
                 hls("Switching to another audio track needs conversion"),
             ),
-            ("unknown track falls back to default", &two_tracks, "mp4", &ClientCaps { audio_index: Some(9), ..chrome.clone() }, PlaybackMode::Direct),
-            ("height within limit", &h264, "mp4", &ClientCaps { max_height: Some(1080), ..chrome.clone() }, PlaybackMode::Direct),
-            ("height over limit", &h264, "mp4", &ClientCaps { max_height: Some(720), ..chrome.clone() }, hls("Lowered to 720p for this device")),
+            (
+                "unknown track falls back to default",
+                &two_tracks,
+                "mp4",
+                ClientCaps {
+                    audio_index: Some(9),
+                    ..chrome.clone()
+                },
+                PlaybackMode::Direct,
+            ),
+            (
+                "height within limit",
+                &h264,
+                "mp4",
+                ClientCaps {
+                    max_height: Some(1080),
+                    ..chrome.clone()
+                },
+                PlaybackMode::Direct,
+            ),
+            (
+                "height over limit",
+                &h264,
+                "mp4",
+                ClientCaps {
+                    max_height: Some(720),
+                    ..chrome.clone()
+                },
+                hls("Lowered to 720p for this device"),
+            ),
         ];
         for (name, media, ext, caps, expected) in table {
-            assert_eq!(decide(media, ext, caps), expected, "{name}");
+            assert_eq!(decide(media, ext, &caps), expected, "{name}");
         }
     }
 
@@ -291,10 +478,19 @@ mod tests {
         // 1920x1080 coded, rotated to portrait: still a 1080p video.
         let mut phone = mp4(video("h264", 1920, 1080), vec![audio(1, "aac")]);
         phone.video.as_mut().unwrap().rotation = 90;
-        let c = ClientCaps { max_height: Some(1080), ..ClientCaps::default() };
+        let c = ClientCaps {
+            max_height: Some(1080),
+            ..ClientCaps::default()
+        };
         assert_eq!(decide(&phone, "mov", &c), PlaybackMode::Direct);
-        let c = ClientCaps { max_height: Some(480), ..ClientCaps::default() };
-        assert_eq!(decide(&phone, "mov", &c), hls("Lowered to 480p for this device"));
+        let c = ClientCaps {
+            max_height: Some(480),
+            ..ClientCaps::default()
+        };
+        assert_eq!(
+            decide(&phone, "mov", &c),
+            hls("Lowered to 480p for this device")
+        );
     }
 
     #[test]
@@ -304,32 +500,55 @@ mod tests {
             audio: vec![audio(0, "mp3")],
             ..MediaSummary::default()
         };
-        assert_eq!(decide(&mp3, "mp3", &ClientCaps::default()), PlaybackMode::Direct);
+        assert_eq!(
+            decide(&mp3, "mp3", &ClientCaps::default()),
+            PlaybackMode::Direct
+        );
         let m4a = MediaSummary {
             container: Some("mov,mp4,m4a,3gp,3g2,mj2".into()),
             audio: vec![audio(0, "alac")],
             ..MediaSummary::default()
         };
-        assert_eq!(decide(&m4a, "m4a", &ClientCaps::default()), hls("This browser cannot play Apple Lossless audio"));
-        let wma = MediaSummary { container: Some("asf".into()), audio: vec![audio(0, "wmav2")], ..MediaSummary::default() };
-        assert_eq!(decide(&wma, "wma", &ClientCaps::default()), hls("WMA files cannot play directly in a browser"));
+        assert_eq!(
+            decide(&m4a, "m4a", &ClientCaps::default()),
+            hls("This browser cannot play Apple Lossless audio")
+        );
+        let wma = MediaSummary {
+            container: Some("asf".into()),
+            audio: vec![audio(0, "wmav2")],
+            ..MediaSummary::default()
+        };
+        assert_eq!(
+            decide(&wma, "wma", &ClientCaps::default()),
+            hls("WMA files cannot play directly in a browser")
+        );
     }
 
     #[test]
     fn missing_probe_relies_on_extension() {
         let unknown = MediaSummary::default();
-        assert_eq!(decide(&unknown, "mp4", &ClientCaps::default()), PlaybackMode::Direct);
-        assert_eq!(decide(&unknown, "", &ClientCaps::default()), hls("These files cannot play directly in a browser"));
+        assert_eq!(
+            decide(&unknown, "mp4", &ClientCaps::default()),
+            PlaybackMode::Direct
+        );
+        assert_eq!(
+            decide(&unknown, "", &ClientCaps::default()),
+            hls("These files cannot play directly in a browser")
+        );
     }
 
     #[test]
     fn serializes_with_mode_tag() {
-        assert_eq!(serde_json::to_value(PlaybackMode::Direct).unwrap(), serde_json::json!({"mode": "direct"}));
+        assert_eq!(
+            serde_json::to_value(PlaybackMode::Direct).unwrap(),
+            serde_json::json!({"mode": "direct"})
+        );
         assert_eq!(
             serde_json::to_value(hls("x")).unwrap(),
             serde_json::json!({"mode": "hls", "reason": "x"})
         );
-        let parsed: ClientCaps = serde_json::from_str(r#"{"video_codecs": ["h264"], "hdr": true}"#).unwrap();
+        let parsed: ClientCaps =
+            serde_json::from_str(r#"{"video_codecs": ["h264"], "hdr": true}"#).unwrap();
         assert!(parsed.hdr);
         assert!(parsed.audio_codecs.is_empty());
     }

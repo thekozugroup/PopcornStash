@@ -8,11 +8,14 @@
 //! librqbit with every socket bound to the tunnel interface and serves the
 //! internal API and CONNECT proxy on loopback.
 
+pub mod adopt;
 pub mod api;
+pub mod children;
 pub mod engine;
 pub mod proxy;
 pub mod status;
 pub mod supervisor;
+pub mod sys;
 pub mod vpn;
 
 use std::net::SocketAddr;

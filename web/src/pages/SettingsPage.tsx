@@ -25,7 +25,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
 
 const styles = stylex.create({
   tabs: {
-    marginBottom: 32,
+    marginBottom: {default: 32, '@media (max-width: 520px)': 24},
   },
 });
 
@@ -41,13 +41,21 @@ export function SettingsIndex() {
 }
 
 export default function SettingsPage() {
+  const {isOwner} = useAuth();
   const sections = useSettingsSections();
   const {pathname} = useLocation();
   const current = pathname.split('/')[2] ?? '';
 
   return (
     <>
-      <PageHeader title="Settings" subtitle="The VPN, people, devices and this server." />
+      <PageHeader
+        title="Settings"
+        subtitle={
+          isOwner
+            ? 'The VPN, the people you share with, your devices and this server.'
+            : 'Your passkeys, the browsers you are signed in on, and your connected devices.'
+        }
+      />
       <TabList value={current} onChange={() => undefined} hasDivider xstyle={styles.tabs}>
         {sections.map(section => (
           <Tab key={section.path} value={section.path} label={section.label} href={`/settings/${section.path}`} />

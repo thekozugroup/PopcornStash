@@ -188,7 +188,7 @@ pub fn parse_countries(body: &[u8]) -> Result<Vec<NordCountry>, NordVpnError> {
             code: c.code.trim().to_ascii_uppercase(),
         })
         .collect();
-    countries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    countries.sort_by_key(|c| c.name.to_lowercase());
     Ok(countries)
 }
 
@@ -231,16 +231,16 @@ pub fn parse_recommendation(
             }
         }
     }
+    // Names end up in the label, a comment line in wireguard.conf: no control characters.
     let country = server
         .locations
         .into_iter()
         .filter_map(|l| l.country.and_then(|c| c.name))
-        .map(|n| n.trim().to_string())
+        .map(|n| display_text(&n))
         .find(|n| !n.is_empty());
-    let name = if server.name.trim().is_empty() {
-        hostname.clone()
-    } else {
-        server.name.trim().to_string()
+    let name = match display_text(&server.name) {
+        name if name.is_empty() => hostname.clone(),
+        name => name,
     };
     Ok(NordServer {
         hostname,
@@ -249,6 +249,17 @@ pub fn parse_recommendation(
         country,
         public_key,
     })
+}
+
+/// API text for labels: control characters dropped, whitespace collapsed, at most 80 chars.
+fn display_text(text: &str) -> String {
+    text.split(|c: char| c.is_whitespace() || c.is_control())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(80)
+        .collect()
 }
 
 /// Parse `GET /v1/users/services/credentials`. Never includes the body in errors.
@@ -393,10 +404,10 @@ impl NordVpnClient {
     /// list is served when NordVPN cannot be reached.
     pub async fn countries(&self) -> Result<Vec<NordCountry>, NordVpnError> {
         let mut cache = self.countries.lock().await;
-        if let Some(cached) = cache.as_ref() {
-            if cached.at.elapsed() < COUNTRIES_TTL {
-                return Ok(cached.countries.clone());
-            }
+        if let Some(cached) = cache.as_ref()
+            && cached.at.elapsed() < COUNTRIES_TTL
+        {
+            return Ok(cached.countries.clone());
         }
         match self.fetch_countries().await {
             Ok(countries) => {
@@ -677,6 +688,21 @@ pub(crate) mod tests {
             parse_recommendation(value.to_string().as_bytes(), NordTechnology::WireguardUdp)
                 .is_err()
         );
+    }
+
+    /// The country name ends up in the label, which is a comment line in wireguard.conf.
+    #[test]
+    fn recommendation_country_cannot_add_lines() {
+        let mut value: serde_json::Value = serde_json::from_str(&recommendation_fixture()).unwrap();
+        value[0]["locations"][0]["country"]["name"] =
+            serde_json::json!("Netherlands\n[Interface]\nPostUp = id\r");
+        let server =
+            parse_recommendation(value.to_string().as_bytes(), NordTechnology::WireguardUdp)
+                .unwrap();
+        assert!(!server.label().chars().any(char::is_control));
+        let conf = build_wireguard_conf(PRIVATE_KEY, &server).unwrap();
+        assert_eq!(conf.matches('\n').count(), 11, "{conf}");
+        assert!(crate::api::vpn::validate_wireguard(&conf).is_ok(), "{conf}");
     }
 
     #[test]

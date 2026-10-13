@@ -27,15 +27,17 @@ bytes = "1"
 axum = { version = "0.8", features = ["macros"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 librqbit = { version = "9", default-features = false, features = ["rust-tls"] }
-nix = { version = "0.30", features = ["fs", "signal", "process", "user"] }
+nix = { version = "0.30", features = ["fs", "signal", "process", "user", "dir", "socket", "net"] }
 socket2 = { version = "0.6", features = ["all"] }
 ipnet = "2"
-hyper = { version = "1", features = ["server", "http1"] }
+hyper = { version = "1", features = ["server", "http1", "client"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
 http-body-util = "0.1"
+landlock = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true

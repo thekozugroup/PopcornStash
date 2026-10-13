@@ -5,25 +5,54 @@ use percent_encoding::percent_decode_str;
 use url::Url;
 
 /// Query keys that look like credentials. A query containing any of them is not stored.
-const SECRET_KEY_PARTS: [&str; 9] =
-    ["token", "key", "sig", "auth", "password", "passwd", "secret", "session", "credential"];
+const SECRET_KEY_PARTS: [&str; 9] = [
+    "token",
+    "key",
+    "sig",
+    "auth",
+    "password",
+    "passwd",
+    "secret",
+    "session",
+    "credential",
+];
 
 fn is_secret_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
     SECRET_KEY_PARTS.iter().any(|part| key.contains(part))
 }
 
+/// Fragment added to a stored link that lost private parts (user info or a query with
+/// credentials). Such a link cannot be fetched again from what is stored.
+pub const REDACTED_MARK: &str = "redacted";
+
 /// The URL as stored in `downloads.source`: no user info, no fragment, and no query
-/// when any query key looks like a credential.
+/// when any query key looks like a credential. When anything private was removed the
+/// result ends in `#redacted`, so a restart knows the stored link is incomplete.
 pub fn redact_url(url: &Url) -> String {
     let mut clean = url.clone();
+    let had_user_info = !clean.username().is_empty() || clean.password().is_some();
     let _ = clean.set_username("");
     let _ = clean.set_password(None);
     clean.set_fragment(None);
-    if clean.query_pairs().any(|(k, _)| is_secret_key(&k)) {
+    let secret_query = clean.query_pairs().any(|(k, _)| is_secret_key(&k));
+    if secret_query {
         clean.set_query(None);
     }
+    if had_user_info || secret_query {
+        clean.set_fragment(Some(REDACTED_MARK));
+    }
     clean.to_string()
+}
+
+/// True for a link that [`redact_url`] stripped of private parts (it ends in `#redacted`).
+pub fn is_redacted(url: &Url) -> bool {
+    url.fragment() == Some(REDACTED_MARK)
+}
+
+/// True when a stored `source` is a link that lost private parts.
+pub fn is_redacted_source(source: &str) -> bool {
+    Url::parse(source).is_ok_and(|u| is_redacted(&u))
 }
 
 /// A parsed magnet link.
@@ -40,7 +69,10 @@ impl Magnet {
     /// Parse `magnet:?xt=urn:btih:…`. Returns None unless a BitTorrent `xt` is present.
     pub fn parse(link: &str) -> Option<Self> {
         let link = link.trim();
-        if !link.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("magnet:")) {
+        if !link
+            .get(..7)
+            .is_some_and(|p| p.eq_ignore_ascii_case("magnet:"))
+        {
             return None;
         }
         let query = link[7..].trim_start_matches('?');
@@ -67,7 +99,11 @@ impl Magnet {
             }
         }
         let (xt, hash) = xt?;
-        Some(Self { xt, hash, display_name })
+        Some(Self {
+            xt,
+            hash,
+            display_name,
+        })
     }
 
     /// What is stored as `source`: the info hash and name only. Tracker URLs can
@@ -93,7 +129,10 @@ impl Magnet {
 /// The last non-empty path segment of a URL, percent-decoded.
 pub fn name_from_url(url: &Url) -> Option<String> {
     let segment = url.path_segments()?.rev().find(|s| !s.is_empty())?;
-    let decoded = percent_decode_str(segment).decode_utf8_lossy().trim().to_string();
+    let decoded = percent_decode_str(segment)
+        .decode_utf8_lossy()
+        .trim()
+        .to_string();
     (!decoded.is_empty()).then_some(decoded)
 }
 
@@ -104,7 +143,12 @@ pub fn is_torrent_url(url: &Url) -> bool {
 
 /// File extension to add when a name has none, from the response's content type.
 pub fn extension_for_mime(mime: &str) -> Option<&'static str> {
-    let essence = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let essence = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     Some(match essence.as_str() {
         "video/mp4" => "mp4",
         "video/x-matroska" => "mkv",
@@ -136,12 +180,37 @@ mod tests {
 
     #[test]
     fn redaction() {
-        assert_eq!(redact("https://user:pw@example.com/a.mkv"), "https://example.com/a.mkv");
-        assert_eq!(redact("https://example.com/a.mkv?token=abc&x=1"), "https://example.com/a.mkv");
-        assert_eq!(redact("https://cdn.example.com/v.mp4?X-Amz-Signature=zz"), "https://cdn.example.com/v.mp4");
-        assert_eq!(redact("https://example.com/a.mkv?api_KEY=1"), "https://example.com/a.mkv");
-        assert_eq!(redact("https://example.com/get?id=42&format=mp4"), "https://example.com/get?id=42&format=mp4");
-        assert_eq!(redact("https://example.com/a.mkv#frag"), "https://example.com/a.mkv");
+        assert_eq!(
+            redact("https://user:pw@example.com/a.mkv"),
+            "https://example.com/a.mkv#redacted"
+        );
+        assert_eq!(
+            redact("https://example.com/a.mkv?token=abc&x=1"),
+            "https://example.com/a.mkv#redacted"
+        );
+        assert_eq!(
+            redact("https://cdn.example.com/v.mp4?X-Amz-Signature=zz"),
+            "https://cdn.example.com/v.mp4#redacted"
+        );
+        assert_eq!(
+            redact("https://example.com/a.mkv?api_KEY=1"),
+            "https://example.com/a.mkv#redacted"
+        );
+        assert_eq!(
+            redact("https://example.com/get?id=42&format=mp4"),
+            "https://example.com/get?id=42&format=mp4"
+        );
+        assert_eq!(
+            redact("https://example.com/a.mkv#frag"),
+            "https://example.com/a.mkv"
+        );
+        assert!(is_redacted_source(&redact(
+            "https://example.com/a.mkv?token=abc"
+        )));
+        assert!(!is_redacted_source(&redact(
+            "https://example.com/a.mkv#redacted"
+        )));
+        assert!(!is_redacted_source("magnet:?xt=urn:btih:abc"));
     }
 
     #[test]
@@ -158,16 +227,26 @@ mod tests {
         assert!(!redacted.contains("passkey123"));
         assert!(Magnet::parse("magnet:?dn=nothing").is_none());
         assert!(Magnet::parse("https://example.com").is_none());
-        assert_eq!(Magnet::parse("MAGNET:?xt=urn:btih:abcdef1234").unwrap().name(), "Torrent abcdef12");
+        assert_eq!(
+            Magnet::parse("MAGNET:?xt=urn:btih:abcdef1234")
+                .unwrap()
+                .name(),
+            "Torrent abcdef12"
+        );
     }
 
     #[test]
     fn url_names() {
         let n = |s: &str| name_from_url(&Url::parse(s).unwrap());
-        assert_eq!(n("https://example.com/files/My%20Movie.mkv").as_deref(), Some("My Movie.mkv"));
+        assert_eq!(
+            n("https://example.com/files/My%20Movie.mkv").as_deref(),
+            Some("My Movie.mkv")
+        );
         assert_eq!(n("https://example.com/dir/").as_deref(), Some("dir"));
         assert_eq!(n("https://example.com/"), None);
-        assert!(is_torrent_url(&Url::parse("https://example.com/x.TORRENT?a=1").unwrap()));
+        assert!(is_torrent_url(
+            &Url::parse("https://example.com/x.TORRENT?a=1").unwrap()
+        ));
         assert_eq!(extension_for_mime("video/mp4; charset=binary"), Some("mp4"));
     }
 }

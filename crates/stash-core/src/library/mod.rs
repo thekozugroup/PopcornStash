@@ -9,12 +9,16 @@ pub mod repo;
 pub mod scanner;
 pub mod watcher;
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::Result;
 use crate::db::Db;
 use crate::events::EventBus;
 use crate::jobs::JobQueue;
@@ -22,7 +26,6 @@ use crate::media::MediaService;
 use crate::models::{Category, ItemRow};
 use crate::paths::StashLayout;
 use crate::settings::SettingsStore;
-use crate::Result;
 
 /// Outcome of a full rescan.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -64,6 +67,10 @@ pub struct Library {
     pub jobs: JobQueue,
     pub settings: SettingsStore,
     pub media: Arc<MediaService>,
+    /// Serializes every step that moves a file or rewrites which file an item points at
+    /// (sorting, organize, review, trash, restore, indexing, marking missing), so the
+    /// sorter, the watcher, rescans and API actions never act on stale state.
+    moves: tokio::sync::Mutex<()>,
 }
 
 impl Library {
@@ -75,7 +82,20 @@ impl Library {
         settings: SettingsStore,
         media: Arc<MediaService>,
     ) -> Self {
-        Self { db, layout, events, jobs, settings, media }
+        Self {
+            db,
+            layout,
+            events,
+            jobs,
+            settings,
+            media,
+            moves: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Take the library's move lock (see [`Library`]).
+    pub(crate) async fn lock_moves(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.moves.lock().await
     }
 
     /// Reconcile the database with the filesystem (Scan job handler).
@@ -90,7 +110,11 @@ impl Library {
 
     /// Classify and sort a file or folder under `Inbox/` or `Downloads/Completed/`
     /// (Sort job handler). Returns the ids of items created or updated.
-    pub async fn sort_path(&self, rel_path: &str, download_id: Option<&str>) -> Result<Vec<String>> {
+    pub async fn sort_path(
+        &self,
+        rel_path: &str,
+        download_id: Option<&str>,
+    ) -> Result<Vec<String>> {
         organizer::sort_path(self, rel_path, download_id).await
     }
 

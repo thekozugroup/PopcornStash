@@ -12,7 +12,7 @@
   <Category>MediaServer:Video MediaServer:Photos Downloaders: Network:VPN</Category>
   <WebUI>http://[IP]:[PORT:8788]/</WebUI>
   <Icon>https://raw.githubusercontent.com/thekozugroup/PopcornStash/main/web/public/icons/icon-512.png</Icon>
-  <ExtraParams>--cap-drop=ALL --cap-add=NET_ADMIN --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER --cap-add=SETUID --cap-add=SETGID --cap-add=KILL --device=/dev/net/tun --security-opt=no-new-privileges:true --read-only --tmpfs /tmp --tmpfs /run --stop-timeout=30</ExtraParams>
+  <ExtraParams>--cap-drop=ALL --cap-add=NET_ADMIN --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER --cap-add=SETUID --cap-add=SETGID --cap-add=KILL --device=/dev/net/tun --sysctl net.ipv4.conf.all.rp_filter=2 --security-opt=no-new-privileges:true --read-only --tmpfs /tmp --tmpfs /run --stop-timeout=30</ExtraParams>
   <Config Name="Web interface" Target="8788" Default="8788" Mode="tcp" Description="Port for the web app. Point your HTTPS reverse proxy, Tailscale Serve or tunnel here." Type="Port" Display="always" Required="true" Mask="false">8788</Config>
   <Config Name="Public address" Target="STASH_PUBLIC_URL" Default="" Mode="" Description="The HTTPS address everyone will open, for example https://stash.example.com. Passkeys only work on HTTPS with a domain name, not on a bare IP address." Type="Variable" Display="always" Required="true" Mask="false"></Config>
   <Config Name="App data" Target="/config" Default="/mnt/user/appdata/popcornstash" Mode="rw" Description="Database, thumbnails, settings and VPN files. Keep it on the cache pool." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/popcornstash</Config>

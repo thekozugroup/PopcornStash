@@ -11,7 +11,7 @@ use stash_core::config::Config;
 use stash_core::events::{Event, EventBus};
 use stash_core::internal_api::{
     AddTorrentRequest, AddTorrentResponse, EngineHealth, EngineTorrent, LimitsRequest, TunnelState,
-    VpnMeta,
+    TunnelStatus, VpnMeta,
 };
 use stash_core::models::{VpnState, VpnStatus};
 use tokio::sync::Notify;
@@ -31,10 +31,14 @@ const FAST_WINDOW: Duration = Duration::from_secs(30);
 
 pub const MSG_DISABLED: &str = "Torrents are turned off on this server.";
 pub const MSG_UNREACHABLE: &str = "The torrent container is not running or not reachable.";
-const MSG_TOKEN_REJECTED: &str = "The torrent container did not accept the internal token. Make sure both containers share the same appdata torrent folder, then restart them.";
+const MSG_TOKEN_REJECTED: &str =
+    "The torrent engine did not accept the internal token. Restart the PopcornStash container.";
 const MSG_ENGINE_ERROR: &str = "The torrent container answered with an error. Check its logs.";
 const MSG_BAD_RESPONSE: &str = "The torrent container sent an answer PopcornStash could not read.";
 const MSG_BLOCKED_DEFAULT: &str = "Waiting for the VPN to connect.";
+const MSG_ENGINE_STARTING: &str = "The VPN is connected. The torrent engine is starting.";
+/// A supervisor `status.json` older than this is ignored (it is rewritten every 5 s).
+const SUPERVISOR_STATUS_MAX_AGE_S: i64 = 20;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TorrentdError {
@@ -123,7 +127,9 @@ impl TorrentdClient {
         self.config.torrentd_url.is_some()
     }
 
-    /// Create `<config>/torrent/` and the internal token (0640) if missing; return the token.
+    /// Create `<config>/torrent/` and `vpn/` and return the internal token. Under the
+    /// supervisor the token comes from `STASH_INTERNAL_TOKEN` and is never written to disk
+    /// (section 7); only a hand-started development setup uses the token file (0640).
     pub async fn ensure_internal_token(config: &Config) -> anyhow::Result<String> {
         let torrent_dir = config.torrent_dir();
         let vpn_dir = config.vpn_dir();
@@ -131,10 +137,14 @@ impl TorrentdClient {
         for dir in [&torrent_dir, &vpn_dir, &engine_dir] {
             tokio::fs::create_dir_all(dir).await?;
         }
-        for dir in [&torrent_dir, &vpn_dir] {
-            set_mode(dir, 0o750).await;
-        }
+        // The engine (primary group PGID) must traverse torrent/ to reach engine/, but has
+        // no business listing the VPN files; the root supervisor reads them regardless.
+        set_mode(&torrent_dir, 0o750).await;
+        set_mode(&vpn_dir, 0o700).await;
 
+        if let Some(token) = env_token(config) {
+            return Ok(token);
+        }
         let path = config.internal_token_path();
         match tokio::fs::read_to_string(&path).await {
             Ok(existing) if !existing.trim().is_empty() => {
@@ -231,10 +241,10 @@ impl TorrentdClient {
 
     /// UI status: combines `vpn/vpn.json` with the engine's health.
     pub async fn vpn_status(&self) -> VpnStatus {
-        if let Some(cached) = lock(&self.status).as_ref() {
-            if cached.at.elapsed() < STATUS_TTL {
-                return cached.status.clone();
-            }
+        if let Some(cached) = lock(&self.status).as_ref()
+            && cached.at.elapsed() < STATUS_TTL
+        {
+            return cached.status.clone();
         }
         self.refresh_status().await
     }
@@ -243,7 +253,17 @@ impl TorrentdClient {
     async fn refresh_status(&self) -> VpnStatus {
         let meta = read_vpn_meta(&self.config).await;
         let health = self.health().await;
-        let status = combine_status(meta.as_ref(), health);
+        let status = match health {
+            // The engine only runs while the tunnel is up; while the supervisor is still
+            // connecting or retrying, its status file says what is going on.
+            Err(TorrentdError::Unreachable(_)) => {
+                match read_supervisor_status(&self.config).await {
+                    Some(tunnel) => status_from_supervisor(meta.as_ref(), tunnel),
+                    None => combine_status(meta.as_ref(), health),
+                }
+            }
+            health => combine_status(meta.as_ref(), health),
+        };
         *lock(&self.status) = Some(CachedStatus {
             at: Instant::now(),
             status: status.clone(),
@@ -307,6 +327,9 @@ impl TorrentdClient {
     // --- internals ------------------------------------------------------------
 
     async fn token(&self) -> Result<String, TorrentdError> {
+        if let Some(token) = env_token(&self.config) {
+            return Ok(token);
+        }
         if let Some(token) = lock(&self.token).clone() {
             return Ok(token);
         }
@@ -386,6 +409,16 @@ impl TorrentdClient {
     }
 }
 
+/// The token the supervisor passed in `STASH_INTERNAL_TOKEN`, if any.
+fn env_token(config: &Config) -> Option<String> {
+    config
+        .internal_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+}
+
 /// Read `vpn/vpn.json`. Missing or unreadable files mean "not configured".
 pub async fn read_vpn_meta(config: &Config) -> Option<VpnMeta> {
     let path = config
@@ -404,6 +437,65 @@ pub async fn read_vpn_meta(config: &Config) -> Option<VpnMeta> {
             tracing::warn!(path = %path.display(), error = %e, "could not read vpn.json");
             None
         }
+    }
+}
+
+/// The supervisor's `status.json` when it was written in the last 20 seconds. It lives in
+/// the supervisor's run directory (`/run/popcornstash`, next to its socket); without a
+/// supervisor there is no status file.
+pub async fn read_supervisor_status(config: &Config) -> Option<TunnelStatus> {
+    let path = config
+        .supervisor_socket
+        .as_deref()?
+        .parent()?
+        .join(stash_core::internal_api::STATUS_FILE);
+    let bytes = tokio::fs::read(&path).await.ok()?;
+    let status: TunnelStatus = match serde_json::from_slice(&bytes) {
+        Ok(status) => status,
+        Err(e) => {
+            tracing::debug!(error = %e, "status.json is not valid");
+            return None;
+        }
+    };
+    let age = stash_core::now().saturating_sub(status.updated_at);
+    (-SUPERVISOR_STATUS_MAX_AGE_S..=SUPERVISOR_STATUS_MAX_AGE_S)
+        .contains(&age)
+        .then_some(status)
+}
+
+/// UI status while the engine is not answering but the supervisor is alive.
+pub fn status_from_supervisor(meta: Option<&VpnMeta>, tunnel: TunnelStatus) -> VpnStatus {
+    let state = vpn_state(tunnel.state);
+    let error = match (tunnel.error, state) {
+        (Some(error), _) => Some(error),
+        (None, VpnState::Connected) => Some(MSG_ENGINE_STARTING.to_string()),
+        (None, _) => None,
+    };
+    VpnStatus {
+        configured: meta.is_some(),
+        reachable: false,
+        state,
+        provider: meta.map(|m| m.provider).or(tunnel.provider),
+        protocol: meta.map(|m| m.protocol).or(tunnel.protocol),
+        label: meta.and_then(|m| m.label.clone()).or(tunnel.label),
+        server: meta.and_then(|m| m.server.clone()).or(tunnel.server),
+        country: meta.and_then(|m| m.country.clone()).or(tunnel.country),
+        public_ip: None,
+        protected: None,
+        since: tunnel.since,
+        error,
+        kill_switch: tunnel.kill_switch,
+        allow_no_vpn: false,
+    }
+}
+
+fn vpn_state(state: TunnelState) -> VpnState {
+    match state {
+        TunnelState::Connected => VpnState::Connected,
+        TunnelState::Connecting => VpnState::Connecting,
+        TunnelState::Disconnected => VpnState::Disconnected,
+        TunnelState::Error => VpnState::Error,
+        TunnelState::NotConfigured => VpnState::NotConfigured,
     }
 }
 
@@ -426,13 +518,7 @@ pub fn combine_status(
     match health {
         Ok(health) => {
             let tunnel = health.vpn;
-            let state = match tunnel.state {
-                TunnelState::Connected => VpnState::Connected,
-                TunnelState::Connecting => VpnState::Connecting,
-                TunnelState::Disconnected => VpnState::Disconnected,
-                TunnelState::Error => VpnState::Error,
-                TunnelState::NotConfigured => VpnState::NotConfigured,
-            };
+            let state = vpn_state(tunnel.state);
             VpnStatus {
                 configured,
                 reachable: true,
@@ -816,7 +902,7 @@ mod tests {
         let path = config.internal_token_path();
         assert_eq!(mode(&path), 0o640);
         assert_eq!(mode(&config.torrent_dir()), 0o750);
-        assert_eq!(mode(&config.vpn_dir()), 0o750);
+        assert_eq!(mode(&config.vpn_dir()), 0o700);
         assert!(config.torrent_dir().join("engine").is_dir());
         assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), token);
         // Second call keeps the token.
@@ -1049,6 +1135,79 @@ mod tests {
         let unreachable = combine_status(Some(&meta), Err(TorrentdError::Unreachable("x".into())));
         assert!(unreachable.configured && !unreachable.reachable);
         assert_eq!(unreachable.label.as_deref(), Some("WireGuard · home"));
+    }
+
+    /// Under the supervisor the token comes from `STASH_INTERNAL_TOKEN` and must never be
+    /// written to disk (section 7); a different file token would make every call a 401.
+    #[tokio::test]
+    async fn supervisor_token_from_env_is_used_and_never_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = Fake::new("token-from-the-supervisor");
+        let url = start_fake(fake.clone()).await;
+        let mut config = test_config(dir.path(), Some(url));
+        config.internal_token = Some("token-from-the-supervisor".into());
+        let token = TorrentdClient::ensure_internal_token(&config)
+            .await
+            .unwrap();
+        assert_eq!(token, "token-from-the-supervisor");
+        assert!(!config.internal_token_path().exists());
+        assert!(config.vpn_dir().is_dir());
+        let client = TorrentdClient::new(Arc::new(config));
+        let health = client.health().await.unwrap();
+        assert_eq!(health.vpn.state, TunnelState::Connected);
+        assert!(
+            client.download_proxy().await.is_none(),
+            "no proxy configured"
+        );
+        assert!(!client.config.internal_token_path().exists());
+    }
+
+    #[tokio::test]
+    async fn supervisor_status_when_engine_is_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let url = Url::parse(&format!("http://127.0.0.1:{port}")).unwrap();
+        // The supervisor writes status.json next to its socket (/run/popcornstash).
+        let run_dir = dir.path().join("run");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let mut config = test_config(dir.path(), Some(url));
+        config.supervisor_socket = Some(run_dir.join("supervisor.sock"));
+        TorrentdClient::ensure_internal_token(&config)
+            .await
+            .unwrap();
+        let client = Arc::new(TorrentdClient::new(Arc::new(config)));
+        let mut tunnel = sample_health(TunnelState::Error).vpn;
+        tunnel.error = Some("No WireGuard handshake for 3 minutes. Retrying in 20 seconds.".into());
+        tunnel.updated_at = stash_core::now();
+        let status_path = run_dir.join("status.json");
+        std::fs::write(&status_path, serde_json::to_vec(&tunnel).unwrap()).unwrap();
+        let status = client.vpn_status().await;
+        assert!(!status.reachable);
+        assert_eq!(status.state, VpnState::Error);
+        assert_eq!(
+            status.error.as_deref(),
+            Some("No WireGuard handshake for 3 minutes. Retrying in 20 seconds.")
+        );
+        assert_eq!(status.server.as_deref(), Some("nl812.nordvpn.com"));
+        assert!(status.public_ip.is_none());
+
+        // A stale file is ignored.
+        tunnel.updated_at = stash_core::now() - 600;
+        std::fs::write(&status_path, serde_json::to_vec(&tunnel).unwrap()).unwrap();
+        client.note_vpn_changed();
+        let status = client.vpn_status().await;
+        assert_eq!(status.state, VpnState::Unreachable);
+        assert_eq!(status.error.as_deref(), Some(MSG_UNREACHABLE));
+
+        // Connected tunnel without an engine: say the engine is starting.
+        let mut up = sample_health(TunnelState::Connected).vpn;
+        up.updated_at = stash_core::now();
+        let status = status_from_supervisor(None, up);
+        assert_eq!(status.state, VpnState::Connected);
+        assert_eq!(status.error.as_deref(), Some(MSG_ENGINE_STARTING));
     }
 
     #[tokio::test]

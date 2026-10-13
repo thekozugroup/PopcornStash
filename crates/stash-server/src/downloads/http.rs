@@ -19,7 +19,10 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use super::manager::{DownloadManager, ForwardedHeaders, MAX_TORRENT_FILE};
+use super::manager::{
+    DownloadManager, ForwardedHeaders, MAX_TORRENT_FILE, MSG_LINK_EXPIRED, MSG_VPN_PORTS,
+    proxy_reaches,
+};
 use super::source;
 use super::ssrf::{self, GuardedResolver};
 use crate::error::{ApiError, ApiResult};
@@ -30,6 +33,8 @@ const MAX_REDIRECTS: usize = 10;
 const MSG_REDIRECTS: &str = "The link redirected too many times.";
 const MSG_UNREACHABLE: &str = "The server for that link could not be reached.";
 const MSG_WRITE: &str = "The download could not be saved. Check that the stash has free space.";
+const MSG_CHANGED: &str =
+    "The file on the server changed since the download started. Add the link again.";
 const PROGRESS_EVENT_EVERY: Duration = Duration::from_secs(1);
 const PROGRESS_DB_EVERY: Duration = Duration::from_secs(2);
 
@@ -76,7 +81,10 @@ pub(crate) fn spawn_worker_loop(manager: Arc<DownloadManager>, cancel: Cancellat
     });
 }
 
-async fn claim_and_spawn(manager: &Arc<DownloadManager>, cancel: &CancellationToken) -> ApiResult<()> {
+async fn claim_and_spawn(
+    manager: &Arc<DownloadManager>,
+    cancel: &CancellationToken,
+) -> ApiResult<()> {
     // Re-read every loop so a settings change applies without a restart.
     let max = manager.settings.get().await.max_concurrent_downloads.max(1) as usize;
     let free = max.saturating_sub(manager.running.len());
@@ -98,6 +106,10 @@ async fn claim_and_spawn(manager: &Arc<DownloadManager>, cancel: &CancellationTo
         if manager.running.contains_key(&id) {
             continue;
         }
+        // Register the stop token before claiming, so a pause that lands in between
+        // always finds it.
+        let token = cancel.child_token();
+        manager.running.insert(id.clone(), token.clone());
         let claimed = sqlx::query(
             "UPDATE downloads SET state = 'downloading', error = NULL, down_bps = 0, eta_s = NULL, updated_at = ?
              WHERE id = ? AND state = 'queued'",
@@ -105,14 +117,20 @@ async fn claim_and_spawn(manager: &Arc<DownloadManager>, cancel: &CancellationTo
         .bind(now())
         .bind(&id)
         .execute(&manager.db)
-        .await?
-        .rows_affected();
+        .await
+        .map(|r| r.rows_affected());
+        let claimed = match claimed {
+            Ok(n) => n,
+            Err(e) => {
+                manager.running.remove(&id);
+                return Err(e.into());
+            }
+        };
         if claimed == 0 {
+            manager.running.remove(&id);
             continue;
         }
         started += 1;
-        let token = cancel.child_token();
-        manager.running.insert(id.clone(), token.clone());
         let _ = manager.publish_id(&id).await;
         let manager = manager.clone();
         tokio::spawn(async move {
@@ -171,13 +189,16 @@ async fn fail_if_downloading(manager: &DownloadManager, id: &str, message: &str)
 
 /// Build the client for one download: guarded DNS and redirect checks when direct,
 /// the VPN proxy (with redirects checked by hand) otherwise.
-pub(crate) fn build_client(manager: &DownloadManager, proxy: Option<reqwest::Proxy>) -> reqwest::Result<reqwest::Client> {
+pub(crate) fn build_client(
+    manager: &DownloadManager,
+    proxy: Option<reqwest::Proxy>,
+) -> reqwest::Result<reqwest::Client> {
     let guard = manager.guard.clone();
     let proxied = proxy.is_some();
     let policy = reqwest::redirect::Policy::custom(move |attempt| {
         if proxied {
-            // Through the proxy the target is resolved remotely, so every hop is
-            // checked by `follow_redirect` with a local lookup instead.
+            // Through the proxy the target is resolved remotely, so every hop comes
+            // back to `download()`, which checks it with a local lookup first.
             return attempt.stop();
         }
         if attempt.previous().len() > MAX_REDIRECTS {
@@ -196,7 +217,9 @@ pub(crate) fn build_client(manager: &DownloadManager, proxy: Option<reqwest::Pro
         .read_timeout(Duration::from_secs(120));
     let builder = match proxy {
         Some(proxy) => builder.proxy(proxy),
-        None => builder.no_proxy().dns_resolver(Arc::new(GuardedResolver { guard: manager.guard.clone() })),
+        None => builder.no_proxy().dns_resolver(Arc::new(GuardedResolver {
+            guard: manager.guard.clone(),
+        })),
     };
     builder.build()
 }
@@ -221,7 +244,10 @@ enum Step {
     Redirect(Url),
     Stopped,
     Fatal(String),
-    Retry { message: String, progressed: bool },
+    Retry {
+        message: String,
+        progressed: bool,
+    },
     /// The `.part` was unusable and has been truncated; try again from zero.
     Restart,
 }
@@ -236,7 +262,10 @@ fn classify_error(error: &reqwest::Error) -> Step {
     if error.is_builder() {
         return Step::Fatal("That link is not valid.".to_string());
     }
-    Step::Retry { message: MSG_UNREACHABLE.to_string(), progressed: false }
+    Step::Retry {
+        message: MSG_UNREACHABLE.to_string(),
+        progressed: false,
+    }
 }
 
 fn status_message(status: StatusCode) -> String {
@@ -245,7 +274,10 @@ fn status_message(status: StatusCode) -> String {
             "The server refused the download ({}). The link may have expired or need a sign-in.",
             status.as_u16()
         ),
-        404 | 410 => format!("The file is not on the server any more ({}).", status.as_u16()),
+        404 | 410 => format!(
+            "The file is not on the server any more ({}).",
+            status.as_u16()
+        ),
         code => format!("The server refused the download ({code})."),
     }
 }
@@ -274,7 +306,10 @@ pub fn content_disposition_filename(value: &str) -> Option<String> {
             _ => {}
         }
     }
-    extended.or(plain).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    extended
+        .or(plain)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn disposition_params(value: &str) -> Vec<(String, String)> {
@@ -366,7 +401,10 @@ fn choose_name(headers: &HeaderMap, final_url: &Url, original: &Url) -> String {
     let mut name = paths::sanitize_filename(&raw);
     let has_extension = name.rfind('.').is_some_and(|i| i > 0 && i + 1 < name.len());
     if !has_extension {
-        let mime = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
+        let mime = headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
         if let Some(ext) = source::extension_for_mime(mime) {
             name = format!("{name}.{ext}");
         }
@@ -374,10 +412,19 @@ fn choose_name(headers: &HeaderMap, final_url: &Url, original: &Url) -> String {
     name
 }
 
+/// Bytes already in the `.part` file. Only a regular file counts: a link planted in
+/// its place is never followed.
 async fn part_len(manager: &DownloadManager, row: &DownloadRow) -> u64 {
-    let Some(rel) = row.rel_path.as_deref() else { return 0 };
-    let Ok(abs) = manager.layout.abs(rel) else { return 0 };
-    tokio::fs::metadata(abs).await.map(|m| m.len()).unwrap_or(0)
+    let Some(rel) = row.rel_path.as_deref() else {
+        return 0;
+    };
+    let Ok(abs) = manager.layout.abs(rel) else {
+        return 0;
+    };
+    match tokio::fs::symlink_metadata(abs).await {
+        Ok(meta) if meta.is_file() => meta.len(),
+        _ => 0,
+    }
 }
 
 async fn truncate_part(manager: &DownloadManager, row: &DownloadRow) {
@@ -386,8 +433,16 @@ async fn truncate_part(manager: &DownloadManager, row: &DownloadRow) {
     }
 }
 
-async fn persist_progress(manager: &DownloadManager, row: &DownloadRow, stopped: bool) -> ApiResult<()> {
-    let (down_bps, eta) = if stopped { (0, None) } else { (row.down_bps, row.eta_s) };
+async fn persist_progress(
+    manager: &DownloadManager,
+    row: &DownloadRow,
+    stopped: bool,
+) -> ApiResult<()> {
+    let (down_bps, eta) = if stopped {
+        (0, None)
+    } else {
+        (row.down_bps, row.eta_s)
+    };
     sqlx::query(
         "UPDATE downloads SET name = ?, rel_path = ?, done_bytes = ?, total_bytes = ?, progress = ?, down_bps = ?,
                 eta_s = ?, updated_at = ?
@@ -412,12 +467,20 @@ async fn download(manager: &Arc<DownloadManager>, id: &str, token: &Cancellation
         return Outcome::Stopped(None);
     };
     let secrets = manager.secrets.get(id).map(|s| s.clone());
-    let original = match secrets.as_ref().map(|s| s.url.clone()).or_else(|| Url::parse(&row.source).ok()) {
+    // The stored link lost its private parts; fetching it would fetch something else.
+    if secrets.is_none() && source::is_redacted_source(&row.source) {
+        return Outcome::Failed(MSG_LINK_EXPIRED.into());
+    }
+    let original = match secrets
+        .as_ref()
+        .map(|s| s.url.clone())
+        .or_else(|| Url::parse(&row.source).ok())
+    {
         Some(url) => url,
         None => return Outcome::Failed("The link for this download is not valid.".into()),
     };
     let headers = request_headers(&secrets.map(|s| s.headers).unwrap_or_default());
-    let proxy = match manager.choose_proxy().await {
+    let proxy = match manager.choose_proxy(&original).await {
         Ok(proxy) => proxy,
         Err(message) => return Outcome::Failed(message),
     };
@@ -437,11 +500,22 @@ async fn download(manager: &Arc<DownloadManager>, id: &str, token: &Cancellation
         if token.is_cancelled() {
             return Outcome::Stopped(Some(row));
         }
-        if let Err(e) = manager.guard.check_url(&current).await {
-            return Outcome::Failed(e.message().to_string());
-        }
         let offset = part_len(manager, &row).await;
-        let step = attempt(manager, &client, &mut row, &current, &original, &headers, offset, token, proxied).await;
+        let step = match manager.guard.check_url(&current).await {
+            Ok(()) => {
+                attempt(
+                    manager, &client, &mut row, &current, &original, &headers, offset, token,
+                    proxied,
+                )
+                .await
+            }
+            // DNS can fail for a moment; try again like any network error.
+            Err(ssrf::GuardError::Unresolved) => Step::Retry {
+                message: ssrf::MSG_UNRESOLVED.to_string(),
+                progressed: false,
+            },
+            Err(e) => Step::Fatal(e.message().to_string()),
+        };
         match step {
             Step::Done => return Outcome::Done(row),
             Step::Stopped => return Outcome::Stopped(Some(row)),
@@ -457,10 +531,16 @@ async fn download(manager: &Arc<DownloadManager>, id: &str, token: &Cancellation
             Step::Restart => {
                 failures += 1;
                 if failures >= MAX_ATTEMPTS {
-                    return Outcome::Failed("The server keeps sending a different file. Try the link again later.".into());
+                    return Outcome::Failed(
+                        "The server keeps sending a different file. Try the link again later."
+                            .into(),
+                    );
                 }
             }
-            Step::Retry { message, progressed } => {
+            Step::Retry {
+                message,
+                progressed,
+            } => {
                 if progressed {
                     failures = 0;
                 }
@@ -515,6 +595,9 @@ async fn attempt(
             .and_then(|v| v.to_str().ok())
             .and_then(|loc| current.join(loc).ok());
         return match next {
+            // The VPN proxy refuses other ports with an answer that would read like the
+            // server's own refusal.
+            Some(next) if !proxy_reaches(&next) => Step::Fatal(MSG_VPN_PORTS.into()),
             Some(next) => Step::Redirect(next),
             None => Step::Fatal("The link redirected to an address that is not valid.".into()),
         };
@@ -532,16 +615,25 @@ async fn attempt(
         return Step::Restart;
     }
     if status == StatusCode::REQUEST_TIMEOUT || status == StatusCode::TOO_MANY_REQUESTS {
-        return Step::Retry { message: status_message(status), progressed: false };
+        return Step::Retry {
+            message: status_message(status),
+            progressed: false,
+        };
     }
     if status.is_client_error() {
         return Step::Fatal(status_message(status));
     }
     if status.is_server_error() {
-        return Step::Retry { message: format!("The server had a problem ({}).", status.as_u16()), progressed: false };
+        return Step::Retry {
+            message: format!("The server had a problem ({}).", status.as_u16()),
+            progressed: false,
+        };
     }
     if !status.is_success() || status == StatusCode::NO_CONTENT {
-        return Step::Fatal(format!("The server sent an unexpected answer ({}).", status.as_u16()));
+        return Step::Fatal(format!(
+            "The server sent an unexpected answer ({}).",
+            status.as_u16()
+        ));
     }
 
     let (start, total) = if status == StatusCode::PARTIAL_CONTENT {
@@ -556,6 +648,16 @@ async fn attempt(
         // 200: the server ignored the Range (or none was sent); start over.
         (0, response.content_length())
     };
+    // Resuming, but the server now describes a different file (a sign-in page after a
+    // restart dropped the cookie, or a replaced file), or no longer says how big it is:
+    // stop rather than overwrite the bytes already here.
+    if offset > 0
+        && let Some(before) = row.total_bytes
+        && before > 0
+        && total.and_then(|t| i64::try_from(t).ok()) != Some(before)
+    {
+        return Step::Fatal(MSG_CHANGED.into());
+    }
 
     if row.rel_path.is_none() {
         let wanted = choose_name(response.headers(), response.url(), original);
@@ -593,7 +695,20 @@ async fn stream_to_part(
         return Step::Fatal(MSG_WRITE.into());
     };
     let opened = async {
-        let mut file = tokio::fs::OpenOptions::new().create(true).write(true).truncate(false).open(&path).await?;
+        // O_NOFOLLOW: In Progress is group-writable for the torrent engine, so a link
+        // planted at this name must not redirect the write anywhere else.
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
+            .open(&path)
+            .await?;
+        if !file.metadata().await?.is_file() {
+            return Err(std::io::Error::other(
+                "the partial download is not a regular file",
+            ));
+        }
         file.set_len(start).await?;
         file.seek(SeekFrom::Start(start)).await?;
         std::io::Result::Ok(file)
@@ -634,7 +749,9 @@ async fn stream_to_part(
                     let bps = ((done - sample_bytes) as f64 / elapsed.as_secs_f64()) as i64;
                     row.down_bps = bps;
                     row.eta_s = match (row.total_bytes, bps) {
-                        (Some(total), bps) if bps > 0 => Some((total - row.done_bytes).max(0) / bps),
+                        (Some(total), bps) if bps > 0 => {
+                            Some((total - row.done_bytes).max(0) / bps)
+                        }
                         _ => None,
                     };
                     sample_at = Instant::now();
@@ -652,7 +769,10 @@ async fn stream_to_part(
                 }
             }
             Some(Err(_)) => {
-                break Step::Retry { message: "The connection dropped.".into(), progressed: done > start };
+                break Step::Retry {
+                    message: "The connection dropped.".into(),
+                    progressed: done > start,
+                };
             }
             None => break Step::Done,
         }
@@ -684,34 +804,60 @@ async fn stream_to_part(
     }
 }
 
-/// `.part` → final name in In Progress → `Completed/` → sort.
+/// `.part` → `Completed/<name>` in one rename → sort. There is no intermediate name in
+/// In Progress, so a restart finds either the `.part` (and resumes) or the finished file.
 async fn finalize(manager: &DownloadManager, row: &DownloadRow) -> Result<(), String> {
     const MSG_MOVE: &str = "The finished download could not be moved to Downloads/Completed.";
-    let part_rel = row.rel_path.as_deref().ok_or_else(|| MSG_MOVE.to_string())?;
-    let part = manager.layout.abs(part_rel).map_err(|_| MSG_MOVE.to_string())?;
-    let target = paths::unique_path(&manager.layout.in_progress().join(&row.name));
-    if let Err(e) = tokio::fs::rename(&part, &target).await {
-        tracing::warn!(error = %e, download = %row.id, "could not rename the finished download");
-        return Err(MSG_MOVE.into());
+    let part_rel = row
+        .rel_path
+        .as_deref()
+        .ok_or_else(|| MSG_MOVE.to_string())?;
+    let part = manager
+        .layout
+        .abs(part_rel)
+        .map_err(|_| MSG_MOVE.to_string())?;
+    let moved = manager.move_to_completed(&part, &row.name).await;
+    if moved.is_ok() {
+        manager.release_name(&row.name);
     }
-    let moved = manager.move_to_completed(&target).await;
-    manager.release_name(&row.name);
     let (_, rel) = moved.map_err(|e| {
         tracing::warn!(error = %e, download = %row.id, "could not move the finished download");
         MSG_MOVE.to_string()
     })?;
     manager.secrets.remove(&row.id);
     tracing::info!(download = %row.id, rel = %rel, "web download finished");
-    manager.complete_and_sort(&row.id, &rel, Some(row.done_bytes)).await.map_err(|e| e.message)?;
+    manager
+        .complete_and_sort(&row.id, &rel, Some(row.done_bytes))
+        .await
+        .map_err(|e| e.message)?;
     Ok(())
 }
 
 impl DownloadManager {
     /// Fetch a `.torrent` link (at most 10 MB) with the same destination checks as
     /// web downloads.
-    pub(crate) async fn fetch_torrent_file(&self, url: &Url, headers: ForwardedHeaders) -> ApiResult<Vec<u8>> {
+    pub(crate) async fn fetch_torrent_file(
+        &self,
+        url: &Url,
+        headers: ForwardedHeaders,
+    ) -> ApiResult<Vec<u8>> {
+        // A server that trickles bytes must not hold the request open for long.
+        let limit = self.tuning().torrent_fetch_timeout;
+        tokio::time::timeout(limit, self.fetch_torrent_file_inner(url, headers))
+            .await
+            .map_err(|_| ApiError::bad_request("The .torrent file took too long to download."))?
+    }
+
+    async fn fetch_torrent_file_inner(
+        &self,
+        url: &Url,
+        headers: ForwardedHeaders,
+    ) -> ApiResult<Vec<u8>> {
         const MSG_FETCH: &str = "The .torrent file could not be downloaded.";
-        let proxy = self.choose_proxy().await.map_err(ApiError::bad_request)?;
+        let proxy = self
+            .choose_proxy(url)
+            .await
+            .map_err(ApiError::bad_request)?;
         let proxied = proxy.is_some();
         let client = build_client(self, proxy).map_err(|e| {
             tracing::error!(error = %e.without_url(), "could not build the download client");
@@ -720,13 +866,19 @@ impl DownloadManager {
         let headers = request_headers(&headers);
         let mut current = url.clone();
         for _ in 0..=MAX_REDIRECTS {
-            self.guard.check_url(&current).await.map_err(|e| ApiError::bad_request(e.message()))?;
-            let response = client.get(current.clone()).headers(headers.clone()).send().await.map_err(|e| {
-                match classify_error(&e) {
+            self.guard
+                .check_url(&current)
+                .await
+                .map_err(|e| ApiError::bad_request(e.message()))?;
+            let response = client
+                .get(current.clone())
+                .headers(headers.clone())
+                .send()
+                .await
+                .map_err(|e| match classify_error(&e) {
                     Step::Fatal(message) => ApiError::bad_request(message),
                     _ => ApiError::bad_request(MSG_FETCH),
-                }
-            })?;
+                })?;
             let status = response.status();
             if status.is_redirection() && proxied {
                 current = response
@@ -735,25 +887,37 @@ impl DownloadManager {
                     .and_then(|v| v.to_str().ok())
                     .and_then(|loc| current.join(loc).ok())
                     .ok_or_else(|| ApiError::bad_request(MSG_FETCH))?;
+                if !proxy_reaches(&current) {
+                    return Err(ApiError::bad_request(MSG_VPN_PORTS));
+                }
                 continue;
             }
             if !status.is_success() {
                 return Err(ApiError::bad_request(status_message(status)));
             }
-            if response.content_length().is_some_and(|len| len > MAX_TORRENT_FILE as u64) {
-                return Err(ApiError::bad_request("The .torrent file is larger than 10 MB."));
+            if response
+                .content_length()
+                .is_some_and(|len| len > MAX_TORRENT_FILE as u64)
+            {
+                return Err(ApiError::bad_request(
+                    "The .torrent file is larger than 10 MB.",
+                ));
             }
             let mut body = Vec::new();
             let mut stream = response.bytes_stream();
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.map_err(|_| ApiError::bad_request(MSG_FETCH))?;
                 if body.len() + chunk.len() > MAX_TORRENT_FILE {
-                    return Err(ApiError::bad_request("The .torrent file is larger than 10 MB."));
+                    return Err(ApiError::bad_request(
+                        "The .torrent file is larger than 10 MB.",
+                    ));
                 }
                 body.extend_from_slice(&chunk);
             }
             if super::torrents::torrent_name(&body).is_err() {
-                return Err(ApiError::bad_request("That link did not return a valid .torrent file."));
+                return Err(ApiError::bad_request(
+                    "That link did not return a valid .torrent file.",
+                ));
             }
             return Ok(body);
         }
@@ -768,15 +932,31 @@ mod tests {
     #[test]
     fn disposition_names() {
         let cd = content_disposition_filename;
-        assert_eq!(cd("attachment; filename=\"movie.mkv\"").as_deref(), Some("movie.mkv"));
-        assert_eq!(cd("attachment; filename=plain.mp4").as_deref(), Some("plain.mp4"));
         assert_eq!(
-            cd("attachment; filename=\"fallback.mp4\"; filename*=UTF-8''na%C3%AFve%20file.mp4").as_deref(),
+            cd("attachment; filename=\"movie.mkv\"").as_deref(),
+            Some("movie.mkv")
+        );
+        assert_eq!(
+            cd("attachment; filename=plain.mp4").as_deref(),
+            Some("plain.mp4")
+        );
+        assert_eq!(
+            cd("attachment; filename=\"fallback.mp4\"; filename*=UTF-8''na%C3%AFve%20file.mp4")
+                .as_deref(),
             Some("naïve file.mp4")
         );
-        assert_eq!(cd("attachment; filename*=utf-8'en'%E2%82%AC%20rates.pdf").as_deref(), Some("€ rates.pdf"));
-        assert_eq!(cd("attachment; filename*=iso-8859-1''caf%E9.jpg").as_deref(), Some("café.jpg"));
-        assert_eq!(cd("attachment; filename=\"semi;colon \\\"quoted\\\".mkv\"").as_deref(), Some("semi;colon \"quoted\".mkv"));
+        assert_eq!(
+            cd("attachment; filename*=utf-8'en'%E2%82%AC%20rates.pdf").as_deref(),
+            Some("€ rates.pdf")
+        );
+        assert_eq!(
+            cd("attachment; filename*=iso-8859-1''caf%E9.jpg").as_deref(),
+            Some("café.jpg")
+        );
+        assert_eq!(
+            cd("attachment; filename=\"semi;colon \\\"quoted\\\".mkv\"").as_deref(),
+            Some("semi;colon \"quoted\".mkv")
+        );
         assert_eq!(cd("inline"), None);
         assert_eq!(cd("attachment; filename=\"\""), None);
     }
@@ -784,11 +964,20 @@ mod tests {
     #[test]
     fn ranges() {
         let mut h = HeaderMap::new();
-        h.insert(header::CONTENT_RANGE, HeaderValue::from_static("bytes 100-199/1000"));
+        h.insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_static("bytes 100-199/1000"),
+        );
         assert_eq!(content_range(&h), Some((Some(100), Some(1000))));
-        h.insert(header::CONTENT_RANGE, HeaderValue::from_static("bytes */1000"));
+        h.insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_static("bytes */1000"),
+        );
         assert_eq!(content_range(&h), Some((None, Some(1000))));
-        h.insert(header::CONTENT_RANGE, HeaderValue::from_static("bytes 0-9/*"));
+        h.insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_static("bytes 0-9/*"),
+        );
         assert_eq!(content_range(&h), Some((Some(0), None)));
     }
 
@@ -800,7 +989,10 @@ mod tests {
         assert_eq!(choose_name(&h, &url, &url), "get.mp4");
         let bare = Url::parse("https://example.com/").unwrap();
         assert_eq!(choose_name(&HeaderMap::new(), &bare, &bare), "download");
-        h.insert(header::CONTENT_DISPOSITION, HeaderValue::from_static("attachment; filename=\"../../x.mkv\""));
+        h.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("attachment; filename=\"../../x.mkv\""),
+        );
         assert_eq!(choose_name(&h, &url, &url), "x.mkv");
     }
 }

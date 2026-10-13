@@ -1,6 +1,7 @@
 /**
  * Full-window overlay shown while files are dragged over the app. It says
- * where dropped files go before anything moves.
+ * where dropped files go before anything moves: they upload to Downloads,
+ * then the sorter files them into the library.
  */
 import * as stylex from '@stylexjs/stylex';
 import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
@@ -20,7 +21,7 @@ const styles = stylex.create({
     zIndex: 50,
     display: 'grid',
     placeItems: 'center',
-    padding: 24,
+    padding: 16,
     backgroundColor: colorVars['--color-overlay'],
     pointerEvents: 'none',
     animationName: {default: fadeIn, '@media (prefers-reduced-motion: reduce)': 'none'},
@@ -32,9 +33,10 @@ const styles = stylex.create({
     flexDirection: 'column',
     alignItems: 'center',
     gap: 12,
+    width: '100%',
     maxWidth: 420,
-    paddingBlock: 36,
-    paddingInline: 32,
+    paddingBlock: {default: 36, '@media (max-width: 520px)': 28},
+    paddingInline: {default: 32, '@media (max-width: 520px)': 20},
     textAlign: 'center',
     borderRadius: 16,
     borderWidth: 2,
@@ -51,6 +53,10 @@ const styles = stylex.create({
     backgroundColor: colorVars['--color-accent-muted'],
     color: colorVars['--color-text-primary'],
   },
+  copy: {
+    textWrap: 'balance',
+    lineHeight: 1.6,
+  },
 });
 
 export function FileDropOverlay({isVisible}: {isVisible: boolean}) {
@@ -61,10 +67,12 @@ export function FileDropOverlay({isVisible}: {isVisible: boolean}) {
         <span {...stylex.props(styles.icon)} aria-hidden="true">
           <Upload size={22} strokeWidth={1.75} />
         </span>
-        <Heading level={2}>Drop to add to PopcornStash</Heading>
-        <Text as="p" color="secondary">
-          Files upload to Downloads, then move into Movies, Shows, Home Videos or Photos. Anything unclear waits in
-          Inbox for you.
+        <Heading level={2}>Drop to upload</Heading>
+        <Text as="p" color="secondary" xstyle={styles.copy}>
+          Files upload to Downloads, then move into your library.
+        </Text>
+        <Text as="p" type="supporting" color="secondary" xstyle={styles.copy}>
+          Folders upload everything inside. A{'\u00a0'}.torrent file starts a torrent instead.
         </Text>
       </div>
     </div>

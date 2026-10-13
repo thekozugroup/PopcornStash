@@ -3,6 +3,11 @@
 
 pub mod http;
 pub mod manager;
+pub mod source;
+pub mod ssrf;
 pub mod torrents;
+
+#[cfg(test)]
+mod tests;
 
 pub use manager::{AddDownloadRequest, DownloadFilter, DownloadManager, ForwardedHeaders};

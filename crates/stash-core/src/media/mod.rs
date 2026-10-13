@@ -14,13 +14,13 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Result;
 use crate::config::Config;
 use crate::db::Db;
 use crate::events::EventBus;
 use crate::models::{ItemRow, MediaSummary};
 use crate::paths::StashLayout;
 use crate::settings::SettingsStore;
-use crate::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -55,8 +55,20 @@ pub struct MediaService {
 }
 
 impl MediaService {
-    pub fn new(config: Arc<Config>, db: Db, settings: SettingsStore, layout: Arc<StashLayout>, events: EventBus) -> Self {
-        Self { config, db, settings, layout, events }
+    pub fn new(
+        config: Arc<Config>,
+        db: Db,
+        settings: SettingsStore,
+        layout: Arc<StashLayout>,
+        events: EventBus,
+    ) -> Self {
+        Self {
+            config,
+            db,
+            settings,
+            layout,
+            events,
+        }
     }
 
     /// Run ffprobe on a file.
@@ -84,8 +96,13 @@ impl MediaService {
 
     /// Where a thumbnail lives (whether or not it exists yet).
     pub fn thumb_path(&self, item_id: &str, size: ThumbSize) -> PathBuf {
-        let shard = item_id.get(item_id.len().saturating_sub(2)..).unwrap_or("00");
-        self.config.thumbs_dir().join(shard).join(format!("{item_id}-{}.webp", size.as_str()))
+        let shard = item_id
+            .get(item_id.len().saturating_sub(2)..)
+            .unwrap_or("00");
+        self.config
+            .thumbs_dir()
+            .join(shard)
+            .join(format!("{item_id}-{}.webp", size.as_str()))
     }
 
     /// Where a photo rendition lives.

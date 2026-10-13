@@ -31,7 +31,8 @@ pub struct ParsedName {
 
 macro_rules! re {
     ($pattern:expr) => {{
-        static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new($pattern).expect("static regex is valid"));
+        static RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new($pattern).expect("static regex is valid"));
         &*RE
     }};
 }
@@ -39,7 +40,10 @@ macro_rules! re {
 /// Parse a file stem (no extension) or folder name.
 pub fn parse_name(stem: &str) -> ParsedName {
     let stem = stem.trim();
-    let mut out = ParsedName { date: find_date(stem), ..ParsedName::default() };
+    let mut out = ParsedName {
+        date: find_date(stem),
+        ..ParsedName::default()
+    };
 
     if let Some(camera_date) = camera_name(stem) {
         out.camera_style = true;
@@ -52,10 +56,15 @@ pub fn parse_name(stem: &str) -> ParsedName {
 
     let norm = normalize(stem);
     let tokens: Vec<&str> = norm.split(' ').filter(|t| !t.is_empty()).collect();
-    out.has_release_tags = tokens.iter().enumerate().skip(1).any(|(i, t)| is_release_tag(t, i > 0 && is_year_token(tokens[i - 1]).is_some()));
+    out.has_release_tags = tokens
+        .iter()
+        .enumerate()
+        .skip(1)
+        .any(|(i, t)| is_release_tag(t, i > 0 && is_year_token(tokens[i - 1]).is_some()));
 
     if let Some(marker) = find_episode(&norm) {
-        let (show, year) = split_trailing_year(&clean_title(&title_before_tags(&norm[..marker.start])));
+        let (show, year) =
+            split_trailing_year(&clean_title(&title_before_tags(&norm[..marker.start])));
         out.title = smart_case(&show);
         out.year = year;
         out.season = marker.season;
@@ -75,12 +84,12 @@ pub fn parse_name(stem: &str) -> ParsedName {
     let mut year_at: Option<(usize, i64)> = None;
     let mut bracketed_at: Option<(usize, i64)> = None;
     for (i, token) in head.iter().enumerate().skip(1) {
-        if let Some((year, bracketed)) = is_year_token(token) {
-            if plausible_year(year) {
-                year_at = Some((i, year));
-                if bracketed {
-                    bracketed_at = Some((i, year));
-                }
+        if let Some((year, bracketed)) = is_year_token(token)
+            && plausible_year(year)
+        {
+            year_at = Some((i, year));
+            if bracketed {
+                bracketed_at = Some((i, year));
             }
         }
     }
@@ -109,7 +118,9 @@ pub fn season_folder(name: &str) -> Option<i64> {
     if name.eq_ignore_ascii_case("specials") || name.eq_ignore_ascii_case("special") {
         return Some(0);
     }
-    re!(r"(?i)^(?:season|series|s)[\s._-]*(\d{1,3})$").captures(name).and_then(|c| c[1].parse().ok())
+    re!(r"(?i)^(?:season|series|s)[\s._-]*(\d{1,3})$")
+        .captures(name)
+        .and_then(|c| c[1].parse().ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +129,9 @@ pub fn season_folder(name: &str) -> Option<i64> {
 /// `Some(date)` when the stem looks like a phone or camera file name.
 fn camera_name(stem: &str) -> Option<Option<i64>> {
     // Names that carry a date and time.
-    if let Some(c) = re!(r"(?i)^(?:IMG|VID|PANO|BURST|MVIMG|PXL|Screenshot)_(\d{8})_(\d{6})").captures(stem) {
+    if let Some(c) =
+        re!(r"(?i)^(?:IMG|VID|PANO|BURST|MVIMG|PXL|Screenshot)_(\d{8})_(\d{6})").captures(stem)
+    {
         return Some(compact_datetime(&c[1], Some(&c[2])));
     }
     if let Some(c) = re!(r"(?i)^Screenshot_(\d{8})-(\d{6})").captures(stem) {
@@ -150,7 +163,14 @@ fn camera_name(stem: &str) -> Option<Option<i64>> {
     }
     if let Some(c) = re!(r"^(\d{4})-(\d{2})-(\d{2}) (\d{2})\.(\d{2})\.(\d{2})").captures(stem) {
         let num = |i: usize| c[i].parse::<i64>().unwrap_or(0);
-        return Some(unix_from_parts(num(1), num(2), num(3), num(4), num(5), num(6)));
+        return Some(unix_from_parts(
+            num(1),
+            num(2),
+            num(3),
+            num(4),
+            num(5),
+            num(6),
+        ));
     }
     if let Some(c) = re!(r"(?i)^RPReplay_Final(\d{9,10})").captures(stem) {
         let ts: i64 = c[1].parse().unwrap_or(0);
@@ -169,29 +189,55 @@ fn camera_name(stem: &str) -> Option<Option<i64>> {
 /// `YYYYMMDD` (+ optional `HHMMSS`) → unix seconds UTC.
 fn compact_datetime(date: &str, time: Option<&str>) -> Option<i64> {
     let d = |a: usize, b: usize| date.get(a..b).and_then(|s| s.parse::<i64>().ok());
-    let t = |a: usize, b: usize| time.and_then(|t| t.get(a..b)).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+    let t = |a: usize, b: usize| {
+        time.and_then(|t| t.get(a..b))
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0)
+    };
     unix_from_parts(d(0, 4)?, d(4, 6)?, d(6, 8)?, t(0, 2), t(2, 4), t(4, 6))
 }
 
 /// Calendar parts → unix seconds UTC, None when the date is not real or outside 1970–2099.
-pub(crate) fn unix_from_parts(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64) -> Option<i64> {
+pub(crate) fn unix_from_parts(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+) -> Option<i64> {
     if !(1970..=2099).contains(&year) {
         return None;
     }
     let month = time::Month::try_from(u8::try_from(month).ok()?).ok()?;
-    let date = time::Date::from_calendar_date(i32::try_from(year).ok()?, month, u8::try_from(day).ok()?).ok()?;
-    let time = time::Time::from_hms(u8::try_from(hour).ok()?, u8::try_from(minute).ok()?, u8::try_from(second).ok()?).ok()?;
-    Some(time::PrimitiveDateTime::new(date, time).assume_utc().unix_timestamp())
+    let date =
+        time::Date::from_calendar_date(i32::try_from(year).ok()?, month, u8::try_from(day).ok()?)
+            .ok()?;
+    let time = time::Time::from_hms(
+        u8::try_from(hour).ok()?,
+        u8::try_from(minute).ok()?,
+        u8::try_from(second).ok()?,
+    )
+    .ok()?;
+    Some(
+        time::PrimitiveDateTime::new(date, time)
+            .assume_utc()
+            .unix_timestamp(),
+    )
 }
 
 /// A date anywhere in the name: `20240613`, `2024-06-13`, `2024_06_13`, `2024.06.13`,
 /// optionally followed by a time (`_101500`, ` 10.15.00`, `T10:15:00`).
 fn find_date(s: &str) -> Option<i64> {
-    let re = re!(r"((?:19|20)\d{2})([-_.]?)(\d{2})([-_.]?)(\d{2})(?:[ _T.-]?(\d{2})[.:-]?(\d{2})[.:-]?(\d{2}))?");
+    let re = re!(
+        r"((?:19|20)\d{2})([-_.]?)(\d{2})([-_.]?)(\d{2})(?:[ _T.-]?(\d{2})[.:-]?(\d{2})[.:-]?(\d{2}))?"
+    );
     let bytes = s.as_bytes();
     let mut start = 0;
     while start < s.len() {
-        let Some(c) = re.captures_at(s, start) else { break };
+        let Some(c) = re.captures_at(s, start) else {
+            break;
+        };
         let Some(whole) = c.get(0) else { break };
         let before_ok = whole.start() == 0 || !bytes[whole.start() - 1].is_ascii_digit();
         let date_end = c.get(5).map_or(whole.end(), |m| m.end());
@@ -202,7 +248,11 @@ fn find_date(s: &str) -> Option<i64> {
         let after_ok = end >= s.len() || !bytes[end].is_ascii_digit();
         let seps_match = c.get(2).map(|m| m.as_str()) == c.get(4).map(|m| m.as_str());
         if before_ok && seps_match {
-            let num = |i: usize| c.get(i).and_then(|m| m.as_str().parse::<i64>().ok()).unwrap_or(0);
+            let num = |i: usize| {
+                c.get(i)
+                    .and_then(|m| m.as_str().parse::<i64>().ok())
+                    .unwrap_or(0)
+            };
             if after_ok {
                 let parsed = if has_time {
                     unix_from_parts(num(1), num(3), num(5), num(6), num(7), num(8))
@@ -215,10 +265,11 @@ fn find_date(s: &str) -> Option<i64> {
             }
             // The time part may have swallowed digits that belong elsewhere: retry date only.
             let date_after_ok = date_end >= s.len() || !bytes[date_end].is_ascii_digit();
-            if has_time && date_after_ok {
-                if let Some(ts) = unix_from_parts(num(1), num(3), num(5), 0, 0, 0) {
-                    return Some(ts);
-                }
+            if has_time
+                && date_after_ok
+                && let Some(ts) = unix_from_parts(num(1), num(3), num(5), 0, 0, 0)
+            {
+                return Some(ts);
             }
         }
         start = whole.start() + s[whole.start()..].chars().next().map_or(1, char::len_utf8);
@@ -239,10 +290,15 @@ struct EpisodeMarker {
 
 fn find_episode(norm: &str) -> Option<EpisodeMarker> {
     // S01E02, S01E02E03, S01E02-E03, S01E02-03, S01 E02
-    if let Some(c) = re!(r"(?i)\bS(\d{1,2})\s?E(\d{1,3})((?:\s?-?\s?E\d{1,3}|-\d{1,3}\b)*)").captures(norm) {
+    if let Some(c) =
+        re!(r"(?i)\bS(\d{1,2})\s?E(\d{1,3})((?:\s?-?\s?E\d{1,3}|-\d{1,3}\b)*)").captures(norm)
+    {
         let whole = c.get(0)?;
         let first: i64 = c[2].parse().ok()?;
-        let last = re!(r"\d{1,3}").find_iter(c.get(3).map_or("", |m| m.as_str())).filter_map(|m| m.as_str().parse::<i64>().ok()).last();
+        let last = re!(r"\d{1,3}")
+            .find_iter(c.get(3).map_or("", |m| m.as_str()))
+            .filter_map(|m| m.as_str().parse::<i64>().ok())
+            .last();
         return Some(EpisodeMarker {
             start: whole.start(),
             end: whole.end(),
@@ -252,7 +308,9 @@ fn find_episode(norm: &str) -> Option<EpisodeMarker> {
         });
     }
     // Season 1 Episode 2
-    if let Some(c) = re!(r"(?i)\bseason\s*(\d{1,2})\s*[,.-]?\s*(?:episode|ep\.?)\s*(\d{1,3})\b").captures(norm) {
+    if let Some(c) =
+        re!(r"(?i)\bseason\s*(\d{1,2})\s*[,.-]?\s*(?:episode|ep\.?)\s*(\d{1,3})\b").captures(norm)
+    {
         let whole = c.get(0)?;
         return Some(EpisodeMarker {
             start: whole.start(),
@@ -271,7 +329,10 @@ fn find_episode(norm: &str) -> Option<EpisodeMarker> {
             end: whole.end(),
             season: c[1].parse().ok(),
             episode: Some(first),
-            episode_end: c.get(3).and_then(|m| m.as_str().parse::<i64>().ok()).filter(|&l| l > first),
+            episode_end: c
+                .get(3)
+                .and_then(|m| m.as_str().parse::<i64>().ok())
+                .filter(|&l| l > first),
         });
     }
     // Season packs: "Show S01", "Show Season 2" (no episode).
@@ -280,8 +341,17 @@ fn find_episode(norm: &str) -> Option<EpisodeMarker> {
         if whole.start() == 0 {
             return None;
         }
-        let season = c.get(1).or_else(|| c.get(2)).and_then(|m| m.as_str().parse::<i64>().ok());
-        return Some(EpisodeMarker { start: whole.start(), end: whole.end(), season, episode: None, episode_end: None });
+        let season = c
+            .get(1)
+            .or_else(|| c.get(2))
+            .and_then(|m| m.as_str().parse::<i64>().ok());
+        return Some(EpisodeMarker {
+            start: whole.start(),
+            end: whole.end(),
+            season,
+            episode: None,
+            episode_end: None,
+        });
     }
     None
 }
@@ -332,7 +402,8 @@ fn is_weak_tag(token: &str, after_year: bool) -> bool {
         r"^(?:proper|repack|rerip|extended|unrated|uncut|remastered|internal|limited|multi(?:subs?)?|dubbed|subbed|hardsub|imax|hybrid|complete)(?:-[a-z0-9]+)?$"
     )
     .is_match(&t);
-    let shouting = raw.chars().any(|c| c.is_ascii_alphabetic()) && !raw.chars().any(|c| c.is_ascii_lowercase());
+    let shouting = raw.chars().any(|c| c.is_ascii_alphabetic())
+        && !raw.chars().any(|c| c.is_ascii_lowercase());
     word && (shouting || after_year)
 }
 
@@ -371,12 +442,14 @@ fn title_until_tags(s: &str) -> String {
 /// "Show Name 2005" → ("Show Name", Some(2005)); never leaves the name empty.
 fn split_trailing_year(s: &str) -> (String, Option<i64>) {
     let tokens: Vec<&str> = s.split(' ').filter(|t| !t.is_empty()).collect();
-    if tokens.len() >= 2 {
-        if let Some((year, _)) = tokens.last().and_then(|t| is_year_token(t)) {
-            if plausible_year(year) {
-                return (clean_title(&tokens[..tokens.len() - 1].join(" ")), Some(year));
-            }
-        }
+    if tokens.len() >= 2
+        && let Some((year, _)) = tokens.last().and_then(|t| is_year_token(t))
+        && plausible_year(year)
+    {
+        return (
+            clean_title(&tokens[..tokens.len() - 1].join(" ")),
+            Some(year),
+        );
     }
     (s.to_string(), None)
 }
@@ -386,11 +459,20 @@ fn clean_title(s: &str) -> String {
     let mut t = s.split_whitespace().collect::<Vec<_>>().join(" ");
     loop {
         let before = t.clone();
-        t = t.replace("()", "").replace("[]", "").replace("{}", "");
+        t = re!(r"[\(\[\{]\s*[\)\]\}]").replace_all(&t, "").into_owned();
         t = t
-            .trim_matches(|c: char| c.is_whitespace() || matches!(c, '-' | '–' | '—' | '_' | '.' | ',' | ':' | ';' | '~' | '+' | '|'))
+            .trim_matches(|c: char| {
+                c.is_whitespace()
+                    || matches!(
+                        c,
+                        '-' | '–' | '—' | '_' | '.' | ',' | ':' | ';' | '~' | '+' | '|'
+                    )
+            })
             .to_string();
-        t = t.trim_end_matches(['(', '[', '{']).trim_start_matches([')', ']', '}']).to_string();
+        t = t
+            .trim_end_matches(['(', '[', '{'])
+            .trim_start_matches([')', ']', '}'])
+            .to_string();
         t = t.split_whitespace().collect::<Vec<_>>().join(" ");
         if t == before {
             return t;
@@ -427,7 +509,10 @@ mod tests {
     fn episodes() {
         let p = parse_name("The.Office.US.S02E03.720p.WEB-DL.x264-GRP");
         assert_eq!(p.title, "The Office US");
-        assert_eq!((p.season, p.episode, p.episode_end), (Some(2), Some(3), None));
+        assert_eq!(
+            (p.season, p.episode, p.episode_end),
+            (Some(2), Some(3), None)
+        );
         assert_eq!(p.episode_title, None);
         assert!(p.has_release_tags);
         assert!(!p.camera_style);
@@ -440,7 +525,10 @@ mod tests {
 
         let p = parse_name("Show.Name.S01E02E03");
         assert_eq!(p.title, "Show Name");
-        assert_eq!((p.season, p.episode, p.episode_end), (Some(1), Some(2), Some(3)));
+        assert_eq!(
+            (p.season, p.episode, p.episode_end),
+            (Some(1), Some(2), Some(3))
+        );
 
         let p = parse_name("show name season 1 episode 4");
         assert_eq!(p.title, "Show Name");
@@ -451,7 +539,10 @@ mod tests {
         assert_eq!((p.season, p.episode), (Some(1), Some(2)));
 
         let p = parse_name("Show Name - S01E02-E04 - Triple Bill [1080p]");
-        assert_eq!((p.season, p.episode, p.episode_end), (Some(1), Some(2), Some(4)));
+        assert_eq!(
+            (p.season, p.episode, p.episode_end),
+            (Some(1), Some(2), Some(4))
+        );
         assert_eq!(p.episode_title.as_deref(), Some("Triple Bill"));
         assert!(p.has_release_tags);
 
@@ -504,17 +595,47 @@ mod tests {
     fn movies() {
         let cases: &[(&str, &str, Option<i64>, bool)] = &[
             ("Heat.1995.1080p.BluRay.x264-GRP", "Heat", Some(1995), true),
-            ("Blade Runner 2049 (2017)", "Blade Runner 2049", Some(2017), false),
-            ("Blade.Runner.2049.2017.2160p.UHD.BluRay", "Blade Runner 2049", Some(2017), true),
-            ("2001.A.Space.Odyssey.1968.1080p", "2001 A Space Odyssey", Some(1968), true),
+            (
+                "Blade Runner 2049 (2017)",
+                "Blade Runner 2049",
+                Some(2017),
+                false,
+            ),
+            (
+                "Blade.Runner.2049.2017.2160p.UHD.BluRay",
+                "Blade Runner 2049",
+                Some(2017),
+                true,
+            ),
+            (
+                "2001.A.Space.Odyssey.1968.1080p",
+                "2001 A Space Odyssey",
+                Some(1968),
+                true,
+            ),
             ("1917 (2019)", "1917", Some(2019), false),
             ("Avatar [2009] 4K", "Avatar", Some(2009), true),
             ("1917", "1917", None, false),
-            ("Movie.Title.2019.EXTENDED.1080p.WEB-DL.DDP5.1.H.264-GRP", "Movie Title", Some(2019), true),
-            ("The Extended Family (2010)", "The Extended Family", Some(2010), false),
+            (
+                "Movie.Title.2019.EXTENDED.1080p.WEB-DL.DDP5.1.H.264-GRP",
+                "Movie Title",
+                Some(2019),
+                true,
+            ),
+            (
+                "The Extended Family (2010)",
+                "The Extended Family",
+                Some(2010),
+                false,
+            ),
             ("heat.1995.720p", "Heat", Some(1995), true),
             ("Some.Movie.1080p.BluRay.x264", "Some Movie", None, true),
-            ("Spider-Man Into the Spider-Verse (2018) [1080p]", "Spider-Man Into the Spider-Verse", Some(2018), true),
+            (
+                "Spider-Man Into the Spider-Verse (2018) [1080p]",
+                "Spider-Man Into the Spider-Verse",
+                Some(2018),
+                true,
+            ),
             ("Amélie.2001.DVDRip", "Amélie", Some(2001), true),
             ("Cam (2018)", "Cam", Some(2018), false),
             ("Our Wedding", "Our Wedding", None, false),
@@ -539,10 +660,19 @@ mod tests {
             ("PXL_20240613_101500123", ts(2024, 6, 13, 10, 15, 0)),
             ("PXL_20240613_101500123.MP", ts(2024, 6, 13, 10, 15, 0)),
             ("20240613_101500", ts(2024, 6, 13, 10, 15, 0)),
-            ("Screen Recording 2024-06-13 at 10.15.00", ts(2024, 6, 13, 10, 15, 0)),
-            ("Screen Recording 2024-06-13 at 3.15.00 PM", ts(2024, 6, 13, 15, 15, 0)),
+            (
+                "Screen Recording 2024-06-13 at 10.15.00",
+                ts(2024, 6, 13, 10, 15, 0),
+            ),
+            (
+                "Screen Recording 2024-06-13 at 3.15.00 PM",
+                ts(2024, 6, 13, 15, 15, 0),
+            ),
             ("Screenshot_20240613-101500", ts(2024, 6, 13, 10, 15, 0)),
-            ("WhatsApp Video 2024-06-13 at 10.15.00", ts(2024, 6, 13, 10, 15, 0)),
+            (
+                "WhatsApp Video 2024-06-13 at 10.15.00",
+                ts(2024, 6, 13, 10, 15, 0),
+            ),
             ("VID-20240613-WA0001", ts(2024, 6, 13, 0, 0, 0)),
             ("2024-06-13 10.15.00", ts(2024, 6, 13, 10, 15, 0)),
             ("GOPR0123", None),
@@ -569,9 +699,15 @@ mod tests {
 
     #[test]
     fn dates_in_ordinary_names() {
-        assert_eq!(parse_name("Birthday 2024-06-13").date, ts(2024, 6, 13, 0, 0, 0));
+        assert_eq!(
+            parse_name("Birthday 2024-06-13").date,
+            ts(2024, 6, 13, 0, 0, 0)
+        );
         assert_eq!(parse_name("beach_20230701").date, ts(2023, 7, 1, 0, 0, 0));
-        assert_eq!(parse_name("party 2023.12.31 22.05.10").date, ts(2023, 12, 31, 22, 5, 10));
+        assert_eq!(
+            parse_name("party 2023.12.31 22.05.10").date,
+            ts(2023, 12, 31, 22, 5, 10)
+        );
         assert_eq!(parse_name("trip-2022_08_15").date, ts(2022, 8, 15, 0, 0, 0));
         assert_eq!(parse_name("Heat.1995.1080p").date, None);
         assert_eq!(parse_name("2024-13-45 nonsense").date, None);

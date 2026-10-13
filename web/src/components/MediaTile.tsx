@@ -10,7 +10,7 @@ import * as stylex from '@stylexjs/stylex';
 import {colorVars, fontWeightVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {Skeleton} from '@astryxdesign/core/Skeleton';
 import {Clapperboard, Film, ImageIcon, type LucideIcon} from 'lucide-react';
-import {useState} from 'react';
+import {useState, type MouseEvent} from 'react';
 import {Link} from 'react-router';
 import {formatPercent} from '../lib/format';
 
@@ -20,6 +20,17 @@ const RATIO: Record<MediaShape, string> = {
   poster: '2 / 3',
   frame: '16 / 9',
   square: '1 / 1',
+};
+
+/**
+ * Rendered image width per shape for `srcset` selection. Thumbnails are
+ * 16:9 video frames, so a 2:3 poster crop draws the image about 2.7 times
+ * wider than the tile.
+ */
+const SIZES: Record<MediaShape, string> = {
+  poster: '(max-width: 799px) 120vw, 480px',
+  frame: '(max-width: 520px) 100vw, 360px',
+  square: '(max-width: 520px) 34vw, 180px',
 };
 
 const PLACEHOLDER_ICON: Record<MediaShape, LucideIcon> = {
@@ -75,10 +86,12 @@ const styles = stylex.create({
     position: 'absolute',
     inset: 0,
     borderRadius: 'inherit',
-    boxShadow: 'inset 0 0 0 1px var(--popcorn-media-hairline)',
+    // The neutral tint stands in for --popcorn-media-hairline, whose dark value
+    // currently builds as opaque white (see the popcorn theme's alpha helper).
+    boxShadow: `inset 0 0 0 1px ${colorVars['--color-neutral']}`,
     backgroundColor: {
       default: 'transparent',
-      [stylex.when.ancestor(':hover')]: colorVars['--color-overlay-hover'],
+      [stylex.when.ancestor(':hover')]: colorVars['--color-neutral'],
     },
     transitionProperty: 'background-color',
     transitionDuration: {default: '160ms', '@media (prefers-reduced-motion: reduce)': '0s'},
@@ -151,32 +164,69 @@ export interface MediaTileProps {
   meta?: string;
   /** Thumbnail URL; a quiet placeholder shows while missing or failed. */
   imageSrc?: string | null;
+  /** Optional `srcset` (small and large thumbnails) for sharp tiles on dense screens. */
+  imageSrcSet?: string | null;
   shape: MediaShape;
   /** Watched fraction 0..1, or null for none. */
   progress?: number | null;
   /** Hide title and metadata (photo grids). The title stays the accessible name. */
   isTextHidden?: boolean;
+  /** Icon for the placeholder when there is no image (defaults by shape). */
+  placeholderIcon?: LucideIcon;
+  /**
+   * Plain clicks (no modifier keys) go here instead of navigating, for
+   * example to open a photo viewer. The link still works in a new tab.
+   */
+  onActivate?: () => void;
 }
 
-export function MediaTile({href, title, meta, imageSrc, shape, progress, isTextHidden = false}: MediaTileProps) {
-  const [failed, setFailed] = useState(false);
-  const Placeholder = PLACEHOLDER_ICON[shape];
-  const showImage = Boolean(imageSrc) && !failed;
+function isPlainClick(event: MouseEvent<HTMLAnchorElement>): boolean {
+  return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+}
+
+export function MediaTile({
+  href,
+  title,
+  meta,
+  imageSrc,
+  imageSrcSet,
+  shape,
+  progress,
+  isTextHidden = false,
+  placeholderIcon,
+  onActivate,
+}: MediaTileProps) {
+  // Failure is remembered per source, so a refreshed thumbnail gets a new try.
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const Placeholder = placeholderIcon ?? PLACEHOLDER_ICON[shape];
+  const showImage = Boolean(imageSrc) && failedSrc !== imageSrc;
   const watched = progress !== null && progress !== undefined && progress > 0 ? Math.min(1, progress) : null;
 
   return (
     <Link
       to={href}
       aria-label={isTextHidden ? [title, meta].filter(Boolean).join(', ') : undefined}
+      onClick={
+        onActivate
+          ? event => {
+              if (!isPlainClick(event)) return;
+              event.preventDefault();
+              onActivate();
+            }
+          : undefined
+      }
       {...stylex.props(stylex.defaultMarker(), styles.tile, styles.focusRing)}>
       <span {...stylex.props(styles.frame, ratioStyles.ratio(RATIO[shape]))}>
         {showImage ? (
           <img
+            key={imageSrc ?? undefined}
             src={imageSrc ?? undefined}
+            srcSet={imageSrcSet ?? undefined}
+            sizes={imageSrcSet ? SIZES[shape] : undefined}
             alt=""
             loading="lazy"
             decoding="async"
-            onError={() => setFailed(true)}
+            onError={() => setFailedSrc(imageSrc ?? null)}
             {...stylex.props(styles.image)}
           />
         ) : (

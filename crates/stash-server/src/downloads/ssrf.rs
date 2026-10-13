@@ -123,7 +123,10 @@ impl AddressGuard {
     }
 
     fn is_allowed(&self, ip: IpAddr) -> bool {
-        self.allowed.read().map(|a| a.contains(&ip)).unwrap_or(false)
+        self.allowed
+            .read()
+            .map(|a| a.contains(&ip))
+            .unwrap_or(false)
     }
 
     /// Synchronous check of one address.
@@ -137,7 +140,10 @@ impl AddressGuard {
         if name == "localhost" || name.ends_with(".localhost") {
             return false;
         }
-        self.blocked_names.read().map(|n| !n.contains(&name)).unwrap_or(true)
+        self.blocked_names
+            .read()
+            .map(|n| !n.contains(&name))
+            .unwrap_or(true)
     }
 
     /// Check every resolved address; any forbidden one refuses the whole host.
@@ -153,8 +159,14 @@ impl AddressGuard {
         }
         let port = url.port_or_known_default().unwrap_or(80);
         match url.host() {
-            Some(Host::Ipv4(ip)) => self.ip_ok(IpAddr::V4(ip)).then_some(()).ok_or(GuardError::Blocked),
-            Some(Host::Ipv6(ip)) => self.ip_ok(IpAddr::V6(ip)).then_some(()).ok_or(GuardError::Blocked),
+            Some(Host::Ipv4(ip)) => self
+                .ip_ok(IpAddr::V4(ip))
+                .then_some(())
+                .ok_or(GuardError::Blocked),
+            Some(Host::Ipv6(ip)) => self
+                .ip_ok(IpAddr::V6(ip))
+                .then_some(())
+                .ok_or(GuardError::Blocked),
             Some(Host::Domain(name)) => {
                 if !self.name_ok(name) {
                     return Err(GuardError::Blocked);
@@ -264,7 +276,14 @@ mod tests {
         ] {
             assert!(is_forbidden_ip(ip(bad)), "{bad} should be forbidden");
         }
-        for good in ["1.1.1.1", "8.8.8.8", "172.32.0.1", "100.128.0.1", "2606:4700::1111", "::ffff:1.1.1.1"] {
+        for good in [
+            "1.1.1.1",
+            "8.8.8.8",
+            "172.32.0.1",
+            "100.128.0.1",
+            "2606:4700::1111",
+            "::ffff:1.1.1.1",
+        ] {
             assert!(!is_forbidden_ip(ip(good)), "{good} should be allowed");
         }
     }
@@ -277,20 +296,41 @@ mod tests {
             let guard = &guard;
             async move { guard.check_url(&url).await }
         };
-        assert_eq!(check("http://127.0.0.1:8788/x").await, Err(GuardError::Blocked));
+        assert_eq!(
+            check("http://127.0.0.1:8788/x").await,
+            Err(GuardError::Blocked)
+        );
         assert_eq!(check("http://[::1]/x").await, Err(GuardError::Blocked));
-        assert_eq!(check("http://169.254.169.254/latest/meta-data").await, Err(GuardError::Blocked));
-        assert_eq!(check("http://localhost:9091/torrents").await, Err(GuardError::Blocked));
-        assert_eq!(check("http://foo.localhost/").await, Err(GuardError::Blocked));
-        assert_eq!(check("ftp://example.com/x").await, Err(GuardError::Unsupported));
+        assert_eq!(
+            check("http://169.254.169.254/latest/meta-data").await,
+            Err(GuardError::Blocked)
+        );
+        assert_eq!(
+            check("http://localhost:9091/torrents").await,
+            Err(GuardError::Blocked)
+        );
+        assert_eq!(
+            check("http://foo.localhost/").await,
+            Err(GuardError::Blocked)
+        );
+        assert_eq!(
+            check("ftp://example.com/x").await,
+            Err(GuardError::Unsupported)
+        );
         assert_eq!(check("http://1.1.1.1/x").await, Ok(()));
 
         guard.allow(ip("127.0.0.1"));
         assert_eq!(check("http://127.0.0.1:8788/x").await, Ok(()));
-        assert_eq!(check("http://127.0.0.2:8788/x").await, Err(GuardError::Blocked));
+        assert_eq!(
+            check("http://127.0.0.2:8788/x").await,
+            Err(GuardError::Blocked)
+        );
 
         guard.block_name("popcornstash-vpn");
-        assert_eq!(check("http://PopcornStash-VPN:9092/").await, Err(GuardError::Blocked));
+        assert_eq!(
+            check("http://PopcornStash-VPN:9092/").await,
+            Err(GuardError::Blocked)
+        );
     }
 
     #[test]

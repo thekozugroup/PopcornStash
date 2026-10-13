@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use serde::{Deserialize, Serialize};
 use stash_core::config::Config;
 use stash_core::db::Db;
@@ -33,7 +33,17 @@ pub const MAX_TORRENT_FILE: usize = 10 * 1024 * 1024;
 /// Shown while a torrent waits for the engine.
 pub const MSG_WAITING_FOR_VPN: &str = "Waiting for the VPN to connect.";
 /// Web downloads set to `always` use the VPN and it is down.
-pub const MSG_VPN_REQUIRED: &str = "Downloads are set to use the VPN, and the VPN is not connected.";
+pub const MSG_VPN_REQUIRED: &str =
+    "Downloads are set to use the VPN, and the VPN is not connected.";
+/// Web downloads set to `always` use the VPN and the link uses a port its proxy cannot reach.
+pub const MSG_VPN_PORTS: &str =
+    "Downloads through the VPN can only reach ports 80 and 443, and this link uses another port.";
+/// A link whose private parts were only kept in memory, after a restart.
+pub const MSG_LINK_EXPIRED: &str =
+    "This link carried a private access code that is not kept after a restart. Add the link again.";
+/// Someone re-added a stored link that lost its private parts.
+pub const MSG_LINK_INCOMPLETE: &str = "This link is missing the private access code it had. Add it again from the page you got it from.";
+const MSG_BEING_SORTED: &str = "This download is being sorted. Try again in a moment.";
 
 /// Headers the Chrome extension may forward. Kept in memory only.
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -59,9 +69,13 @@ impl ForwardedHeaders {
     /// Drop empty values; None when nothing is left.
     fn cleaned(self) -> Option<Self> {
         let keep = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        let cleaned =
-            Self { cookie: keep(self.cookie), referer: keep(self.referer), user_agent: keep(self.user_agent) };
-        (cleaned.cookie.is_some() || cleaned.referer.is_some() || cleaned.user_agent.is_some()).then_some(cleaned)
+        let cleaned = Self {
+            cookie: keep(self.cookie),
+            referer: keep(self.referer),
+            user_agent: keep(self.user_agent),
+        };
+        (cleaned.cookie.is_some() || cleaned.referer.is_some() || cleaned.user_agent.is_some())
+            .then_some(cleaned)
     }
 }
 
@@ -119,6 +133,10 @@ pub(crate) struct Tuning {
     pub engine_backoff_max: Duration,
     /// A torrent missing from the engine list for this long has failed.
     pub torrent_missing: Duration,
+    /// Wait before trying again to move a finished torrent that could not be moved.
+    pub finish_retry: Duration,
+    /// Longest time fetching a `.torrent` link may take.
+    pub torrent_fetch_timeout: Duration,
 }
 
 impl Default for Tuning {
@@ -130,6 +148,8 @@ impl Default for Tuning {
             torrent_slow: Duration::from_secs(10),
             engine_backoff_max: Duration::from_secs(60),
             torrent_missing: Duration::from_secs(60),
+            finish_retry: Duration::from_secs(60),
+            torrent_fetch_timeout: Duration::from_secs(60),
         }
     }
 }
@@ -162,6 +182,8 @@ pub struct DownloadManager {
     pub(crate) secrets: DashMap<String, RequestSecrets>,
     /// Running web downloads and how to stop them.
     pub(crate) running: DashMap<String, CancellationToken>,
+    /// Torrent rows whose first engine add is in flight; the poller leaves them alone.
+    pub(crate) adding: DashSet<String>,
     /// Names claimed in `In Progress` by downloads that have not written their file yet.
     reserved: Mutex<HashSet<String>>,
     pub(crate) http_wake: Notify,
@@ -170,7 +192,9 @@ pub struct DownloadManager {
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn not_found() -> ApiError {
@@ -191,7 +215,11 @@ impl DownloadManager {
     ) -> Self {
         let guard = AddressGuard::new();
         // The engine API and its proxy are never valid download targets.
-        for url in config.torrentd_url.iter().chain(config.torrentd_proxy.iter()) {
+        for url in config
+            .torrentd_url
+            .iter()
+            .chain(config.torrentd_proxy.iter())
+        {
             if let Some(host) = url.host_str() {
                 guard.block_name(host);
             }
@@ -208,6 +236,7 @@ impl DownloadManager {
             guard: Arc::new(guard),
             secrets: DashMap::new(),
             running: DashMap::new(),
+            adding: DashSet::new(),
             reserved: Mutex::new(HashSet::new()),
             http_wake: Notify::new(),
             torrent_wake: Notify::new(),
@@ -254,6 +283,15 @@ impl DownloadManager {
         .bind(t)
         .execute(&self.db)
         .await?;
+        // Names of partial web downloads stay claimed across restarts, even before
+        // their .part file exists.
+        let claimed: Vec<(String,)> = sqlx::query_as(
+            "SELECT name FROM downloads WHERE kind = 'http' AND rel_path LIKE 'Downloads/In Progress/%.part'
+             AND state IN ('queued', 'downloading', 'paused', 'failed')",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        lock(&self.reserved).extend(claimed.into_iter().map(|(name,)| name));
         let waiting: Vec<(String, String)> = sqlx::query_as(
             "SELECT id, rel_path FROM downloads WHERE state IN ('sorting', 'completed') AND rel_path IS NOT NULL",
         )
@@ -282,15 +320,30 @@ impl DownloadManager {
         if raw.is_empty() {
             return Err(ApiError::bad_request("Paste a link to download."));
         }
-        if raw.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("magnet:")) {
+        if raw
+            .get(..7)
+            .is_some_and(|p| p.eq_ignore_ascii_case("magnet:"))
+        {
             self.require_torrents()?;
-            let magnet = Magnet::parse(raw).ok_or_else(|| ApiError::bad_request("That magnet link is not valid."))?;
-            let add = stash_core::internal_api::AddTorrentRequest { magnet: Some(raw.to_string()), torrent_base64: None };
-            return self.add_torrent(user_id, add, magnet.name(), magnet.redacted()).await;
+            let magnet = Magnet::parse(raw)
+                .ok_or_else(|| ApiError::bad_request("That magnet link is not valid."))?;
+            let add = stash_core::internal_api::AddTorrentRequest {
+                magnet: Some(raw.to_string()),
+                torrent_base64: None,
+            };
+            return self
+                .add_torrent(user_id, add, magnet.name(), magnet.redacted())
+                .await;
         }
         let url = Url::parse(raw).map_err(|_| ApiError::bad_request("That link is not valid."))?;
         if !matches!(url.scheme(), "http" | "https") {
-            return Err(ApiError::bad_request("Only http, https and magnet links can be downloaded."));
+            return Err(ApiError::bad_request(
+                "Only http, https and magnet links can be downloaded.",
+            ));
+        }
+        // A stored source sent back (a retry): its private parts are gone.
+        if source::is_redacted(&url) {
+            return Err(ApiError::bad_request(MSG_LINK_INCOMPLETE));
         }
         if url.host_str().is_none_or(str::is_empty) {
             return Err(ApiError::bad_request("That link is not valid."));
@@ -299,14 +352,26 @@ impl DownloadManager {
 
         if source::is_torrent_url(&url) {
             self.require_torrents()?;
-            self.guard.check_url(&url).await.map_err(|e| ApiError::bad_request(e.message()))?;
-            let bytes = self.fetch_torrent_file(&url, headers.unwrap_or_default()).await?;
+            self.guard
+                .check_url(&url)
+                .await
+                .map_err(|e| ApiError::bad_request(e.message()))?;
+            let bytes = self
+                .fetch_torrent_file(&url, headers.unwrap_or_default())
+                .await?;
             let filename = source::name_from_url(&url);
             return self.add_torrent_file(user_id, bytes, filename).await;
         }
 
-        self.guard.check_url(&url).await.map_err(|e| ApiError::bad_request(e.message()))?;
-        let chosen = request.filename.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        self.guard
+            .check_url(&url)
+            .await
+            .map_err(|e| ApiError::bad_request(e.message()))?;
+        let chosen = request
+            .filename
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         let (name, rel_path) = match chosen {
             Some(filename) => {
                 let name = self.reserve_name(&paths::sanitize_filename(filename));
@@ -314,8 +379,12 @@ impl DownloadManager {
                 (name, Some(rel))
             }
             None => {
-                let guess = source::name_from_url(&url).or_else(|| url.host_str().map(str::to_string));
-                (paths::sanitize_filename(guess.as_deref().unwrap_or("download")), None)
+                let guess =
+                    source::name_from_url(&url).or_else(|| url.host_str().map(str::to_string));
+                (
+                    paths::sanitize_filename(guess.as_deref().unwrap_or("download")),
+                    None,
+                )
             }
         };
         let stored_source = source::redact_url(&url);
@@ -337,7 +406,13 @@ impl DownloadManager {
                     self.release_name(&name);
                 }
             })?;
-        self.secrets.insert(id.clone(), RequestSecrets { url, headers: headers.unwrap_or_default() });
+        self.secrets.insert(
+            id.clone(),
+            RequestSecrets {
+                url,
+                headers: headers.unwrap_or_default(),
+            },
+        );
         tracing::info!(download = %id, source = %stored_source, "web download queued");
         let download = self.publish_id(&id).await?;
         self.http_wake.notify_one();
@@ -345,10 +420,17 @@ impl DownloadManager {
     }
 
     /// Add a .torrent file.
-    pub async fn add_torrent_file(&self, user_id: &str, bytes: Vec<u8>, filename: Option<String>) -> ApiResult<Download> {
+    pub async fn add_torrent_file(
+        &self,
+        user_id: &str,
+        bytes: Vec<u8>,
+        filename: Option<String>,
+    ) -> ApiResult<Download> {
         self.require_torrents()?;
         if bytes.len() > MAX_TORRENT_FILE {
-            return Err(ApiError::bad_request("The .torrent file is larger than 10 MB."));
+            return Err(ApiError::bad_request(
+                "The .torrent file is larger than 10 MB.",
+            ));
         }
         let info_name = super::torrents::torrent_name(&bytes)
             .map_err(|_| ApiError::bad_request("That file is not a valid .torrent file."))?;
@@ -357,7 +439,10 @@ impl DownloadManager {
             .or_else(|| {
                 filename.as_deref().map(|f| {
                     let lower = f.to_ascii_lowercase();
-                    lower.strip_suffix(".torrent").map(|_| f[..f.len() - 8].to_string()).unwrap_or_else(|| f.to_string())
+                    lower
+                        .strip_suffix(".torrent")
+                        .map(|_| f[..f.len() - 8].to_string())
+                        .unwrap_or_else(|| f.to_string())
                 })
             })
             .filter(|n| !n.trim().is_empty())
@@ -371,37 +456,58 @@ impl DownloadManager {
         self.add_torrent(user_id, add, name, source).await
     }
 
-    /// A finished browser upload that now sits at `rel_path` (under In Progress); moves it to Completed and sorts.
-    pub async fn upload_finished(&self, user_id: &str, filename: &str, rel_path: &str, size: i64) -> ApiResult<Download> {
+    /// A finished browser upload that now sits at `rel_path` (under In Progress): moves it
+    /// straight to Completed under `filename` (sanitized, never overwriting), records the
+    /// download and queues the sort. If the download cannot be recorded, the file goes
+    /// back to `rel_path` so completing can be tried again.
+    pub async fn upload_finished(
+        &self,
+        user_id: &str,
+        filename: &str,
+        rel_path: &str,
+        size: i64,
+    ) -> ApiResult<Download> {
         if StashLayout::zone(rel_path) != Zone::InProgress {
-            return Err(ApiError::bad_request("That upload is not in Downloads/In Progress."));
+            return Err(ApiError::bad_request(
+                "That upload is not in Downloads/In Progress.",
+            ));
         }
         let src = self.layout.abs(rel_path)?;
-        if tokio::fs::symlink_metadata(&src).await.is_err() {
-            return Err(ApiError::not_found("The uploaded file is missing."));
+        match tokio::fs::symlink_metadata(&src).await {
+            Ok(meta) if meta.is_file() => {}
+            _ => return Err(ApiError::not_found("The uploaded file is missing.")),
         }
         let name = paths::sanitize_filename(filename);
-        let id = self
+        let (dest, rel) = self.move_to_completed(&src, &name).await.map_err(|e| {
+            tracing::error!(error = %e, "could not move an upload to Completed");
+            ApiError::new(
+                ErrorCode::Internal,
+                "The upload could not be moved to Downloads/Completed.",
+            )
+        })?;
+        let inserted = self
             .insert_row(NewDownload {
                 kind: DownloadKind::Upload,
                 name: &name,
                 source: &name,
                 state: DownloadState::Completed,
                 created_by: user_id,
-                rel_path: Some(rel_path),
+                rel_path: Some(&rel),
                 total_bytes: Some(size),
                 done_bytes: size,
                 error: None,
             })
-            .await?;
-        match self.move_to_completed(&src).await {
-            Ok((_, rel)) => self.complete_and_sort(&id, &rel, Some(size)).await?,
+            .await;
+        let id = match inserted {
+            Ok(id) => id,
             Err(e) => {
-                tracing::error!(error = %e, download = %id, "could not move an upload to Completed");
-                self.fail(&id, "The upload could not be moved to Downloads/Completed.").await;
-                return Err(ApiError::internal());
+                if let Err(back) = paths::move_path(&dest, &src).await {
+                    tracing::warn!(error = %back, "could not return an upload after a failure");
+                }
+                return Err(e);
             }
-        }
+        };
+        self.complete_and_sort(&id, &rel, Some(size)).await?;
         self.get(&id).await
     }
 
@@ -409,10 +515,16 @@ impl DownloadManager {
         let limit = i64::from(limit.clamp(1, 500));
         let filter_sql = match filter {
             DownloadFilter::All => "",
-            DownloadFilter::Active => "WHERE state IN ('queued', 'downloading', 'paused', 'seeding', 'sorting')",
-            DownloadFilter::Finished => "WHERE state IN ('completed', 'sorted', 'failed', 'cancelled')",
+            DownloadFilter::Active => {
+                "WHERE state IN ('queued', 'downloading', 'paused', 'seeding', 'sorting')"
+            }
+            DownloadFilter::Finished => {
+                "WHERE state IN ('completed', 'sorted', 'failed', 'cancelled')"
+            }
         };
-        let sql = format!("SELECT * FROM downloads {filter_sql} ORDER BY created_at DESC, id DESC LIMIT ?");
+        let sql = format!(
+            "SELECT * FROM downloads {filter_sql} ORDER BY created_at DESC, id DESC LIMIT ?"
+        );
         let rows: Vec<DownloadRow> = sqlx::query_as(&sql).bind(limit).fetch_all(&self.db).await?;
         if rows.is_empty() {
             return Ok(Vec::new());
@@ -429,7 +541,11 @@ impl DownloadManager {
         Ok(rows
             .iter()
             .map(|row| {
-                let items = links.iter().filter(|(d, _)| *d == row.id).map(|(_, i)| i.clone()).collect();
+                let items = links
+                    .iter()
+                    .filter(|(d, _)| *d == row.id)
+                    .map(|(_, i)| i.clone())
+                    .collect();
                 row.to_download(items)
             })
             .collect())
@@ -446,10 +562,16 @@ impl DownloadManager {
         match row.kind {
             DownloadKind::Upload => return Err(ApiError::conflict("Uploads cannot be paused.")),
             DownloadKind::Http => {
-                if !matches!(row.state, DownloadState::Queued | DownloadState::Downloading | DownloadState::Paused) {
-                    return Err(ApiError::conflict("Only downloads in progress can be paused."));
+                if !matches!(
+                    row.state,
+                    DownloadState::Queued | DownloadState::Downloading | DownloadState::Paused
+                ) {
+                    return Err(ApiError::conflict(
+                        "Only downloads in progress can be paused.",
+                    ));
                 }
-                self.set_state_if(id, DownloadState::Paused, &["queued", "downloading"]).await?;
+                self.set_state_if(id, DownloadState::Paused, &["queued", "downloading"])
+                    .await?;
                 if let Some(token) = self.running.get(id) {
                     token.cancel();
                 }
@@ -457,16 +579,29 @@ impl DownloadManager {
             DownloadKind::Torrent => {
                 if !matches!(
                     row.state,
-                    DownloadState::Queued | DownloadState::Downloading | DownloadState::Seeding | DownloadState::Paused
+                    DownloadState::Queued
+                        | DownloadState::Downloading
+                        | DownloadState::Seeding
+                        | DownloadState::Paused
                 ) {
-                    return Err(ApiError::conflict("Only downloads in progress can be paused."));
+                    return Err(ApiError::conflict(
+                        "Only downloads in progress can be paused.",
+                    ));
                 }
-                if let Some(engine_id) = row.engine_id.as_deref() {
-                    if row.state != DownloadState::Paused {
-                        self.torrentd.pause(engine_id).await.map_err(|e| engine_error(&e))?;
-                    }
+                if let Some(engine_id) = row.engine_id.as_deref()
+                    && row.state != DownloadState::Paused
+                {
+                    self.torrentd
+                        .pause(engine_id)
+                        .await
+                        .map_err(|e| engine_error(&e))?;
                 }
-                self.set_state_if(id, DownloadState::Paused, &["queued", "downloading", "seeding"]).await?;
+                self.set_state_if(
+                    id,
+                    DownloadState::Paused,
+                    &["queued", "downloading", "seeding"],
+                )
+                .await?;
                 self.torrent_wake.notify_one();
             }
         }
@@ -476,8 +611,16 @@ impl DownloadManager {
     pub async fn resume(&self, id: &str) -> ApiResult<Download> {
         let row = self.load_row(id).await?;
         match row.kind {
-            DownloadKind::Upload => return Err(ApiError::conflict("Uploads cannot be resumed here.")),
+            DownloadKind::Upload => {
+                return Err(ApiError::conflict("Uploads cannot be resumed here."));
+            }
             DownloadKind::Http => match row.state {
+                DownloadState::Paused | DownloadState::Failed
+                    if !self.secrets.contains_key(id)
+                        && source::is_redacted_source(&row.source) =>
+                {
+                    return Err(ApiError::conflict(MSG_LINK_EXPIRED));
+                }
                 DownloadState::Paused | DownloadState::Failed => {
                     sqlx::query(
                         "UPDATE downloads SET state = 'queued', error = NULL, down_bps = 0, eta_s = NULL, updated_at = ?
@@ -494,8 +637,12 @@ impl DownloadManager {
             },
             DownloadKind::Torrent => match (row.state, row.engine_id.as_deref()) {
                 (DownloadState::Paused, Some(engine_id)) => {
-                    self.torrentd.resume(engine_id).await.map_err(|e| engine_error(&e))?;
-                    self.set_state_if(id, DownloadState::Downloading, &["paused"]).await?;
+                    self.torrentd
+                        .resume(engine_id)
+                        .await
+                        .map_err(|e| engine_error(&e))?;
+                    self.set_state_if(id, DownloadState::Downloading, &["paused"])
+                        .await?;
                     self.torrent_wake.notify_one();
                 }
                 (DownloadState::Paused, None) => {
@@ -509,8 +656,15 @@ impl DownloadManager {
                     .await?;
                     self.torrent_wake.notify_one();
                 }
-                (DownloadState::Queued | DownloadState::Downloading | DownloadState::Seeding, _) => {}
-                _ => return Err(ApiError::conflict("This download cannot be resumed. Add it again.")),
+                (
+                    DownloadState::Queued | DownloadState::Downloading | DownloadState::Seeding,
+                    _,
+                ) => {}
+                _ => {
+                    return Err(ApiError::conflict(
+                        "This download cannot be resumed. Add it again.",
+                    ));
+                }
             },
         }
         self.publish_id(id).await
@@ -518,19 +672,18 @@ impl DownloadManager {
 
     pub async fn remove(&self, id: &str, delete_files: bool) -> ApiResult<()> {
         let row = self.load_row(id).await?;
-        if row.state == DownloadState::Sorting {
-            return Err(ApiError::conflict("This download is being sorted. Try again in a moment."));
+        if row.state == DownloadState::Sorting && self.sort_pending(&row).await? {
+            return Err(ApiError::conflict(MSG_BEING_SORTED));
         }
         match row.kind {
             DownloadKind::Http => self.stop_worker(id).await,
             DownloadKind::Torrent => {
-                let in_engine = !matches!(
-                    row.state,
-                    DownloadState::Completed | DownloadState::Sorting | DownloadState::Sorted
-                );
-                if let (Some(engine_id), true) = (row.engine_id.as_deref(), in_engine) {
+                if let (Some(engine_id), true) = (row.engine_id.as_deref(), torrent_in_engine(&row))
+                {
                     match self.torrentd.remove(engine_id, delete_files).await {
-                        Ok(()) | Err(TorrentdError::Disabled) | Err(TorrentdError::Api { status: 404, .. }) => {}
+                        Ok(())
+                        | Err(TorrentdError::Disabled)
+                        | Err(TorrentdError::Api { status: 404, .. }) => {}
                         Err(e) => return Err(engine_error(&e)),
                     }
                 }
@@ -540,24 +693,50 @@ impl DownloadManager {
         }
         // The worker may have finished meanwhile.
         let row = self.load_row(id).await?;
-        if row.state == DownloadState::Sorting {
-            return Err(ApiError::conflict("This download is being sorted. Try again in a moment."));
+        if row.state == DownloadState::Sorting && self.sort_pending(&row).await? {
+            return Err(ApiError::conflict(MSG_BEING_SORTED));
         }
-        if delete_files {
-            if let Some(rel) = row.rel_path.as_deref() {
-                self.delete_download_files(rel).await;
-            }
+        // Once sorted, the files live in the library and the old path may belong to a
+        // newer download: only files the download still owns are deleted.
+        let owns_files = !matches!(row.state, DownloadState::Sorted | DownloadState::Cancelled);
+        if delete_files
+            && owns_files
+            && let Some(rel) = row.rel_path.as_deref()
+        {
+            self.delete_download_files(rel).await;
         }
         let mut gone = row.clone();
         gone.state = DownloadState::Cancelled;
-        self.events.publish(Event::Download(gone.to_download(Vec::new())));
-        sqlx::query("DELETE FROM downloads WHERE id = ?").bind(id).execute(&self.db).await?;
+        self.events
+            .publish(Event::Download(gone.to_download(Vec::new())));
+        sqlx::query("DELETE FROM downloads WHERE id = ?")
+            .bind(id)
+            .execute(&self.db)
+            .await?;
         self.secrets.remove(id);
-        if row.kind == DownloadKind::Http && row.rel_path.as_deref().is_some_and(|r| r.ends_with(".part")) {
+        if row.kind == DownloadKind::Http
+            && row
+                .rel_path
+                .as_deref()
+                .is_some_and(|r| r.ends_with(".part"))
+        {
             self.release_name(&row.name);
         }
         tracing::info!(download = %id, delete_files, "download removed");
         Ok(())
+    }
+
+    /// True while a sort job for this download (or its path) is queued or running.
+    async fn sort_pending(&self, row: &DownloadRow) -> ApiResult<bool> {
+        let (pending,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS(SELECT 1 FROM jobs WHERE kind = 'sort' AND state IN ('queued', 'running')
+               AND (json_extract(payload, '$.download_id') = ? OR json_extract(payload, '$.rel_path') = ?))",
+        )
+        .bind(&row.id)
+        .bind(row.rel_path.as_deref())
+        .fetch_one(&self.db)
+        .await?;
+        Ok(pending)
     }
 
     // --- shared helpers -----------------------------------------------------------
@@ -570,22 +749,32 @@ impl DownloadManager {
         }
     }
 
-    /// Which proxy a web request uses, per `http_via_vpn`. Err is a user-facing message.
-    pub(crate) async fn choose_proxy(&self) -> Result<Option<reqwest::Proxy>, String> {
+    /// Which proxy a request for `url` uses, per `http_via_vpn`. The VPN proxy only
+    /// reaches ports 80 and 443: `when_available` goes direct for other ports and
+    /// `always` refuses them. Err is a user-facing message.
+    pub(crate) async fn choose_proxy(&self, url: &Url) -> Result<Option<reqwest::Proxy>, String> {
         let setting = self.settings.get().await.http_via_vpn;
+        let proxy_reaches = proxy_reaches(url);
         match setting {
             HttpViaVpn::Never => Ok(None),
             HttpViaVpn::WhenAvailable => {
-                if self.torrentd.enabled() {
+                if self.torrentd.enabled() && proxy_reaches {
                     Ok(self.torrentd.download_proxy().await)
                 } else {
                     Ok(None)
                 }
             }
             HttpViaVpn::Always => {
-                let proxy =
-                    if self.torrentd.enabled() { self.torrentd.download_proxy().await } else { None };
-                proxy.map(Some).ok_or_else(|| MSG_VPN_REQUIRED.to_string())
+                let proxy = if self.torrentd.enabled() {
+                    self.torrentd.download_proxy().await
+                } else {
+                    None
+                };
+                match proxy {
+                    None => Err(MSG_VPN_REQUIRED.to_string()),
+                    Some(_) if !proxy_reaches => Err(MSG_VPN_PORTS.to_string()),
+                    Some(proxy) => Ok(Some(proxy)),
+                }
             }
         }
     }
@@ -599,11 +788,12 @@ impl DownloadManager {
     }
 
     async fn item_ids(&self, id: &str) -> ApiResult<Vec<String>> {
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT item_id FROM download_items WHERE download_id = ? ORDER BY item_id")
-                .bind(id)
-                .fetch_all(&self.db)
-                .await?;
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT item_id FROM download_items WHERE download_id = ? ORDER BY item_id",
+        )
+        .bind(id)
+        .fetch_all(&self.db)
+        .await?;
         Ok(rows.into_iter().map(|(i,)| i).collect())
     }
 
@@ -616,7 +806,8 @@ impl DownloadManager {
 
     /// Publish without reading the database (progress ticks).
     pub(crate) fn publish_row(&self, row: &DownloadRow) {
-        self.events.publish(Event::Download(row.to_download(Vec::new())));
+        self.events
+            .publish(Event::Download(row.to_download(Vec::new())));
     }
 
     pub(crate) async fn insert_row(&self, new: NewDownload<'_>) -> ApiResult<String> {
@@ -653,9 +844,16 @@ impl DownloadManager {
     }
 
     /// Set `state` when the current state is one of `from`. Returns whether it changed.
-    pub(crate) async fn set_state_if(&self, id: &str, state: DownloadState, from: &[&str]) -> ApiResult<bool> {
+    pub(crate) async fn set_state_if(
+        &self,
+        id: &str,
+        state: DownloadState,
+        from: &[&str],
+    ) -> ApiResult<bool> {
         let placeholders = vec!["?"; from.len()].join(", ");
-        let sql = format!("UPDATE downloads SET state = ?, updated_at = ? WHERE id = ? AND state IN ({placeholders})");
+        let sql = format!(
+            "UPDATE downloads SET state = ?, updated_at = ? WHERE id = ? AND state IN ({placeholders})"
+        );
         let mut query = sqlx::query(&sql).bind(state.as_str()).bind(now()).bind(id);
         for s in from {
             query = query.bind(*s);
@@ -678,13 +876,20 @@ impl DownloadManager {
             Ok(_) => {
                 let _ = self.publish_id(id).await;
             }
-            Err(e) => tracing::warn!(error = %e, download = %id, "could not record a failed download"),
+            Err(e) => {
+                tracing::warn!(error = %e, download = %id, "could not record a failed download")
+            }
         }
     }
 
     /// The download's files are in `Completed/` at `rel`: mark it completed, queue the
     /// sort job, then mark it sorting.
-    pub(crate) async fn complete_and_sort(&self, id: &str, rel: &str, total: Option<i64>) -> ApiResult<()> {
+    pub(crate) async fn complete_and_sort(
+        &self,
+        id: &str,
+        rel: &str,
+        total: Option<i64>,
+    ) -> ApiResult<()> {
         let t = now();
         sqlx::query(
             "UPDATE downloads SET state = 'completed', rel_path = ?, completed_at = COALESCE(completed_at, ?),
@@ -706,28 +911,29 @@ impl DownloadManager {
             tracing::warn!(error = %e, download = %id, "could not queue the sort job");
             return Ok(());
         }
-        self.set_state_if(id, DownloadState::Sorting, &["completed"]).await?;
+        self.set_state_if(id, DownloadState::Sorting, &["completed"])
+            .await?;
         self.publish_id(id).await?;
         Ok(())
     }
 
-    /// Move a file or folder into `Completed/` under a free name. Returns the absolute
-    /// and relative destination.
-    pub(crate) async fn move_to_completed(&self, src: &Path) -> stash_core::Result<(PathBuf, String)> {
-        let name = src
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .ok_or_else(|| stash_core::CoreError::invalid("nothing to move"))?;
+    /// Move a file or folder into `Completed/` as `name` (a single component), or a free
+    /// variant of it. Never overwrites. Returns the absolute and relative destination.
+    pub(crate) async fn move_to_completed(
+        &self,
+        src: &Path,
+        name: &str,
+    ) -> stash_core::Result<(PathBuf, String)> {
+        let name = paths::sanitize_filename(name);
         let completed = self.layout.completed();
         let mut last = None;
         for _ in 0..8 {
             let dest = paths::unique_path(&completed.join(&name));
             match paths::move_path(src, &dest).await {
                 Ok(()) => {
-                    let rel = self
-                        .layout
-                        .rel(&dest)
-                        .ok_or_else(|| stash_core::CoreError::invalid("destination outside the stash"))?;
+                    let rel = self.layout.rel(&dest).ok_or_else(|| {
+                        stash_core::CoreError::invalid("destination outside the stash")
+                    })?;
                     return Ok((dest, rel));
                 }
                 // Someone took the name between the check and the move; pick another.
@@ -754,7 +960,11 @@ impl DownloadManager {
         };
         let mut n = 1u32;
         let name = loop {
-            let candidate = if n == 1 { wanted.to_string() } else { format!("{stem} ({n}){ext}") };
+            let candidate = if n == 1 {
+                wanted.to_string()
+            } else {
+                format!("{stem} ({n}){ext}")
+            };
             if !taken(&candidate) {
                 break candidate;
             }
@@ -770,7 +980,10 @@ impl DownloadManager {
 
     /// Where a torrent waiting for the engine keeps its add request across restarts.
     pub(crate) fn pending_path(&self, id: &str) -> PathBuf {
-        self.config.config_dir.join("pending-torrents").join(format!("{id}.json"))
+        self.config
+            .config_dir
+            .join("pending-torrents")
+            .join(format!("{id}.json"))
     }
 
     /// Stop a running web download and wait (briefly) for its worker to exit.
@@ -791,10 +1004,15 @@ impl DownloadManager {
     /// `Downloads/In Progress` or `Downloads/Completed` are touched, never the library.
     async fn delete_download_files(&self, rel: &str) {
         if !is_deletable_download_path(rel) {
-            tracing::warn!(rel, "refusing to delete a path outside the download folders");
+            tracing::warn!(
+                rel,
+                "refusing to delete a path outside the download folders"
+            );
             return;
         }
-        let Ok(abs) = self.layout.abs(rel) else { return };
+        let Ok(abs) = self.layout.abs(rel) else {
+            return;
+        };
         let result = match tokio::fs::symlink_metadata(&abs).await {
             Ok(meta) if meta.is_dir() => tokio::fs::remove_dir_all(&abs).await,
             Ok(_) => tokio::fs::remove_file(&abs).await,
@@ -810,10 +1028,14 @@ impl DownloadManager {
 /// themselves, not partial browser uploads).
 pub(crate) fn is_deletable_download_path(rel: &str) -> bool {
     let rel = rel.trim_matches('/');
-    if rel.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
+    if rel
+        .split('/')
+        .any(|c| c.is_empty() || c == "." || c == "..")
+    {
         return false;
     }
-    let inside = |prefix: &str| rel.len() > prefix.len() + 1 && rel.starts_with(&format!("{prefix}/"));
+    let inside =
+        |prefix: &str| rel.len() > prefix.len() + 1 && rel.starts_with(&format!("{prefix}/"));
     let uploads = rel == paths::UPLOADS_TMP || rel.starts_with(&format!("{}/", paths::UPLOADS_TMP));
     (inside(paths::IN_PROGRESS) || inside(paths::COMPLETED)) && !uploads
 }
@@ -823,25 +1045,55 @@ pub(crate) fn engine_error(e: &TorrentdError) -> ApiError {
     e.api_error()
 }
 
+/// The VPN download proxy only connects to ports 80 and 443.
+pub(crate) fn proxy_reaches(url: &Url) -> bool {
+    matches!(url.port_or_known_default(), Some(80 | 443))
+}
+
+/// The engine may still hold this torrent: anything not yet handed to the sorter,
+/// including a completed torrent whose files have not left `In Progress`.
+fn torrent_in_engine(row: &DownloadRow) -> bool {
+    match row.state {
+        DownloadState::Sorting | DownloadState::Sorted => false,
+        DownloadState::Completed => row
+            .rel_path
+            .as_deref()
+            .is_some_and(|rel| StashLayout::zone(rel) == Zone::InProgress),
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn deletable_paths() {
-        assert!(is_deletable_download_path("Downloads/In Progress/a.mkv.part"));
+        assert!(is_deletable_download_path(
+            "Downloads/In Progress/a.mkv.part"
+        ));
         assert!(is_deletable_download_path("Downloads/Completed/Show S01"));
         assert!(!is_deletable_download_path("Downloads/Completed"));
         assert!(!is_deletable_download_path("Downloads/In Progress"));
-        assert!(!is_deletable_download_path("Downloads/In Progress/.uploads/x.part"));
-        assert!(!is_deletable_download_path("Movies/Heat (1995)/Heat (1995).mkv"));
-        assert!(!is_deletable_download_path("Downloads/Completed/../../Movies"));
+        assert!(!is_deletable_download_path(
+            "Downloads/In Progress/.uploads/x.part"
+        ));
+        assert!(!is_deletable_download_path(
+            "Movies/Heat (1995)/Heat (1995).mkv"
+        ));
+        assert!(!is_deletable_download_path(
+            "Downloads/Completed/../../Movies"
+        ));
         assert!(!is_deletable_download_path("Downloads/Completedx/a"));
     }
 
     #[test]
     fn headers_debug_hides_values() {
-        let headers = ForwardedHeaders { cookie: Some("sid=SECRET".into()), referer: None, user_agent: None };
+        let headers = ForwardedHeaders {
+            cookie: Some("sid=SECRET".into()),
+            referer: None,
+            user_agent: None,
+        };
         let shown = format!("{headers:?}");
         assert!(!shown.contains("SECRET"));
         let request = AddDownloadRequest {

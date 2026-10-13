@@ -1,0 +1,482 @@
+/*
+ * PopcornStash tokens for the extension, mirroring DESIGN.md and the web
+ * app's Popcorn theme (web/src/themes/popcorn/popcornTheme.ts): zinc
+ * neutrals, blue-500 as the single action and focus accent with zinc-950 text
+ * on blue, the system sans, flat surfaces, thin dividers, 8px controls,
+ * 44px targets, system light/dark and reduced motion.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* Tailwind zinc, blue, emerald, amber, red */
+  --zinc-50: oklch(98.5% 0 0);
+  --zinc-100: oklch(96.7% 0.001 286.375);
+  --zinc-200: oklch(92% 0.004 286.32);
+  --zinc-300: oklch(87.1% 0.006 286.286);
+  --zinc-400: oklch(70.5% 0.015 286.067);
+  --zinc-500: oklch(55.2% 0.016 285.938);
+  --zinc-600: oklch(44.2% 0.017 285.786);
+  --zinc-700: oklch(37% 0.013 285.805);
+  --zinc-800: oklch(27.4% 0.006 286.033);
+  --zinc-900: oklch(21% 0.006 285.885);
+  --zinc-950: oklch(14.1% 0.005 285.823);
+  --blue-400: oklch(70.7% 0.165 254.624);
+  --blue-500: oklch(62.3% 0.214 259.815);
+  --blue-600: oklch(54.6% 0.245 262.881);
+
+  /* Semantic, light */
+  --page: var(--zinc-50);
+  --surface: #fff;
+  --text: var(--zinc-900);
+  --text-muted: var(--zinc-600);
+  --divider: var(--zinc-200);
+  --control-border: var(--zinc-300);
+  --control-border-hover: var(--zinc-400);
+  --fill-subtle: var(--zinc-100);
+  --fill-hover: oklch(14.1% 0.005 285.823 / 5%);
+  --fill-pressed: oklch(14.1% 0.005 285.823 / 10%);
+  --track: var(--zinc-200);
+  --accent: var(--blue-500);
+  --accent-hover: var(--blue-400);
+  --on-accent: var(--zinc-950);
+  --text-accent: var(--blue-600);
+  --error-text: oklch(50.5% 0.213 27.518);
+  --error-fill: oklch(63.7% 0.237 25.331 / 10%);
+  --error-line: oklch(63.7% 0.237 25.331 / 35%);
+  --status-connected: oklch(69.6% 0.17 162.48);
+  --status-warning: oklch(76.9% 0.188 70.08);
+  --status-error: oklch(63.7% 0.237 25.331);
+  --status-neutral: var(--zinc-500);
+  --mark-tile: var(--zinc-900);
+  --mark-glyph: var(--zinc-50);
+  --skeleton: var(--zinc-200);
+  --selection: oklch(62.3% 0.214 259.815 / 22%);
+
+  /* Shape and size */
+  --radius-control: 8px;
+  --radius-panel: 16px;
+  --radius-tag: 6px;
+  --radius-progress: 4px;
+  --target: 44px;
+
+  /* Type */
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-code: ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration: 160ms;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: var(--zinc-950);
+    --surface: var(--zinc-900);
+    --text: var(--zinc-50);
+    --text-muted: var(--zinc-400);
+    --divider: var(--zinc-800);
+    --control-border: var(--zinc-700);
+    --control-border-hover: var(--zinc-600);
+    --fill-subtle: var(--zinc-800);
+    --fill-hover: oklch(100% 0 0 / 6%);
+    --fill-pressed: oklch(100% 0 0 / 12%);
+    --track: var(--zinc-800);
+    --text-accent: var(--blue-400);
+    --error-text: oklch(70.4% 0.191 22.216);
+    --error-fill: oklch(63.7% 0.237 25.331 / 14%);
+    --error-line: oklch(63.7% 0.237 25.331 / 40%);
+    --mark-tile: var(--zinc-50);
+    --mark-glyph: var(--zinc-900);
+    --skeleton: var(--zinc-800);
+    --selection: oklch(62.3% 0.214 259.815 / 35%);
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 1rem;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  accent-color: var(--accent);
+}
+
+::selection {
+  background: var(--selection);
+}
+
+p,
+h1,
+h2,
+h3,
+ul,
+dl,
+dd {
+  margin: 0;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* Brand ------------------------------------------------------------------ */
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.brand-mark {
+  flex-shrink: 0;
+  display: block;
+}
+
+.brand-mark-tile {
+  fill: var(--mark-tile);
+}
+
+.brand-mark-glyph {
+  fill: var(--mark-glyph);
+}
+
+.brand-mark-bowl {
+  stroke: var(--mark-glyph);
+}
+
+.brand-word {
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.6px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.brand-product {
+  margin-inline-start: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+/* Buttons ---------------------------------------------------------------- */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: var(--target);
+  padding: 0 16px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4286;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--duration) var(--ease-out),
+    border-color var(--duration) var(--ease-out),
+    transform var(--duration) var(--ease-out);
+}
+
+.button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.button-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.button-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.button-secondary {
+  background: var(--surface);
+  border-color: var(--divider);
+  color: var(--text);
+}
+
+.button-secondary:hover:not(:disabled) {
+  border-color: var(--control-border);
+  background: color-mix(in oklch, var(--surface), var(--text) 4%);
+}
+
+.button-quiet {
+  padding: 0 12px;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.button-quiet:hover:not(:disabled) {
+  background: var(--fill-hover);
+  color: var(--text);
+}
+
+.button-block {
+  width: 100%;
+}
+
+.button-small {
+  min-height: 36px;
+  padding: 0 12px;
+}
+
+@media (pointer: coarse) {
+  .button-small {
+    min-height: var(--target);
+  }
+}
+
+.link-button {
+  min-height: var(--target);
+  padding: 0 4px;
+  margin-inline-end: -4px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: none;
+  color: var(--text-accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Fields ----------------------------------------------------------------- */
+
+.label {
+  display: block;
+  font-size: 14px;
+  font-weight: 550;
+  line-height: 1.5;
+}
+
+.hint {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.hint p + p {
+  margin-top: 8px;
+}
+
+.input {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--target);
+  padding: 0 12px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9375rem;
+  caret-color: var(--accent);
+  transition: border-color var(--duration) var(--ease-out);
+}
+
+.input::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+.input:hover {
+  border-color: var(--control-border-hover);
+}
+
+.input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.input[aria-invalid='true'] {
+  border-color: var(--status-error);
+}
+
+.input:read-only {
+  color: var(--text-muted);
+}
+
+.field-message {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.field-message:empty {
+  display: none;
+}
+
+.field-message-error {
+  color: var(--error-text);
+}
+
+.field-message-success {
+  color: var(--text);
+}
+
+/* Status tag ------------------------------------------------------------- */
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 5px 9px;
+  border-radius: var(--radius-tag);
+  background: var(--fill-subtle);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.tag-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--status-neutral);
+}
+
+.dot-connected {
+  background: var(--status-connected);
+}
+
+.dot-warning {
+  background: var(--status-warning);
+}
+
+.dot-error {
+  background: var(--status-error);
+}
+
+/* Progress --------------------------------------------------------------- */
+
+.progress {
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--radius-progress);
+  background: var(--track);
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: var(--radius-progress);
+  background: var(--accent);
+  transform-origin: left center;
+  transition: transform 400ms var(--ease-out);
+}
+
+/* Notices ---------------------------------------------------------------- */
+
+.notice {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  padding: 12px 14px;
+  border-radius: var(--radius-control);
+  background: var(--fill-subtle);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.notice-error {
+  background: var(--error-fill);
+  box-shadow: inset 0 0 0 1px var(--error-line);
+}
+
+.notice-title {
+  font-weight: 600;
+}
+
+.notice-text {
+  color: var(--text);
+}
+
+/* Skeleton --------------------------------------------------------------- */
+
+.skeleton {
+  display: block;
+  height: 12px;
+  border-radius: 4px;
+  background: var(--skeleton);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .skeleton {
+    animation: skeleton-pulse 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes skeleton-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

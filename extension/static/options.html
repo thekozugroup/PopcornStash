@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>PopcornStash options</title>
+    <link rel="stylesheet" href="options.css" />
+    <script type="module" src="options.js"></script>
+  </head>
+  <body class="options">
+    <div class="page">
+      <header class="masthead">
+        <div class="brand">
+          <svg class="brand-mark" viewBox="0 0 512 512" width="32" height="32" aria-hidden="true">
+            <rect class="brand-mark-tile" width="512" height="512" rx="112" />
+            <rect class="brand-mark-glyph" x="166" y="170" width="52" height="236" rx="26" />
+            <circle class="brand-mark-bowl" cx="280" cy="250" r="76" fill="none" stroke-width="52" />
+          </svg>
+          <p class="brand-word">Popcorn<span class="brand-product">Stash</span></p>
+        </div>
+      </header>
+
+      <main>
+        <div class="intro">
+          <h1 class="page-title" id="page-title">Connect Chrome to PopcornStash</h1>
+          <p class="page-lede" id="page-lede"></p>
+        </div>
+
+        <section class="section" aria-labelledby="server-title">
+          <h2 class="section-title" id="server-title">Server</h2>
+          <div id="server-body" class="section-body"></div>
+        </section>
+
+        <section class="section" aria-labelledby="sending-title">
+          <h2 class="section-title" id="sending-title">Sending</h2>
+          <div class="section-body settings">
+            <div class="setting">
+              <div class="setting-text">
+                <label class="setting-title" for="intercept">Send all my browser downloads to PopcornStash</label>
+                <p class="hint" id="intercept-hint">
+                  Chrome pauses each new download and hands its link to PopcornStash. Chrome's copy is cancelled only
+                  after PopcornStash starts fetching the file. If that fails, Chrome carries on as usual. Downloads from
+                  PopcornStash itself and from incognito windows stay in Chrome.
+                </p>
+                <p class="field-message field-message-error" id="intercept-message" role="alert" hidden></p>
+              </div>
+              <input class="switch" type="checkbox" role="switch" id="intercept" aria-describedby="intercept-hint" />
+            </div>
+
+            <div class="setting">
+              <div class="setting-text">
+                <label class="setting-title" for="cookies">Include this site's sign-in cookies so protected downloads work</label>
+                <div class="hint" id="cookies-hint">
+                  <p>
+                    Some sites only let signed-in people download. With this on, each link you send carries the cookies
+                    Chrome holds for that link's site, and only that site, so PopcornStash can fetch the file as you.
+                  </p>
+                  <p>
+                    The trade-off: those cookies can sign in as you on that site. PopcornStash keeps them in memory for
+                    the one download and never saves them, but anyone in control of the server could use them while it
+                    runs. Turn this on only for a server you run yourself. Chrome will ask to let the extension read
+                    cookies on all sites.
+                  </p>
+                </div>
+                <p class="field-message field-message-error" id="cookies-message" role="alert" hidden></p>
+              </div>
+              <input class="switch" type="checkbox" role="switch" id="cookies" aria-describedby="cookies-hint" />
+            </div>
+          </div>
+        </section>
+
+        <section class="section" aria-labelledby="privacy-title">
+          <h2 class="section-title" id="privacy-title">Privacy</h2>
+          <div class="section-body prose">
+            <ul class="plain-list">
+              <li>The access key for your server stays on this computer, in Chrome's local extension storage. It is never synced to your Google account.</li>
+              <li>Links go only to your PopcornStash server. The extension sends nothing anywhere else.</li>
+              <li>Cookies travel only when the option above is on, and only the download site's own. Cookies for PopcornStash itself are never sent.</li>
+              <li>To remove this browser's access completely, open PopcornStash, Settings, Devices, and remove it there.</li>
+            </ul>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

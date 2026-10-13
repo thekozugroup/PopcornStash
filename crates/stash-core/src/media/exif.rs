@@ -1,6 +1,6 @@
 //! EXIF reading for photos.
 
-use std::io::BufReader;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use ::exif::{DateTime, Exif, Field, In, Reader, Tag, Value};
@@ -28,7 +28,11 @@ impl ExifInfo {
 
     /// Width and height as displayed, after applying the orientation.
     pub fn display_size(&self) -> (Option<i64>, Option<i64>) {
-        if self.swaps_dimensions() { (self.height, self.width) } else { (self.width, self.height) }
+        if self.swaps_dimensions() {
+            (self.height, self.width)
+        } else {
+            (self.width, self.height)
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -36,15 +40,25 @@ impl ExifInfo {
     }
 }
 
+/// TIFF-structured files (TIFF, DNG, NEF, CR2, ARW) keep their EXIF near the start, but
+/// the EXIF library reads such a file whole: a multi-gigabyte scan would land in memory.
+/// At most this much of one is read.
+const MAX_TIFF_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Blocking EXIF read (JPEG, HEIC, TIFF, PNG, WebP, DNG). Ok(None) when absent.
 ///
 /// Corrupt or unsupported files yield Ok(None); only I/O errors opening the file are errors.
+/// A file with some broken fields still yields the readable ones.
 pub fn read(path: &Path) -> Result<Option<ExifInfo>> {
+    read_limited(path, MAX_TIFF_BYTES)
+}
+
+fn read_limited(path: &Path, tiff_limit: u64) -> Result<Option<ExifInfo>> {
     let file = std::fs::File::open(path)?;
     let mut reader = BufReader::new(file);
     // The parser is defensive, but a malformed file must never take a worker down.
     let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        Reader::new().read_from_container(&mut reader)
+        parse_container(&mut reader, tiff_limit)
     }));
     let exif = match parsed {
         Ok(Ok(exif)) => exif,
@@ -65,9 +79,42 @@ pub fn read(path: &Path) -> Result<Option<ExifInfo>> {
     Ok(from_exif(&exif))
 }
 
+/// A parser that keeps every readable field when others are broken (a bad offset in one
+/// entry would otherwise discard the date along with it). Results come back as
+/// `Error::PartialResult` when anything was skipped.
+fn lenient() -> Reader {
+    let mut reader = Reader::new();
+    reader.continue_on_error(true);
+    reader
+}
+
+fn parse_container<R: BufRead + Seek>(
+    reader: &mut R,
+    tiff_limit: u64,
+) -> std::result::Result<Exif, ::exif::Error> {
+    match tiff_prefix(reader, tiff_limit)? {
+        Some(buf) => lenient().read_raw(buf),
+        None => lenient().read_from_container(reader),
+    }
+}
+
+/// The first `limit` bytes of a TIFF-structured file; None, with the reader rewound,
+/// for any other format (whose EXIF block the library finds without reading it all).
+fn tiff_prefix<R: BufRead + Seek>(reader: &mut R, limit: u64) -> std::io::Result<Option<Vec<u8>>> {
+    let mut head = Vec::with_capacity(4);
+    reader.by_ref().take(4).read_to_end(&mut head)?;
+    reader.seek(SeekFrom::Start(0))?;
+    if head != b"II*\0" && head != b"MM\0*" {
+        return Ok(None);
+    }
+    let mut buf = Vec::new();
+    reader.by_ref().take(limit).read_to_end(&mut buf)?;
+    Ok(Some(buf))
+}
+
 /// Parse EXIF from a raw TIFF-structured buffer (the payload of a JPEG APP1 segment).
 pub fn read_raw(buf: Vec<u8>) -> Option<ExifInfo> {
-    let parsed = std::panic::catch_unwind(move || Reader::new().read_raw(buf));
+    let parsed = std::panic::catch_unwind(move || lenient().read_raw(buf));
     match parsed {
         Ok(Ok(exif)) => from_exif(&exif),
         Ok(Err(::exif::Error::PartialResult(partial))) => from_exif(&partial.into_inner().0),
@@ -85,7 +132,10 @@ fn from_exif(exif: &Exif) -> Option<ExifInfo> {
     .into_iter()
     .find_map(|(time_tag, offset_tag)| datetime(field(time_tag)?, field(offset_tag)));
 
-    let camera = camera_name(field(Tag::Make).and_then(ascii).as_deref(), field(Tag::Model).and_then(ascii).as_deref());
+    let camera = camera_name(
+        field(Tag::Make).and_then(ascii).as_deref(),
+        field(Tag::Model).and_then(ascii).as_deref(),
+    );
     let width = field(Tag::PixelXDimension)
         .or_else(|| field(Tag::ImageWidth))
         .and_then(|f| f.value.get_uint(0))
@@ -101,7 +151,13 @@ fn from_exif(exif: &Exif) -> Option<ExifInfo> {
         .and_then(|v| u16::try_from(v).ok())
         .filter(|v| (1..=8).contains(v));
 
-    let info = ExifInfo { taken_at, camera, width, height, orientation };
+    let info = ExifInfo {
+        taken_at,
+        camera,
+        width,
+        height,
+        orientation,
+    };
     (!info.is_empty()).then_some(info)
 }
 
@@ -110,7 +166,11 @@ fn ascii(field: &Field) -> Option<String> {
     match &field.value {
         Value::Ascii(parts) => parts
             .iter()
-            .map(|p| String::from_utf8_lossy(p).trim_matches(|c: char| c == '\0' || c.is_whitespace()).to_string())
+            .map(|p| {
+                String::from_utf8_lossy(p)
+                    .trim_matches(|c: char| c == '\0' || c.is_whitespace())
+                    .to_string()
+            })
             .find(|s| !s.is_empty()),
         _ => None,
     }
@@ -142,7 +202,15 @@ fn datetime(time_field: &Field, offset_field: Option<&Field>) -> Option<i64> {
 
 /// Calendar fields plus a UTC offset in minutes → unix seconds. None for impossible dates
 /// and for the zeroed placeholders cameras write when the clock was never set.
-pub(crate) fn to_unix(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8, offset_minutes: i32) -> Option<i64> {
+pub(crate) fn to_unix(
+    year: i32,
+    month: u8,
+    day: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
+    offset_minutes: i32,
+) -> Option<i64> {
     if !(1800..=2200).contains(&year) {
         return None;
     }
@@ -150,7 +218,9 @@ pub(crate) fn to_unix(year: i32, month: u8, day: u8, hour: u8, minute: u8, secon
     let date = time::Date::from_calendar_date(year, month, day).ok()?;
     let clock = time::Time::from_hms(hour, minute, second.min(59)).ok()?;
     let offset = time::UtcOffset::from_whole_seconds(offset_minutes.checked_mul(60)?).ok()?;
-    let ts = time::PrimitiveDateTime::new(date, clock).assume_offset(offset).unix_timestamp();
+    let ts = time::PrimitiveDateTime::new(date, clock)
+        .assume_offset(offset)
+        .unix_timestamp();
     // 1970-01-01 (unix epoch) and 1904-01-01 (QuickTime epoch) mean "clock never set".
     (ts != 0 && ts != QUICKTIME_EPOCH).then_some(ts)
 }
@@ -162,12 +232,19 @@ const QUICKTIME_EPOCH: i64 = -2_082_844_800;
 /// "NIKON CORPORATION" + "NIKON D850" → "NIKON D850".
 pub fn camera_name(make: Option<&str>, model: Option<&str>) -> Option<String> {
     let clean = |s: Option<&str>| {
-        s.map(|v| v.trim_matches(|c: char| c == '\0' || c.is_whitespace()).to_string())
-            .filter(|v| !v.is_empty())
+        s.map(|v| {
+            v.trim_matches(|c: char| c == '\0' || c.is_whitespace())
+                .to_string()
+        })
+        .filter(|v| !v.is_empty())
     };
     match (clean(make), clean(model)) {
         (Some(make), Some(model)) => {
-            let make_word = make.split_whitespace().next().unwrap_or(&make).to_lowercase();
+            let make_word = make
+                .split_whitespace()
+                .next()
+                .unwrap_or(&make)
+                .to_lowercase();
             if model.to_lowercase().starts_with(&make_word) {
                 Some(model)
             } else {
@@ -215,7 +292,11 @@ pub(crate) mod tests {
     }
 
     fn ascii_field(tag: Tag, value: &str) -> Field {
-        Field { tag, ifd_num: In::PRIMARY, value: Value::Ascii(vec![value.as_bytes().to_vec()]) }
+        Field {
+            tag,
+            ifd_num: In::PRIMARY,
+            value: Value::Ascii(vec![value.as_bytes().to_vec()]),
+        }
     }
 
     /// A TIFF-structured EXIF block, as found after `Exif\0\0` in a JPEG APP1 segment.
@@ -237,13 +318,25 @@ pub(crate) mod tests {
             fields.push(ascii_field(Tag::Model, v));
         }
         if let Some(v) = spec.width {
-            fields.push(Field { tag: Tag::PixelXDimension, ifd_num: In::PRIMARY, value: Value::Long(vec![v]) });
+            fields.push(Field {
+                tag: Tag::PixelXDimension,
+                ifd_num: In::PRIMARY,
+                value: Value::Long(vec![v]),
+            });
         }
         if let Some(v) = spec.height {
-            fields.push(Field { tag: Tag::PixelYDimension, ifd_num: In::PRIMARY, value: Value::Long(vec![v]) });
+            fields.push(Field {
+                tag: Tag::PixelYDimension,
+                ifd_num: In::PRIMARY,
+                value: Value::Long(vec![v]),
+            });
         }
         if let Some(v) = spec.orientation {
-            fields.push(Field { tag: Tag::Orientation, ifd_num: In::PRIMARY, value: Value::Short(vec![v]) });
+            fields.push(Field {
+                tag: Tag::Orientation,
+                ifd_num: In::PRIMARY,
+                value: Value::Short(vec![v]),
+            });
         }
         let mut writer = Writer::new();
         for f in &fields {
@@ -268,7 +361,15 @@ pub(crate) mod tests {
 
     pub(crate) fn make_jpeg(path: &Path, size: &str) {
         let status = std::process::Command::new("ffmpeg")
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i"])
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+            ])
             .arg(format!("testsrc=s={size}:d=1"))
             .args(["-frames:v", "1"])
             .arg(path)
@@ -283,7 +384,11 @@ pub(crate) mod tests {
         let path = dir.path().join("IMG_0001.jpg");
         make_jpeg(&path, "320x240");
         let jpeg = std::fs::read(&path).unwrap();
-        std::fs::write(&path, inject_into_jpeg(&jpeg, &tiff_block(&TestExif::default()))).unwrap();
+        std::fs::write(
+            &path,
+            inject_into_jpeg(&jpeg, &tiff_block(&TestExif::default())),
+        )
+        .unwrap();
         let info = read(&path).unwrap().unwrap();
         // 12:21 at +02:00 is 10:21 UTC.
         assert_eq!(info.taken_at, Some(1_718_274_060));
@@ -310,28 +415,56 @@ pub(crate) mod tests {
         assert_eq!(info.camera.as_deref(), Some("Canon EOS R5"));
         assert!(!info.swaps_dimensions());
 
-        let spec = TestExif { offset_original: None, ..TestExif::default() };
-        assert_eq!(read_raw(tiff_block(&spec)).unwrap().taken_at, Some(1_718_281_260));
+        let spec = TestExif {
+            offset_original: None,
+            ..TestExif::default()
+        };
+        assert_eq!(
+            read_raw(tiff_block(&spec)).unwrap().taken_at,
+            Some(1_718_281_260)
+        );
     }
 
     #[test]
     fn placeholder_dates_are_ignored() {
-        let spec = TestExif { datetime_original: Some("0000:00:00 00:00:00"), ..TestExif::default() };
+        let spec = TestExif {
+            datetime_original: Some("0000:00:00 00:00:00"),
+            ..TestExif::default()
+        };
         assert_eq!(read_raw(tiff_block(&spec)).unwrap().taken_at, None);
-        let spec = TestExif { datetime_original: Some("    :  :     :  :  "), ..TestExif::default() };
+        let spec = TestExif {
+            datetime_original: Some("    :  :     :  :  "),
+            ..TestExif::default()
+        };
         assert_eq!(read_raw(tiff_block(&spec)).unwrap().taken_at, None);
-        let spec = TestExif { datetime_original: Some("2024:02:30 10:00:00"), ..TestExif::default() };
+        let spec = TestExif {
+            datetime_original: Some("2024:02:30 10:00:00"),
+            ..TestExif::default()
+        };
         assert_eq!(read_raw(tiff_block(&spec)).unwrap().taken_at, None);
         // Bad offset: keep the time as UTC.
-        let spec = TestExif { offset_original: Some("junk"), ..TestExif::default() };
-        assert_eq!(read_raw(tiff_block(&spec)).unwrap().taken_at, Some(1_718_281_260));
+        let spec = TestExif {
+            offset_original: Some("junk"),
+            ..TestExif::default()
+        };
+        assert_eq!(
+            read_raw(tiff_block(&spec)).unwrap().taken_at,
+            Some(1_718_281_260)
+        );
     }
 
     #[test]
     fn tiff_file_is_read() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("scan.tif");
-        std::fs::write(&path, tiff_block(&TestExif { orientation: Some(8), ..TestExif::default() })).unwrap();
+        std::fs::write(
+            &path,
+            tiff_block(&TestExif {
+                orientation: Some(8),
+                ..TestExif::default()
+            }),
+        )
+        .unwrap();
         let info = read(&path).unwrap().unwrap();
         assert_eq!(info.orientation, Some(8));
         assert_eq!(info.camera.as_deref(), Some("Apple iPhone 15 Pro"));
@@ -371,6 +504,91 @@ pub(crate) mod tests {
         assert!(read(&dir.path().join("missing.jpg")).is_err());
     }
 
+    /// Point one IFD0 entry's value at an offset far past the end of the block, the way a
+    /// photo editor that trims or rewrites EXIF badly leaves it.
+    fn break_entry(tiff: &mut [u8], tag: u16) {
+        let big_endian = &tiff[..2] == b"MM";
+        let u16_at = |b: &[u8], o: usize| {
+            let bytes = [b[o], b[o + 1]];
+            if big_endian {
+                u16::from_be_bytes(bytes)
+            } else {
+                u16::from_le_bytes(bytes)
+            }
+        };
+        let u32_at = |b: &[u8], o: usize| {
+            let bytes = [b[o], b[o + 1], b[o + 2], b[o + 3]];
+            if big_endian {
+                u32::from_be_bytes(bytes)
+            } else {
+                u32::from_le_bytes(bytes)
+            }
+        };
+        let ifd = u32_at(tiff, 4) as usize;
+        let count = usize::from(u16_at(tiff, ifd));
+        for i in 0..count {
+            let entry = ifd + 2 + i * 12;
+            if u16_at(tiff, entry) == tag {
+                let bad = if big_endian {
+                    0xFFFF_FF00_u32.to_be_bytes()
+                } else {
+                    0xFFFF_FF00_u32.to_le_bytes()
+                };
+                tiff[entry + 8..entry + 12].copy_from_slice(&bad);
+                return;
+            }
+        }
+        panic!("tag {tag:#x} not in IFD0");
+    }
+
+    #[test]
+    fn one_broken_field_keeps_the_rest() {
+        let mut tiff = tiff_block(&TestExif::default());
+        break_entry(&mut tiff, 0x0110); // Model
+        let info = read_raw(tiff).expect("the readable fields survive");
+        assert_eq!(info.taken_at, Some(1_718_274_060));
+        assert_eq!(info.camera.as_deref(), Some("Apple"));
+        assert_eq!(info.orientation, Some(6));
+
+        // The same through a JPEG file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edited.jpg");
+        make_jpeg(&path, "64x64");
+        let mut tiff = tiff_block(&TestExif::default());
+        break_entry(&mut tiff, 0x010F); // Make
+        let jpeg = std::fs::read(&path).unwrap();
+        std::fs::write(&path, inject_into_jpeg(&jpeg, &tiff)).unwrap();
+        let info = read(&path).unwrap().expect("date survives a broken Make");
+        assert_eq!(info.taken_at, Some(1_718_274_060));
+        assert_eq!(info.camera.as_deref(), Some("iPhone 15 Pro"));
+    }
+
+    #[test]
+    fn large_tiff_files_are_read_only_up_to_the_limit() {
+        const LIMIT: u64 = 1024 * 1024;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scan.tif");
+        // EXIF at the start, then 3 MiB standing in for the image strips.
+        let mut data = tiff_block(&TestExif::default());
+        data.resize(data.len() + 3 * 1024 * 1024, 0x55);
+        std::fs::write(&path, &data).unwrap();
+        let mut reader = BufReader::new(std::fs::File::open(&path).unwrap());
+        let prefix = tiff_prefix(&mut reader, LIMIT).unwrap().expect("a TIFF");
+        assert_eq!(prefix.len() as u64, LIMIT);
+        let info = read_limited(&path, LIMIT).unwrap().unwrap();
+        assert_eq!(info.taken_at, Some(1_718_274_060));
+        assert_eq!(info.orientation, Some(6));
+
+        // Other formats are left to the library and the reader is rewound for it.
+        let jpeg = dir.path().join("a.jpg");
+        make_jpeg(&jpeg, "64x64");
+        let mut reader = BufReader::new(std::fs::File::open(&jpeg).unwrap());
+        assert!(tiff_prefix(&mut reader, LIMIT).unwrap().is_none());
+        let mut first = [0u8; 2];
+        reader.read_exact(&mut first).unwrap();
+        assert_eq!(first, [0xFF, 0xD8]);
+    }
+
     #[test]
     fn fuzzed_buffers_never_panic() {
         let base = tiff_block(&TestExif::default());
@@ -399,9 +617,23 @@ pub(crate) mod tests {
         let path = dir.path().join("DSC_0001.jpg");
         make_jpeg(&path, "200x100");
         let status = std::process::Command::new("exiftool")
-            .args(["-q", "-overwrite_original", "-n", "-Orientation=8", "-Make=NIKON CORPORATION", "-Model=NIKON D850"])
-            .args(["-DateTimeOriginal=2023:12:31 23:59:59", "-OffsetTimeOriginal=-05:00"])
-            .args(["-ExifImageWidth=200", "-ExifImageHeight=100", "-GPSLatitude=37.7"])
+            .args([
+                "-q",
+                "-overwrite_original",
+                "-n",
+                "-Orientation=8",
+                "-Make=NIKON CORPORATION",
+                "-Model=NIKON D850",
+            ])
+            .args([
+                "-DateTimeOriginal=2023:12:31 23:59:59",
+                "-OffsetTimeOriginal=-05:00",
+            ])
+            .args([
+                "-ExifImageWidth=200",
+                "-ExifImageHeight=100",
+                "-GPSLatitude=37.7",
+            ])
             .arg(&path)
             .status()
             .unwrap();
@@ -416,11 +648,26 @@ pub(crate) mod tests {
 
     #[test]
     fn camera_names() {
-        assert_eq!(camera_name(Some("Apple"), Some("iPhone 15 Pro")).as_deref(), Some("Apple iPhone 15 Pro"));
-        assert_eq!(camera_name(Some("Canon"), Some("Canon EOS R5")).as_deref(), Some("Canon EOS R5"));
-        assert_eq!(camera_name(Some("NIKON CORPORATION"), Some("NIKON D850")).as_deref(), Some("NIKON D850"));
-        assert_eq!(camera_name(Some("samsung"), Some("SM-G991B")).as_deref(), Some("samsung SM-G991B"));
-        assert_eq!(camera_name(Some("  "), Some("Pixel 8\0")).as_deref(), Some("Pixel 8"));
+        assert_eq!(
+            camera_name(Some("Apple"), Some("iPhone 15 Pro")).as_deref(),
+            Some("Apple iPhone 15 Pro")
+        );
+        assert_eq!(
+            camera_name(Some("Canon"), Some("Canon EOS R5")).as_deref(),
+            Some("Canon EOS R5")
+        );
+        assert_eq!(
+            camera_name(Some("NIKON CORPORATION"), Some("NIKON D850")).as_deref(),
+            Some("NIKON D850")
+        );
+        assert_eq!(
+            camera_name(Some("samsung"), Some("SM-G991B")).as_deref(),
+            Some("samsung SM-G991B")
+        );
+        assert_eq!(
+            camera_name(Some("  "), Some("Pixel 8\0")).as_deref(),
+            Some("Pixel 8")
+        );
         assert_eq!(camera_name(Some("GoPro"), None).as_deref(), Some("GoPro"));
         assert_eq!(camera_name(None, None), None);
     }
@@ -428,6 +675,8 @@ pub(crate) mod tests {
     #[test]
     fn unix_conversion() {
         assert_eq!(to_unix(1970, 1, 1, 0, 0, 0, 0), None);
+        assert_eq!(to_unix(1904, 1, 1, 0, 0, 0, 0), None);
+        assert_eq!(to_unix(1965, 7, 4, 12, 0, 0, 0), Some(-141_825_600));
         assert_eq!(to_unix(2024, 6, 13, 10, 21, 0, 0), Some(1_718_274_060));
         assert_eq!(to_unix(2024, 6, 13, 12, 21, 0, 120), Some(1_718_274_060));
         assert_eq!(to_unix(2024, 13, 1, 0, 0, 0, 0), None);

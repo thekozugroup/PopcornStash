@@ -47,6 +47,11 @@ services:
       # Hardware video encoding (Intel/AMD VAAPI or Intel QSV): uncomment and set
       # STASH_HWACCEL=vaapi or qsv. See "Hardware acceleration" in docs/deployment.md.
       # - /dev/dri:/dev/dri
+    # Loose reverse-path filtering, so replies that arrive through the VPN tunnel are
+    # accepted on hosts whose default is strict (rp_filter=1). Only this container's
+    # network namespace is affected.
+    sysctls:
+      net.ipv4.conf.all.rp_filter: 2
     read_only: true
     tmpfs:
       - /tmp

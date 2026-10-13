@@ -1,0 +1,6 @@
+node_modules/
+dist/
+popcornstash-extension.zip
+test-results/
+playwright-report/
+.e2e/

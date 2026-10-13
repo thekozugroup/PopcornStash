@@ -148,9 +148,11 @@ struct ItemWithProgress {
 impl ItemWithProgress {
     fn progress(&self) -> Option<Progress> {
         match (self.p_position_s, self.p_duration_s) {
-            (Some(position_s), Some(duration_s)) => {
-                Some(Progress { position_s, duration_s, finished: self.p_finished.unwrap_or(false) })
-            }
+            (Some(position_s), Some(duration_s)) => Some(Progress {
+                position_s,
+                duration_s,
+                finished: self.p_finished.unwrap_or(false),
+            }),
             _ => None,
         }
     }
@@ -160,7 +162,11 @@ impl ItemWithProgress {
         self.row.to_item(progress)
     }
 
-    fn into_detail(self, next_episode_id: Option<String>, previous_episode_id: Option<String>) -> ItemDetail {
+    fn into_detail(
+        self,
+        next_episode_id: Option<String>,
+        previous_episode_id: Option<String>,
+    ) -> ItemDetail {
         let progress = self.progress();
         let row = self.row;
         ItemDetail {
@@ -202,11 +208,21 @@ pub fn escape_like(s: &str) -> String {
 }
 
 pub async fn get(db: &Db, id: &str) -> Result<Option<ItemRow>> {
-    Ok(sqlx::query_as::<_, ItemRow>("SELECT * FROM items WHERE id = ?").bind(id).fetch_optional(db).await?)
+    Ok(
+        sqlx::query_as::<_, ItemRow>("SELECT * FROM items WHERE id = ?")
+            .bind(id)
+            .fetch_optional(db)
+            .await?,
+    )
 }
 
 pub async fn get_by_path(db: &Db, rel_path: &str) -> Result<Option<ItemRow>> {
-    Ok(sqlx::query_as::<_, ItemRow>("SELECT * FROM items WHERE rel_path = ?").bind(rel_path).fetch_optional(db).await?)
+    Ok(
+        sqlx::query_as::<_, ItemRow>("SELECT * FROM items WHERE rel_path = ?")
+            .bind(rel_path)
+            .fetch_optional(db)
+            .await?,
+    )
 }
 
 /// Insert a new row. Returns false (and changes nothing) when `rel_path` is already taken.
@@ -255,7 +271,10 @@ pub async fn insert_item(db: &Db, row: &ItemRow) -> Result<bool> {
 async fn get_with_progress(db: &Db, id: &str, user_id: &str) -> Result<Option<ItemWithProgress>> {
     let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
     qb.push_bind(user_id).push(" WHERE i.id = ").push_bind(id);
-    Ok(qb.build_query_as::<ItemWithProgress>().fetch_optional(db).await?)
+    Ok(qb
+        .build_query_as::<ItemWithProgress>()
+        .fetch_optional(db)
+        .await?)
 }
 
 // ---------------------------------------------------------------------------
@@ -275,9 +294,11 @@ struct ListCursor {
     id: String,
 }
 
+/// Position in the photo timeline: the last photo returned (its time key and id).
 #[derive(Debug, Serialize, Deserialize)]
-struct MonthCursor {
-    m: String,
+struct TimelineCursor {
+    k: i64,
+    id: String,
 }
 
 fn encode_cursor<T: Serialize>(value: &T) -> Result<String> {
@@ -285,8 +306,11 @@ fn encode_cursor<T: Serialize>(value: &T) -> Result<String> {
 }
 
 fn decode_cursor<T: for<'de> Deserialize<'de>>(cursor: &str) -> Result<T> {
-    let invalid = || CoreError::invalid("The page cursor is not valid. Start again from the first page.");
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(cursor.trim()).map_err(|_| invalid())?;
+    let invalid =
+        || CoreError::invalid("The page cursor is not valid. Start again from the first page.");
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor.trim())
+        .map_err(|_| invalid())?;
     serde_json::from_slice(&bytes).map_err(|_| invalid())
 }
 
@@ -353,20 +377,32 @@ pub async fn list(db: &Db, query: &ItemQuery, user_id: &str) -> Result<Page<Item
         let cursor: ListCursor = decode_cursor(cursor)?;
         let key_matches_sort = matches!(
             (&cursor.k, query.sort),
-            (CursorKey::Text(_), ItemSort::Title) | (CursorKey::Int(_), ItemSort::Added | ItemSort::Taken | ItemSort::Size)
+            (CursorKey::Text(_), ItemSort::Title)
+                | (
+                    CursorKey::Int(_),
+                    ItemSort::Added | ItemSort::Taken | ItemSort::Size
+                )
         );
         if cursor.s != query.sort || !key_matches_sort {
-            return Err(CoreError::invalid("The page cursor belongs to a different sort order. Start again from the first page."));
+            return Err(CoreError::invalid(
+                "The page cursor belongs to a different sort order. Start again from the first page.",
+            ));
         }
         qb.push(format!(" AND ({key_expr} {op} "));
         push_key(&mut qb, &cursor.k);
         qb.push(format!(" OR ({key_expr} = "));
         push_key(&mut qb, &cursor.k);
-        qb.push(format!(" AND i.id {op} ")).push_bind(cursor.id).push("))");
+        qb.push(format!(" AND i.id {op} "))
+            .push_bind(cursor.id)
+            .push("))");
     }
-    qb.push(format!(" ORDER BY {key_expr} {dir}, i.id {dir} LIMIT ")).push_bind(limit + 1);
+    qb.push(format!(" ORDER BY {key_expr} {dir}, i.id {dir} LIMIT "))
+        .push_bind(limit + 1);
 
-    let mut rows = qb.build_query_as::<ItemWithProgress>().fetch_all(db).await?;
+    let mut rows = qb
+        .build_query_as::<ItemWithProgress>()
+        .fetch_all(db)
+        .await?;
     let next_cursor = if rows.len() as i64 > limit {
         rows.truncate(limit as usize);
         match rows.last() {
@@ -380,15 +416,23 @@ pub async fn list(db: &Db, query: &ItemQuery, user_id: &str) -> Result<Page<Item
     } else {
         None
     };
-    Ok(Page { items: rows.into_iter().map(ItemWithProgress::into_item).collect(), next_cursor })
+    Ok(Page {
+        items: rows.into_iter().map(ItemWithProgress::into_item).collect(),
+        next_cursor,
+    })
 }
 
 pub async fn detail(db: &Db, id: &str, user_id: &str) -> Result<ItemDetail> {
-    let row = get_with_progress(db, id, user_id).await?.ok_or(CoreError::NotFound)?;
+    let row = get_with_progress(db, id, user_id)
+        .await?
+        .ok_or(CoreError::NotFound)?;
     let (mut next, mut previous) = (None, None);
-    if let (Category::Episode, Some(show), Some(season), Some(episode)) =
-        (row.row.category, row.row.show_name.as_deref(), row.row.season, row.row.episode)
-    {
+    if let (Category::Episode, Some(show), Some(season), Some(episode)) = (
+        row.row.category,
+        row.row.show_name.as_deref(),
+        row.row.season,
+        row.row.episode,
+    ) {
         next = sqlx::query_scalar::<_, String>(
             "SELECT id FROM items WHERE category = 'episode' AND status = 'ready' AND show_name = ? AND id != ?
                AND (season > ? OR (season = ? AND episode > ?))
@@ -427,14 +471,18 @@ pub async fn update_metadata(db: &Db, id: &str, patch: &ItemPatch) -> Result<Ite
             return Err(CoreError::invalid("The title cannot be empty."));
         }
         if title.chars().count() > 500 {
-            return Err(CoreError::invalid("The title is too long. Keep it under 500 characters."));
+            return Err(CoreError::invalid(
+                "The title is too long. Keep it under 500 characters.",
+            ));
         }
         qb.push(", title = ").push_bind(title.to_string());
         qb.push(", sort_title = ").push_bind(sort_title(title));
     }
     if let Some(year) = patch.year {
         if year.is_some_and(|y| !(1800..=2200).contains(&y)) {
-            return Err(CoreError::invalid("The year must be between 1800 and 2200."));
+            return Err(CoreError::invalid(
+                "The year must be between 1800 and 2200.",
+            ));
         }
         qb.push(", year = ").push_bind(year);
     }
@@ -443,18 +491,28 @@ pub async fn update_metadata(db: &Db, id: &str, patch: &ItemPatch) -> Result<Ite
     }
     if let Some(show_name) = &patch.show_name {
         let show_name = show_name.trim();
-        qb.push(", show_name = ").push_bind((!show_name.is_empty()).then(|| show_name.to_string()));
+        qb.push(", show_name = ")
+            .push_bind((!show_name.is_empty()).then(|| show_name.to_string()));
     }
-    for (column, value, label) in [("season", patch.season, "season"), ("episode", patch.episode, "episode")] {
+    for (column, value, label) in [
+        ("season", patch.season, "season"),
+        ("episode", patch.episode, "episode"),
+    ] {
         if let Some(value) = value {
             if value.is_some_and(|v| !(0..=10_000).contains(&v)) {
-                return Err(CoreError::invalid(format!("The {label} number must be between 0 and 10000.")));
+                return Err(CoreError::invalid(format!(
+                    "The {label} number must be between 0 and 10000."
+                )));
             }
             qb.push(format!(", {column} = ")).push_bind(value);
         }
     }
     if let Some(episode_title) = &patch.episode_title {
-        let value = episode_title.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+        let value = episode_title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
         qb.push(", episode_title = ").push_bind(value);
     }
     qb.push(" WHERE id = ").push_bind(current.id.clone());
@@ -462,16 +520,30 @@ pub async fn update_metadata(db: &Db, id: &str, patch: &ItemPatch) -> Result<Ite
     get(db, id).await?.ok_or(CoreError::NotFound)
 }
 
-pub async fn set_progress(db: &Db, user_id: &str, item_id: &str, position_s: f64, duration_s: f64) -> Result<()> {
+pub async fn set_progress(
+    db: &Db,
+    user_id: &str,
+    item_id: &str,
+    position_s: f64,
+    duration_s: f64,
+) -> Result<()> {
     if !position_s.is_finite() || !duration_s.is_finite() || position_s < 0.0 || duration_s < 0.0 {
-        return Err(CoreError::invalid("Playback position and duration must be zero or more seconds."));
+        return Err(CoreError::invalid(
+            "Playback position and duration must be zero or more seconds.",
+        ));
     }
-    let exists: Option<i64> =
-        sqlx::query_scalar("SELECT 1 FROM items WHERE id = ?").bind(item_id).fetch_optional(db).await?;
+    let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM items WHERE id = ?")
+        .bind(item_id)
+        .fetch_optional(db)
+        .await?;
     if exists.is_none() {
         return Err(CoreError::NotFound);
     }
-    let position_s = if duration_s > 0.0 { position_s.min(duration_s) } else { position_s };
+    let position_s = if duration_s > 0.0 {
+        position_s.min(duration_s)
+    } else {
+        position_s
+    };
     let finished = duration_s > 0.0 && position_s >= 0.9 * duration_s;
     sqlx::query(
         "INSERT INTO item_progress (user_id, item_id, position_s, duration_s, finished, updated_at)
@@ -493,8 +565,11 @@ pub async fn set_progress(db: &Db, user_id: &str, item_id: &str, position_s: f64
 
 pub async fn summary(db: &Db, user_id: &str) -> Result<LibrarySummary> {
     let mut counts = LibraryCounts::default();
-    let rows: Vec<(String, i64)> =
-        sqlx::query_as("SELECT category, count(*) FROM items WHERE status = 'ready' GROUP BY category").fetch_all(db).await?;
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT category, count(*) FROM items WHERE status = 'ready' GROUP BY category",
+    )
+    .fetch_all(db)
+    .await?;
     for (category, n) in rows {
         match category.parse::<Category>() {
             Ok(Category::Movie) => counts.movies = n,
@@ -512,13 +587,18 @@ pub async fn summary(db: &Db, user_id: &str) -> Result<LibrarySummary> {
     .fetch_one(db)
     .await?;
     let total_bytes: Option<i64> =
-        sqlx::query_scalar("SELECT sum(size) FROM items WHERE status = 'ready'").fetch_one(db).await?;
+        sqlx::query_scalar("SELECT sum(size) FROM items WHERE status = 'ready'")
+            .fetch_one(db)
+            .await?;
 
     let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
     qb.push_bind(user_id.to_string())
         .push(" WHERE i.status = 'ready' AND i.category != 'photo' ORDER BY i.added_at DESC, i.id DESC LIMIT ")
         .push_bind(SUMMARY_ROW);
-    let recently_added = qb.build_query_as::<ItemWithProgress>().fetch_all(db).await?;
+    let recently_added = qb
+        .build_query_as::<ItemWithProgress>()
+        .fetch_all(db)
+        .await?;
 
     let continue_watching = sqlx::query_as::<_, ItemWithProgress>(
         "SELECT i.*, p.position_s AS p_position_s, p.duration_s AS p_duration_s, p.finished AS p_finished
@@ -535,8 +615,14 @@ pub async fn summary(db: &Db, user_id: &str) -> Result<LibrarySummary> {
         counts,
         total_bytes: total_bytes.unwrap_or(0),
         needs_review: needs_review_count(db).await?,
-        recently_added: recently_added.into_iter().map(ItemWithProgress::into_item).collect(),
-        continue_watching: continue_watching.into_iter().map(ItemWithProgress::into_item).collect(),
+        recently_added: recently_added
+            .into_iter()
+            .map(ItemWithProgress::into_item)
+            .collect(),
+        continue_watching: continue_watching
+            .into_iter()
+            .map(ItemWithProgress::into_item)
+            .collect(),
     })
 }
 
@@ -554,13 +640,15 @@ pub async fn shows(db: &Db) -> Result<Vec<ShowSummary>> {
     .await?;
     let mut shows: Vec<ShowSummary> = rows
         .into_iter()
-        .map(|(show_name, item_count, season_count, last_added_at, poster_item_id)| ShowSummary {
-            show_name,
-            item_count,
-            season_count,
-            poster_item_id,
-            last_added_at,
-        })
+        .map(
+            |(show_name, item_count, season_count, last_added_at, poster_item_id)| ShowSummary {
+                show_name,
+                item_count,
+                season_count,
+                poster_item_id,
+                last_added_at,
+            },
+        )
         .collect();
     shows.sort_by_cached_key(|s| (sort_title(&s.show_name), s.show_name.clone()));
     Ok(shows)
@@ -572,7 +660,10 @@ pub async fn show(db: &Db, show_name: &str, user_id: &str) -> Result<ShowDetail>
         .push(" WHERE i.category = 'episode' AND i.status = 'ready' AND i.show_name = ")
         .push_bind(show_name.to_string())
         .push(" ORDER BY COALESCE(i.season, 0), COALESCE(i.episode, 0), i.sort_title, i.id");
-    let rows = qb.build_query_as::<ItemWithProgress>().fetch_all(db).await?;
+    let rows = qb
+        .build_query_as::<ItemWithProgress>()
+        .fetch_all(db)
+        .await?;
     if rows.is_empty() {
         return Err(CoreError::NotFound);
     }
@@ -582,74 +673,127 @@ pub async fn show(db: &Db, show_name: &str, user_id: &str) -> Result<ShowDetail>
         let item = row.into_item();
         match seasons.last_mut() {
             Some(season) if season.season == number => season.episodes.push(item),
-            _ => seasons.push(Season { season: number, episodes: vec![item] }),
+            _ => seasons.push(Season {
+                season: number,
+                episodes: vec![item],
+            }),
         }
     }
-    Ok(ShowDetail { show_name: show_name.to_string(), seasons })
+    Ok(ShowDetail {
+        show_name: show_name.to_string(),
+        seasons,
+    })
 }
 
+/// Earliest and latest time keys the timeline can place (years 0001 to 9999, UTC).
+const TIMELINE_MIN_KEY: i64 = -62_135_596_800;
+const TIMELINE_MAX_KEY: i64 = 253_402_300_799;
+
 /// Photos grouped by month (of `taken_at`, else `added_at`, UTC), newest first. A page
-/// holds whole months: months are added until `limit` photos are reached (at least one
-/// month per page). The cursor names the last month returned.
-pub async fn photo_timeline(db: &Db, cursor: Option<&str>, limit: u32, user_id: &str) -> Result<PhotoTimeline> {
-    let limit = i64::from(if limit == 0 { DEFAULT_TIMELINE_LIMIT } else { limit.min(5_000) });
-    let before = match cursor.filter(|c| !c.trim().is_empty()) {
-        Some(c) => {
-            let cursor: MonthCursor = decode_cursor(c)?;
-            if month_bounds(&cursor.m).is_none() {
-                return Err(CoreError::invalid("The page cursor is not valid. Start again from the first page."));
-            }
-            Some(cursor.m)
-        }
-        None => None,
-    };
-    let month_expr = "strftime('%Y-%m', COALESCE(taken_at, added_at), 'unixepoch')";
-    let mut qb = QueryBuilder::<Sqlite>::new(format!(
-        "SELECT {month_expr} AS month, count(*) FROM items WHERE category = 'photo' AND status = 'ready'"
-    ));
-    if let Some(before) = &before {
-        qb.push(format!(" AND {month_expr} < ")).push_bind(before.clone());
-    }
-    qb.push(" GROUP BY month ORDER BY month DESC");
-    let all_months: Vec<(Option<String>, i64)> = qb.build_query_as().fetch_all(db).await?;
-    let all_months: Vec<(String, i64)> = all_months.into_iter().filter_map(|(m, n)| m.map(|m| (m, n))).collect();
-
-    let mut chosen: Vec<(String, i64)> = Vec::new();
-    let mut total = 0;
-    for (month, count) in &all_months {
-        if !chosen.is_empty() && total >= limit {
-            break;
-        }
-        total += count;
-        chosen.push((month.clone(), *count));
-    }
-    let (Some((newest, _)), Some((oldest, _))) = (chosen.first(), chosen.last()) else {
-        return Ok(PhotoTimeline { months: Vec::new(), next_cursor: None });
-    };
-    let next_cursor =
-        if chosen.len() < all_months.len() { Some(encode_cursor(&MonthCursor { m: oldest.clone() })?) } else { None };
-    let (Some((start, _)), Some((_, end))) = (month_bounds(oldest), month_bounds(newest)) else {
-        return Err(CoreError::invalid("A photo has a date PopcornStash cannot place on the timeline."));
-    };
-
+/// holds at most `limit` photos (`0` means [`DEFAULT_TIMELINE_LIMIT`]), so one busy month
+/// can span several pages: `count` is always the month's full total and the next page
+/// continues the same month where this one stopped (clients merge consecutive entries
+/// with the same `month`).
+pub async fn photo_timeline(
+    db: &Db,
+    cursor: Option<&str>,
+    limit: u32,
+    user_id: &str,
+) -> Result<PhotoTimeline> {
+    let limit = i64::from(if limit == 0 {
+        DEFAULT_TIMELINE_LIMIT
+    } else {
+        limit.min(MAX_LIMIT * 5)
+    });
+    let after: Option<TimelineCursor> = cursor
+        .filter(|c| !c.trim().is_empty())
+        .map(decode_cursor)
+        .transpose()?;
+    let key = "COALESCE(i.taken_at, i.added_at)";
     let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
     qb.push_bind(user_id.to_string())
-        .push(" WHERE i.category = 'photo' AND i.status = 'ready' AND COALESCE(i.taken_at, i.added_at) >= ")
-        .push_bind(start)
-        .push(" AND COALESCE(i.taken_at, i.added_at) < ")
-        .push_bind(end)
-        .push(" ORDER BY COALESCE(i.taken_at, i.added_at) DESC, i.id DESC");
-    let rows = qb.build_query_as::<ItemWithProgress>().fetch_all(db).await?;
+        .push(format!(
+            " WHERE i.category = 'photo' AND i.status = 'ready' AND {key} BETWEEN "
+        ))
+        .push_bind(TIMELINE_MIN_KEY)
+        .push(" AND ")
+        .push_bind(TIMELINE_MAX_KEY);
+    if let Some(after) = &after {
+        qb.push(format!(" AND ({key} < "))
+            .push_bind(after.k)
+            .push(format!(" OR ({key} = "))
+            .push_bind(after.k)
+            .push(" AND i.id < ")
+            .push_bind(after.id.clone())
+            .push("))");
+    }
+    qb.push(format!(" ORDER BY {key} DESC, i.id DESC LIMIT "))
+        .push_bind(limit + 1);
+    let mut rows = qb
+        .build_query_as::<ItemWithProgress>()
+        .fetch_all(db)
+        .await?;
+    let next_cursor = if rows.len() as i64 > limit {
+        rows.truncate(limit as usize);
+        match rows.last() {
+            Some(last) => Some(encode_cursor(&TimelineCursor {
+                k: last.row.taken_at.unwrap_or(last.row.added_at),
+                id: last.row.id.clone(),
+            })?),
+            None => None,
+        }
+    } else {
+        None
+    };
 
-    let mut months: Vec<PhotoMonth> =
-        chosen.into_iter().map(|(month, count)| PhotoMonth { month, count, items: Vec::new() }).collect();
+    let mut months: Vec<PhotoMonth> = Vec::new();
     for row in rows {
-        let key = month_of(row.row.taken_at.unwrap_or(row.row.added_at));
-        if let Some(month) = months.iter_mut().find(|m| Some(&m.month) == key.as_ref()) {
-            month.items.push(row.into_item());
+        let Some(month) = month_of(row.row.taken_at.unwrap_or(row.row.added_at)) else {
+            continue;
+        };
+        let item = row.into_item();
+        match months.last_mut() {
+            Some(last) if last.month == month => {
+                last.items.push(item);
+                last.count += 1;
+            }
+            _ => months.push(PhotoMonth {
+                month,
+                count: 1,
+                items: vec![item],
+            }),
         }
     }
-    Ok(PhotoTimeline { months, next_cursor })
+    // Full totals for the months on this page (a month may continue on other pages).
+    let bounds = (
+        months.last().and_then(|m| month_bounds(&m.month)),
+        months.first().and_then(|m| month_bounds(&m.month)),
+    );
+    if let (Some((start, _)), Some((_, end))) = bounds {
+        let totals: Vec<(Option<String>, i64)> = sqlx::query_as(
+            "SELECT strftime('%Y-%m', COALESCE(taken_at, added_at), 'unixepoch') AS month, count(*)
+             FROM items
+             WHERE category = 'photo' AND status = 'ready'
+               AND COALESCE(taken_at, added_at) >= ? AND COALESCE(taken_at, added_at) < ?
+             GROUP BY month",
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_all(db)
+        .await?;
+        for month in &mut months {
+            if let Some((_, n)) = totals
+                .iter()
+                .find(|(m, _)| m.as_deref() == Some(month.month.as_str()))
+            {
+                month.count = *n;
+            }
+        }
+    }
+    Ok(PhotoTimeline {
+        months,
+        next_cursor,
+    })
 }
 
 /// `YYYY-MM` for a unix time (UTC), matching SQLite's `strftime('%Y-%m', t, 'unixepoch')`.
@@ -664,7 +808,11 @@ fn month_bounds(month: &str) -> Option<(i64, i64)> {
     let (y, m): (i32, u8) = (y.parse().ok()?, m.parse().ok()?);
     let start_month = time::Month::try_from(m).ok()?;
     let start = time::Date::from_calendar_date(y, start_month, 1).ok()?;
-    let (ny, nm) = if m == 12 { (y + 1, time::Month::January) } else { (y, start_month.next()) };
+    let (ny, nm) = if m == 12 {
+        (y + 1, time::Month::January)
+    } else {
+        (y, start_month.next())
+    };
     let end = time::Date::from_calendar_date(ny, nm, 1).ok()?;
     let ts = |d: time::Date| d.midnight().assume_utc().unix_timestamp();
     Some((ts(start), ts(end)))
@@ -675,12 +823,22 @@ pub async fn inbox(db: &Db, user_id: &str) -> Result<Vec<ItemDetail>> {
     qb.push_bind(user_id.to_string())
         .push(" WHERE i.status = 'needs_review' ORDER BY i.added_at DESC, i.id DESC LIMIT ")
         .push_bind(INBOX_MAX);
-    let rows = qb.build_query_as::<ItemWithProgress>().fetch_all(db).await?;
-    Ok(rows.into_iter().map(|r| r.into_detail(None, None)).collect())
+    let rows = qb
+        .build_query_as::<ItemWithProgress>()
+        .fetch_all(db)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| r.into_detail(None, None))
+        .collect())
 }
 
 pub async fn needs_review_count(db: &Db) -> Result<i64> {
-    Ok(sqlx::query_scalar("SELECT count(*) FROM items WHERE status = 'needs_review'").fetch_one(db).await?)
+    Ok(
+        sqlx::query_scalar("SELECT count(*) FROM items WHERE status = 'needs_review'")
+            .fetch_one(db)
+            .await?,
+    )
 }
 
 #[derive(sqlx::FromRow)]
@@ -797,7 +955,10 @@ pub(crate) mod tests {
         dup.rel_path = r.rel_path.clone();
         assert!(!insert_item(&db, &dup).await.unwrap());
         assert_eq!(get(&db, "a").await.unwrap().unwrap().title, "Heat");
-        assert_eq!(get_by_path(&db, &r.rel_path).await.unwrap().unwrap().id, "a");
+        assert_eq!(
+            get_by_path(&db, &r.rel_path).await.unwrap().unwrap().id,
+            "a"
+        );
         assert!(get(&db, "missing").await.unwrap().is_none());
     }
 
@@ -822,7 +983,13 @@ pub(crate) mod tests {
             let mut cursor = None;
             let mut pages = 0;
             loop {
-                let q = ItemQuery { sort, order, cursor: cursor.clone(), limit: Some(3), ..Default::default() };
+                let q = ItemQuery {
+                    sort,
+                    order,
+                    cursor: cursor.clone(),
+                    limit: Some(3),
+                    ..Default::default()
+                };
                 let page = list(&db, &q, "u").await.unwrap();
                 pages += 1;
                 seen.extend(page.items.iter().map(|i| i.id.clone()));
@@ -837,19 +1004,55 @@ pub(crate) mod tests {
             unique.dedup();
             assert_eq!(unique.len(), 7, "{sort:?} {order:?}: {seen:?}");
             // Same order as one big page.
-            let all = list(&db, &ItemQuery { sort, order, limit: Some(50), ..Default::default() }, "u").await.unwrap();
-            assert_eq!(all.items.iter().map(|i| i.id.clone()).collect::<Vec<_>>(), seen);
-            assert!(all.next_cursor.is_none());
-        }
-        let page = list(&db, &ItemQuery { sort: ItemSort::Added, order: SortOrder::Desc, limit: Some(2), ..Default::default() }, "u")
+            let all = list(
+                &db,
+                &ItemQuery {
+                    sort,
+                    order,
+                    limit: Some(50),
+                    ..Default::default()
+                },
+                "u",
+            )
             .await
             .unwrap();
+            assert_eq!(
+                all.items.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+                seen
+            );
+            assert!(all.next_cursor.is_none());
+        }
+        let page = list(
+            &db,
+            &ItemQuery {
+                sort: ItemSort::Added,
+                order: SortOrder::Desc,
+                limit: Some(2),
+                ..Default::default()
+            },
+            "u",
+        )
+        .await
+        .unwrap();
         assert_eq!(page.items[0].id, "id6");
         // A cursor from another sort order is refused; garbage is refused.
-        let bad = ItemQuery { sort: ItemSort::Title, cursor: page.next_cursor.clone(), ..Default::default() };
-        assert!(matches!(list(&db, &bad, "u").await, Err(CoreError::Invalid(_))));
-        let bad = ItemQuery { cursor: Some("!!!".into()), ..Default::default() };
-        assert!(matches!(list(&db, &bad, "u").await, Err(CoreError::Invalid(_))));
+        let bad = ItemQuery {
+            sort: ItemSort::Title,
+            cursor: page.next_cursor.clone(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            list(&db, &bad, "u").await,
+            Err(CoreError::Invalid(_))
+        ));
+        let bad = ItemQuery {
+            cursor: Some("!!!".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            list(&db, &bad, "u").await,
+            Err(CoreError::Invalid(_))
+        ));
     }
 
     #[tokio::test]
@@ -882,18 +1085,43 @@ pub(crate) mod tests {
             v.sort();
             v
         };
-        let q = |s: &str| ItemQuery { q: Some(s.into()), ..Default::default() };
+        let q = |s: &str| ItemQuery {
+            q: Some(s.into()),
+            ..Default::default()
+        };
         assert_eq!(ids(list(&db, &q("100%"), "u").await.unwrap()), vec!["a"]);
-        assert_eq!(ids(list(&db, &q("snake_case"), "u").await.unwrap()), vec!["c"]);
-        assert_eq!(ids(list(&db, &q("WOLF"), "u").await.unwrap()), vec!["a", "e"]);
-        assert_eq!(ids(list(&db, &q("Season 01"), "u").await.unwrap()), vec!["e"], "rel_path is searched");
-        let fav = ItemQuery { favorite: Some(true), ..Default::default() };
+        assert_eq!(
+            ids(list(&db, &q("snake_case"), "u").await.unwrap()),
+            vec!["c"]
+        );
+        assert_eq!(
+            ids(list(&db, &q("WOLF"), "u").await.unwrap()),
+            vec!["a", "e"]
+        );
+        assert_eq!(
+            ids(list(&db, &q("Season 01"), "u").await.unwrap()),
+            vec!["e"],
+            "rel_path is searched"
+        );
+        let fav = ItemQuery {
+            favorite: Some(true),
+            ..Default::default()
+        };
         assert_eq!(ids(list(&db, &fav, "u").await.unwrap()), vec!["a"]);
-        let year = ItemQuery { year: Some(2019), ..Default::default() };
+        let year = ItemQuery {
+            year: Some(2019),
+            ..Default::default()
+        };
         assert_eq!(ids(list(&db, &year, "u").await.unwrap()), vec!["b"]);
-        let cat = ItemQuery { category: Some(Category::Other), ..Default::default() };
+        let cat = ItemQuery {
+            category: Some(Category::Other),
+            ..Default::default()
+        };
         assert_eq!(ids(list(&db, &cat, "u").await.unwrap()), vec!["c", "d"]);
-        let review = ItemQuery { status: Some(ItemStatus::NeedsReview), ..Default::default() };
+        let review = ItemQuery {
+            status: Some(ItemStatus::NeedsReview),
+            ..Default::default()
+        };
         assert_eq!(ids(list(&db, &review, "u").await.unwrap()), vec!["h"]);
     }
 
@@ -924,13 +1152,20 @@ pub(crate) mod tests {
         insert(&db, &review).await;
 
         set_progress(&db, "u1", "m01", 120.0, 3600.0).await.unwrap();
-        set_progress(&db, "u1", "m02", 3500.0, 3600.0).await.unwrap(); // finished
+        set_progress(&db, "u1", "m02", 3500.0, 3600.0)
+            .await
+            .unwrap(); // finished
         set_progress(&db, "u1", "m03", 10.0, 3600.0).await.unwrap(); // too early
         set_progress(&db, "u2", "m04", 300.0, 3600.0).await.unwrap(); // other user
         // Upsert keeps one row and recomputes `finished`.
-        set_progress(&db, "u1", "m05", 3300.0, 3600.0).await.unwrap();
+        set_progress(&db, "u1", "m05", 3300.0, 3600.0)
+            .await
+            .unwrap();
         set_progress(&db, "u1", "m05", 600.0, 3600.0).await.unwrap();
-        assert!(matches!(set_progress(&db, "u1", "nope", 1.0, 2.0).await, Err(CoreError::NotFound)));
+        assert!(matches!(
+            set_progress(&db, "u1", "nope", 1.0, 2.0).await,
+            Err(CoreError::NotFound)
+        ));
         assert!(set_progress(&db, "u1", "m01", f64::NAN, 2.0).await.is_err());
         assert!(set_progress(&db, "u1", "m01", -1.0, 2.0).await.is_err());
 
@@ -943,18 +1178,51 @@ pub(crate) mod tests {
         assert_eq!(s.total_bytes, 15 * 10 + 5 + 3 * 1000);
         assert_eq!(s.needs_review, 1);
         assert_eq!(s.recently_added.len(), 12);
-        assert!(s.recently_added.iter().all(|i| i.category != Category::Photo));
+        assert!(
+            s.recently_added
+                .iter()
+                .all(|i| i.category != Category::Photo)
+        );
         assert_eq!(s.recently_added[0].id, "m14");
         let cw: Vec<&str> = s.continue_watching.iter().map(|i| i.id.as_str()).collect();
         assert_eq!(cw.len(), 2);
         assert!(cw.contains(&"m01") && cw.contains(&"m05"));
-        let p = s.continue_watching.iter().find(|i| i.id == "m05").unwrap().progress.unwrap();
-        assert_eq!(p, Progress { position_s: 600.0, duration_s: 3600.0, finished: false });
+        let p = s
+            .continue_watching
+            .iter()
+            .find(|i| i.id == "m05")
+            .unwrap()
+            .progress
+            .unwrap();
+        assert_eq!(
+            p,
+            Progress {
+                position_s: 600.0,
+                duration_s: 3600.0,
+                finished: false
+            }
+        );
 
         let d = detail(&db, "m02", "u1").await.unwrap();
         assert!(d.item.progress.unwrap().finished);
-        assert!(detail(&db, "m02", "u2").await.unwrap().item.progress.is_none());
-        let page = list(&db, &ItemQuery { q: Some("Movie 04".into()), ..Default::default() }, "u2").await.unwrap();
+        assert!(
+            detail(&db, "m02", "u2")
+                .await
+                .unwrap()
+                .item
+                .progress
+                .is_none()
+        );
+        let page = list(
+            &db,
+            &ItemQuery {
+                q: Some("Movie 04".into()),
+                ..Default::default()
+            },
+            "u2",
+        )
+        .await
+        .unwrap();
         assert_eq!(page.items[0].progress.unwrap().position_s, 300.0);
     }
 
@@ -973,17 +1241,46 @@ pub(crate) mod tests {
         insert(&db, &gone).await;
 
         let list = shows(&db).await.unwrap();
-        assert_eq!(list.iter().map(|s| s.show_name.as_str()).collect::<Vec<_>>(), vec!["Andor", "The Office"]);
+        assert_eq!(
+            list.iter()
+                .map(|s| s.show_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Andor", "The Office"]
+        );
         let office = &list[1];
-        assert_eq!((office.item_count, office.season_count, office.last_added_at), (4, 2, 4));
-        assert_eq!(office.poster_item_id.as_deref(), Some("o4"), "an episode with a thumbnail is the poster");
+        assert_eq!(
+            (office.item_count, office.season_count, office.last_added_at),
+            (4, 2, 4)
+        );
+        assert_eq!(
+            office.poster_item_id.as_deref(),
+            Some("o4"),
+            "an episode with a thumbnail is the poster"
+        );
         assert_eq!(list[0].poster_item_id.as_deref(), Some("a1"));
 
         let detail_show = show(&db, "The Office", "u").await.unwrap();
         assert_eq!(detail_show.seasons.len(), 2);
-        assert_eq!(detail_show.seasons[0].episodes.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), vec!["o1", "o2"]);
-        assert_eq!(detail_show.seasons[1].episodes.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), vec!["o3", "o4"]);
-        assert!(matches!(show(&db, "Nope", "u").await, Err(CoreError::NotFound)));
+        assert_eq!(
+            detail_show.seasons[0]
+                .episodes
+                .iter()
+                .map(|e| e.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["o1", "o2"]
+        );
+        assert_eq!(
+            detail_show.seasons[1]
+                .episodes
+                .iter()
+                .map(|e| e.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["o3", "o4"]
+        );
+        assert!(matches!(
+            show(&db, "Nope", "u").await,
+            Err(CoreError::NotFound)
+        ));
 
         let d = detail(&db, "o2", "u").await.unwrap();
         assert_eq!(d.next_episode_id.as_deref(), Some("o3"));
@@ -992,7 +1289,10 @@ pub(crate) mod tests {
         assert_eq!(d.previous_episode_id, None);
         let d = detail(&db, "o4", "u").await.unwrap();
         assert_eq!(d.next_episode_id, None, "missing episodes are skipped");
-        assert!(matches!(detail(&db, "zzz", "u").await, Err(CoreError::NotFound)));
+        assert!(matches!(
+            detail(&db, "zzz", "u").await,
+            Err(CoreError::NotFound)
+        ));
     }
 
     #[tokio::test]
@@ -1028,11 +1328,29 @@ pub(crate) mod tests {
         assert_eq!(page.months.len(), 1);
         assert_eq!(page.months[0].month, "2024-06");
         assert_eq!(page.months[0].count, 3);
-        assert_eq!(page.months[0].items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), vec!["p03", "p02", "p01"]);
-        let page2 = photo_timeline(&db, page.next_cursor.as_deref(), 3, "u").await.unwrap();
-        assert_eq!(page2.months.iter().map(|m| m.month.as_str()).collect::<Vec<_>>(), vec!["2024-05", "2023-12"]);
+        assert_eq!(
+            page.months[0]
+                .items
+                .iter()
+                .map(|i| i.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["p03", "p02", "p01"]
+        );
+        let page2 = photo_timeline(&db, page.next_cursor.as_deref(), 3, "u")
+            .await
+            .unwrap();
+        assert_eq!(
+            page2
+                .months
+                .iter()
+                .map(|m| m.month.as_str())
+                .collect::<Vec<_>>(),
+            vec!["2024-05", "2023-12"]
+        );
         assert_eq!(page2.months[0].items.len(), 2);
-        let page3 = photo_timeline(&db, page2.next_cursor.as_deref(), 3, "u").await.unwrap();
+        let page3 = photo_timeline(&db, page2.next_cursor.as_deref(), 3, "u")
+            .await
+            .unwrap();
         assert_eq!(page3.months.len(), 1);
         assert_eq!(page3.months[0].month, "2023-11");
         assert!(page3.next_cursor.is_none());
@@ -1040,7 +1358,69 @@ pub(crate) mod tests {
         assert_eq!(everything.months.len(), 4);
         assert!(everything.next_cursor.is_none());
         assert!(photo_timeline(&db, Some("garbage"), 3, "u").await.is_err());
-        assert_eq!(month_bounds("2024-12"), Some((1_733_011_200, 1_735_689_600)));
+        assert_eq!(
+            month_bounds("2024-12"),
+            Some((1_733_011_200, 1_735_689_600))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_busy_month_is_split_across_pages() {
+        let db = crate::db::open_memory().await.unwrap();
+        let june = 1_717_200_000; // 2024-06-01 00:00 UTC
+        let may = 1_714_521_600; // 2024-05-01 00:00 UTC
+        for n in 0..5 {
+            let mut r = row(&format!("j{n}"), &format!("June {n}"));
+            r.category = Category::Photo;
+            r.kind = crate::models::MediaKind::Photo;
+            r.rel_path = format!("Photos/2024/06/j{n}.jpg");
+            // Two photos share a timestamp so the id tiebreak is exercised.
+            r.taken_at = Some(june + 100 * (n / 2));
+            insert(&db, &r).await;
+        }
+        let mut m = row("m0", "May");
+        m.category = Category::Photo;
+        m.kind = crate::models::MediaKind::Photo;
+        m.rel_path = "Photos/2024/05/m0.jpg".into();
+        m.taken_at = Some(may + 1);
+        insert(&db, &m).await;
+
+        let mut cursor: Option<String> = None;
+        let mut pages = Vec::new();
+        loop {
+            let page = photo_timeline(&db, cursor.as_deref(), 2, "u")
+                .await
+                .unwrap();
+            let n: usize = page.months.iter().map(|m| m.items.len()).sum();
+            assert!(n <= 2, "a page never holds more than the limit");
+            pages.push(page.months.clone());
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        assert_eq!(pages.len(), 3);
+        let flat: Vec<(String, i64, String)> = pages
+            .iter()
+            .flatten()
+            .flat_map(|m| {
+                m.items
+                    .iter()
+                    .map(|i| (m.month.clone(), m.count, i.id.clone()))
+            })
+            .collect();
+        assert_eq!(
+            flat,
+            vec![
+                ("2024-06".into(), 5, "j4".into()),
+                ("2024-06".into(), 5, "j3".into()),
+                ("2024-06".into(), 5, "j2".into()),
+                ("2024-06".into(), 5, "j1".into()),
+                ("2024-06".into(), 5, "j0".into()),
+                ("2024-05".into(), 1, "m0".into()),
+            ],
+            "every month carries its full count; nothing is repeated or skipped"
+        );
     }
 
     #[tokio::test]
@@ -1066,18 +1446,58 @@ pub(crate) mod tests {
         assert_eq!(patched.year, Some(1995));
         assert!(patched.favorite);
         assert_eq!(patched.episode_title, None);
-        let cleared = update_metadata(&db, "a", &ItemPatch { year: Some(None), ..Default::default() }).await.unwrap();
+        let cleared = update_metadata(
+            &db,
+            "a",
+            &ItemPatch {
+                year: Some(None),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(cleared.year, None);
         assert_eq!(cleared.title, "The Heat");
-        assert!(update_metadata(&db, "a", &ItemPatch { title: Some(" ".into()), ..Default::default() }).await.is_err());
-        assert!(update_metadata(&db, "a", &ItemPatch { year: Some(Some(3)), ..Default::default() }).await.is_err());
-        assert!(matches!(update_metadata(&db, "zz", &ItemPatch::default()).await, Err(CoreError::NotFound)));
+        assert!(
+            update_metadata(
+                &db,
+                "a",
+                &ItemPatch {
+                    title: Some(" ".into()),
+                    ..Default::default()
+                }
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            update_metadata(
+                &db,
+                "a",
+                &ItemPatch {
+                    year: Some(Some(3)),
+                    ..Default::default()
+                }
+            )
+            .await
+            .is_err()
+        );
+        assert!(matches!(
+            update_metadata(&db, "zz", &ItemPatch::default()).await,
+            Err(CoreError::NotFound)
+        ));
 
         let mut r1 = row("r1", "Review one");
         r1.status = ItemStatus::NeedsReview;
         r1.added_at = 10;
         r1.suggestion_json = Some(
-            serde_json::to_string(&crate::library::classify::classify("Inbox/Some.Movie.1080p.mkv", None, None, 0)).unwrap(),
+            serde_json::to_string(&crate::library::classify::classify(
+                "Inbox/Some.Movie.1080p.mkv",
+                None,
+                None,
+                0,
+            ))
+            .unwrap(),
         );
         insert(&db, &r1).await;
         let mut r2 = row("r2", "Review two");
@@ -1085,8 +1505,17 @@ pub(crate) mod tests {
         r2.added_at = 20;
         insert(&db, &r2).await;
         let inbox_items = inbox(&db, "owner").await.unwrap();
-        assert_eq!(inbox_items.iter().map(|d| d.item.id.as_str()).collect::<Vec<_>>(), vec!["r2", "r1"]);
-        assert_eq!(inbox_items[1].suggestion.as_ref().unwrap().destination, "Movies/Some Movie/Some Movie.mkv");
+        assert_eq!(
+            inbox_items
+                .iter()
+                .map(|d| d.item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["r2", "r1"]
+        );
+        assert_eq!(
+            inbox_items[1].suggestion.as_ref().unwrap().destination,
+            "Movies/Some Movie/Some Movie.mkv"
+        );
         assert_eq!(needs_review_count(&db).await.unwrap(), 2);
 
         let mut t = row("t", "Trashed");

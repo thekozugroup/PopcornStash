@@ -1,0 +1,195 @@
+/**
+ * A titled horizontal row of tiles (Home: continue watching, recently
+ * added). The row scrolls sideways with snap points; on wide screens with a
+ * mouse, quiet arrow buttons page through it. Keyboard users tab through the
+ * tiles and the row follows focus.
+ */
+import * as stylex from '@stylexjs/stylex';
+import {Heading} from '@astryxdesign/core/Heading';
+import {IconButton} from '@astryxdesign/core/IconButton';
+import {Button} from '@astryxdesign/core/Button';
+import {Skeleton} from '@astryxdesign/core/Skeleton';
+import {Text} from '@astryxdesign/core/Text';
+import {ChevronLeft, ChevronRight} from 'lucide-react';
+import {Children, isValidElement, useCallback, useEffect, useState, type ReactNode} from 'react';
+import {MediaTileSkeleton, type MediaShape} from '../MediaTile';
+
+const styles = stylex.create({
+  section: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 14,
+    minWidth: 0,
+  },
+  header: {
+    display: 'flex',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: 16,
+    minWidth: 0,
+  },
+  titleGroup: {
+    display: 'flex',
+    alignItems: 'baseline',
+    flexWrap: 'wrap',
+    columnGap: 10,
+    rowGap: 2,
+    minWidth: 0,
+  },
+  trailing: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    flexShrink: 0,
+    // Optical alignment: the ghost button's label lines up with the row's edge.
+    marginInlineEnd: -10,
+  },
+  arrows: {
+    display: {default: 'none', '@media (hover: hover) and (pointer: fine) and (min-width: 800px)': 'flex'},
+    gap: 4,
+  },
+  row: {
+    display: 'grid',
+    gridAutoFlow: 'column',
+    gap: {default: 20, '@media (max-width: 520px)': 14},
+    margin: 0,
+    padding: 0,
+    listStyle: 'none',
+    overflowX: 'auto',
+    overflowY: 'hidden',
+    overscrollBehaviorX: 'contain',
+    scrollSnapType: 'x proximity',
+    scrollbarWidth: 'none',
+    // Under 800px the row runs to the screen edge and keeps the page gutter.
+    marginInline: {default: 0, '@media (max-width: 799px)': -20},
+    paddingInline: {default: 0, '@media (max-width: 799px)': 20},
+    scrollPaddingInline: {default: 0, '@media (max-width: 799px)': 20},
+    // Room for the focus ring of the first and last tiles.
+    paddingBlock: 4,
+    marginBlock: -4,
+    scrollBehavior: {default: 'smooth', '@media (prefers-reduced-motion: reduce)': 'auto'},
+  },
+  poster: {
+    gridAutoColumns: {default: 168, '@media (max-width: 520px)': 132},
+  },
+  frame: {
+    gridAutoColumns: {default: 288, '@media (max-width: 520px)': 232},
+  },
+  square: {
+    gridAutoColumns: {default: 148, '@media (max-width: 520px)': 112},
+  },
+  // A short group (one or two tiles) sits beside other short groups instead
+  // of taking a whole row; it never scrolls.
+  compactSection: {
+    flex: '0 1 auto',
+  },
+  compactRow: {
+    overflowX: 'visible',
+    marginInline: 0,
+    paddingInline: 0,
+    scrollPaddingInline: 0,
+  },
+  cell: {
+    scrollSnapAlign: 'start',
+    minWidth: 0,
+  },
+});
+
+export interface ShelfProps {
+  title: string;
+  /** Quiet text after the title ("3 new"). */
+  note?: string;
+  headingLevel?: 2 | 3;
+  /** "See all" destination. */
+  href?: string;
+  linkLabel?: string;
+  shape: MediaShape;
+  /** One or two tiles: no scrolling, sized to its content. */
+  isCompact?: boolean;
+  children: ReactNode;
+}
+
+export function Shelf({title, note, headingLevel = 3, href, linkLabel = 'See all', shape, isCompact = false, children}: ShelfProps) {
+  const [row, setRow] = useState<HTMLUListElement | null>(null);
+  const [edges, setEdges] = useState({start: true, end: true});
+
+  const measure = useCallback(() => {
+    if (!row) return;
+    const max = row.scrollWidth - row.clientWidth;
+    setEdges({start: row.scrollLeft <= 2, end: row.scrollLeft >= max - 2});
+  }, [row]);
+
+  useEffect(() => {
+    if (!row) return;
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(row);
+    row.addEventListener('scroll', measure, {passive: true});
+    return () => {
+      observer.disconnect();
+      row.removeEventListener('scroll', measure);
+    };
+  }, [row, measure]);
+
+  const page = (direction: 1 | -1) => {
+    if (!row) return;
+    row.scrollBy({left: direction * row.clientWidth * 0.85});
+  };
+
+  const hasOverflow = !(edges.start && edges.end);
+
+  return (
+    <section {...stylex.props(styles.section, isCompact && styles.compactSection)} aria-label={title}>
+      <div {...stylex.props(styles.header)}>
+        <div {...stylex.props(styles.titleGroup)}>
+          <Heading level={headingLevel}>{title}</Heading>
+          {note ? (
+            <Text type="supporting" color="secondary">
+              {note}
+            </Text>
+          ) : null}
+        </div>
+        <div {...stylex.props(styles.trailing)}>
+          {hasOverflow && !isCompact ? (
+            <div {...stylex.props(styles.arrows)}>
+              <IconButton
+                label={`Scroll ${title} back`}
+                icon={<ChevronLeft size={18} strokeWidth={1.75} aria-hidden="true" />}
+                variant="ghost"
+                size="sm"
+                isDisabled={edges.start}
+                onClick={() => page(-1)}
+              />
+              <IconButton
+                label={`Scroll ${title} forward`}
+                icon={<ChevronRight size={18} strokeWidth={1.75} aria-hidden="true" />}
+                variant="ghost"
+                size="sm"
+                isDisabled={edges.end}
+                onClick={() => page(1)}
+              />
+            </div>
+          ) : null}
+          {href ? <Button label={linkLabel} variant="ghost" size="sm" href={href} /> : null}
+        </div>
+      </div>
+      <ul ref={setRow} {...stylex.props(styles.row, styles[shape], isCompact && styles.compactRow)}>
+        {Children.map(children, child =>
+          isValidElement(child) ? <li {...stylex.props(styles.cell)}>{child}</li> : null,
+        )}
+      </ul>
+    </section>
+  );
+}
+
+export function ShelfSkeleton({shape, count = 6}: {shape: MediaShape; count?: number}) {
+  return (
+    <div {...stylex.props(styles.section)} aria-hidden="true">
+      <Skeleton width={180} height={20} radius={1} />
+      <div {...stylex.props(styles.row, styles[shape])}>
+        {Array.from({length: count}, (_, index) => (
+          <MediaTileSkeleton key={index} shape={shape} index={index} isTextHidden={shape === 'square'} />
+        ))}
+      </div>
+    </div>
+  );
+}

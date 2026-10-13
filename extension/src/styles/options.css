@@ -1,0 +1,291 @@
+@import './base.css';
+
+/* Options page: a bounded single column, flat sections split by thin dividers. */
+
+.page {
+  width: min(100%, 680px);
+  margin-inline: auto;
+  padding: clamp(24px, 5vw, 56px) clamp(20px, 5vw, 40px) 64px;
+}
+
+.masthead {
+  margin-bottom: 40px;
+}
+
+.intro {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 32px;
+}
+
+.page-title {
+  font-size: 1.875rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+.page-lede {
+  max-width: 60ch;
+  color: var(--text-muted);
+  font-size: 1rem;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.page-lede:empty {
+  display: none;
+}
+
+.section {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 24px;
+  padding-block: 28px;
+  border-top: 1px solid var(--divider);
+}
+
+.section-title {
+  padding-top: 2px;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.section-body {
+  display: grid;
+  gap: 20px;
+  align-content: start;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .section {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+}
+
+/* Server address form ---------------------------------------------------- */
+
+.field {
+  display: grid;
+  gap: 8px;
+}
+
+.field .hint {
+  margin-top: -4px;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.field-row .button {
+  min-width: 112px;
+}
+
+@media (max-width: 420px) {
+  .field-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.footnote {
+  max-width: 60ch;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Pairing code ------------------------------------------------------------ */
+
+.pairing {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+  padding: 24px;
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+}
+
+.code {
+  margin-block: 4px 4px;
+  font-family: var(--font-code);
+  font-size: clamp(2.25rem, 7vw, 3rem);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+  user-select: all;
+}
+
+.pairing .hint {
+  max-width: 52ch;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pairing .actions {
+  margin-top: 8px;
+}
+
+.status {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.status-trouble {
+  color: var(--text);
+}
+
+/* Connected --------------------------------------------------------------- */
+
+.facts {
+  display: grid;
+  border-block: 1px solid var(--divider);
+}
+
+.fact {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 16px;
+  padding-block: 12px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.fact + .fact {
+  border-top: 1px solid var(--divider);
+}
+
+.fact dt {
+  color: var(--text-muted);
+}
+
+.fact dd {
+  overflow-wrap: anywhere;
+  font-weight: 500;
+}
+
+/* Settings (switch rows) -------------------------------------------------- */
+
+.settings {
+  gap: 0;
+}
+
+.setting {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px;
+  align-items: start;
+  padding-block: 4px 20px;
+}
+
+.setting + .setting {
+  padding-top: 20px;
+  border-top: 1px solid var(--divider);
+}
+
+.setting-text {
+  display: grid;
+  gap: 6px;
+  max-width: 60ch;
+}
+
+.setting-title {
+  font-size: 1rem;
+  font-weight: 550;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+/* A native checkbox drawn as a switch: 44px wide target, ink when off, blue when on. */
+.switch {
+  appearance: none;
+  position: relative;
+  flex-shrink: 0;
+  width: 44px;
+  height: 26px;
+  margin: 0;
+  margin-top: 1px;
+  border-radius: 13px;
+  background: var(--control-border);
+  cursor: pointer;
+  transition: background-color var(--duration) var(--ease-out);
+}
+
+.switch::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px oklch(14.1% 0.005 285.823 / 25%);
+  transition: transform var(--duration) var(--ease-out);
+}
+
+.switch:hover {
+  background: var(--control-border-hover);
+}
+
+.switch:checked {
+  background: var(--accent);
+}
+
+.switch:checked:hover {
+  background: var(--accent-hover);
+}
+
+.switch:checked::before {
+  transform: translateX(18px);
+  background: var(--zinc-950);
+}
+
+.switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* A taller invisible hit area keeps the 44px target. */
+.switch::after {
+  content: '';
+  position: absolute;
+  inset: -9px 0;
+}
+
+/* Privacy ----------------------------------------------------------------- */
+
+.prose {
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.plain-list {
+  display: grid;
+  gap: 10px;
+  max-width: 62ch;
+  padding-left: 1.1em;
+  color: var(--text-muted);
+}
+
+.plain-list li::marker {
+  color: var(--zinc-400);
+}
+
+/* Notices on the options page sit above the form. */
+.section-body > .notice {
+  max-width: 60ch;
+}

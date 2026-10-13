@@ -30,8 +30,15 @@ const MAX_TAG_VALUE: usize = 512;
 /// including external same-stem subtitle files.
 pub async fn probe(path: &Path) -> Result<MediaSummary> {
     let mut cmd = tools::command(tools::FFPROBE);
-    cmd.args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"])
-        .arg(tools::ffmpeg_input(path));
+    cmd.args([
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+    ])
+    .arg(tools::ffmpeg_input(path));
     let output = tools::run(cmd, tools::FFPROBE, PROBE_TIMEOUT).await?;
     if !output.status.success() {
         return Err(CoreError::external(format!(
@@ -42,14 +49,19 @@ pub async fn probe(path: &Path) -> Result<MediaSummary> {
     let json = String::from_utf8_lossy(&output.stdout);
     let mut summary = parse_ffprobe_json(&json)?;
     let next_index = next_stream_index(&json);
-    summary.subtitles.extend(external_subtitles(path, next_index).await);
+    summary
+        .subtitles
+        .extend(external_subtitles(path, next_index).await);
     Ok(summary)
 }
 
 /// Parse ffprobe JSON output (separated for unit tests).
 pub fn parse_ffprobe_json(json: &str) -> Result<MediaSummary> {
-    let raw: RawProbe = serde_json::from_str(json)
-        .map_err(|e| CoreError::external(format!("ffprobe returned output that could not be read: {e}")))?;
+    let raw: RawProbe = serde_json::from_str(json).map_err(|e| {
+        CoreError::external(format!(
+            "ffprobe returned output that could not be read: {e}"
+        ))
+    })?;
     let format = raw.format.unwrap_or_default();
 
     let video_raw = raw
@@ -64,7 +76,8 @@ pub fn parse_ffprobe_json(json: &str) -> Result<MediaSummary> {
         pix_fmt: s.pix_fmt.clone().filter(|p| !p.is_empty()),
         width: s.width.unwrap_or(0),
         height: s.height.unwrap_or(0),
-        fps: parse_rate(s.avg_frame_rate.as_deref()).or_else(|| parse_rate(s.r_frame_rate.as_deref())),
+        fps: parse_rate(s.avg_frame_rate.as_deref())
+            .or_else(|| parse_rate(s.r_frame_rate.as_deref())),
         hdr: detect_hdr(s),
         rotation: detect_rotation(s),
     });
@@ -97,7 +110,11 @@ pub fn parse_ffprobe_json(json: &str) -> Result<MediaSummary> {
 
     let duration_s = parse_f64(format.duration.as_ref())
         .filter(|d| *d > 0.0)
-        .or_else(|| video_raw.and_then(|s| parse_f64(s.duration.as_ref())).filter(|d| *d > 0.0))
+        .or_else(|| {
+            video_raw
+                .and_then(|s| parse_f64(s.duration.as_ref()))
+                .filter(|d| *d > 0.0)
+        })
         .or_else(|| {
             raw.streams
                 .iter()
@@ -117,7 +134,9 @@ pub fn parse_ffprobe_json(json: &str) -> Result<MediaSummary> {
     Ok(MediaSummary {
         container: format.format_name.filter(|f| !f.is_empty()),
         duration_s,
-        bitrate: parse_f64(format.bit_rate.as_ref()).map(|b| b as i64).filter(|b| *b > 0),
+        bitrate: parse_f64(format.bit_rate.as_ref())
+            .map(|b| b as i64)
+            .filter(|b| *b > 0),
         video,
         audio,
         subtitles,
@@ -159,7 +178,10 @@ pub async fn external_subtitles(path: &Path, first_index: i64) -> Vec<SubtitleSt
 fn sidecar_subtitle(stem: &str, name: &str) -> Option<(&'static str, Option<String>, String)> {
     let (base, ext) = name.rsplit_once('.')?;
     let ext = ext.to_ascii_lowercase();
-    let codec = SIDECAR_SUBTITLES.iter().find(|(e, _)| *e == ext).map(|(_, c)| *c)?;
+    let codec = SIDECAR_SUBTITLES
+        .iter()
+        .find(|(e, _)| *e == ext)
+        .map(|(_, c)| *c)?;
     let rest = if base == stem {
         ""
     } else {
@@ -179,8 +201,12 @@ fn is_language_code(part: &str) -> bool {
         None => (part, None),
     };
     let lang_ok = (2..=3).contains(&lang.len()) && lang.chars().all(|c| c.is_ascii_alphabetic());
-    let region_ok = region.is_none_or(|r| (2..=4).contains(&r.len()) && r.chars().all(|c| c.is_ascii_alphanumeric()));
-    let marker_word = matches!(part.to_ascii_lowercase().as_str(), "sdh" | "cc" | "dub" | "sub");
+    let region_ok = region
+        .is_none_or(|r| (2..=4).contains(&r.len()) && r.chars().all(|c| c.is_ascii_alphanumeric()));
+    let marker_word = matches!(
+        part.to_ascii_lowercase().as_str(),
+        "sdh" | "cc" | "dub" | "sub"
+    );
     lang_ok && region_ok && !marker_word
 }
 
@@ -234,7 +260,10 @@ struct RawStream {
 
 impl RawStream {
     fn codec(&self) -> String {
-        self.codec_name.clone().filter(|c| !c.is_empty()).unwrap_or_else(|| "unknown".to_string())
+        self.codec_name
+            .clone()
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| "unknown".to_string())
     }
 
     fn is_attached_pic(&self) -> bool {
@@ -291,7 +320,10 @@ fn detect_hdr(stream: &RawStream) -> Option<String> {
             .and_then(Value::as_str)
             .is_some_and(|t| t.to_ascii_lowercase().contains("dovi"))
     });
-    let dovi_tag = matches!(stream.codec_tag_string.as_deref(), Some("dvh1" | "dvhe" | "dva1" | "dvav"));
+    let dovi_tag = matches!(
+        stream.codec_tag_string.as_deref(),
+        Some("dvh1" | "dvhe" | "dva1" | "dvav")
+    );
     if dovi_side_data || dovi_tag {
         return Some("dolby_vision".to_string());
     }
@@ -372,7 +404,10 @@ fn merge_tags(into: &mut BTreeMap<String, String>, tags: &BTreeMap<String, Value
 /// (classifier, camera field) finds them in one place.
 fn add_camera_aliases(tags: &mut BTreeMap<String, String>) {
     for (alias, sources) in [
-        ("make", ["com.apple.quicktime.make", "com.android.manufacturer"]),
+        (
+            "make",
+            ["com.apple.quicktime.make", "com.android.manufacturer"],
+        ),
         ("model", ["com.apple.quicktime.model", "com.android.model"]),
     ] {
         if tags.contains_key(alias) {
@@ -497,11 +532,27 @@ mod tests {
         assert!(m.subtitles.is_empty());
         // Tags: lowercase, merged, location dropped, camera aliases added.
         assert_eq!(m.tags.get("make").map(String::as_str), Some("Apple"));
-        assert_eq!(m.tags.get("model").map(String::as_str), Some("iPhone 15 Pro"));
-        assert_eq!(m.tags.get("com.apple.quicktime.make").map(String::as_str), Some("Apple"));
-        assert_eq!(m.tags.get("creation_time").map(String::as_str), Some("2024-06-13T10:21:00.000000Z"));
-        assert_eq!(m.tags.get("handler_name").map(String::as_str), Some("Core Media Video"));
-        assert!(m.tags.keys().all(|k| !k.contains("location")), "{:?}", m.tags);
+        assert_eq!(
+            m.tags.get("model").map(String::as_str),
+            Some("iPhone 15 Pro")
+        );
+        assert_eq!(
+            m.tags.get("com.apple.quicktime.make").map(String::as_str),
+            Some("Apple")
+        );
+        assert_eq!(
+            m.tags.get("creation_time").map(String::as_str),
+            Some("2024-06-13T10:21:00.000000Z")
+        );
+        assert_eq!(
+            m.tags.get("handler_name").map(String::as_str),
+            Some("Core Media Video")
+        );
+        assert!(
+            m.tags.keys().all(|k| !k.contains("location")),
+            "{:?}",
+            m.tags
+        );
         let json = serde_json::to_string(&m).unwrap();
         assert!(!json.contains("37.7749"));
     }
@@ -530,7 +581,10 @@ mod tests {
         assert_eq!(m.subtitles[1].title.as_deref(), Some("Forced"));
         // Video stream tags are merged in with lowercase keys.
         assert_eq!(m.tags.get("bps").map(String::as_str), Some("8000000"));
-        assert_eq!(m.tags.get("encoder").map(String::as_str), Some("libebml v1.4.2 + libmatroska v1.6.4"));
+        assert_eq!(
+            m.tags.get("encoder").map(String::as_str),
+            Some("libebml v1.4.2 + libmatroska v1.6.4")
+        );
         assert_eq!(m.tags.get("title").map(String::as_str), Some("Heat"));
     }
 
@@ -538,7 +592,10 @@ mod tests {
     fn audio_only_mp3_skips_cover_art() {
         let m = parse_ffprobe_json(MP3_COVER).unwrap();
         assert_eq!(m.container.as_deref(), Some("mp3"));
-        assert!(m.video.is_none(), "attached cover art is not a video stream");
+        assert!(
+            m.video.is_none(),
+            "attached cover art is not a video stream"
+        );
         assert_eq!(m.audio.len(), 1);
         assert_eq!(m.audio[0].codec, "mp3");
         assert_eq!(m.duration_s, Some(215.484));
@@ -572,7 +629,9 @@ mod tests {
         let m = parse_ffprobe_json("{}").unwrap();
         assert_eq!(m, MediaSummary::default());
         // Zero or negative durations are not real durations.
-        let m = parse_ffprobe_json(r#"{"format": {"duration": "0.000000", "format_name": "image2"}}"#).unwrap();
+        let m =
+            parse_ffprobe_json(r#"{"format": {"duration": "0.000000", "format_name": "image2"}}"#)
+                .unwrap();
         assert_eq!(m.duration_s, None);
     }
 
@@ -623,16 +682,29 @@ mod tests {
         );
         assert_eq!(
             sidecar_subtitle("Heat (1995)", "Heat (1995).en.srt"),
-            Some(("subrip", Some("en".to_string()), "Heat (1995).en.srt".to_string()))
+            Some((
+                "subrip",
+                Some("en".to_string()),
+                "Heat (1995).en.srt".to_string()
+            ))
         );
         assert_eq!(
             sidecar_subtitle("Heat (1995)", "Heat (1995).eng.forced.VTT").map(|s| (s.0, s.1)),
             Some(("webvtt", Some("eng".to_string())))
         );
-        assert_eq!(sidecar_subtitle("Heat (1995)", "Heat (1995).sdh.ass").map(|s| s.1), Some(None));
-        assert_eq!(sidecar_subtitle("Heat (1995)", "Heat (1995).pt-BR.srt").map(|s| s.1), Some(Some("pt-br".into())));
+        assert_eq!(
+            sidecar_subtitle("Heat (1995)", "Heat (1995).sdh.ass").map(|s| s.1),
+            Some(None)
+        );
+        assert_eq!(
+            sidecar_subtitle("Heat (1995)", "Heat (1995).pt-BR.srt").map(|s| s.1),
+            Some(Some("pt-br".into()))
+        );
         assert_eq!(sidecar_subtitle("Heat (1995)", "Heat (1995).mkv"), None);
-        assert_eq!(sidecar_subtitle("Heat (1995)", "Heat (1995) extras.srt"), None);
+        assert_eq!(
+            sidecar_subtitle("Heat (1995)", "Heat (1995) extras.srt"),
+            None
+        );
         assert_eq!(sidecar_subtitle("Heat", "Heater.srt"), None);
         assert_eq!(sidecar_subtitle("Heat (1995)", "Other.en.srt"), None);
     }
@@ -642,17 +714,32 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let video = dir.path().join("Movie.mkv");
         std::fs::write(&video, b"x").unwrap();
-        for name in ["Movie.en.srt", "Movie.srt", "Movie.fr.vtt", "Movie.nfo", "Other.srt"] {
+        for name in [
+            "Movie.en.srt",
+            "Movie.srt",
+            "Movie.fr.vtt",
+            "Movie.nfo",
+            "Other.srt",
+        ] {
             std::fs::write(dir.path().join(name), b"1").unwrap();
         }
         let subs = external_subtitles(&video, 3).await;
         assert_eq!(subs.len(), 3, "{subs:?}");
         assert!(subs.iter().all(|s| s.external));
-        assert_eq!(subs.iter().map(|s| s.index).collect::<Vec<_>>(), vec![3, 4, 5]);
-        let en = subs.iter().find(|s| s.title.as_deref() == Some("Movie.en.srt")).unwrap();
+        assert_eq!(
+            subs.iter().map(|s| s.index).collect::<Vec<_>>(),
+            vec![3, 4, 5]
+        );
+        let en = subs
+            .iter()
+            .find(|s| s.title.as_deref() == Some("Movie.en.srt"))
+            .unwrap();
         assert_eq!(en.language.as_deref(), Some("en"));
         assert_eq!(en.codec, "subrip");
-        let fr = subs.iter().find(|s| s.title.as_deref() == Some("Movie.fr.vtt")).unwrap();
+        let fr = subs
+            .iter()
+            .find(|s| s.title.as_deref() == Some("Movie.fr.vtt"))
+            .unwrap();
         assert_eq!(fr.codec, "webvtt");
     }
 
@@ -661,15 +748,50 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let clip = dir.path().join("clip:odd name.mov");
         let status = std::process::Command::new("ffmpeg")
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=s=320x240:r=25:d=2"])
-            .args(["-f", "lavfi", "-i", "sine=d=2", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest"])
-            .args(["-movflags", "use_metadata_tags", "-metadata", "com.apple.quicktime.make=Apple"])
-            .args(["-metadata", "com.apple.quicktime.location.ISO6709=+37.7749-122.4194/", "-f", "mov"])
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=s=320x240:r=25:d=2",
+            ])
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=d=2",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-c:a",
+                "aac",
+                "-shortest",
+            ])
+            .args([
+                "-movflags",
+                "use_metadata_tags",
+                "-metadata",
+                "com.apple.quicktime.make=Apple",
+            ])
+            .args([
+                "-metadata",
+                "com.apple.quicktime.location.ISO6709=+37.7749-122.4194/",
+                "-f",
+                "mov",
+            ])
             .arg(&clip)
             .status()
             .unwrap();
         assert!(status.success());
-        std::fs::write(dir.path().join("clip:odd name.en.srt"), "1\n00:00:00,000 --> 00:00:01,000\nHi\n").unwrap();
+        std::fs::write(
+            dir.path().join("clip:odd name.en.srt"),
+            "1\n00:00:00,000 --> 00:00:01,000\nHi\n",
+        )
+        .unwrap();
         let m = probe(&clip).await.unwrap();
         let v = m.video.as_ref().unwrap();
         assert_eq!((v.codec.as_str(), v.width, v.height), ("h264", 320, 240));
@@ -683,7 +805,12 @@ mod tests {
         assert!(m.subtitles[0].external);
 
         let missing = probe(&dir.path().join("nope.mp4")).await.unwrap_err();
-        assert!(missing.to_string().starts_with("This file could not be read as media"), "{missing}");
+        assert!(
+            missing
+                .to_string()
+                .starts_with("This file could not be read as media"),
+            "{missing}"
+        );
         let junk = dir.path().join("junk.mp4");
         std::fs::write(&junk, b"definitely not a video").unwrap();
         assert!(probe(&junk).await.is_err());

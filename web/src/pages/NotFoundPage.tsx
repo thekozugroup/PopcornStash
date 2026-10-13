@@ -1,18 +1,30 @@
 /**
- * Unknown address inside the app.
+ * Unknown address inside the app: say so plainly and offer the way back.
+ * The sidebar (or the quick links on phones) stays available for anywhere else.
  */
+import * as stylex from '@stylexjs/stylex';
 import {Button} from '@astryxdesign/core/Button';
-import {EmptyPanel} from '../components/EmptyPanel';
-import {useDocumentTitle} from '../components/PageHeader';
+import {Text} from '@astryxdesign/core/Text';
+import {useLocation} from 'react-router';
+import {PageHeader} from '../components/PageHeader';
+
+const styles = stylex.create({
+  path: {
+    overflowWrap: 'anywhere',
+  },
+});
 
 export default function NotFoundPage() {
-  useDocumentTitle('Page not found');
+  const {pathname} = useLocation();
   return (
-    <EmptyPanel
-      headingLevel={2}
+    <PageHeader
       title="Page not found"
-      description="That address does not match anything in PopcornStash."
-      actions={<Button label="Go to Home" href="/" variant="secondary" />}
+      subtitle={
+        <Text as="span" color="secondary" xstyle={styles.path}>
+          {`Nothing in PopcornStash lives at ${pathname}. The link may be old or mistyped.`}
+        </Text>
+      }
+      actions={<Button label="Go to Home" variant="primary" href="/" />}
     />
   );
 }

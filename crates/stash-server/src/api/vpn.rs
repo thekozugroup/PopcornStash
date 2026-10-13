@@ -32,6 +32,8 @@ pub const WIREGUARD_MAX_BYTES: usize = 64 * 1024;
 /// Largest OpenVPN file accepted.
 pub const OPENVPN_MAX_BYTES: usize = 256 * 1024;
 const CREDENTIAL_MAX_CHARS: usize = 512;
+/// Longest `.ovpn` line OpenVPN reads in one piece (255 bytes with the newline).
+const OPENVPN_MAX_LINE: usize = 254;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -246,14 +248,19 @@ async fn finish_change(
         // The supervisor reads the files when the VPN container starts.
         Err(TorrentdError::Unreachable(_)) | Err(TorrentdError::Disabled) => {
             tracing::info!(
-                "VPN settings saved; the torrent container will apply them when it starts"
+                "VPN settings saved; the supervisor applies them when the engine starts"
             );
         }
         Err(e) => {
             tracing::warn!(error = %e, "VPN settings saved, but the engine did not accept the reload")
         }
     }
-    Ok(Json(state.torrentd.vpn_status().await))
+    let status = state.torrentd.vpn_status().await;
+    // The status watcher only runs while torrents are enabled; tell every open page now.
+    state
+        .events
+        .publish(stash_core::events::Event::Vpn(status.clone()));
+    Ok(Json(status))
 }
 
 // --- Applying configurations (no HTTP types; used by handlers and tests) ------
@@ -672,6 +679,7 @@ pub struct WireguardSummary {
 struct PeerSeen {
     public_key: bool,
     endpoint: Option<String>,
+    allowed_ips: usize,
 }
 
 /// Check a wg-quick file: exactly one `[Interface]` with `PrivateKey` and `Address`, at least
@@ -708,10 +716,10 @@ pub fn validate_wireguard(text: &str) -> Result<WireguardSummary, String> {
             continue;
         }
         if let Some(rest) = line.strip_prefix('[') {
+            // No spaces inside the brackets: the supervisor reads `[Interface]` and `[Peer]` literally.
             let name = rest
                 .strip_suffix(']')
-                .ok_or_else(|| format!("Line {n} starts a section but has no closing bracket."))?
-                .trim();
+                .ok_or_else(|| format!("Line {n} starts a section but has no closing bracket."))?;
             if name.eq_ignore_ascii_case("interface") {
                 interfaces += 1;
                 if interfaces > 1 {
@@ -787,10 +795,10 @@ pub fn validate_wireguard(text: &str) -> Result<WireguardSummary, String> {
                 "mtu" => {
                     if !value
                         .parse::<u32>()
-                        .is_ok_and(|m| (576..=65535).contains(&m))
+                        .is_ok_and(|m| (1280..=9000).contains(&m))
                     {
                         return Err(format!(
-                            "The MTU on line {n} must be a number between 576 and 65535."
+                            "The MTU on line {n} must be a number between 1280 and 9000."
                         ));
                     }
                 }
@@ -843,6 +851,7 @@ pub fn validate_wireguard(text: &str) -> Result<WireguardSummary, String> {
                                     "The AllowedIPs entry {item:?} on line {n} is not an IP range."
                                 ));
                             }
+                            peer.allowed_ips += 1;
                         }
                     }
                     "endpoint" => {
@@ -878,6 +887,9 @@ pub fn validate_wireguard(text: &str) -> Result<WireguardSummary, String> {
     }
     if peers.iter().any(|p| !p.public_key) {
         return Err("Every [Peer] needs a PublicKey.".into());
+    }
+    if peers.iter().any(|p| p.allowed_ips == 0) {
+        return Err("Every [Peer] needs AllowedIPs, for example AllowedIPs = 0.0.0.0/0.".into());
     }
     if peers.iter().any(|p| p.endpoint.is_none()) {
         return Err(
@@ -1024,6 +1036,7 @@ pub fn validate_openvpn(text: &str) -> Result<OpenvpnSummary, String> {
     }
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
 
+    // `(close tag, line)` of the inline block being skipped.
     let mut block: Option<(String, usize)> = None;
     let mut client = false;
     let mut tls_client = false;
@@ -1031,11 +1044,28 @@ pub fn validate_openvpn(text: &str) -> Result<OpenvpnSummary, String> {
     let mut remotes: Vec<String> = Vec::new();
     let mut x509_names: Vec<String> = Vec::new();
 
-    for (index, raw) in text.lines().enumerate() {
+    // Lines are split on '\n' only, like OpenVPN's fgets(); a trailing '\r' is whitespace.
+    for (index, raw) in text.split('\n').enumerate() {
         let n = index + 1;
-        let trimmed = raw.trim();
-        if let Some((name, _)) = &block {
-            if trimmed.eq_ignore_ascii_case(&format!("</{name}>")) {
+        // OpenVPN reads at most 255 bytes per line (inline blocks) and refuses longer
+        // option lines; the tail of a long inline line would be read as its own line.
+        if raw.len() > OPENVPN_MAX_LINE {
+            return Err(format!(
+                "Line {n} is longer than OpenVPN allows ({OPENVPN_MAX_LINE} characters). Upload the .ovpn file your VPN provider gave you."
+            ));
+        }
+        if let Some((close, _)) = &block {
+            // OpenVPN ends the block at the first line that starts with the close tag
+            // (case-sensitive, after leading whitespace) and ignores the rest of that line.
+            if let Some(rest) = raw
+                .trim_start_matches(c_isspace)
+                .strip_prefix(close.as_str())
+            {
+                if !rest.trim_matches(c_isspace).is_empty() {
+                    return Err(format!(
+                        "Line {n} has text after {close}. Remove it and upload the file again."
+                    ));
+                }
                 block = None;
             }
             continue;
@@ -1044,22 +1074,27 @@ pub fn validate_openvpn(text: &str) -> Result<OpenvpnSummary, String> {
         let Some(first) = tokens.first() else {
             continue;
         };
-        if first.starts_with('<') {
-            let tag = first
-                .trim_start_matches('<')
-                .trim_end_matches('>')
-                .to_ascii_lowercase();
-            if !first.ends_with('>') || tokens.len() > 1 || tag.starts_with('/') || tag.is_empty() {
+        // OpenVPN strips one leading `--` before it looks for `<tag>`.
+        let tag_token = match first.strip_prefix("--") {
+            Some(rest) if first.len() >= 3 => rest,
+            _ => first.as_str(),
+        };
+        if tag_token.starts_with('<') {
+            let tag = tag_token
+                .strip_prefix('<')
+                .and_then(|t| t.strip_suffix('>'))
+                .unwrap_or_default();
+            if tokens.len() > 1 || tag.is_empty() || tag.starts_with('/') {
                 return Err(format!("Line {n} is not a valid OpenVPN block tag."));
             }
-            if !OPENVPN_INLINE.contains(&tag.as_str()) {
-                return Err(match tag.as_str() {
+            if !OPENVPN_INLINE.contains(&tag) {
+                return Err(match tag.to_ascii_lowercase().as_str() {
                     "auth-user-pass" => "This OpenVPN file contains a username and password block. Remove it and type them into the form instead.".to_string(),
                     "connection" => "This OpenVPN file uses <connection> blocks, which PopcornStash does not support. Use a file with plain remote lines.".to_string(),
                     _ => format!("Line {n}: the <{tag}> block is not supported. Only certificate and key blocks are allowed."),
                 });
             }
-            block = Some((tag, n));
+            block = Some((format!("</{tag}>"), n));
             continue;
         }
         let directive = first.trim_start_matches("--").to_ascii_lowercase();
@@ -1077,10 +1112,10 @@ pub fn validate_openvpn(text: &str) -> Result<OpenvpnSummary, String> {
                 if host.parse::<std::net::IpAddr>().is_err() && !nordvpn::is_hostname(&host) {
                     return Err(format!("The remote on line {n} is not a server address."));
                 }
-                if let Some(port) = args.get(1) {
-                    if !port.parse::<u16>().is_ok_and(|p| p > 0) {
-                        return Err(format!("The remote on line {n} has an invalid port."));
-                    }
+                if let Some(port) = args.get(1)
+                    && !port.parse::<u16>().is_ok_and(|p| p > 0)
+                {
+                    return Err(format!("The remote on line {n} has an invalid port."));
                 }
                 remotes.push(host);
             }
@@ -1097,9 +1132,9 @@ pub fn validate_openvpn(text: &str) -> Result<OpenvpnSummary, String> {
         }
     }
 
-    if let Some((name, line)) = block {
+    if let Some((close, line)) = block {
         return Err(format!(
-            "The <{name}> block that starts on line {line} is never closed."
+            "The block that starts on line {line} is never closed with {close}."
         ));
     }
     if !client && !(tls_client && pull) {
@@ -1144,74 +1179,145 @@ fn check_openvpn_directive(directive: &str, args: &[&str], n: usize) -> Result<(
             )),
             _ => Ok(()),
         },
-        "http-proxy" | "socks-proxy" if args.get(2).is_some_and(|a| !matches!(a.to_ascii_lowercase().as_str(), "auto" | "auto-nct")) => {
-            Err(format!("Line {n} points {directive} at a password file. PopcornStash does not allow that."))
-        }
+        "http-proxy" | "socks-proxy" if proxy_auth_file(args) => Err(format!(
+            "Line {n} points {directive} at a password file. PopcornStash does not allow that."
+        )),
         // `setenv opt <directive>` makes OpenVPN run the directive; check it too.
         "setenv" | "setenv-safe" if args.first().is_some_and(|a| a.eq_ignore_ascii_case("opt")) => match args.get(1) {
             Some(inner) => check_openvpn_directive(&inner.trim_start_matches("--").to_ascii_lowercase(), &args[2..], n),
             None => Ok(()),
         },
+        // Plain `setenv` variables reach the root-run hook script unchanged
+        // (`setenv-safe` prefixes them with OPENVPN_ and stays allowed).
+        "setenv" => match args.first() {
+            Some(name) if !safe_setenv_name(name) => {
+                let name: String = name.chars().filter(|c| !c.is_control()).take(40).collect();
+                Err(format!(
+                    "Line {n} sets {name} for programs on the server. PopcornStash does not allow that. Remove the line and upload the file again."
+                ))
+            }
+            _ => Ok(()),
+        },
         _ => Ok(()),
     }
 }
 
-/// Split one OpenVPN config line the way OpenVPN does: whitespace separates tokens,
-/// double quotes group (with backslash escapes), single quotes group literally, and a
-/// token starting with `#` or `;` begins a comment.
+/// `http-proxy host port authfile` / `socks-proxy host port authfile` read credentials from a file.
+fn proxy_auth_file(args: &[&str]) -> bool {
+    args.get(2)
+        .is_some_and(|a| !matches!(a.to_ascii_lowercase().as_str(), "auto" | "auto-nct"))
+}
+
+/// `setenv` names that are safe to hand to scripts. Anything else (`LD_PRELOAD`, `PATH`,
+/// `GLIBC_TUNABLES`, ...) would reach the root-run hook script, so it is refused.
+fn safe_setenv_name(name: &str) -> bool {
+    name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && (name.starts_with("UV_")
+            || name.starts_with("IV_")
+            || matches!(
+                name,
+                "CLIENT_CERT"
+                    | "FORWARD_COMPATIBLE"
+                    | "PUSH_PEER_INFO"
+                    | "SERVER_POLL_TIMEOUT"
+                    | "REMOTE_RANDOM_HOSTNAME"
+                    | "ALLOW_PASSWORD_SAVE"
+                    | "FRIENDLY_NAME"
+            ))
+}
+
+/// C `isspace()` in the C locale, plus NUL: OpenVPN's `space()`.
+fn c_isspace(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r' | '\0')
+}
+
+/// Split one OpenVPN config line exactly the way OpenVPN 2.6's `parse_line()` does:
+/// ASCII whitespace separates tokens; `#` or `;` at the start of a token begins a comment
+/// (even after a backslash); a backslash escapes `\`, `"` or whitespace outside single
+/// quotes; double quotes group, single quotes group literally; and a closing quote ends
+/// the token (`"plugin"/x.so` is two tokens). Lines OpenVPN refuses or drops (bad
+/// escapes, open quotes) are refused, so the check never sees less than OpenVPN does.
 fn tokenize_openvpn(line: &str) -> Result<Vec<String>, &'static str> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum State {
+        Initial,
+        Unquoted,
+        Quoted,
+        SingleQuoted,
+    }
     let mut tokens = Vec::new();
     let mut current = String::new();
-    let mut in_token = false;
-    let mut chars = line.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            c if c.is_whitespace() => {
-                if in_token {
-                    tokens.push(std::mem::take(&mut current));
-                    in_token = false;
-                }
-            }
-            '#' | ';' if !in_token => break,
-            '"' => {
-                in_token = true;
-                loop {
-                    match chars.next() {
-                        Some('"') => break,
-                        Some('\\') => match chars.next() {
-                            Some(next) => current.push(next),
-                            None => return Err("has an unfinished escape"),
-                        },
-                        Some(other) => current.push(other),
-                        None => return Err("has an unterminated quote"),
+    let mut state = State::Initial;
+    let mut backslash = false;
+    // OpenVPN sees the line with its newline (from fgets) and the terminating NUL.
+    for c in line.chars().chain(['\n', '\0']) {
+        if !backslash && c == '\\' && state != State::SingleQuoted {
+            backslash = true;
+            continue;
+        }
+        let mut out = None;
+        let mut done = false;
+        match state {
+            State::Initial => {
+                if !c_isspace(c) {
+                    if c == ';' || c == '#' {
+                        break;
+                    }
+                    if !backslash && c == '"' {
+                        state = State::Quoted;
+                    } else if !backslash && c == '\'' {
+                        state = State::SingleQuoted;
+                    } else {
+                        out = Some(c);
+                        state = State::Unquoted;
                     }
                 }
             }
-            '\'' => {
-                in_token = true;
-                loop {
-                    match chars.next() {
-                        Some('\'') => break,
-                        Some(other) => current.push(other),
-                        None => return Err("has an unterminated quote"),
-                    }
+            State::Unquoted => {
+                if !backslash && c_isspace(c) {
+                    done = true;
+                } else {
+                    out = Some(c);
                 }
             }
-            '\\' => {
-                in_token = true;
-                match chars.next() {
-                    Some(next) => current.push(next),
-                    None => return Err("has an unfinished escape"),
+            State::Quoted => {
+                if !backslash && c == '"' {
+                    done = true;
+                } else {
+                    out = Some(c);
                 }
             }
-            other => {
-                in_token = true;
-                current.push(other);
+            State::SingleQuoted => {
+                if c == '\'' {
+                    done = true;
+                } else {
+                    out = Some(c);
+                }
             }
         }
+        if done {
+            tokens.push(std::mem::take(&mut current));
+            state = State::Initial;
+        }
+        if backslash
+            && let Some(o) = out
+            && !(o == '\\' || o == '"' || c_isspace(o))
+        {
+            return Err("has a backslash OpenVPN does not accept");
+        }
+        backslash = false;
+        // NUL ends the line; it is never part of a token.
+        if let Some(o) = out.filter(|&o| o != '\0') {
+            current.push(o);
+        }
     }
-    if in_token {
-        tokens.push(current);
+    match state {
+        State::Quoted | State::SingleQuoted => return Err("has an unterminated quote"),
+        State::Unquoted => return Err("has an unfinished escape"),
+        State::Initial => {}
+    }
+    if tokens.iter().any(|t| t.contains('\n')) {
+        return Err("ends with a backslash");
     }
     Ok(tokens)
 }
@@ -1283,6 +1389,21 @@ e685bdaf659a25a200e2b9e39e51ff03\n-----END OpenVPN Static key V1-----\n</tls-aut
             let err = validate_wireguard(&text).unwrap_err();
             assert!(err.contains(word), "{line}: {err}");
         }
+    }
+
+    /// Files the supervisor would refuse must be refused at upload, not saved as configured.
+    #[test]
+    fn wireguard_matches_what_the_supervisor_accepts() {
+        for text in [
+            good_wireguard().replace("AllowedIPs = 0.0.0.0/0, ::/0\n", ""),
+            good_wireguard().replace("DNS = 10.2.0.1\n", "DNS = 10.2.0.1\nMTU = 1000\n"),
+            good_wireguard().replace("DNS = 10.2.0.1\n", "DNS = 10.2.0.1\nMTU = 65000\n"),
+            good_wireguard().replace("[Peer]", "[ Peer ]"),
+        ] {
+            assert!(validate_wireguard(&text).is_err(), "should fail:\n{text}");
+        }
+        let mtu = good_wireguard().replace("DNS = 10.2.0.1\n", "DNS = 10.2.0.1\nMTU = 1420\n");
+        assert!(validate_wireguard(&mtu).is_ok());
     }
 
     #[test]
@@ -1387,6 +1508,57 @@ e685bdaf659a25a200e2b9e39e51ff03\n-----END OpenVPN Static key V1-----\n</tls-aut
         );
     }
 
+    /// Lines OpenVPN 2.6 parses as a directive although a naive reader sees something
+    /// harmless. Each one would run as root in the supervisor.
+    #[test]
+    fn openvpn_parser_differentials_are_rejected() {
+        let cert = "<ca>\nMIIFCjCCAvKgAwIBAgIBATANBgkqhkiG9w0BAQ0FADA5MQswCQYDVQQGEwJQQTEQ\n";
+        let cases = [
+            // A closing quote ends the token: OpenVPN reads `plugin /tmp/x.so`.
+            "client\nremote a.example 1194\n\"plugin\"/tmp/x.so\n".to_string(),
+            "client\nremote a.example 1194\n'route-up'/bin/true\n".to_string(),
+            "client\nremote a.example 1194\n\"ipchange\"'/bin/sh -c id'\n".to_string(),
+            // OpenVPN ends an inline block at a line that starts with the close tag.
+            format!(
+                "client\nremote a.example 1194\n{cert}</ca>junk\nplugin /tmp/x.so\n{cert}</ca>\n"
+            ),
+            // OpenVPN reads inline blocks 255 bytes at a time, so the tail of a long line
+            // can close the block.
+            format!(
+                "client\nremote a.example 1194\n{cert}{}</ca>\nplugin /tmp/x.so\n{cert}</ca>\n",
+                "A".repeat(255)
+            ),
+            // A long comment line: OpenVPN refuses it, so refuse it here with a sentence.
+            format!(
+                "client\nremote a.example 1194\n#{}plugin /tmp/x.so\n",
+                "0".repeat(255)
+            ),
+            // Environment for the root-run hook script.
+            "client\nremote a.example 1194\nsetenv LD_PRELOAD /stash/Inbox/x.so\n".to_string(),
+            "client\nremote a.example 1194\nsetenv PATH /stash/Inbox\n".to_string(),
+            "client\nremote a.example 1194\nsetenv GLIBC_TUNABLES x\n".to_string(),
+            // `--<ca>` opens a block in OpenVPN (it strips one leading `--`).
+            format!(
+                "client\nremote a.example 1194\n--<ca>\nAAAA\n</ca>junk\nplugin /x.so\n{cert}</ca>\n"
+            ),
+        ];
+        for text in cases {
+            assert!(validate_openvpn(&text).is_err(), "should reject:\n{text}");
+        }
+        // Common provider lines stay allowed.
+        for line in [
+            "setenv CLIENT_CERT 0",
+            "setenv FORWARD_COMPATIBLE 1",
+            "setenv UV_IPV6 yes",
+            "setenv PUSH_PEER_INFO",
+            "setenv opt block-outside-dns",
+            "setenv-safe FRIENDLY_NAME home",
+        ] {
+            let text = format!("client\nremote a.example 1194\n{line}\n");
+            assert!(validate_openvpn(&text).is_ok(), "should allow {line:?}");
+        }
+    }
+
     #[test]
     fn tokenizer_matches_openvpn() {
         assert_eq!(
@@ -1403,6 +1575,17 @@ e685bdaf659a25a200e2b9e39e51ff03\n-----END OpenVPN Static key V1-----\n</tls-aut
         );
         assert!(tokenize_openvpn("; comment").unwrap().is_empty());
         assert!(tokenize_openvpn("x \"open").is_err());
+        // Quotes end a token, as in OpenVPN's parse_line().
+        assert_eq!(
+            tokenize_openvpn("\"plugin\"/x.so").unwrap(),
+            ["plugin", "/x.so"]
+        );
+        assert_eq!(tokenize_openvpn("'a'\"b\"c").unwrap(), ["a", "b", "c"]);
+        // A quote inside an unquoted token is an ordinary character.
+        assert_eq!(tokenize_openvpn("up\"x\"").unwrap(), ["up\"x\""]);
+        // `\#` still starts a comment; bad escapes make OpenVPN drop the line, so refuse it.
+        assert!(tokenize_openvpn("\\# up /x").unwrap().is_empty());
+        assert!(tokenize_openvpn("u\\p /x").is_err());
     }
 
     fn test_config(dir: &Path) -> Config {
@@ -1781,6 +1964,7 @@ e685bdaf659a25a200e2b9e39e51ff03\n-----END OpenVPN Static key V1-----\n</tls-aut
         let dir = tempfile::tempdir().unwrap();
         let state = crate::app::test_state(dir.path()).await.unwrap();
         let vpn = state.config.vpn_dir();
+        let mut events = state.events.subscribe();
         let app = crate::app::router(state);
 
         // Status needs a signed-in caller; members may read it.
@@ -1844,6 +2028,11 @@ e685bdaf659a25a200e2b9e39e51ff03\n-----END OpenVPN Static key V1-----\n</tls-aut
         assert_eq!(body["provider"], "wireguard");
         assert_eq!(body["label"], "WireGuard · nl-12.vpn.example.com");
         assert_eq!(mode(&vpn.join(WIREGUARD_FILE)), 0o600);
+        // Every open page hears about it, even with no status watcher running.
+        match events.try_recv() {
+            Ok(stash_core::events::Event::Vpn(status)) => assert!(status.configured),
+            other => panic!("expected a vpn event, got {other:?}"),
+        }
 
         // Owner: multipart WireGuard with a malicious line is refused with a sentence.
         let bad = good_wireguard().replace("DNS = 10.2.0.1", "DNS = 10.2.0.1\nPostUp = id");
