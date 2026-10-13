@@ -49,11 +49,7 @@ export interface TrashRow {
   trashedAt: UnixSeconds;
 }
 
-type ServerTrashEntry = {
-  item?: Partial<Item> & {id: string};
-  original_rel_path: string;
-  trashed_at: UnixSeconds;
-} & Partial<TrashEntry>;
+type ServerTrashEntry = Omit<TrashEntry, 'item'> & {item?: Partial<Item> & {id: string}};
 
 function fileName(path: string): string {
   const parts = path.split('/').filter(Boolean);
@@ -64,7 +60,7 @@ export async function listTrash(signal?: AbortSignal): Promise<TrashRow[]> {
   const rows = await request<ServerTrashEntry[]>('/api/trash', {signal});
   return rows
     .map(row => {
-      const id = row.item?.id ?? row.item_id ?? '';
+      const id = row.item?.id ?? '';
       return {
         id,
         title: row.item?.title || fileName(row.original_rel_path),
@@ -80,7 +76,7 @@ export async function listTrash(signal?: AbortSignal): Promise<TrashRow[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Sessions. The shared client has `me.revokeAllSessions()` (DELETE
+// Sessions. There is no "sign out everywhere else" route (DELETE
 // /api/me/sessions), but the server has no such route; revoke the others one
 // by one instead.
 // ---------------------------------------------------------------------------

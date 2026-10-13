@@ -151,8 +151,10 @@ const AUTH_FAILURE_FLOWS: Record<string, string> = {
 
 /** `auth_failed` detail `{flow, reason}` in words: "Passkey not accepted while joining". */
 function authFailure(flow: unknown, reason: unknown): string | null {
-  const why = typeof reason === 'string' ? (AUTH_FAILURE_REASONS[reason] ?? null) : null;
-  if (!why) return null;
+  if (typeof reason !== 'string' || !reason.trim()) return null;
+  // Unknown codes still read as words ("rate_limited" -> "Rate limited").
+  const words = reason.replace(/[_.]+/g, ' ').trim();
+  const why = AUTH_FAILURE_REASONS[reason] ?? words.charAt(0).toUpperCase() + words.slice(1);
   const where = typeof flow === 'string' && reason === 'passkey_rejected' ? AUTH_FAILURE_FLOWS[flow] : undefined;
   return where ? `${why} ${where}` : why;
 }

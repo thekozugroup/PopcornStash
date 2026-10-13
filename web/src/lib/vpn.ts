@@ -78,10 +78,12 @@ export function describeVpn(status: VpnStatus | null, options: {isUnavailable?: 
         detail: status.error ?? 'The VPN could not connect. Torrents stay stopped until it does.',
       };
     case 'unreachable':
+      // The server explains why: torrents turned off (for example no NET_ADMIN), or the
+      // engine restarting. Either way nothing torrent-related uses the home connection.
       return {
         tone: 'error',
-        label: 'Torrents blocked: VPN service offline',
-        detail: 'The VPN container is not answering. Torrents stay stopped until it is back.',
+        label: 'Torrents unavailable',
+        detail: status.error ?? 'The torrent engine is not answering. Torrents stay stopped until it is back.',
       };
     case 'not_configured':
     default:

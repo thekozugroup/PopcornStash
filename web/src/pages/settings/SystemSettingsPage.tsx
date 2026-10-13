@@ -249,7 +249,7 @@ function PlaybackGroup({info}: {info: SystemInfo | undefined}) {
         info.hwaccel.available.length > 0 ? info.hwaccel.available.map(hwaccelName).join(', ') : 'none'
       }.`
     : '';
-  const description = `Videos a device cannot play directly are converted while you watch. Most phones and browsers play common files as they are.${found}`;
+  const description = `Videos a device cannot play directly are converted while you watch.${found}`;
 
   if (form.isLoading) {
     return (

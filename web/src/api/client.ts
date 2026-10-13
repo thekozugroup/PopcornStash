@@ -25,6 +25,7 @@ import type {
   Invite,
   InviteCreateRequest,
   InviteInfo,
+  InviteListEntry,
   InviteStartRequest,
   ItemDetail,
   ItemPatch,
@@ -174,6 +175,8 @@ export interface RequestOptions {
   acceptStatuses?: number[];
   /** Do not notify the unauthorized handler (auth flows answer 401 for bad credentials). */
   skipAuthRefresh?: boolean;
+  /** Let the request outlive the page (final progress save, ending a stream on leave). */
+  keepalive?: boolean;
 }
 
 export function buildUrl(path: string, query?: Query): string {
@@ -204,13 +207,14 @@ async function readBody(response: Response): Promise<unknown> {
 
 /** Performs a request and returns the parsed JSON body (undefined for 204). */
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const {method = 'GET', query, json, body, headers = {}, signal, acceptStatuses, skipAuthRefresh} =
+  const {method = 'GET', query, json, body, headers = {}, signal, acceptStatuses, skipAuthRefresh, keepalive} =
     options;
   const init: RequestInit = {
     method,
     credentials: 'same-origin',
     headers: {Accept: 'application/json', ...headers},
     signal: signal ?? null,
+    keepalive: keepalive ?? false,
   };
   if (json !== undefined) {
     init.body = JSON.stringify(json);
@@ -299,8 +303,8 @@ export const invites = {
   /** Public: checks an invite code without revealing anything else. */
   check: (code: string, signal?: AbortSignal) =>
     request<InviteInfo>(`/api/invites/${enc(code)}`, {signal, skipAuthRefresh: true}),
-  /** Owner: list open invites. */
-  list: (signal?: AbortSignal) => get<Invite[]>('/api/invites', undefined, signal),
+  /** Owner: every invite with its status (active, used, expired). */
+  list: (signal?: AbortSignal) => get<InviteListEntry[]>('/api/invites', undefined, signal),
   create: (body: InviteCreateRequest) => post<Invite>('/api/invites', body),
   revoke: (id: string) => del(`/api/invites/${enc(id)}`),
 };
@@ -336,7 +340,6 @@ export const me = {
 
   sessions: (signal?: AbortSignal) => get<Session[]>('/api/me/sessions', undefined, signal),
   revokeSession: (id: string) => del(`/api/me/sessions/${enc(id)}`),
-  revokeAllSessions: () => del('/api/me/sessions'),
 };
 
 export const tokens = {

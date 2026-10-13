@@ -374,8 +374,9 @@ export interface RecoverStartRequest {
 
 export interface InviteInfo {
   valid: boolean;
-  role: Role;
-  expires_at: UnixSeconds;
+  /** Null when the invite is not valid. */
+  role: Role | null;
+  expires_at: UnixSeconds | null;
 }
 
 export interface PairingRequestBody {
@@ -548,9 +549,8 @@ export interface JobAccepted {
 }
 
 export interface TrashEntry {
-  item_id: Id;
+  item: Item;
   original_rel_path: string;
-  trashed_rel_path: string;
   trashed_at: UnixSeconds;
   trashed_by: Id | null;
 }
@@ -659,6 +659,7 @@ export interface UserRolePatch {
   role: Role;
 }
 
+/** `POST /api/invites` response. The code and link are only ever shown here. */
 export interface Invite {
   id: Id;
   url: string;
@@ -667,15 +668,36 @@ export interface Invite {
   expires_at: UnixSeconds;
 }
 
+export type InviteStatus = 'active' | 'used' | 'expired';
+
+/** One row of `GET /api/invites`. */
+export interface InviteListEntry {
+  id: Id;
+  role: Role;
+  created_by: Id | null;
+  created_by_name: string | null;
+  created_at: UnixSeconds;
+  expires_at: UnixSeconds;
+  used_at: UnixSeconds | null;
+  used_by: Id | null;
+  used_by_name: string | null;
+  status: InviteStatus;
+}
+
 export interface InviteCreateRequest {
   role: Role;
   expires_in_hours: number;
 }
 
+export interface AuditUser {
+  id: Id;
+  display_name: string | null;
+}
+
 export interface AuditEntry {
   id: number;
   at: UnixSeconds;
-  user: User | null;
+  user: AuditUser | null;
   event: string;
   detail: Record<string, unknown> | null;
   ip: string | null;
