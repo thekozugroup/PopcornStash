@@ -267,7 +267,7 @@ wait_healthy() {
 }
 
 base_url() {
-  printf 'http://%s' "$(docker port "$1" 8788/tcp | head -n 1)"
+  printf 'http://%s' "$(docker port "$1" 8788/tcp | sed -n 1p)"
 }
 
 # stat(1) on the host folders, through a throwaway container so that folders
@@ -291,8 +291,12 @@ processes() {
 }
 
 # PID of the first process whose command line contains "$2" and runs as uid "$3".
+# The list is captured first: awk stops reading at the first match, and under
+# pipefail a writer still running then dies of SIGPIPE and fails the script.
 pid_of() {
-  processes "$1" | awk -v want="$2" -v uid="$3" 'index($0, want) && $2 == uid { print $1; exit }'
+  local list
+  list="$(processes "$1")" || return 1
+  awk -v want="$2" -v uid="$3" 'index($0, want) && $2 == uid { print $1; exit }' <<<"$list"
 }
 
 json_field_is() {

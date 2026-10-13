@@ -264,7 +264,7 @@ start_wgserver
 logs_of() { docker logs "$1" 2>&1; }
 wg_ready() { grep -q 'wgserver: ready' <<<"$(logs_of "$WG")"; }
 eventually 30 wg_ready || die "the WireGuard peer did not start: $(logs_of "$WG" | tail -n 3 | tr '\n' ' ')"
-note "WireGuard peer is up at $WG_IP ($(logs_of "$WG" | head -n 1))"
+note "WireGuard peer is up at $WG_IP ($(logs_of "$WG" | sed -n 1p))"
 
 # The settings from compose.yaml.
 docker run -d --name "$MAIN" --network "$NET" --ip "$STASH_IP" \
@@ -284,7 +284,7 @@ docker run -d --name "$MAIN" --network "$NET" --ip "$STASH_IP" \
   "$IMAGE" >/dev/null
 
 base_url() {
-  printf 'http://%s' "$(docker port "$MAIN" 8788/tcp | head -n 1)"
+  printf 'http://%s' "$(docker port "$MAIN" 8788/tcp | sed -n 1p)"
 }
 
 as_engine() { docker exec --user "$ENGINE_UID:$PGID" "$MAIN" "$@"; }
@@ -404,7 +404,9 @@ rules_ok() {
 check "ip rules: fwmark and uidrange lookups into table 51820, then prohibit" rules_ok
 check "table 51820 routes everything through psw0" bash -c "docker exec '$MAIN' ip -4 route show table 51820 | grep -q '^default dev psw0'"
 docker_tables_intact() {
-  docker exec "$MAIN" nft list tables | grep -qv 'inet popcornstash'
+  local tables
+  tables="$(docker exec "$MAIN" nft list tables)" || return 1
+  grep -qv 'inet popcornstash' <<<"$tables"
 }
 check "Docker's own nftables tables are still there" docker_tables_intact
 

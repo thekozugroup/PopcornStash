@@ -339,7 +339,7 @@ docker run -d --name "$WG" --network "$NET" --ip "$WG_IP" \
   --entrypoint /bin/sh "$IMAGE" /wgserver.sh >/dev/null
 wg_ready() { grep -q 'wgserver: ready' <<<"$(logs_of "$WG")"; }
 eventually 30 wg_ready || die "the WireGuard peer did not start: $(logs_of "$WG" | tail -n 3 | tr '\n' ' ')"
-note "WireGuard peer is up at $WG_IP ($(logs_of "$WG" | head -n 1))"
+note "WireGuard peer is up at $WG_IP ($(logs_of "$WG" | sed -n 1p))"
 
 # ------------------------------------------------------------ popcornstash ----
 note "starting PopcornStash with the settings from compose.yaml"
