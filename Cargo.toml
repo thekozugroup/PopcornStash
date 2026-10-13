@@ -2,6 +2,10 @@
 resolver = "3"
 members = ["crates/stash-core", "crates/stash-server", "crates/stash-torrentd", "crates/popcornstash"]
 
+[patch.crates-io]
+# IPv4 fallback on hosts without IPv6; see vendor/librqbit-dualstack-sockets/PATCHED.md.
+librqbit-dualstack-sockets = { path = "vendor/librqbit-dualstack-sockets" }
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
