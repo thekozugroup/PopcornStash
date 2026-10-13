@@ -36,7 +36,7 @@ const styles = stylex.create({
     paddingInline: 18,
     color: colorVars['--color-text-primary'],
     textDecoration: 'none',
-    backgroundColor: {default: 'transparent', ':hover': colorVars['--color-neutral']},
+    backgroundColor: {default: 'transparent', ':hover': colorVars['--color-overlay-hover']},
     outlineStyle: {default: 'none', ':focus-visible': 'solid'},
     outlineWidth: 2,
     outlineColor: colorVars['--color-accent'],

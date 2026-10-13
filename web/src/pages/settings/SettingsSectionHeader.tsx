@@ -1,5 +1,7 @@
 /**
- * Heading for one settings section (an h2 under the Settings h1).
+ * Heading for one settings section (an h2 under the Settings h1). A plain
+ * block, not a <header>: inside the app's main region a <header> would be
+ * read as a second page banner.
  */
 import * as stylex from '@stylexjs/stylex';
 import {Heading} from '@astryxdesign/core/Heading';
@@ -44,7 +46,7 @@ export interface SettingsSectionHeaderProps {
 export function SettingsSectionHeader({title, subtitle, actions}: SettingsSectionHeaderProps) {
   useDocumentTitle(`${title} settings`);
   return (
-    <header {...stylex.props(styles.header)}>
+    <div {...stylex.props(styles.header)}>
       <div {...stylex.props(styles.copy)}>
         <Heading level={2}>{title}</Heading>
         {subtitle ? (
@@ -54,6 +56,6 @@ export function SettingsSectionHeader({title, subtitle, actions}: SettingsSectio
         ) : null}
       </div>
       {actions ? <div {...stylex.props(styles.actions)}>{actions}</div> : null}
-    </header>
+    </div>
   );
 }

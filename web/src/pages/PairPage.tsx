@@ -4,11 +4,12 @@
  * the device and the access it will get, then approves or denies it.
  */
 import * as stylex from '@stylexjs/stylex';
-import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
+import {colorVars, typographyVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {Button} from '@astryxdesign/core/Button';
+import {Heading} from '@astryxdesign/core/Heading';
 import {Text} from '@astryxdesign/core/Text';
 import {TextInput} from '@astryxdesign/core/TextInput';
-import {useState, type FormEvent} from 'react';
+import {useId, useState, type FormEvent} from 'react';
 import {useSearchParams} from 'react-router';
 import {pairing} from '../api/client';
 import type {PendingPairing} from '../api/types';
@@ -55,7 +56,7 @@ const styles = stylex.create({
     backgroundColor: colorVars['--color-background-muted'],
   },
   code: {
-    fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+    fontFamily: typographyVars['--font-family-code'],
     fontSize: 24,
     fontWeight: 600,
     letterSpacing: '0.08em',
@@ -204,6 +205,7 @@ export default function PairPage() {
   const code = normalizeCode(params.get('code') ?? '');
   const hasCode = code.replace(/-/g, '').length === 8;
   const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const expiredId = useId();
   const pending = useResource(signal => pairing.pending(signal), {enabled: hasCode && !outcome, key: `pair:${code}`});
 
   const lookUp = (next: string) => {
@@ -244,14 +246,20 @@ export default function PairPage() {
   } else if (pending.error !== undefined && !pending.data) {
     body = <LoadError title="The device could not be looked up" error={pending.error} onRetry={pending.reload} />;
   } else if (!request) {
+    // One panel with one action: say what happened, then take a new code.
     body = (
-      <>
-        <EmptyPanel
-          title="This code has expired or was already used"
-          description={`No device is waiting with ${code}. Codes last 10 minutes. Start pairing again on the device to get a new one.`}
-        />
-        <CodeForm onSubmit={lookUp} isPrimary={false} />
-      </>
+      <section aria-labelledby={expiredId} {...stylex.props(styles.panel)}>
+        <div {...stylex.props(styles.device)}>
+          <Heading level={2} id={expiredId}>
+            This code has expired or was already used
+          </Heading>
+          <Text as="p" color="secondary">
+            No device is waiting with that code. Codes last 10 minutes. Start pairing again on the device, then type
+            the new code here.
+          </Text>
+        </div>
+        <CodeForm key={code} onSubmit={lookUp} isPrimary />
+      </section>
     );
   } else {
     body = <Request request={request} onOutcome={setOutcome} />;

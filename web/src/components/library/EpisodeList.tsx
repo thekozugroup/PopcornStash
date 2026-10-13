@@ -35,7 +35,7 @@ const styles = stylex.create({
     borderRadius: 12,
     color: colorVars['--color-text-primary'],
     textDecoration: 'none',
-    backgroundColor: {default: 'transparent', ':hover': colorVars['--color-neutral']},
+    backgroundColor: {default: 'transparent', ':hover': colorVars['--color-overlay-hover']},
     outlineStyle: {default: 'none', ':focus-visible': 'solid'},
     outlineWidth: 2,
     outlineColor: colorVars['--color-accent'],
@@ -69,9 +69,7 @@ const styles = stylex.create({
     position: 'absolute',
     inset: 0,
     borderRadius: 'inherit',
-    // The neutral tint stands in for --popcorn-media-hairline, whose dark value
-    // currently builds as opaque white (see the popcorn theme's alpha helper).
-    boxShadow: `inset 0 0 0 1px ${colorVars['--color-neutral']}`,
+    boxShadow: 'inset 0 0 0 1px var(--popcorn-media-hairline)',
     pointerEvents: 'none',
   },
   track: {
@@ -79,7 +77,7 @@ const styles = stylex.create({
     insetInline: 0,
     bottom: 0,
     height: 4,
-    backgroundColor: 'oklch(0% 0 0 / 0.45)',
+    backgroundColor: 'color-mix(in oklch, var(--popcorn-stage) 45%, transparent)',
   },
   fill: {
     display: 'block',
@@ -192,10 +190,7 @@ export function EpisodeList({episodes, nextId, label}: {episodes: Item[]; nextId
         const title = episode.episode_title ?? episode.title;
         return (
           <li key={episode.id} {...stylex.props(styles.item)}>
-            <Link
-              to={itemHref(episode)}
-              aria-current={episode.id === nextId ? 'step' : undefined}
-              {...stylex.props(styles.row)}>
+            <Link to={itemHref(episode)} {...stylex.props(styles.row)}>
               <EpisodeFrame episode={episode} />
               <span {...stylex.props(styles.text)}>
                 <span {...stylex.props(styles.code)}>{code}</span>

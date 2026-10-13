@@ -57,8 +57,8 @@ const styles = stylex.create({
     top: 12,
     insetInlineEnd: 12,
     borderRadius: 8,
-    backgroundColor: 'oklch(0% 0 0 / 0.55)',
-    color: 'oklch(98.5% 0 0)',
+    backgroundColor: 'color-mix(in oklch, var(--popcorn-stage) 55%, transparent)',
+    color: colorVars['--color-on-dark'],
   },
   panel: {
     display: 'flex',
@@ -167,7 +167,7 @@ export function FileStage({item}: {item: ItemDetail}) {
       <div {...stylex.props(styles.fileRow)}>
         {icon}
         <Text as="p" color="secondary">
-          {`PopcornStash cannot open ${type ? `${type} files` : 'this kind of file'} in the browser. Download it to open it on this device.`}
+          {`PopcornStash does not preview ${type ? `${type} files` : 'this kind of file'}. Download it to open it on this device.`}
         </Text>
       </div>
       <Button

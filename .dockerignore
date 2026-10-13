@@ -18,13 +18,19 @@ scripts
 *.md
 !web/**/*.md
 
-# Never send secrets or personal files to the builder.
-.env
-.env.*
-*.ovpn
-wireguard.conf
-*.db
-*.db-shm
-*.db-wal
-*.zip
-.DS_Store
+# Never send secrets or personal files to the builder, from any folder. Vite would
+# also bake a web/.env* file into the UI.
+**/.env
+**/.env.*
+**/*.ovpn
+**/*.ovpn.auth
+**/openvpn.auth
+**/wireguard.conf
+**/internal.token
+**/*.pem
+**/*.key
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.zip
+**/.DS_Store

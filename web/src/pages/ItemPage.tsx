@@ -31,6 +31,8 @@ import {
   CATEGORY_FOLDER,
   displayTitle,
   fileType,
+  formatTime,
+  hasFileNameTitle,
   isInLibraryFolder,
   itemHref,
   itemParent,
@@ -103,6 +105,18 @@ const styles = stylex.create({
   starFilled: {
     fill: 'currentColor',
   },
+  // The error banner carries the visible title; the page still needs its h1.
+  visuallyHidden: {
+    position: 'absolute',
+    width: 1,
+    height: 1,
+    margin: -1,
+    padding: 0,
+    overflow: 'hidden',
+    clipPath: 'inset(50%)',
+    whiteSpace: 'nowrap',
+    borderWidth: 0,
+  },
 });
 
 interface ItemState {
@@ -130,7 +144,9 @@ function metaLine(item: ItemDetail): string {
         .filter(Boolean)
         .join(' · ');
     case 'photo':
-      return item.taken_at ? `Taken ${formatDateTime(item.taken_at)}` : `Added ${formatDate(item.added_at)}`;
+      if (!item.taken_at) return `Added ${formatDate(item.added_at)}`;
+      // A camera-named photo's heading is already its date.
+      return hasFileNameTitle(item) ? `Taken at ${formatTime(item.taken_at)}` : `Taken ${formatDateTime(item.taken_at)}`;
     default:
       return [fileType(item.rel_path), duration || formatBytes(item.size)].filter(Boolean).join(' · ');
   }
@@ -211,7 +227,7 @@ export default function ItemPage() {
   const back = (
     <div {...stylex.props(styles.back)}>
       <Button
-        label={parent?.label ?? 'Back'}
+        label={parent?.label ?? 'Home'}
         variant="ghost"
         href={parent?.href ?? '/'}
         icon={<ChevronLeft size={18} strokeWidth={1.75} aria-hidden="true" />}
@@ -225,7 +241,7 @@ export default function ItemPage() {
         <PageHeader
           title="This file is not in your library"
           subtitle="It may have been moved to Trash, or the link is out of date."
-          actions={<Button label="Go to Home" variant="secondary" href="/" />}
+          actions={<Button label="Go to Home" variant="primary" href="/" />}
         />
       );
     }
@@ -233,6 +249,9 @@ export default function ItemPage() {
       return (
         <>
           {back}
+          <div {...stylex.props(styles.visuallyHidden)}>
+            <Heading level={1}>This file could not be opened</Heading>
+          </div>
           <LoadError title="This file could not be opened" error={error} onRetry={() => setNonce(n => n + 1)} />
         </>
       );
@@ -322,7 +341,7 @@ export default function ItemPage() {
         </div>
       ) : null}
 
-      <header {...stylex.props(styles.header)}>
+      <div {...stylex.props(styles.header)}>
         <div {...stylex.props(styles.titleBlock)}>
           <Heading level={1} textWrap="balance">
             {title}
@@ -363,7 +382,7 @@ export default function ItemPage() {
             items={menuItems}
           />
         </div>
-      </header>
+      </div>
 
       <div {...stylex.props(styles.facts)}>
         <ItemFacts item={item} />

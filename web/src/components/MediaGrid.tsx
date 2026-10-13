@@ -22,7 +22,8 @@ const styles = stylex.create({
   },
   frame: {
     gridTemplateColumns: {
-      default: 'repeat(auto-fill, minmax(min(100%, 240px), 1fr))',
+      // 208px keeps four frames on a laptop and gives tablets three instead of two oversized ones.
+      default: 'repeat(auto-fill, minmax(min(100%, 208px), 1fr))',
       '@media (max-width: 520px)': 'repeat(auto-fill, minmax(min(100%, 150px), 1fr))',
     },
     columnGap: {default: 20, '@media (max-width: 520px)': 14},

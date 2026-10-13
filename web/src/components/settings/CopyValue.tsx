@@ -3,7 +3,7 @@
  * The value is selectable text too, for browsers that block the clipboard.
  */
 import * as stylex from '@stylexjs/stylex';
-import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
+import {colorVars, typographyVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {Button} from '@astryxdesign/core/Button';
 import {Icon} from '@astryxdesign/core/Icon';
 import {useClipboard} from '@astryxdesign/core/hooks';
@@ -37,7 +37,7 @@ const styles = stylex.create({
     borderColor: colorVars['--color-border'],
     backgroundColor: colorVars['--color-background-muted'],
     color: colorVars['--color-text-primary'],
-    fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+    fontFamily: typographyVars['--font-family-code'],
     fontSize: 14,
     lineHeight: 1.5,
     overflowWrap: 'anywhere',

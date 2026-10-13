@@ -27,7 +27,7 @@ WireGuard uses the host's kernel module when it exists (Unraid has it built in).
 
 ### Web downloads
 
-Web links can also go through the VPN. The web downloads setting has three choices: through the VPN when it is connected (the default), always through the VPN (downloads wait when it is down), or never.
+Web links can also go through the VPN. The web downloads setting has three choices: through the VPN when it is connected (the default), always through the VPN, or never. With **Always**, a web download fails while the VPN is down instead of using your home connection, and only ordinary web addresses (ports 80 and 443) can be downloaded.
 
 ## NordVPN quick setup (access token)
 
@@ -56,9 +56,9 @@ Most VPN providers (Mullvad, Proton VPN, IVPN, AirVPN, Surfshark and others) let
 1. Create a WireGuard configuration in your provider's account page and download the `.conf` file.
 2. In PopcornStash, open **Settings**, then **VPN**, choose **WireGuard**, and upload the file or paste its contents.
 
-The file needs an `[Interface]` with `PrivateKey` and `Address`, and a `[Peer]` with `PublicKey`, `Endpoint` and `AllowedIPs = 0.0.0.0/0`. If it lists `DNS` servers, PopcornStash uses them for the engine's lookups. Other `wg-quick` lines such as `PostUp` are ignored.
+The file needs an `[Interface]` with `PrivateKey` and `Address`, and a `[Peer]` with `PublicKey`, `Endpoint` and `AllowedIPs = 0.0.0.0/0`. If it lists `DNS` servers, PopcornStash uses them for the engine's lookups. `Table`, `FwMark` and `SaveConfig` lines are ignored, because PopcornStash manages routing itself. A file with script lines (`PreUp`, `PostUp`, `PreDown` or `PostDown`) is refused: PopcornStash never runs commands from a VPN file, so delete those lines and upload it again.
 
-Any provider with OpenVPN files works the same way through the **OpenVPN** choice.
+Any provider with OpenVPN files works the same way through the **OpenVPN** choice. The `.ovpn` file must be self-contained, with its certificates and keys inside the file (`<ca>`, `<cert>`, `<key>`, `<tls-auth>` blocks) rather than in separate files. Lines that run programs or write files, such as `up`, `down`, `script-security` or `plugin`, are refused. Delete those lines and upload the file again.
 
 ## Checking that it works
 

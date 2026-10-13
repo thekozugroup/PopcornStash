@@ -85,6 +85,30 @@ export default function InvitePage() {
   const availability = passkeyAvailability(state);
   const isSignedIn = Boolean(state?.authenticated);
 
+  // Someone is already signed in on this device. The invite is for a new
+  // person, so the only useful step here is signing out (or going back).
+  // While this page is joining (isBusy), the new session is expected.
+  if (isSignedIn && !isBusy) {
+    return (
+      <AuthLayout
+        title="Join PopcornStash"
+        subtitle={`This invite is for someone new, but ${state?.user?.display_name ?? 'someone'} is signed in on this device. Sign out to use it here, or open the link on the new person's own device.`}
+        footnote={FOOTNOTE}>
+        <Button
+          variant="primary"
+          label="Sign out"
+          isLoading={isSigningOut}
+          onClick={() => {
+            setIsSigningOut(true);
+            void signOut().finally(() => setIsSigningOut(false));
+          }}
+          width="100%"
+        />
+        <Button variant="secondary" label="Go to PopcornStash" href="/" width="100%" />
+      </AuthLayout>
+    );
+  }
+
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (isBusy) return;
@@ -120,25 +144,6 @@ export default function InvitePage() {
           ? `This invite works once and expires ${formatDateTime(invite.expires_at)}. ${FOOTNOTE}`
           : FOOTNOTE
       }>
-      {isSignedIn ? (
-        <Banner
-          status="info"
-          title={`You are signed in as ${state?.user?.display_name ?? 'someone else'}`}
-          description="This invite is for someone new. To use it on this device, sign out first."
-          collapsible={false}
-          endContent={
-            <Button
-              label="Sign out"
-              variant="secondary"
-              isLoading={isSigningOut}
-              onClick={() => {
-                setIsSigningOut(true);
-                void signOut().finally(() => setIsSigningOut(false));
-              }}
-            />
-          }
-        />
-      ) : null}
       <PasskeyNotice availability={availability} />
       <form onSubmit={onSubmit} noValidate {...stylex.props(styles.form)}>
         <TextInput
@@ -152,7 +157,7 @@ export default function InvitePage() {
           autoComplete="name"
           htmlName="display_name"
           isRequired
-          isDisabled={isBusy || isSignedIn}
+          isDisabled={isBusy}
           status={nameError ? {type: 'error', message: nameError} : undefined}
           statusVariant="detached"
           width="100%"
@@ -165,7 +170,7 @@ export default function InvitePage() {
           variant="primary"
           label="Create passkey and join"
           isLoading={isBusy}
-          isDisabled={!availability.ok || isSignedIn}
+          isDisabled={!availability.ok}
           width="100%"
         />
       </form>

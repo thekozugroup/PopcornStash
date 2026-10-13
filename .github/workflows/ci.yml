@@ -66,7 +66,15 @@ jobs:
           cache-dependency-path: extension/package-lock.json
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run check
-      - run: npm run build
+      # Builds dist/ and packs it into popcornstash-extension.zip, the file each
+      # release ships (docs/extension.md).
+      - run: npm run zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: popcornstash-extension
+          path: extension/popcornstash-extension.zip
+          if-no-files-found: error
+          retention-days: 14
 
   docker:
     name: Docker image (build, smoke test)

@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Docker smoke test for the single PopcornStash container.
 #
-# Builds the image, runs it with the same security settings as compose.yaml and
-# checks the web app, the folder layout, the process users, the torrent kill
-# switch with no VPN configured, the internal engine API, and the degraded mode
-# without NET_ADMIN. Prints PASS/FAIL lines and exits non-zero on any failure.
+# Builds the image, runs it with the security settings read from compose.yaml
+# and checks the web app, the folder layout, the process users and their
+# capabilities, /run, the torrent kill switch with no VPN configured, the
+# internal engine API, the admin commands, a clean shutdown, and the degraded
+# modes without NET_ADMIN and as a non-root user. It also checks that
+# compose.yaml, the Unraid template and the `docker run` example in
+# docs/deployment.md ask for the same settings. Prints PASS/FAIL lines and
+# exits non-zero on any failure.
 #
 # Environment:
 #   IMAGE              image tag to build and test (default popcornstash:smoke)
@@ -35,6 +39,7 @@ NET="${RUN_ID}-net"
 ECHO="${RUN_ID}-echo"
 MAIN="${RUN_ID}-main"
 NOCAP="${RUN_ID}-nocap"
+USERMODE="${RUN_ID}-user"
 WORK=""
 
 failures=0
@@ -92,7 +97,7 @@ check_not() {
 save_logs() {
   local name
   mkdir -p "$EVIDENCE_DIR"
-  for name in "$MAIN" "$NOCAP"; do
+  for name in "$MAIN" "$NOCAP" "$USERMODE"; do
     if docker container inspect "$name" >/dev/null 2>&1; then
       docker logs "$name" >"$EVIDENCE_DIR/${name#"${RUN_ID}"-}.log" 2>&1 || true
     fi
@@ -103,15 +108,15 @@ cleanup() {
   local status=$?
   save_logs
   if [[ "${KEEP:-0}" == "1" ]]; then
-    note "KEEP=1: leaving $MAIN, $NOCAP, $ECHO, $NET and $WORK in place"
+    note "KEEP=1: leaving $MAIN, $NOCAP, $USERMODE, $ECHO, $NET and $WORK in place"
     exit "$status"
   fi
-  docker rm -f "$MAIN" "$NOCAP" "$ECHO" >/dev/null 2>&1 || true
+  docker rm -f "$MAIN" "$NOCAP" "$USERMODE" "$ECHO" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   if [[ -n "$WORK" && -d "$WORK" ]]; then
     # Files belong to PUID and the engine user; remove them from inside a container.
     docker run --rm --user 0:0 --entrypoint /bin/rm -v "$WORK:/work" "$IMAGE" \
-      -rf /work/main /work/nocap >/dev/null 2>&1 || true
+      -rf /work/main /work/nocap /work/user >/dev/null 2>&1 || true
     rm -rf "$WORK" 2>/dev/null || true
   fi
   exit "$status"
@@ -122,6 +127,73 @@ trap 'exit 130' INT TERM
 need docker
 need curl
 need jq
+
+# ------------------------------------------------------ packaging files ----
+# The container settings come from compose.yaml, so this test runs what users run.
+COMPOSE_JSON="$(STASH_PUBLIC_URL=http://localhost:8788 APPDATA_PATH=/ STASH_PATH=/ \
+  docker compose --env-file /dev/null -f compose.yaml config --format json)" ||
+  die "docker compose config could not read compose.yaml"
+
+# The security-relevant `docker run` flags of the compose service, one per line.
+compose_flags() {
+  jq -r '.services.popcornstash
+    | ((.cap_drop // [])[] | "--cap-drop=\(.)"),
+      ((.cap_add // [])[] | "--cap-add=\(.)"),
+      ((.devices // [])[]
+        | (if type == "string" then (split(":") | {source: .[0], target: (.[1] // .[0])}) else . end)
+        | if .source == .target then "--device=\(.source)" else "--device=\(.source):\(.target)" end),
+      ((.tmpfs // [])[] | "--tmpfs=\(.)"),
+      ((.sysctls // {}) | to_entries[] | "--sysctl=\(.key)=\(.value)"),
+      ((.security_opt // [])[] | "--security-opt=\(.)"),
+      (if .read_only then "--read-only" else empty end),
+      (.stop_grace_period // empty | capture("^(?<s>[0-9]+)s$") | "--stop-timeout=\(.s)")' \
+    <<<"$COMPOSE_JSON" | sort
+}
+
+# The same flags from a `docker run` command line, normalized to --flag=value.
+normalize_flags() {
+  local -a words
+  local i=0 w
+  read -r -a words <<<"$1"
+  while ((i < ${#words[@]})); do
+    w="${words[i]}"
+    case "$w" in
+      --cap-add=* | --cap-drop=* | --device=* | --sysctl=* | --tmpfs=* | --security-opt=* | --stop-timeout=*)
+        printf '%s\n' "$w"
+        ;;
+      --cap-add | --cap-drop | --device | --sysctl | --tmpfs | --security-opt | --stop-timeout)
+        i=$((i + 1))
+        printf '%s=%s\n' "$w" "${words[i]:-}"
+        ;;
+      --read-only | --read-only=true) printf '%s\n' --read-only ;;
+    esac
+    i=$((i + 1))
+  done | sort
+}
+
+unraid_flags() {
+  normalize_flags "$(sed -n 's:.*<ExtraParams>\(.*\)</ExtraParams>.*:\1:p' unraid/popcornstash.xml)"
+}
+
+docs_flags() {
+  normalize_flags "$(awk '/^docker run -d --name popcornstash/ { on = 1 } on { print } on && /popcornstash:latest/ { exit }' \
+    docs/deployment.md | sed 's/\\$//' | tr '\n' ' ')"
+}
+
+same_flags() {
+  local other="$1" diff_out
+  if diff_out="$(diff <(compose_flags) <("$other"))"; then
+    return 0
+  fi
+  echo "differences (< compose.yaml, > $2): $(grep '^[<>]' <<<"$diff_out" | tr '\n' ' ')"
+  return 1
+}
+check "compose.yaml and the Unraid template ask for the same container settings" same_flags unraid_flags unraid/popcornstash.xml
+check "compose.yaml and the docker run example in docs/deployment.md agree" same_flags docs_flags docs/deployment.md
+
+mapfile -t FULL_FLAGS < <(compose_flags)
+mapfile -t NOCAP_FLAGS < <(compose_flags | grep -vx -e '--cap-add=NET_ADMIN')
+((${#FULL_FLAGS[@]} > 0)) || die "no container settings found in compose.yaml"
 
 # ------------------------------------------------------------------ build ----
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
@@ -141,11 +213,14 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE is not availa
 # ---------------------------------------------------------- environment ----
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/popcornstash-smoke.XXXXXX")"
 chmod 0755 "$WORK"
-mkdir -p "$WORK/main/config" "$WORK/main/stash" "$WORK/nocap/config" "$WORK/nocap/stash"
+mkdir -p "$WORK/main/config" "$WORK/main/stash" "$WORK/nocap/config" "$WORK/nocap/stash" \
+  "$WORK/user/config" "$WORK/user/stash"
 # Like a real share, the library folder already belongs to PUID:PGID. App data is
 # left as Docker would create it, so the supervisor has to take ownership of it.
+# Started with --user, PopcornStash cannot change owners, so both folders are given
+# to that user up front.
 docker run --rm --user 0:0 --entrypoint /bin/chown -v "$WORK:/work" "$IMAGE" \
-  "$PUID:$PGID" /work/main/stash /work/nocap/stash >/dev/null
+  "$PUID:$PGID" /work/main/stash /work/nocap/stash /work/user/config /work/user/stash >/dev/null
 
 docker network create "$NET" >/dev/null
 
@@ -159,7 +234,8 @@ docker run -d --name "$ECHO" --network "$NET" "$REGISTRY/busybox:1.37" sh -c '
 ECHO_IP="$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$ECHO")"
 ECHO_URL="http://$ECHO_IP/cgi-bin/ip"
 
-# The settings from compose.yaml. Extra arguments add or override capabilities.
+# run_stash <name> <dir> <docker run flags...>: the environment from compose.yaml
+# with a test address, the two folders, and the given container settings.
 run_stash() {
   local name="$1" dir="$2"
   shift 2
@@ -169,12 +245,6 @@ run_stash() {
     -e STASH_PUBLIC_URL=http://localhost:8788 \
     -e STASH_LOG=info \
     -v "$dir/config:/config" -v "$dir/stash:/stash" \
-    --cap-drop=ALL \
-    --cap-add=CHOWN --cap-add=DAC_OVERRIDE --cap-add=FOWNER \
-    --cap-add=SETUID --cap-add=SETGID --cap-add=KILL \
-    --sysctl net.ipv4.conf.all.rp_filter=2 \
-    --read-only --tmpfs /tmp --tmpfs /run \
-    --security-opt=no-new-privileges:true \
     "$@" "$IMAGE" >/dev/null
 }
 
@@ -243,9 +313,12 @@ owner_is() {
   }
 }
 
+# Logs are captured first: grep -q stops reading early, which would fail the pipe.
+logs_of() { docker logs "$1" 2>&1; }
+
 # ------------------------------------------------------- full container ----
-note "starting $MAIN with NET_ADMIN and /dev/net/tun"
-run_stash "$MAIN" "$WORK/main" --cap-add=NET_ADMIN --device=/dev/net/tun
+note "starting $MAIN with the settings from compose.yaml"
+run_stash "$MAIN" "$WORK/main" "${FULL_FLAGS[@]}"
 if wait_healthy "$MAIN"; then
   pass "container becomes healthy (popcornstash healthcheck)"
 else
@@ -258,9 +331,6 @@ URL="$(base_url "$MAIN")"
 check "/api/health answers ok" json_field_is "$URL/api/health" '.status == "ok"'
 check "/api/auth/state: setup_required is true" json_field_is "$URL/api/auth/state" '.setup_required == true'
 check "/api/auth/state: passkeys_ready is true" json_field_is "$URL/api/auth/state" '.passkeys_ready == true'
-
-# Logs are captured first: grep -q stops reading early, which would fail the pipe.
-logs_of() { docker logs "$1" 2>&1; }
 
 setup_code_logged() {
   local logs
@@ -303,9 +373,56 @@ config_owned() {
 }
 check "app data belongs to PUID; engine state to the engine user (0700)" config_owned
 
-check "serve runs as uid $PUID" test -n "$(pid_of "$MAIN" "popcornstash serve" "$PUID")"
-check "torrent-engine runs as uid $ENGINE_UID" test -n "$(pid_of "$MAIN" "popcornstash torrent-engine" "$ENGINE_UID")"
+SERVE_PID="$(pid_of "$MAIN" "popcornstash serve" "$PUID")"
+ENGINE_PID="$(pid_of "$MAIN" "popcornstash torrent-engine" "$ENGINE_UID")"
+check "serve runs as uid $PUID" test -n "$SERVE_PID"
+check "torrent-engine runs as uid $ENGINE_UID" test -n "$ENGINE_PID"
 check "the supervisor runs as root" test -n "$(pid_of "$MAIN" "popcornstash run" 0)"
+
+# no_privileges <pid>: no capabilities at all, and no way to gain any.
+no_privileges() {
+  local status
+  [[ -n "$1" ]] || return 1
+  status="$(docker exec "$MAIN" cat "/proc/$1/status")" || return 1
+  if grep -Eq '^CapPrm:[[:space:]]+0+$' <<<"$status" &&
+    grep -Eq '^CapEff:[[:space:]]+0+$' <<<"$status" &&
+    grep -Eq '^CapAmb:[[:space:]]+0+$' <<<"$status" &&
+    grep -Eq '^NoNewPrivs:[[:space:]]+1$' <<<"$status"; then
+    return 0
+  fi
+  grep -E '^(Cap(Prm|Eff|Amb)|NoNewPrivs):' <<<"$status" | tr '\n' ' '
+  return 1
+}
+check "serve has no capabilities and no_new_privs" no_privileges "$SERVE_PID"
+check "torrent-engine has no capabilities and no_new_privs" no_privileges "$ENGINE_PID"
+
+# /run holds the supervisor's socket and status file and boringtun's control
+# socket (/var/run/wireguard). Only root may create anything there: an entry made
+# by the engine user (for example a fake /run/wireguard/psw0.sock) would receive
+# the WireGuard private key from `wg setconf`.
+run_is_root_only() {
+  local got
+  got="$(docker exec "$MAIN" stat -c '%a %u' /run)" || return 1
+  [[ "$got" == "755 0" ]] || {
+    echo "/run is mode $got (mode, owner)"
+    return 1
+  }
+}
+check "/run belongs to root, mode 755" run_is_root_only
+check_not "uid $ENGINE_UID cannot create anything in /run" \
+  docker exec --user "$ENGINE_UID:$PGID" "$MAIN" mkdir /run/smoke-engine
+check_not "uid $PUID cannot create anything in /run" \
+  docker exec --user "$PUID:$PGID" "$MAIN" mkdir /run/smoke-serve
+# OpenVPN runs its --up/--down hook from /run/popcornstash/openvpn.
+# shellcheck disable=SC2016 # expanded inside the container
+run_hooks_execute() {
+  docker exec "$MAIN" sh -c '
+    hook=/run/popcornstash/.smoke-hook
+    printf "#!/bin/sh\necho hook-ran\n" > "$hook" && chmod 0700 "$hook"
+    out=$("$hook" 2>&1); rm -f "$hook"
+    [ "$out" = hook-ran ] || { echo "a root-owned hook in /run/popcornstash cannot run: $out"; exit 1; }'
+}
+check "the supervisor can run hooks from /run/popcornstash (OpenVPN --up/--down)" run_hooks_execute
 
 check "nftables table inet popcornstash exists" docker exec "$MAIN" nft list table inet popcornstash
 uid_rules() {
@@ -326,6 +443,8 @@ echo_sees_stash() {
   }
 }
 check "uid $PUID reaches a local echo server (it sees $STASH_IP)" echo_sees_stash
+check "uid $PUID resolves the echo server's name" \
+  docker exec --user "$PUID:$PGID" "$MAIN" getent hosts "$ECHO"
 check_not "uid $ENGINE_UID has no network without a VPN" \
   docker exec --user "$ENGINE_UID:$PGID" "$MAIN" curl -fsS -m 5 "$ECHO_URL"
 check_not "uid $ENGINE_UID cannot resolve names without a VPN" \
@@ -336,12 +455,12 @@ check "engine /livez answers without a token" \
 
 # The token lives only in the environment of serve and the engine. It is read and
 # used inside the container and never printed.
+# engine_request <none|wrong|right> <code|body>: GET /health on the engine as serve.
 # shellcheck disable=SC2016 # expanded inside the container
-engine_status() {
-  local token_mode="$1" pid
-  pid="$(pid_of "$MAIN" "popcornstash serve" "$PUID")"
-  [[ -n "$pid" ]] || return 1
-  docker exec --user "$PUID:$PGID" -e MODE="$token_mode" -e PID="$pid" "$MAIN" bash -c '
+engine_request() {
+  local token_mode="$1" output="$2"
+  [[ -n "$SERVE_PID" ]] || return 1
+  docker exec --user "$PUID:$PGID" -e MODE="$token_mode" -e OUT="$output" -e PID="$SERVE_PID" "$MAIN" bash -c '
     token=$(tr "\0" "\n" < "/proc/$PID/environ" | sed -n "s/^STASH_INTERNAL_TOKEN=//p")
     [ -n "$token" ] || { echo missing; exit 0; }
     case "$MODE" in
@@ -349,11 +468,15 @@ engine_status() {
       wrong) auth=(-H "Authorization: Bearer 0000$token") ;;
       none) auth=() ;;
     esac
-    curl -sS -m 5 -o /dev/null -w "%{http_code}" "${auth[@]}" http://127.0.0.1:9091/health'
+    if [ "$OUT" = body ]; then
+      curl -fsS -m 5 "${auth[@]}" http://127.0.0.1:9091/health
+    else
+      curl -sS -m 5 -o /dev/null -w "%{http_code}" "${auth[@]}" http://127.0.0.1:9091/health
+    fi'
 }
 expect_status() {
   local mode="$1" want="$2" got
-  got="$(engine_status "$mode")"
+  got="$(engine_request "$mode" code)"
   [[ "$got" == "$want" ]] || {
     echo "got $got"
     return 1
@@ -362,6 +485,16 @@ expect_status() {
 check "internal API: no token is refused (401)" expect_status none 401
 check "internal API: a wrong token is refused (401)" expect_status wrong 401
 check "internal API: the internal token is accepted (200)" expect_status right 200
+engine_blocked() {
+  local health
+  health="$(engine_request right body)" || return 1
+  jq -e '.engine.state == "blocked" and .engine.allow_no_vpn == false
+    and .vpn.state == "not_configured" and .vpn.kill_switch == true' <<<"$health" >/dev/null || {
+    jq -c '{engine, vpn: {state: .vpn.state, kill_switch: .vpn.kill_switch}}' <<<"$health" 2>/dev/null || echo "$health"
+    return 1
+  }
+}
+check "engine /health: blocked, VPN not configured, kill switch on" engine_blocked
 no_token_file() {
   if host_stat '%n' "main/config/torrent/internal.token" >/dev/null 2>&1; then
     echo "config/torrent/internal.token exists"
@@ -381,12 +514,66 @@ engine_accepts_serve() {
 check "the web server's requests to the engine are accepted" engine_accepts_serve
 check_not "internal API is not reachable from the network" \
   docker exec "$ECHO" wget -q -T 5 -O - "http://$STASH_IP:9091/livez"
+check_not "internal CONNECT proxy is not reachable from the network" \
+  docker exec "$ECHO" nc -w 5 "$STASH_IP" 9092 </dev/null
 check "web app is reachable from the network" \
   docker exec "$ECHO" wget -q -T 5 -O - "http://$STASH_IP:8788/api/health"
 
+no_readonly_errors() {
+  local logs
+  logs="$(logs_of "$MAIN")"
+  if grep -Eiq 'read-only file system|os error 30' <<<"$logs"; then
+    grep -Ei 'read-only file system|os error 30' <<<"$logs" | tail -n 2
+    return 1
+  fi
+}
+check "nothing tried to write to the read-only image" no_readonly_errors
+
+# The documented recovery commands run as root through `docker exec`.
+admin_setup_code() {
+  local out
+  out="$(docker exec "$MAIN" popcornstash admin setup-code 2>&1)" || {
+    tail -n 2 <<<"$out"
+    return 1
+  }
+  grep -Eq '\b[0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}\b' <<<"$out" || {
+    echo "no setup code in: $out"
+    return 1
+  }
+}
+check "docker exec ... popcornstash admin setup-code prints a setup code" admin_setup_code
+config_still_owned() {
+  local stray
+  stray="$(docker run --rm --user 0:0 --network none --entrypoint /usr/bin/find \
+    -v "$WORK:/work:ro" "$IMAGE" /work/main/config \
+    -path /work/main/config/torrent/engine -prune -o ! -user "$PUID" -print)" || return 1
+  [[ -z "$stray" ]] || {
+    echo "not owned by $PUID: $(head -n 3 <<<"$stray" | tr '\n' ' ')"
+    return 1
+  }
+}
+check "after the admin command every app data file still belongs to PUID $PUID" config_still_owned
+
+stops_cleanly() {
+  local started code
+  started=$SECONDS
+  docker stop -t 30 "$MAIN" >/dev/null || return 1
+  code="$(docker inspect -f '{{.State.ExitCode}}' "$MAIN")"
+  # Children get 10s to stop before the supervisor kills them; a clean stop is quicker.
+  [[ "$code" == 0 && $((SECONDS - started)) -lt 10 ]] || {
+    echo "exit code $code after $((SECONDS - started))s"
+    return 1
+  }
+  grep -q 'stopped cleanly' <<<"$(logs_of "$MAIN")" || {
+    echo "the supervisor did not log a clean shutdown"
+    return 1
+  }
+}
+check "docker stop: the supervisor stops everything within 10s and exits 0" stops_cleanly
+
 # ------------------------------------------------------- no NET_ADMIN ----
 note "starting $NOCAP without NET_ADMIN"
-run_stash "$NOCAP" "$WORK/nocap" --device=/dev/net/tun
+run_stash "$NOCAP" "$WORK/nocap" "${NOCAP_FLAGS[@]}"
 explains_torrents() { grep -Eiq 'torrent.*NET_ADMIN' <<<"$(logs_of "$NOCAP")"; }
 if wait_healthy "$NOCAP"; then
   pass "without NET_ADMIN: container becomes healthy"
@@ -400,10 +587,28 @@ if wait_healthy "$NOCAP"; then
   check "without NET_ADMIN: the logs explain torrents are unavailable" explains_torrents
   check "without NET_ADMIN: serve still runs as uid $PUID" test -n "$(pid_of "$NOCAP" "popcornstash serve" "$PUID")"
   check_not "without NET_ADMIN: no torrent engine is running" test -n "$(pid_of "$NOCAP" "popcornstash torrent-engine" "$ENGINE_UID")"
+  nocap_owned() { owner_is "nocap/config" "$PUID" && owner_is "nocap/config/popcornstash.db" "$PUID" "regular file"; }
+  check "without NET_ADMIN: app data still belongs to PUID $PUID" nocap_owned
 else
   fail "without NET_ADMIN: container becomes healthy (web UI checks skipped)"
   docker logs --tail 60 "$NOCAP" 2>&1 | sed 's/^/      /'
   check "without NET_ADMIN: the logs explain torrents are unavailable" explains_torrents
+fi
+
+# ------------------------------------------------------- --user (non-root) ----
+note "starting $USERMODE with --user $PUID:$PGID"
+run_stash "$USERMODE" "$WORK/user" "${FULL_FLAGS[@]}" --user "$PUID:$PGID"
+explains_user() { grep -q 'non-root user, so torrents are turned off' <<<"$(logs_of "$USERMODE")"; }
+if wait_healthy "$USERMODE"; then
+  pass "with --user: container becomes healthy"
+  USER_URL="$(base_url "$USERMODE")"
+  check "with --user: /api/health answers ok" json_field_is "$USER_URL/api/health" '.status == "ok"'
+  check "with --user: the logs explain torrents are unavailable" explains_user
+  check "with --user: serve runs as uid $PUID" test -n "$(pid_of "$USERMODE" "popcornstash serve" "$PUID")"
+  check_not "with --user: nothing runs as root" test -n "$(processes "$USERMODE" | awk '$2 == 0')"
+else
+  fail "with --user: container becomes healthy (checks skipped)"
+  docker logs --tail 60 "$USERMODE" 2>&1 | sed 's/^/      /'
 fi
 
 # ---------------------------------------------------------------- result ----

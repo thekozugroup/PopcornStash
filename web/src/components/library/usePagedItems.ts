@@ -133,11 +133,17 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
     },
     onRemoved: id => setState(s => ({...s, items: s.items.filter(item => item.id !== id)})),
     onAdded: () => {
-      // Only a list sorted newest-first has an obvious place for new arrivals.
-      if (sort !== 'added' || order !== 'desc' || q || favorite) return;
+      // Only a list sorted newest-first (added or filmed) has an obvious place for new arrivals.
+      if ((sort !== 'added' && sort !== 'taken') || order !== 'desc' || q || favorite) return;
       const requestKey = key;
+      const dateOf = (item: Item) => (sort === 'taken' ? (item.taken_at ?? item.added_at) : item.added_at);
       itemsApi.list({category, sort, order, limit: 20}).then(
-        page => setState(s => (s.key !== requestKey ? s : {...s, items: mergeUnique(page.items, s.items)})),
+        page =>
+          setState(s =>
+            s.key !== requestKey
+              ? s
+              : {...s, items: mergeUnique(page.items, s.items).sort((a, b) => dateOf(b) - dateOf(a))},
+          ),
         () => undefined,
       );
     },
@@ -145,8 +151,10 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
 
   return {
     items: state.items,
-    isLoading: !isCurrent && state.key === '',
-    isStale: !isCurrent && state.key !== '',
+    // Nothing on screen yet (first load, or a retry after an error): skeleton.
+    isLoading: !isCurrent && state.items.length === 0,
+    // Older results stay visible, dimmed, while the new query loads.
+    isStale: !isCurrent && state.items.length > 0,
     error: isCurrent ? state.error : null,
     hasMore: isCurrent && Boolean(state.cursor),
     isLoadingMore: isCurrent && state.isLoadingMore,

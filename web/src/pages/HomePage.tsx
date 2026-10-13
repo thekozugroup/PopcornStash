@@ -36,7 +36,7 @@ const styles = stylex.create({
     display: 'flex',
     flexWrap: 'wrap',
     columnGap: 20,
-    rowGap: 4,
+    rowGap: 0,
     margin: 0,
     padding: 0,
     listStyle: 'none',
@@ -44,7 +44,7 @@ const styles = stylex.create({
   countLink: {
     display: 'inline-flex',
     alignItems: 'center',
-    minHeight: 32,
+    minHeight: 44,
     color: colorVars['--color-text-secondary'],
     fontSize: 15,
     textDecoration: 'none',

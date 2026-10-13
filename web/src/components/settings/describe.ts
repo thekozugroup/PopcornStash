@@ -133,6 +133,30 @@ const SETTING_NAMES: Record<string, string> = {
   'transcode.max_sessions': 'streams at once',
 };
 
+const AUTH_FAILURE_REASONS: Record<string, string> = {
+  wrong_setup_code: 'Wrong setup code',
+  passkey_rejected: 'Passkey not accepted',
+  unknown_user: 'Passkey not recognised',
+  no_user_handle: 'Passkey not recognised',
+  invalid_invite: 'Invite link not valid',
+  invalid_code: 'Recovery link not valid',
+};
+
+const AUTH_FAILURE_FLOWS: Record<string, string> = {
+  setup: 'during setup',
+  invite: 'while joining',
+  recover: 'during owner recovery',
+  add_passkey: 'while adding a passkey',
+};
+
+/** `auth_failed` detail `{flow, reason}` in words: "Passkey not accepted while joining". */
+function authFailure(flow: unknown, reason: unknown): string | null {
+  const why = typeof reason === 'string' ? (AUTH_FAILURE_REASONS[reason] ?? null) : null;
+  if (!why) return null;
+  const where = typeof flow === 'string' && reason === 'passkey_rejected' ? AUTH_FAILURE_FLOWS[flow] : undefined;
+  return where ? `${why} ${where}` : why;
+}
+
 function text(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
 }
@@ -156,7 +180,7 @@ export function auditDetail(entry: Pick<AuditEntry, 'event' | 'detail'>): string
     case 'invite_created':
       return detail.role === 'owner' ? 'Owner invite' : detail.role === 'member' ? 'Member invite' : null;
     case 'auth_failed':
-      return text(detail.reason);
+      return authFailure(detail.flow, detail.reason);
     case 'trash_emptied':
       return typeof detail.deleted === 'number' ? `${detail.deleted} ${detail.deleted === 1 ? 'item' : 'items'}` : null;
     case 'vpn_configured':

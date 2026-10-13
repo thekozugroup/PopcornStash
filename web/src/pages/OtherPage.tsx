@@ -18,8 +18,8 @@ const config: CategoryLibraryConfig = {
   noun: 'files',
   sortOptions: [
     {value: 'added', label: 'Recently added'},
+    // Music and documents carry no date taken, so that sort is left out.
     {value: 'title', label: 'Name'},
-    {value: 'taken', label: 'Date taken'},
     {value: 'size', label: 'Largest first'},
   ],
   defaultSort: 'added',

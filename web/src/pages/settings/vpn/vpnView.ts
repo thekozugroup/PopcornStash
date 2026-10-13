@@ -37,9 +37,9 @@ export function vpnView(status: VpnStatus | null, isUnavailable: boolean): VpnVi
   if (isTorrentsTurnedOff(status)) {
     return {
       tone: 'error',
-      title: 'Torrents unavailable: the container needs NET_ADMIN and /dev/net/tun',
+      title: 'Torrents off: this container cannot build a VPN tunnel',
       detail:
-        'Without them PopcornStash cannot build the tunnel or the kill switch, so torrents stay off. Web links and uploads still work. Add both to the container, then restart it.',
+        'Give the container the NET_ADMIN capability and the /dev/net/tun device, then restart it. Web links and uploads still work.',
       isDegraded: true,
     };
   }
@@ -51,9 +51,11 @@ export function vpnView(status: VpnStatus | null, isUnavailable: boolean): VpnVi
     case 'connected':
       if (status.protected === false)
         return {tone: summary.tone, title: summary.label, detail: summary.detail, isDegraded: false};
+      // "Protected · NordVPN · Netherlands" (DESIGN.md). The public address,
+      // the proof of protection, is listed with the connection facts.
       return {
         tone: 'connected',
-        title: ['Protected', provider, status.country, status.public_ip].filter(Boolean).join(' · '),
+        title: ['Protected', provider, status.country].filter(Boolean).join(' · '),
         detail: null,
         isDegraded: false,
       };

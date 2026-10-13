@@ -69,10 +69,29 @@ export function itemParent(item: Pick<Item, 'category' | 'show_name'>): {href: s
   return {href: CATEGORY_PATH[item.category], label: CATEGORY_LABEL[item.category]};
 }
 
-/** The name people know an item by: episode titles for episodes. */
-export function displayTitle(item: Pick<Item, 'title' | 'episode_title' | 'category'>): string {
+/**
+ * True when a photo's title is still its camera file name ("PXL_20240613_…"),
+ * which means nothing to the family; the date it was taken says more.
+ */
+export function hasFileNameTitle(item: Pick<Item, 'title' | 'rel_path' | 'category' | 'taken_at'>): boolean {
+  if (item.category !== 'photo' || !item.taken_at) return false;
+  const name = fileName(item.rel_path);
+  const dot = name.lastIndexOf('.');
+  return item.title === (dot > 0 ? name.slice(0, dot) : name);
+}
+
+/** The name people know an item by: episode titles for episodes, the date for camera-named photos. */
+export function displayTitle(
+  item: Pick<Item, 'title' | 'episode_title' | 'category' | 'rel_path' | 'taken_at'>,
+): string {
   if (item.category === 'episode' && item.episode_title) return item.episode_title;
+  if (hasFileNameTitle(item)) return `Photo from ${formatDate(item.taken_at)}`;
   return item.title;
+}
+
+/** "3:28 PM" in the viewer's own clock style. */
+export function formatTime(unixSeconds: number): string {
+  return new Intl.DateTimeFormat(undefined, {timeStyle: 'short'}).format(new Date(unixSeconds * 1000));
 }
 
 /** File extension in capitals ("PDF", "MP3"), or null. */
@@ -97,7 +116,8 @@ export function itemMeta(item: Item): string {
     case 'home_video':
       return [formatDate(item.taken_at ?? item.added_at), formatDuration(item.duration_s)].filter(Boolean).join(' · ');
     case 'photo':
-      return formatDate(item.taken_at ?? item.added_at);
+      // A camera-named photo already shows its date as the title.
+      return hasFileNameTitle(item) ? (item.camera ?? '') : formatDate(item.taken_at ?? item.added_at);
     case 'other':
     default: {
       const type = fileType(item.rel_path);

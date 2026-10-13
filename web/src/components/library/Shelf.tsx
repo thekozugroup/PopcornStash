@@ -11,7 +11,7 @@ import {Button} from '@astryxdesign/core/Button';
 import {Skeleton} from '@astryxdesign/core/Skeleton';
 import {Text} from '@astryxdesign/core/Text';
 import {ChevronLeft, ChevronRight} from 'lucide-react';
-import {Children, isValidElement, useCallback, useEffect, useState, type ReactNode} from 'react';
+import {Children, isValidElement, useCallback, useEffect, useId, useState, type ReactNode} from 'react';
 import {MediaTileSkeleton, type MediaShape} from '../MediaTile';
 
 const styles = stylex.create({
@@ -79,9 +79,10 @@ const styles = stylex.create({
     gridAutoColumns: {default: 148, '@media (max-width: 520px)': 112},
   },
   // A short group (one or two tiles) sits beside other short groups instead
-  // of taking a whole row; it never scrolls.
+  // of taking a whole row; it never scrolls. On phones each group takes the
+  // full width, so its "See all" lines up with the page edge like the others.
   compactSection: {
-    flex: '0 1 auto',
+    flex: {default: '0 1 auto', '@media (max-width: 799px)': '1 1 100%'},
   },
   compactRow: {
     overflowX: 'visible',
@@ -110,6 +111,7 @@ export interface ShelfProps {
 }
 
 export function Shelf({title, note, headingLevel = 3, href, linkLabel = 'See all', shape, isCompact = false, children}: ShelfProps) {
+  const headingId = useId();
   const [row, setRow] = useState<HTMLUListElement | null>(null);
   const [edges, setEdges] = useState({start: true, end: true});
 
@@ -138,10 +140,12 @@ export function Shelf({title, note, headingLevel = 3, href, linkLabel = 'See all
   const hasOverflow = !(edges.start && edges.end);
 
   return (
-    <section {...stylex.props(styles.section, isCompact && styles.compactSection)} aria-label={title}>
+    <section {...stylex.props(styles.section, isCompact && styles.compactSection)} aria-labelledby={headingId}>
       <div {...stylex.props(styles.header)}>
         <div {...stylex.props(styles.titleGroup)}>
-          <Heading level={headingLevel}>{title}</Heading>
+          <Heading level={headingLevel} id={headingId}>
+            {title}
+          </Heading>
           {note ? (
             <Text type="supporting" color="secondary">
               {note}
@@ -169,7 +173,7 @@ export function Shelf({title, note, headingLevel = 3, href, linkLabel = 'See all
               />
             </div>
           ) : null}
-          {href ? <Button label={linkLabel} variant="ghost" size="sm" href={href} /> : null}
+          {href ? <Button label={linkLabel} variant="ghost" href={href} /> : null}
         </div>
       </div>
       <ul ref={setRow} {...stylex.props(styles.row, styles[shape], isCompact && styles.compactRow)}>

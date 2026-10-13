@@ -226,9 +226,11 @@ start_wgserver() {
     --entrypoint /bin/sh "$IMAGE" /wgserver.sh >/dev/null
 }
 start_wgserver
-wg_ready() { docker logs "$WG" 2>&1 | grep -q 'wgserver: ready'; }
-eventually 30 wg_ready || die "the WireGuard peer did not start: $(docker logs "$WG" 2>&1 | tail -n 3 | tr '\n' ' ')"
-note "WireGuard peer is up at $WG_IP ($(docker logs "$WG" 2>&1 | head -n 1))"
+# Logs are captured before grep -q: it stops reading early, which fails the pipe.
+logs_of() { docker logs "$1" 2>&1; }
+wg_ready() { grep -q 'wgserver: ready' <<<"$(logs_of "$WG")"; }
+eventually 30 wg_ready || die "the WireGuard peer did not start: $(logs_of "$WG" | tail -n 3 | tr '\n' ' ')"
+note "WireGuard peer is up at $WG_IP ($(logs_of "$WG" | head -n 1))"
 
 # The settings from compose.yaml.
 docker run -d --name "$MAIN" --network "$NET" --ip "$STASH_IP" \
@@ -458,15 +460,25 @@ check "the tunnel recovers: the engine uid reaches the echo server through the V
 
 # ---------------------------------------------------------------- reload ----
 note "asking the engine to reload the VPN (what the web server does after a VPN change)"
+psw0_index() { docker exec "$MAIN" cat /sys/class/net/psw0/ifindex; }
+index_before="$(psw0_index 2>/dev/null || echo none)"
 reload_accepted() {
   engine_api POST /vpn/reload >/dev/null
 }
 check "POST /vpn/reload is accepted" reload_accepted
-sleep 5
+reload_logged() { grep -q 'reload requested; re-applying the VPN' <<<"$(logs_of "$MAIN")"; }
+check "the engine exits for the reload and the supervisor re-applies the VPN" eventually 30 reload_logged
 check "after a reload the engine comes back and the tunnel reconnects" eventually 120 tunnel_connected
+new_tunnel() {
+  local index
+  index="$(psw0_index)" || return 1
+  [[ "$index" != "$index_before" ]] || {
+    echo "psw0 still has ifindex $index"
+    return 1
+  }
+}
+check "the reload created a new tunnel interface" new_tunnel
 check "after a reload the engine uid is tunneled again" eventually 60 engine_sees "$WG_IP"
-reload_logged() { docker logs "$MAIN" 2>&1 | grep -q 'reload requested; re-applying the VPN'; }
-check "the supervisor logged the reload" reload_logged
 
 # --------------------------------------------------------------- shutdown ----
 note "stopping PopcornStash"
@@ -478,7 +490,7 @@ stopped_cleanly() {
     echo "exit code $code"
     return 1
   }
-  docker logs "$MAIN" 2>&1 | grep -q 'stopped cleanly'
+  grep -q 'stopped cleanly' <<<"$(logs_of "$MAIN")"
 }
 check "SIGTERM stops children, tunnel and rules, and exits 0" stopped_cleanly
 logs_have_no_secrets() {

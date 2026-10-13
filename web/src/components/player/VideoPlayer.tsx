@@ -17,7 +17,7 @@ import {DropdownMenu, DropdownMenuRadioGroup, DropdownMenuRadioItem} from '@astr
 import {Spinner} from '@astryxdesign/core/Spinner';
 import {Text} from '@astryxdesign/core/Text';
 import {MediaTheme} from '@astryxdesign/core/theme';
-import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
+import {colorVars, fontWeightVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {AudioLines, Download, Gauge, Play, RotateCcw, SkipForward} from 'lucide-react';
 import {useEffect, useRef, useState} from 'react';
 import type HlsType from 'hls.js';
@@ -64,22 +64,23 @@ const styles = stylex.create({
     gap: 14,
     padding: 24,
     textAlign: 'center',
-    backgroundColor: 'oklch(0% 0 0 / 0.48)',
-    color: 'oklch(98.5% 0 0)',
+    // The black stage colour over the poster, the same in both themes.
+    backgroundColor: 'color-mix(in oklch, var(--popcorn-stage) 48%, transparent)',
+    color: colorVars['--color-on-dark'],
   },
   // Secondary controls on the stage read as light text on black in both themes.
   onStage: {
-    color: 'oklch(92% 0.004 286.32)',
+    color: colorVars['--color-on-dark'],
   },
   overlaySolid: {
-    backgroundColor: 'oklch(0% 0 0 / 0.72)',
+    backgroundColor: 'color-mix(in oklch, var(--popcorn-stage) 72%, transparent)',
   },
   message: {
     maxWidth: '44ch',
     lineHeight: 1.55,
   },
   messageTitle: {
-    fontWeight: 600,
+    fontWeight: fontWeightVars['--font-weight-semibold'],
   },
   row: {
     display: 'flex',
@@ -169,6 +170,9 @@ export function VideoPlayer({item, autoPlay = false, onNext = null}: VideoPlayer
   const fellBackRef = useRef(false);
   const lastSavedRef = useRef(-1);
   const modeRef = useRef<PlaybackResponse['mode'] | null>(null);
+  // Play and Try again disappear once pressed; focus moves to the video so
+  // keyboard users keep their place and can pause with the space bar.
+  const focusOnReadyRef = useRef(false);
 
   const resumeAt = resumePosition(item);
   const poster = largeThumb(item) ?? undefined;
@@ -309,7 +313,14 @@ export function VideoPlayer({item, autoPlay = false, onNext = null}: VideoPlayer
     };
   }, []);
 
+  useEffect(() => {
+    if (phase !== 'ready' || !focusOnReadyRef.current) return;
+    focusOnReadyRef.current = false;
+    videoRef.current?.focus({preventScroll: true});
+  }, [phase]);
+
   const begin = (startAt: number) => {
+    focusOnReadyRef.current = true;
     setPhase('starting');
     setError(null);
     void start({startAt, quality, audioIndex, autoplay: true});
@@ -402,10 +413,12 @@ export function VideoPlayer({item, autoPlay = false, onNext = null}: VideoPlayer
             {phase === 'starting' ? <Spinner size="xl" shade="onMedia" aria-label="Starting playback" /> : null}
             {phase === 'error' ? (
               <>
-                <Text as="p" color="inherit" xstyle={styles.message}>
-                  <span {...stylex.props(styles.messageTitle)}>Playback stopped. </span>
-                  {error}
-                </Text>
+                <div role="alert">
+                  <Text as="p" color="inherit" xstyle={styles.message}>
+                    <span {...stylex.props(styles.messageTitle)}>Playback stopped. </span>
+                    {error}
+                  </Text>
+                </div>
                 <div {...stylex.props(styles.row)}>
                   <Button
                     label="Try again"

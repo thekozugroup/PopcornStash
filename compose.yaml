@@ -2,7 +2,7 @@
 #
 #   cp .env.example .env    # then set STASH_PUBLIC_URL, APPDATA_PATH and STASH_PATH
 #   docker compose up -d
-#   docker compose logs popcornstash | grep -i "setup code"
+#   docker compose logs popcornstash | grep -A 1 "setup code"
 #
 # See docs/deployment.md for HTTPS, Unraid and first run, and docs/vpn.md for torrents.
 services:
@@ -53,9 +53,11 @@ services:
     sysctls:
       net.ipv4.conf.all.rp_filter: 2
     read_only: true
+    # /run stays root-only (mode 755) and may run programs: the supervisor keeps its
+    # socket, the VPN status and the OpenVPN connect hook there.
     tmpfs:
       - /tmp
-      - /run
+      - /run:exec,mode=755
     security_opt:
       - no-new-privileges:true
     stop_grace_period: 30s

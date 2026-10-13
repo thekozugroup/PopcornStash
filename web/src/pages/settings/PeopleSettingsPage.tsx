@@ -108,7 +108,7 @@ function InviteRow({invite, onRevoke}: {invite: InviteListEntry; onRevoke: (invi
 }
 
 function People() {
-  const {user} = useAuth();
+  const {user, refresh} = useAuth();
   const showToast = useToast();
   const people = useResource(signal => users.list(signal), {key: 'users'});
   const openInvites = useResource(signal => listOpenInvites(signal), {key: 'invites'});
@@ -119,12 +119,26 @@ function People() {
   const ownerCount = list.filter(person => person.role === 'owner').length;
 
   const changeRole = (person: User, role: Role) => {
+    const isMe = person.id === user?.id;
     const run = async () => {
       const updated = await users.setRole(person.id, role);
       people.mutate(current => current.map(item => (item.id === updated.id ? updated : item)));
-      showToast({body: `${person.display_name} is now ${role === 'owner' ? 'an owner' : 'a member'}.`});
+      showToast({
+        body: isMe ? 'You are now a member.' : `${person.display_name} is now ${role === 'owner' ? 'an owner' : 'a member'}.`,
+      });
+      // Your own role changed: reload the session so owner-only pages close.
+      if (isMe) await refresh();
     };
-    if (role === 'owner') {
+    if (isMe && role === 'member') {
+      ask({
+        title: 'Make yourself a member?',
+        description:
+          'You will no longer be able to change the VPN, settings or who has access, and this page closes for you. Another owner can make you an owner again.',
+        actionLabel: 'Make me a member',
+        failure: 'Your role did not change. Try again.',
+        run,
+      });
+    } else if (role === 'owner') {
       ask({
         title: `Make ${person.display_name} an owner?`,
         description:
@@ -177,7 +191,7 @@ function People() {
       />
       <div {...stylex.props(styles.groups)}>
         <SettingsGroup
-          title="People"
+          title="Who has access"
           description="Owners manage the VPN, settings and who has access. Members watch, browse, upload and add downloads.">
           {people.isLoading ? (
             <LoadingRows rows={3} label="Loading people" />

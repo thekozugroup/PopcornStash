@@ -21,7 +21,7 @@ export default function NotFoundPage() {
       title="Page not found"
       subtitle={
         <Text as="span" color="secondary" xstyle={styles.path}>
-          {`Nothing in PopcornStash lives at ${pathname}. The link may be old or mistyped.`}
+          {`Nothing in PopcornStash lives at ${pathname}. The link may be out of date.`}
         </Text>
       }
       actions={<Button label="Go to Home" variant="primary" href="/" />}

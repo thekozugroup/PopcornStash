@@ -125,18 +125,16 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: extension/package-lock.json
-      - name: Build
+      # docs/extension.md tells people to download popcornstash-extension.zip from
+      # the release; `npm run zip` builds dist/ and packs it reproducibly under that name.
+      - name: Build and zip
         working-directory: extension
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
-          npm run build
-      - name: Zip
-        run: |
-          zip_name="popcornstash-extension-${GITHUB_REF_NAME}.zip"
-          (cd extension/dist && zip -r -X "${GITHUB_WORKSPACE}/${zip_name}" .)
-          echo "ZIP_NAME=${zip_name}" >> "$GITHUB_ENV"
+          npm run zip
       - uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ZIP_NAME }}
+          files: extension/popcornstash-extension.zip
+          fail_on_unmatched_files: true
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}

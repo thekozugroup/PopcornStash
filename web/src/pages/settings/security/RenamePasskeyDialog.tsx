@@ -4,25 +4,17 @@
 import * as stylex from '@stylexjs/stylex';
 import {Button} from '@astryxdesign/core/Button';
 import {Dialog, DialogHeader} from '@astryxdesign/core/Dialog';
+import {HStack, Layout, LayoutContent, LayoutFooter} from '@astryxdesign/core/Layout';
 import {TextInput} from '@astryxdesign/core/TextInput';
-import {useState, type FormEvent} from 'react';
+import {useId, useState, type FormEvent} from 'react';
 import {me} from '../../../api/client';
 import type {Passkey} from '../../../api/types';
 import {errorMessage} from '../../../lib/errors';
 
 const styles = stylex.create({
-  body: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 20,
-    paddingBlock: 20,
-    paddingInline: 24,
-  },
-  footer: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    justifyContent: 'flex-end',
-    gap: 8,
+  // The form wraps the dialog layout without adding a box of its own.
+  form: {
+    display: 'contents',
   },
 });
 
@@ -44,6 +36,7 @@ function RenameForm({
   const [name, setName] = useState(passkey.name);
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  const formId = useId();
 
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -69,26 +62,39 @@ function RenameForm({
   };
 
   return (
-    <form onSubmit={onSubmit} noValidate {...stylex.props(styles.body)}>
-      <TextInput
-        label="Name"
-        value={name}
-        onChange={value => {
-          setName(value);
-          if (error) setError(null);
-        }}
-        autoComplete="off"
-        isRequired
-        hasAutoFocus
-        isDisabled={isBusy}
-        status={error ? {type: 'error', message: error} : undefined}
-        statusVariant="detached"
-        width="100%"
+    <form id={formId} onSubmit={onSubmit} noValidate {...stylex.props(styles.form)}>
+      <Layout
+        header={
+          <DialogHeader title="Rename passkey" subtitle="Only you see this name." onOpenChange={() => onClose()} />
+        }
+        content={
+          <LayoutContent>
+            <TextInput
+              label="Name"
+              value={name}
+              onChange={value => {
+                setName(value);
+                if (error) setError(null);
+              }}
+              autoComplete="off"
+              isRequired
+              hasAutoFocus
+              isDisabled={isBusy}
+              status={error ? {type: 'error', message: error} : undefined}
+              statusVariant="detached"
+              width="100%"
+            />
+          </LayoutContent>
+        }
+        footer={
+          <LayoutFooter>
+            <HStack gap={2} hAlign="end" wrap="wrap">
+              <Button label="Cancel" variant="secondary" onClick={onClose} isDisabled={isBusy} />
+              <Button type="submit" form={formId} label="Save name" variant="primary" isLoading={isBusy} />
+            </HStack>
+          </LayoutFooter>
+        }
       />
-      <div {...stylex.props(styles.footer)}>
-        <Button label="Cancel" variant="secondary" onClick={onClose} isDisabled={isBusy} />
-        <Button type="submit" label="Save name" variant="primary" isLoading={isBusy} />
-      </div>
     </form>
   );
 }
@@ -96,11 +102,6 @@ function RenameForm({
 export function RenamePasskeyDialog({passkey, onClose, onRenamed}: RenamePasskeyDialogProps) {
   return (
     <Dialog isOpen={passkey !== null} onOpenChange={open => (open ? undefined : onClose())} purpose="form" width={440}>
-      <DialogHeader
-        title="Rename passkey"
-        subtitle="Only you see this name."
-        onOpenChange={open => (open ? undefined : onClose())}
-      />
       {passkey ? <RenameForm key={passkey.id} passkey={passkey} onClose={onClose} onRenamed={onRenamed} /> : null}
     </Dialog>
   );

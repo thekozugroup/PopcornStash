@@ -5,7 +5,7 @@
 //! tunnel interface. Supports `CONNECT host:443` and absolute-form `http://`
 //! requests, only to ports 80 and 443, never to private, loopback, link-local
 //! or ULA addresses (checked after DNS resolution), and answers 503 while the
-//! engine is blocked.
+//! tunnel is not usable (the engine is blocked by the VPN state).
 
 use std::convert::Infallible;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -375,7 +375,7 @@ async fn forward(request: Request<Incoming>, config: &ProxyConfig) -> Response<P
     }
 }
 
-/// Serve the proxy until `cancel`. `running` is false while the engine is blocked.
+/// Serve the proxy until `cancel`. `running` is false while the tunnel is not usable.
 pub async fn serve(
     listener: TcpListener,
     config: Arc<ProxyConfig>,

@@ -73,7 +73,6 @@ function Caption({photo, hasDetailsLink}: {photo: Item; hasDetailsLink: boolean}
         <Button
           label="Download original"
           variant="secondary"
-          size="sm"
           href={itemsApi.fileUrl(photo.id, true)}
           icon={<Download size={16} strokeWidth={1.75} aria-hidden="true" />}
           tooltip={fileName(photo.rel_path)}
@@ -82,7 +81,6 @@ function Caption({photo, hasDetailsLink}: {photo: Item; hasDetailsLink: boolean}
           <Button
             label="Details"
             variant="ghost"
-            size="sm"
             href={itemHref(photo)}
             icon={<Info size={16} strokeWidth={1.75} aria-hidden="true" />}
           />

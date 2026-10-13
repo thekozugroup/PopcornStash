@@ -3,6 +3,7 @@
  * work, hardware acceleration and streaming (transcode) settings.
  */
 import * as stylex from '@stylexjs/stylex';
+import {typographyVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {Button} from '@astryxdesign/core/Button';
 import {Code} from '@astryxdesign/core/Code';
 import {MetadataList, MetadataListItem} from '@astryxdesign/core/MetadataList';
@@ -46,7 +47,7 @@ const styles = stylex.create({
     maxWidth: '64ch',
   },
   path: {
-    fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+    fontFamily: typographyVars['--font-family-code'],
     fontSize: '0.875rem',
     overflowWrap: 'anywhere',
   },
@@ -203,7 +204,7 @@ function JobsGroup({info}: {info: SystemInfo}) {
   return (
     <SettingsGroup
       title="Background work"
-      description="Scanning, sorting, reading video details and making thumbnails. Failed jobs are retried three times.">
+      description="Scanning, sorting, reading video details and making thumbnails. A job that fails is tried up to three times.">
       <RowsPanel>
         <div {...stylex.props(styles.facts)}>
           <MetadataList orientation="horizontal">
@@ -243,11 +244,12 @@ function PlaybackGroup({info}: {info: SystemInfo | undefined}) {
   const draft = form.draft;
   const available = new Set(info?.hwaccel.available ?? []);
 
-  const description = info
-    ? `The container is set to ${hwaccelName(info.hwaccel.configured)}. Found on this server: ${
+  const found = info
+    ? ` Hardware acceleration found on this server: ${
         info.hwaccel.available.length > 0 ? info.hwaccel.available.map(hwaccelName).join(', ') : 'none'
       }.`
-    : 'Videos a device cannot play directly are converted while you watch.';
+    : '';
+  const description = `Videos a device cannot play directly are converted while you watch. Most phones and browsers play common files as they are.${found}`;
 
   if (form.isLoading) {
     return (
@@ -343,13 +345,10 @@ function PlaybackGroup({info}: {info: SystemInfo | undefined}) {
           width="100%"
         />
       </div>
-      <Text as="p" type="supporting" color="secondary" xstyle={styles.note}>
-        Only videos a device cannot play directly are converted. Most phones and browsers play common files as they are.
-      </Text>
       <div {...stylex.props(styles.footer)}>
         <Button
           label="Save changes"
-          variant="primary"
+          variant={form.isDirty ? 'primary' : 'secondary'}
           onClick={() => void save()}
           isLoading={isSaving}
           isDisabled={!form.isDirty}

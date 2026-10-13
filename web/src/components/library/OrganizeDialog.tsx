@@ -5,7 +5,7 @@
  * file will go before anything moves.
  */
 import * as stylex from '@stylexjs/stylex';
-import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
+import {colorVars, fontWeightVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {Banner} from '@astryxdesign/core/Banner';
 import {Button} from '@astryxdesign/core/Button';
 import {Dialog, DialogHeader} from '@astryxdesign/core/Dialog';
@@ -46,13 +46,14 @@ const styles = stylex.create({
   },
   label: {
     fontSize: 13,
-    fontWeight: 600,
+    fontWeight: fontWeightVars['--font-weight-semibold'],
     color: colorVars['--color-text-secondary'],
   },
+  // The destination is the point of this dialog: metadata style (DESIGN.md), primary ink, wraps anywhere.
   path: {
-    fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
-    fontSize: 13,
-    lineHeight: 1.55,
+    fontSize: 14,
+    lineHeight: 1.5,
+    fontWeight: fontWeightVars['--font-weight-medium'],
     overflowWrap: 'anywhere',
     color: colorVars['--color-text-primary'],
   },

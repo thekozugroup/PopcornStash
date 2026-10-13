@@ -189,8 +189,20 @@ fn prepare_in_progress(options: &SupervisorOptions) -> std::io::Result<()> {
         .map_err(errno)?;
     }
     let (in_progress, _) = open_or_create_dir(&downloads, "In Progress", 0o2775)?;
-    fchown(&in_progress, Some(puid), Some(pgid)).map_err(errno)?;
+    // Without CAP_FSETID (compose drops it) the kernel silently clears the
+    // setgid bit when root chmods a directory whose group root is not in. So
+    // set the mode while the group is root's, then hand the folder over:
+    // chown keeps setgid on directories.
+    fchown(&in_progress, None, Some(Gid::from_raw(0))).map_err(errno)?;
     fchmod(&in_progress, Mode::from_bits_truncate(0o2775)).map_err(errno)?;
+    fchown(&in_progress, Some(puid), Some(pgid)).map_err(errno)?;
+    let mode = fstat(&in_progress).map_err(errno)?.st_mode & 0o7777;
+    if mode != 0o2775 {
+        tracing::warn!(
+            mode = format!("{mode:o}"),
+            "Downloads/In Progress could not be set to mode 2775"
+        );
+    }
     let root_mode = fstat(&root).map_err(errno)?.st_mode;
     if root_mode & 0o011 == 0 {
         tracing::warn!(path = %options.stash_root.display(), "the stash folder is not searchable by its group or others; the torrent engine may not reach Downloads/In Progress");

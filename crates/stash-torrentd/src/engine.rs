@@ -181,12 +181,18 @@ async fn run_sandboxed(options: EngineOptions) -> anyhow::Result<i32> {
     tokio::spawn(proxy::serve(
         proxy_listener,
         proxy_config,
-        engine.running(),
+        engine.tunnel_usable(),
         shutdown.clone(),
     ));
     let code = engine.clone().supervise(shutdown.clone()).await;
     shutdown.cancel();
     Ok(code)
+}
+
+/// Why the main loop ends.
+enum Stop {
+    Reload,
+    Shutdown,
 }
 
 /// A magnet whose metadata is still being fetched.
@@ -233,6 +239,8 @@ pub struct Engine {
     session: RwLock<Option<Live>>,
     inner: Mutex<Inner>,
     running_tx: watch::Sender<bool>,
+    /// The tunnel is up (or no VPN is required): the proxy may forward.
+    tunnel_tx: watch::Sender<bool>,
     reload: Notify,
     reload_requested: AtomicBool,
 }
@@ -366,6 +374,7 @@ fn if_index(name: &str) -> Option<u32> {
 impl Engine {
     pub fn new(options: &EngineOptions) -> Self {
         let (running_tx, _) = watch::channel(false);
+        let (tunnel_tx, _) = watch::channel(false);
         let engine = Self {
             downloads_dir: options.downloads_dir.clone(),
             state_dir: options.state_dir.clone(),
@@ -384,6 +393,7 @@ impl Engine {
                 reserved_folders: HashSet::new(),
             }),
             running_tx,
+            tunnel_tx,
             reload: Notify::new(),
             reload_requested: AtomicBool::new(false),
         };
@@ -391,9 +401,16 @@ impl Engine {
         engine
     }
 
-    /// `true` while torrents may run (for the proxy).
+    /// `true` while the torrent session runs.
     pub fn running(&self) -> watch::Receiver<bool> {
         self.running_tx.subscribe()
+    }
+
+    /// `true` while the tunnel is usable. The CONNECT proxy follows this rather
+    /// than the torrent session, so web downloads through the VPN keep working
+    /// even if librqbit could not start.
+    pub fn tunnel_usable(&self) -> watch::Receiver<bool> {
+        self.tunnel_tx.subscribe()
     }
 
     fn load_saved_state(&self) {
@@ -483,7 +500,9 @@ impl Engine {
             let status = status::read(&self.status_file);
             let provider = status.as_ref().and_then(|s| s.provider);
             lock(&self.inner).tunnel = status.clone();
-            match self.decide(status.as_ref(), now) {
+            let decision = self.decide(status.as_ref(), now);
+            self.tunnel_tx.send_replace(decision.is_ok());
+            match decision {
                 Ok(ifindex) => {
                     let current = self.session.read().await.as_ref().map(|live| live.ifindex);
                     let wait_retry = failed_start.is_some_and(|(failed, at)| {
@@ -491,7 +510,13 @@ impl Engine {
                     });
                     if current != Some(ifindex) && !wait_retry {
                         self.stop_session().await;
-                        match self.start_session(ifindex).await {
+                        // Starting can take several seconds; a reload or shutdown must not wait for it.
+                        let started = tokio::select! {
+                            r = self.start_session(ifindex) => r,
+                            _ = self.reload.notified() => return self.finish(Stop::Reload).await,
+                            _ = shutdown.cancelled() => return self.finish(Stop::Shutdown).await,
+                        };
+                        match started {
                             Ok(()) => {
                                 failed_start = None;
                                 self.set_running(true, None);
@@ -524,17 +549,20 @@ impl Engine {
             }
             tokio::select! {
                 _ = tokio::time::sleep(POLL) => {}
-                _ = self.reload.notified() => {
-                    self.set_running(false, Some(MSG_VPN_WAIT.into()));
-                    self.stop_session().await;
-                    return EXIT_RELOAD;
-                }
-                _ = shutdown.cancelled() => {
-                    self.set_running(false, Some(MSG_VPN_WAIT.into()));
-                    self.stop_session().await;
-                    return 0;
-                }
+                _ = self.reload.notified() => return self.finish(Stop::Reload).await,
+                _ = shutdown.cancelled() => return self.finish(Stop::Shutdown).await,
             }
+        }
+    }
+
+    /// Stop torrents (librqbit flushes its state) and return the exit code.
+    async fn finish(&self, stop: Stop) -> i32 {
+        self.tunnel_tx.send_replace(false);
+        self.set_running(false, Some(MSG_VPN_WAIT.into()));
+        self.stop_session().await;
+        match stop {
+            Stop::Reload => EXIT_RELOAD,
+            Stop::Shutdown => 0,
         }
     }
 
@@ -1327,6 +1355,38 @@ mod tests {
         assert!(engine.list().await.is_empty());
         assert!(!folder.exists());
         assert!(opts.downloads_dir.exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reload_ends_the_loop_promptly_with_exit_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut opts = options(dir.path());
+        opts.tunnel_if = Some("lo".into());
+        let mut status = TunnelStatus::not_configured(now_unix());
+        status.state = TunnelState::Connected;
+        crate::status::write(&opts.status_file, &status).unwrap();
+        let engine = Arc::new(Engine::new(&opts));
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(engine.clone().supervise(shutdown.clone()));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            *engine.tunnel_usable().borrow(),
+            "the proxy follows the tunnel state"
+        );
+        let asked = Instant::now();
+        engine.request_reload();
+        let code = tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("the loop ended")
+            .unwrap();
+        assert_eq!(code, EXIT_RELOAD);
+        assert!(
+            asked.elapsed() < Duration::from_secs(5),
+            "took {:?}",
+            asked.elapsed()
+        );
+        assert!(!*engine.tunnel_usable().borrow());
+        assert_eq!(engine.health().await.engine.state, EngineRunState::Blocked);
     }
 
     #[tokio::test]

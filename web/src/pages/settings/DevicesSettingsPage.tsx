@@ -4,7 +4,7 @@
  * hand, and how to install the Chrome extension.
  */
 import * as stylex from '@stylexjs/stylex';
-import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
+import {colorVars, typographyVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {Button} from '@astryxdesign/core/Button';
 import {Link} from '@astryxdesign/core/Link';
 import {ListItem} from '@astryxdesign/core/List';
@@ -60,7 +60,7 @@ const styles = stylex.create({
     gap: 2,
   },
   codeValue: {
-    fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+    fontFamily: typographyVars['--font-family-code'],
     fontSize: 20,
     fontWeight: 600,
     letterSpacing: '0.06em',
@@ -77,7 +77,7 @@ const styles = stylex.create({
     lineHeight: 1.55,
   },
   url: {
-    fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+    fontFamily: typographyVars['--font-family-code'],
     fontSize: '0.8125rem',
     color: colorVars['--color-text-primary'],
     overflowWrap: 'anywhere',
@@ -99,7 +99,16 @@ function usePolling(reload: () => void, intervalMs: number) {
   }, [reload, intervalMs]);
 }
 
-function PendingRequest({request, onDone}: {request: PendingPairing; onDone: () => void}) {
+function PendingRequest({
+  request,
+  isOnly,
+  onDone,
+}: {
+  request: PendingPairing;
+  /** One request: Approve is the page's primary action. Several: all stay secondary. */
+  isOnly: boolean;
+  onDone: () => void;
+}) {
   const showToast = useToast();
   const access = pairingAccess(request.client_kind);
   const decide = async (approve: boolean) => {
@@ -134,7 +143,7 @@ function PendingRequest({request, onDone}: {request: PendingPairing; onDone: () 
         <span {...stylex.props(styles.codeValue)}>{request.user_code}</span>
       </div>
       <div {...stylex.props(styles.requestActions)}>
-        <Button label="Approve" variant="primary" clickAction={() => decide(true)} />
+        <Button label="Approve" variant={isOnly ? 'primary' : 'secondary'} clickAction={() => decide(true)} />
         <Button label="Deny" variant="secondary" clickAction={() => decide(false)} />
       </div>
     </li>
@@ -204,6 +213,7 @@ export default function DevicesSettingsPage() {
                   <PendingRequest
                     key={request.pairing_id}
                     request={request}
+                    isOnly={pendingRequests.length === 1}
                     onDone={() => {
                       pending.reload();
                       tokenList.reload();
@@ -252,7 +262,7 @@ export default function DevicesSettingsPage() {
             <>
               Open it and enter this address: <span {...stylex.props(styles.url)}>{serverAddress}</span>
             </>
-            <>It shows a code and opens a page to approve it. The request also appears here.</>
+            <>It shows a code. Approve it on the page it opens, or here, once the codes match.</>
           </Steps>
         </SettingsGroup>
       </div>

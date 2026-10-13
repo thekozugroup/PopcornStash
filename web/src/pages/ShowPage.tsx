@@ -61,9 +61,7 @@ const styles = stylex.create({
     position: 'absolute',
     inset: 0,
     borderRadius: 'inherit',
-    // The neutral tint stands in for --popcorn-media-hairline, whose dark value
-    // currently builds as opaque white (see the popcorn theme's alpha helper).
-    boxShadow: `inset 0 0 0 1px ${colorVars['--color-neutral']}`,
+    boxShadow: 'inset 0 0 0 1px var(--popcorn-media-hairline)',
   },
   intro: {
     display: 'flex',
@@ -186,20 +184,19 @@ export default function ShowPage() {
 
   if (!show && error) {
     if (error instanceof ApiError && error.code === 'not_found') {
+      // One way out: the action already leads back to Shows, so no back link as well.
       return (
-        <>
-          {back}
-          <PageHeader
-            title="Show not found"
-            subtitle={`There is no show called “${name}” in your library. It may have been renamed or removed.`}
-            actions={<Button label="See all shows" variant="secondary" href="/shows" />}
-          />
-        </>
+        <PageHeader
+          title="Show not found"
+          subtitle={`There is no show called “${name}” in your library. It may have been renamed or removed.`}
+          actions={<Button label="See all shows" variant="primary" href="/shows" />}
+        />
       );
     }
     return (
       <>
         {back}
+        <PageHeader title={name || 'Show'} />
         <LoadError title="This show could not be loaded" error={error} onRetry={() => setNonce(n => n + 1)} />
       </>
     );
@@ -263,7 +260,7 @@ export default function ShowPage() {
   return (
     <>
       {back}
-      <header {...stylex.props(styles.hero)}>
+      <div {...stylex.props(styles.hero)}>
         <ShowPoster episode={upEpisode ?? seasons[0]?.episodes[0]} />
         <div {...stylex.props(styles.intro)}>
           <Heading level={1} textWrap="balance">
@@ -275,7 +272,7 @@ export default function ShowPage() {
           {nextBlock(styles.nextDesktop)}
         </div>
         {nextBlock(styles.nextMobile)}
-      </header>
+      </div>
 
       <section aria-label="Episodes">
         {seasons.length > 1 ? (

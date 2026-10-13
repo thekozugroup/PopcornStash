@@ -47,10 +47,10 @@ const styles = stylex.create({
     borderTopStyle: 'solid',
     borderTopColor: colorVars['--color-border'],
   },
+  // File paths use the metadata style (DESIGN.md) and wrap anywhere.
   path: {
-    fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
     fontSize: 13,
-    lineHeight: 1.55,
+    lineHeight: 1.5,
     overflowWrap: 'anywhere',
   },
   lines: {
@@ -93,21 +93,24 @@ export function ItemFacts({item}: {item: ItemDetail}) {
   summary.push({label: 'File size', value: formatBytes(item.size)});
 
   const tagCamera = media?.tags ? [media.tags.make, media.tags.model].filter(Boolean).join(' ') : '';
+  // A document's size alone is already in the line under its title.
+  const hasSummary = summary.length > 1 || item.kind !== 'other';
 
   return (
     <div {...stylex.props(styles.wrap)}>
-      <MetadataList orientation="horizontal" columns="multi" xstyle={styles.summary}>
-        {summary.map(entry => (
-          <MetadataListItem key={entry.label} label={entry.label}>
-            {entry.value}
-          </MetadataListItem>
-        ))}
-      </MetadataList>
+      {hasSummary ? (
+        <MetadataList orientation="horizontal" columns="multi" xstyle={styles.summary}>
+          {summary.map(entry => (
+            <MetadataListItem key={entry.label} label={entry.label}>
+              {entry.value}
+            </MetadataListItem>
+          ))}
+        </MetadataList>
+      ) : null}
 
       <Button
         label={isOpen ? 'Hide file details' : 'Show file details'}
         variant="ghost"
-        size="sm"
         icon={
           isOpen ? (
             <ChevronUp size={16} strokeWidth={1.75} aria-hidden="true" />

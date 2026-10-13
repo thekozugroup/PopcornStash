@@ -161,10 +161,12 @@ export function VpnStatusPanel({status, error, isLoading, onReload, onChange, pa
               {view.detail}
             </Text>
           ) : null}
-          <Text as="p" type="supporting" color="secondary" xstyle={styles.explain}>
-            Only torrent traffic goes through the VPN, so streaming and this page stay on your own network. A kill
-            switch stops torrents the moment the tunnel drops, and their DNS lookups go through the tunnel too.
-          </Text>
+          {view.isDegraded ? null : (
+            <Text as="p" type="supporting" color="secondary" xstyle={styles.explain}>
+              Only torrent traffic goes through the VPN, so streaming and this page stay on your own network. A kill
+              switch stops torrents the moment the tunnel drops, and their DNS lookups go through the tunnel too.
+            </Text>
+          )}
         </div>
         {status.configured ? (
           <div {...stylex.props(styles.actions)}>
@@ -184,6 +186,9 @@ export function VpnStatusPanel({status, error, isLoading, onReload, onChange, pa
       {status.configured && !view.isDegraded ? (
         <div {...stylex.props(styles.facts)}>
           <MetadataList orientation="horizontal">
+            {status.public_ip ? (
+              <MetadataListItem label="Public address">{status.public_ip}</MetadataListItem>
+            ) : null}
             {provider ? <MetadataListItem label="Provider">{provider}</MetadataListItem> : null}
             {status.server ? <MetadataListItem label="Server">{status.server}</MetadataListItem> : null}
             {protocolName(status.protocol) ? (

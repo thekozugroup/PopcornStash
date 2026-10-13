@@ -120,7 +120,7 @@ docker run -d --name popcornstash --restart unless-stopped \
   --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=CHOWN --cap-add=DAC_OVERRIDE \
   --cap-add=FOWNER --cap-add=SETUID --cap-add=SETGID --cap-add=KILL \
   --device=/dev/net/tun --sysctl net.ipv4.conf.all.rp_filter=2 \
-  --read-only --tmpfs /tmp --tmpfs /run \
+  --read-only --tmpfs /tmp --tmpfs /run:exec,mode=755 \
   --security-opt=no-new-privileges:true \
   --stop-timeout 30 \
   ghcr.io/thekozugroup/popcornstash:latest
@@ -154,7 +154,7 @@ The template already adds what torrents need in **Extra Parameters** (visible in
    docker compose logs popcornstash | grep -A 1 "setup code"
    ```
 
-   You can also print the current code at any time with `docker exec popcornstash popcornstash admin setup-code`.
+   If the log has scrolled away, run `docker exec popcornstash popcornstash admin setup-code`. It prints a new code, and the one in the log stops working.
 2. Open your HTTPS address. PopcornStash asks for the setup code and your name.
 3. Create the owner passkey when your browser asks. Use your phone, your computer or your password manager.
 

@@ -6,10 +6,11 @@ import * as stylex from '@stylexjs/stylex';
 import {Banner} from '@astryxdesign/core/Banner';
 import {Button} from '@astryxdesign/core/Button';
 import {Dialog, DialogHeader} from '@astryxdesign/core/Dialog';
+import {HStack, Layout, LayoutContent, LayoutFooter, VStack} from '@astryxdesign/core/Layout';
 import {RadioList, RadioListItem} from '@astryxdesign/core/RadioList';
 import {Selector} from '@astryxdesign/core/Selector';
 import {Text} from '@astryxdesign/core/Text';
-import {useState, type FormEvent} from 'react';
+import {useId, useState, type FormEvent} from 'react';
 import {invites} from '../../../api/client';
 import type {Invite, Role} from '../../../api/types';
 import {CopyValue} from '../../../components/settings/CopyValue';
@@ -17,19 +18,9 @@ import {errorMessage} from '../../../lib/errors';
 import {formatDateTime} from '../../../lib/format';
 
 const styles = stylex.create({
-  body: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 20,
-    paddingBlock: 20,
-    paddingInline: 24,
-  },
-  footer: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    justifyContent: 'flex-end',
-    gap: 8,
-    paddingTop: 4,
+  // The form wraps the dialog layout without adding a box of its own.
+  form: {
+    display: 'contents',
   },
   note: {
     lineHeight: 1.55,
@@ -54,6 +45,7 @@ export function InviteDialog({isOpen, onOpenChange, onCreated}: InviteDialogProp
   const [formError, setFormError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [created, setCreated] = useState<Invite | null>(null);
+  const formId = useId();
 
   const close = () => {
     onOpenChange(false);
@@ -79,53 +71,90 @@ export function InviteDialog({isOpen, onOpenChange, onCreated}: InviteDialogProp
     }
   };
 
+  const header = (
+    <DialogHeader
+      title={created ? 'Send this link' : 'Invite someone'}
+      subtitle={created ? undefined : 'They create their own passkey, so there is no password to share.'}
+      onOpenChange={open => (open ? undefined : close())}
+    />
+  );
+
   return (
     <Dialog isOpen={isOpen} onOpenChange={open => (open ? onOpenChange(true) : close())} purpose="form" width={520}>
-      <DialogHeader
-        title={created ? 'Send this link' : 'Invite someone'}
-        subtitle={created ? undefined : 'They create their own passkey, so there is no password to share.'}
-        onOpenChange={open => (open ? undefined : close())}
-      />
       {created ? (
-        <div {...stylex.props(styles.body)}>
-          <CopyValue
-            label={created.role === 'owner' ? 'Owner invite link' : 'Member invite link'}
-            value={created.url}
-            copyLabel="Copy link"
-          />
-          <Text as="p" type="supporting" color="secondary" xstyle={styles.note}>
-            The link works once and expires {formatDateTime(created.expires_at)}. Whoever opens it first can join, so
-            send it only to the person you are inviting.
-          </Text>
-          <div {...stylex.props(styles.footer)}>
-            <Button label="Done" variant="primary" onClick={close} />
-          </div>
-        </div>
+        <Layout
+          header={header}
+          content={
+            <LayoutContent>
+              <VStack gap={5}>
+                <CopyValue
+                  label={created.role === 'owner' ? 'Owner invite link' : 'Member invite link'}
+                  value={created.url}
+                  copyLabel="Copy link"
+                />
+                <Text as="p" type="supporting" color="secondary" xstyle={styles.note}>
+                  The link works once and expires {formatDateTime(created.expires_at)}. Whoever opens it first can
+                  join, so send it only to the person you are inviting.
+                </Text>
+              </VStack>
+            </LayoutContent>
+          }
+          footer={
+            <LayoutFooter>
+              <HStack gap={2} hAlign="end" wrap="wrap">
+                <Button label="Done" variant="primary" onClick={close} />
+              </HStack>
+            </LayoutFooter>
+          }
+        />
       ) : (
-        <form onSubmit={onSubmit} noValidate {...stylex.props(styles.body)}>
-          <RadioList label="Role" value={role} onChange={value => setRole(value as Role)} isDisabled={isBusy}>
-            <RadioListItem value="member" label="Member" description="Watch, browse, upload and add downloads." />
-            <RadioListItem
-              value="owner"
-              label="Owner"
-              description="Everything a member can do, plus the VPN, settings and who has access."
-            />
-          </RadioList>
-          <Selector
-            label="Link expires after"
-            options={EXPIRY_OPTIONS}
-            value={hours}
-            onChange={value => setHours(value ?? '72')}
-            isDisabled={isBusy}
-            width="100%"
+        <form id={formId} onSubmit={onSubmit} noValidate {...stylex.props(styles.form)}>
+          <Layout
+            header={header}
+            content={
+              <LayoutContent>
+                <VStack gap={5}>
+                  <RadioList label="Role" value={role} onChange={value => setRole(value as Role)} isDisabled={isBusy}>
+                    <RadioListItem
+                      value="member"
+                      label="Member"
+                      description="Watch, browse, upload and add downloads."
+                    />
+                    <RadioListItem
+                      value="owner"
+                      label="Owner"
+                      description="Everything a member can do, plus the VPN, settings and who has access."
+                    />
+                  </RadioList>
+                  <Selector
+                    label="Link expires after"
+                    options={EXPIRY_OPTIONS}
+                    value={hours}
+                    onChange={value => setHours(value ?? '72')}
+                    isDisabled={isBusy}
+                    width="100%"
+                  />
+                  {formError ? (
+                    <Banner status="error" title="No invite was created" description={formError} collapsible={false} />
+                  ) : null}
+                </VStack>
+              </LayoutContent>
+            }
+            footer={
+              <LayoutFooter>
+                <HStack gap={2} hAlign="end" wrap="wrap">
+                  <Button label="Cancel" variant="secondary" onClick={close} isDisabled={isBusy} />
+                  <Button
+                    type="submit"
+                    form={formId}
+                    label="Create invite link"
+                    variant="primary"
+                    isLoading={isBusy}
+                  />
+                </HStack>
+              </LayoutFooter>
+            }
           />
-          {formError ? (
-            <Banner status="error" title="No invite was created" description={formError} collapsible={false} />
-          ) : null}
-          <div {...stylex.props(styles.footer)}>
-            <Button label="Cancel" variant="secondary" onClick={close} isDisabled={isBusy} />
-            <Button type="submit" label="Create invite link" variant="primary" isLoading={isBusy} />
-          </div>
         </form>
       )}
     </Dialog>

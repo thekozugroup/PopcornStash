@@ -251,9 +251,10 @@ export function TorrentSettings({isPrimary}: {isPrimary: boolean}) {
           <RadioListItem value="never" label="Never" description="Web downloads use your home connection." />
         </RadioList>
         <div {...stylex.props(styles.footer)}>
+          {/* Blue only when there is something to save: a disabled primary reads as broken. */}
           <Button
             label="Save changes"
-            variant={isPrimary ? 'primary' : 'secondary'}
+            variant={isPrimary && form.isDirty ? 'primary' : 'secondary'}
             onClick={() => void save()}
             isLoading={isSaving}
             isDisabled={!form.isDirty}

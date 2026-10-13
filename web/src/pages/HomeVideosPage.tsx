@@ -1,6 +1,6 @@
 /**
- * Home Videos: family clips as 16:9 frames, newest first, with search, sort
- * by date filmed, the favourites filter and infinite scroll.
+ * Home Videos: family clips as 16:9 frames, most recently filmed first, with
+ * search, sort, the favourites filter and infinite scroll.
  */
 import {Button} from '@astryxdesign/core/Button';
 import {CategoryLibraryPage, type CategoryLibraryConfig} from '../components/library/CategoryLibraryPage';
@@ -8,16 +8,18 @@ import {CategoryLibraryPage, type CategoryLibraryConfig} from '../components/lib
 const config: CategoryLibraryConfig = {
   category: 'home_video',
   title: 'Home Videos',
-  subtitle: 'Family clips from your phones and cameras, newest first.',
+  subtitle: 'Family clips from your phones and cameras, most recently filmed first.',
   shape: 'frame',
   noun: 'home videos',
+  // Tiles show the date each clip was filmed, so that is the default order:
+  // a phone backup imported in one go still reads as a timeline.
   sortOptions: [
-    {value: 'added', label: 'Recently added'},
     {value: 'taken', label: 'Date filmed'},
+    {value: 'added', label: 'Recently added'},
     {value: 'title', label: 'Title'},
     {value: 'size', label: 'Largest first'},
   ],
-  defaultSort: 'added',
+  defaultSort: 'taken',
   empty: {
     title: 'No home videos yet',
     description:

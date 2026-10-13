@@ -1,5 +1,5 @@
 /**
- * Movies: every film in the library as posters, newest first, with search,
+ * Movies: every film in the library as posters, most recently added first, with search,
  * sort, the favourites filter and infinite scroll.
  */
 import {Button} from '@astryxdesign/core/Button';
@@ -8,7 +8,7 @@ import {CategoryLibraryPage, type CategoryLibraryConfig} from '../components/lib
 const config: CategoryLibraryConfig = {
   category: 'movie',
   title: 'Movies',
-  subtitle: 'Every film in your library, newest first.',
+  subtitle: 'Every film in your library, most recently added first.',
   shape: 'poster',
   noun: 'movies',
   // Films carry a release year, not a date taken, so that sort is left out.

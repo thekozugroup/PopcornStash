@@ -4,7 +4,7 @@
  * retention and Empty trash.
  */
 import * as stylex from '@stylexjs/stylex';
-import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
+import {colorVars, typographyVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {Button} from '@astryxdesign/core/Button';
 import {Code} from '@astryxdesign/core/Code';
 import {ListItem} from '@astryxdesign/core/List';
@@ -40,13 +40,13 @@ const styles = stylex.create({
     gap: 6,
   },
   path: {
-    fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+    fontFamily: typographyVars['--font-family-code'],
     fontSize: '0.875rem',
     color: colorVars['--color-text-primary'],
     overflowWrap: 'anywhere',
   },
   example: {
-    fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+    fontFamily: typographyVars['--font-family-code'],
     fontSize: '0.8125rem',
     color: colorVars['--color-text-secondary'],
     overflowWrap: 'anywhere',
@@ -289,6 +289,8 @@ function TrashGroup() {
       },
     });
 
+  // NumberInput commits on blur or Enter. No steppers or wheel here, so one
+  // edit is one save (and one toast), not one per click.
   const saveRetention = async (days: number | null) => {
     if (days === null || !Number.isInteger(days) || days < 1 || days > 365) {
       setRetentionError('Enter a whole number of days from 1 to 365.');
@@ -309,7 +311,11 @@ function TrashGroup() {
   return (
     <SettingsGroup
       title="Trash"
-      description="Deleted items wait here before they are removed from the disk for good."
+      description={
+        form.saved
+          ? `Deleted items wait here for ${formatCount(form.saved.trash_retention_days, 'day')}, then are removed from the disk for good.`
+          : 'Deleted items wait here before they are removed from the disk for good.'
+      }
       actions={rows.length > 0 ? <Button label="Empty trash" variant="secondary" onClick={emptyTrash} /> : undefined}>
       {items.isLoading ? (
         <LoadingRows rows={3} label="Loading the trash" />
@@ -332,7 +338,7 @@ function TrashGroup() {
           min={1}
           max={365}
           isIntegerOnly
-          hasNumberSteppers
+          isWheelEnabled={false}
           units="days"
           isDisabled={form.draft === null}
           status={retentionError ? {type: 'error', message: retentionError} : undefined}

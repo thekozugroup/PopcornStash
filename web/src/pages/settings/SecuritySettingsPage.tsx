@@ -5,6 +5,7 @@
  */
 import * as stylex from '@stylexjs/stylex';
 import {Button} from '@astryxdesign/core/Button';
+import {Code} from '@astryxdesign/core/Code';
 import {ListItem} from '@astryxdesign/core/List';
 import {MoreMenu} from '@astryxdesign/core/MoreMenu';
 import {Text} from '@astryxdesign/core/Text';
@@ -210,7 +211,15 @@ export default function SecuritySettingsPage() {
               </PanelList>
               {isLastPasskey ? (
                 <Text as="p" type="supporting" color="secondary" xstyle={styles.note}>
-                  {LAST_PASSKEY} If this device is lost, the owner can print a recovery link from the server.
+                  {LAST_PASSKEY}{' '}
+                  {isOwner ? (
+                    <>
+                      If you lose it, run <Code>popcornstash admin reset-owner</Code> on the server for a recovery
+                      link.
+                    </>
+                  ) : (
+                    'If you lose it, an owner can remove you and send you a new invite.'
+                  )}
                 </Text>
               ) : null}
             </>

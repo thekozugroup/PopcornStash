@@ -86,12 +86,10 @@ const styles = stylex.create({
     position: 'absolute',
     inset: 0,
     borderRadius: 'inherit',
-    // The neutral tint stands in for --popcorn-media-hairline, whose dark value
-    // currently builds as opaque white (see the popcorn theme's alpha helper).
-    boxShadow: `inset 0 0 0 1px ${colorVars['--color-neutral']}`,
+    boxShadow: 'inset 0 0 0 1px var(--popcorn-media-hairline)',
     backgroundColor: {
       default: 'transparent',
-      [stylex.when.ancestor(':hover')]: colorVars['--color-neutral'],
+      [stylex.when.ancestor(':hover')]: colorVars['--color-overlay-hover'],
     },
     transitionProperty: 'background-color',
     transitionDuration: {default: '160ms', '@media (prefers-reduced-motion: reduce)': '0s'},
@@ -102,7 +100,8 @@ const styles = stylex.create({
     insetInline: 0,
     bottom: 0,
     height: 4,
-    backgroundColor: 'oklch(0% 0 0 / 0.45)',
+    // The black stage colour at 45%: a dark track that reads on any frame.
+    backgroundColor: 'color-mix(in oklch, var(--popcorn-stage) 45%, transparent)',
   },
   progressFill: {
     display: 'block',
@@ -236,9 +235,8 @@ export function MediaTile({
         )}
         <span {...stylex.props(styles.hairline)} aria-hidden="true" />
         {watched !== null ? (
-          <span {...stylex.props(styles.progressTrack)}>
+          <span aria-hidden="true" {...stylex.props(styles.progressTrack)}>
             <span {...stylex.props(styles.progressFill, ratioStyles.width(`${watched * 100}%`))} />
-            <span {...stylex.props(styles.visuallyHidden)}>{`${formatPercent(watched)} watched`}</span>
           </span>
         ) : null}
       </span>
@@ -246,6 +244,8 @@ export function MediaTile({
         <span {...stylex.props(styles.text)}>
           <span {...stylex.props(styles.title)}>{title}</span>
           {meta ? <span {...stylex.props(styles.meta)}>{meta}</span> : null}
+          {/* Read after the title, so the link is announced by its name first. */}
+          {watched !== null ? <span {...stylex.props(styles.visuallyHidden)}>{`, ${formatPercent(watched)} watched`}</span> : null}
         </span>
       )}
     </Link>
