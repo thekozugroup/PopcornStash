@@ -21,5 +21,10 @@ lto = "thin"
 codegen-units = 4
 strip = "symbols"
 
+# Keep debug builds small: parallel agents share one target dir on a limited disk.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
 opt-level = 1
+debug = false
