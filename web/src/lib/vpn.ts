@@ -76,6 +76,15 @@ export function torrentsOffReason(status: VpnStatus): string | null {
   return reason && reason !== TORRENTS_OFF_FALLBACK ? reason : null;
 }
 
+/**
+ * The server runs torrents without a VPN (STASH_ALLOW_NO_VPN): torrents use this
+ * network whatever the tunnel state says, and a saved VPN is not used. Every VPN
+ * surface shows the permanent warning then, never "paused" or "connecting".
+ */
+export function isNoVpnMode(status: VpnStatus | null | undefined): boolean {
+  return status?.allow_no_vpn === true && status.torrents_off !== true;
+}
+
 export function describeVpn(status: VpnStatus | null, options: {isUnavailable?: boolean} = {}): VpnSummary {
   if (!status) {
     return options.isUnavailable
@@ -83,7 +92,7 @@ export function describeVpn(status: VpnStatus | null, options: {isUnavailable?: 
       : {tone: 'neutral', label: 'Checking VPN', detail: 'Checking the VPN connection.'};
   }
 
-  if (status.allow_no_vpn && status.state === 'not_configured') {
+  if (isNoVpnMode(status)) {
     return {
       tone: 'warning',
       label: 'No VPN: torrents use this network',

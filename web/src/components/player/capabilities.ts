@@ -72,7 +72,11 @@ export function detectPlaybackCaps(element?: HTMLMediaElement | null): PlaybackC
 /** The most widely supported pair, used to retry when direct play fails. */
 export const SAFE_CAPS: PlaybackCaps = {video_codecs: ['h264'], audio_codecs: ['aac'], hdr: false};
 
-/** True when the browser plays HLS without hls.js (Safari, iOS, some Chrome builds). */
+/**
+ * True when the browser plays HLS without hls.js (Safari, iOS, current Chrome). The
+ * player uses it only where hls.js cannot run: hls.js starts a stream at the resume
+ * point, while a native player loads the start first and then seeks.
+ */
 export function hasNativeHls(element: HTMLMediaElement): boolean {
   try {
     return element.canPlayType('application/vnd.apple.mpegurl') !== '';

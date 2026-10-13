@@ -1500,6 +1500,118 @@ async fn torrent_added_while_the_vpn_is_down_waits_then_starts() {
     assert_eq!(env.engine().with(|e| e.torrents.len()), 1);
 }
 
+/// "Torrents at once" (`torrent.max_active`): torrents beyond the limit wait in line as
+/// `queued` with the reason in plain words and start, oldest first, when a slot frees up.
+/// A changed limit applies without a restart, both ways.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn torrents_beyond_the_limit_wait_for_a_free_slot() {
+    let env = env(Opts {
+        engine: true,
+        start: true,
+        ..Default::default()
+    })
+    .await;
+    env.settings
+        .update(serde_json::json!({"torrent": {"max_active": 2}}))
+        .await
+        .unwrap();
+    let magnet = |n: u32| format!("magnet:?xt=urn:btih:{:040x}&dn=Clip+{n}", 0xabc000 + n);
+    let mut added = Vec::new();
+    for n in 1..=4 {
+        added.push(env.add(&magnet(n)).await);
+    }
+    let ids: Vec<String> = added.iter().map(|d| d.id.clone()).collect();
+    assert_eq!(added[0].state, DownloadState::Downloading);
+    assert_eq!(added[1].state, DownloadState::Downloading);
+    for waiting in &added[2..] {
+        assert_eq!(waiting.state, DownloadState::Queued, "{}", waiting.name);
+        assert_eq!(
+            waiting.error.as_deref(),
+            Some("Waiting for a free slot (2 at once).")
+        );
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(env.engine().with(|e| e.added.len()), 2, "only two started");
+    assert_eq!(env.row(&ids[2]).await.state, DownloadState::Queued);
+    assert_eq!(env.row(&ids[3]).await.state, DownloadState::Queued);
+
+    // A finished torrent frees its slot: the next in line starts, the last keeps waiting.
+    let first = env.row(&ids[0]).await.engine_id.unwrap();
+    env.engine().finish(&first, 0);
+    wait_until!(
+        "the third torrent to start",
+        env.row(&ids[2]).await.state == DownloadState::Downloading
+    );
+    assert_eq!(env.row(&ids[2]).await.error, None);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(env.row(&ids[3]).await.state, DownloadState::Queued);
+    assert_eq!(env.engine().with(|e| e.added.len()), 3);
+
+    // A paused torrent does not hold a slot, and resuming it while every slot is taken
+    // puts it back in line instead of running a third one.
+    env.manager.pause(&ids[1]).await.unwrap();
+    wait_until!(
+        "the fourth torrent to take the paused one's slot",
+        env.row(&ids[3]).await.state == DownloadState::Downloading
+    );
+    let resumed = env.manager.resume(&ids[1]).await.unwrap();
+    assert_eq!(resumed.state, DownloadState::Queued);
+    assert_eq!(
+        resumed.error.as_deref(),
+        Some("Waiting for a free slot (2 at once).")
+    );
+    let second = env.row(&ids[1]).await.engine_id.unwrap();
+    let engine_state = |id: &str| {
+        env.engine()
+            .with(|e| e.torrents.iter().find(|t| t.id == id).map(|t| t.state))
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(engine_state(&second), Some(EngineTorrentState::Paused));
+    assert_eq!(env.row(&ids[1]).await.state, DownloadState::Queued);
+
+    // Raising the limit starts it at once, without a restart.
+    env.settings
+        .update(serde_json::json!({"torrent": {"max_active": 5}}))
+        .await
+        .unwrap();
+    wait_until!(
+        "the resumed torrent to run",
+        env.row(&ids[1]).await.state == DownloadState::Downloading
+    );
+    assert_eq!(engine_state(&second), Some(EngineTorrentState::Downloading));
+
+    // Lowering it makes the newest running torrents wait again, paused in the engine.
+    env.settings
+        .update(serde_json::json!({"torrent": {"max_active": 1}}))
+        .await
+        .unwrap();
+    wait_until!("only one torrent to run", {
+        let mut running = 0;
+        for id in &ids[1..] {
+            if env.row(id).await.state == DownloadState::Downloading {
+                running += 1;
+            }
+        }
+        running == 1
+    });
+    assert_eq!(env.row(&ids[1]).await.state, DownloadState::Downloading);
+    for id in &ids[2..] {
+        let row = env.row(id).await;
+        assert_eq!(row.state, DownloadState::Queued);
+        assert_eq!(
+            row.error.as_deref(),
+            Some("Waiting for a free slot (1 at once).")
+        );
+        assert_eq!(
+            engine_state(row.engine_id.as_deref().unwrap()),
+            Some(EngineTorrentState::Paused)
+        );
+    }
+    // They stay in line across polls (the engine's "paused" is not a pause by hand).
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(env.row(&ids[2]).await.state, DownloadState::Queued);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn torrent_missing_from_the_engine_fails() {
     let env = env(Opts {

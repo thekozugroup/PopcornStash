@@ -5,7 +5,14 @@
  */
 import type {VpnStatus} from '../../../api/types';
 import type {StatusTone} from '../../../components/StatusTag';
-import {describeVpn, protectedLabel, protectedParts, torrentsOffReason, vpnName} from '../../../lib/vpn';
+import {
+  describeVpn,
+  isNoVpnMode,
+  protectedLabel,
+  protectedParts,
+  torrentsOffReason,
+  vpnName,
+} from '../../../lib/vpn';
 
 export interface VpnView {
   tone: StatusTone;
@@ -17,6 +24,8 @@ export interface VpnView {
   detail: string | null;
   /** Torrents cannot run on this server (degraded container or no torrent engine). */
   isDegraded: boolean;
+  /** Torrents run without a VPN (STASH_ALLOW_NO_VPN): the VPN setup is not used. */
+  isNoVpn?: boolean;
 }
 
 /** Torrents are off on this server by design; `status.error` says why. */
@@ -51,6 +60,22 @@ export function vpnView(status: VpnStatus | null, isUnavailable: boolean): VpnVi
   const summary = describeVpn(status);
   const name = vpnName(status);
 
+  if (isNoVpnMode(status)) {
+    // A permanent warning whatever the tunnel reports: no tunnel is used, and a saved
+    // VPN waits unused until the setting is removed.
+    const saved = name ? `the saved VPN (${name})` : 'the saved VPN';
+    const skip = status.configured
+      ? `STASH_ALLOW_NO_VPN is on, so torrents skip the VPN and ${saved} is not used.`
+      : 'STASH_ALLOW_NO_VPN is on, so torrents skip the VPN.';
+    return {
+      tone: summary.tone,
+      title: summary.label,
+      detail: `${skip} Your router must protect the traffic.`,
+      isDegraded: false,
+      isNoVpn: true,
+    };
+  }
+
   switch (status.state) {
     case 'connected':
       if (status.protected === false)
@@ -65,8 +90,6 @@ export function vpnView(status: VpnStatus | null, isUnavailable: boolean): VpnVi
         isDegraded: false,
       };
     case 'not_configured':
-      if (status.allow_no_vpn)
-        return {tone: summary.tone, title: summary.label, detail: summary.detail, isDegraded: false};
       return {
         tone: 'error',
         title: 'Torrents blocked: no VPN set up',

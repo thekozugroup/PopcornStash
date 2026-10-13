@@ -95,6 +95,21 @@ describe('describeVpn', () => {
     expect(reasoned.detail).toBe('Torrents need NET_ADMIN and /dev/net/tun. Web links still download.');
     expect(describeVpn(vpn({state: 'unreachable', reachable: false})).label).toBe('Torrents blocked: VPN service offline');
   });
+
+  it('warns that torrents use this network whenever the server allows no VPN, whatever VPN is saved', () => {
+    // STASH_ALLOW_NO_VPN: torrents run on this network. A saved VPN is unused, so the
+    // popup must never say torrents are paused or waiting for it.
+    for (const state of ['not_configured', 'connecting', 'disconnected', 'connected', 'error'] as const) {
+      for (const configured of [true, false]) {
+        const summary = describeVpn(vpn({state, configured, allow_no_vpn: true, kill_switch: false, protected: null}));
+        expect(summary, `${state} configured=${configured}`).toEqual({
+          tone: 'warning',
+          label: 'No VPN: torrents use this network',
+          detail: 'This server allows torrents without a VPN. Your router must protect the traffic.',
+        });
+      }
+    }
+  });
 });
 
 describe('shouldIntercept', () => {

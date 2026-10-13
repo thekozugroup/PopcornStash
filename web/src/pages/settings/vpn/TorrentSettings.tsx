@@ -91,7 +91,13 @@ function errorStatus(message: string | undefined) {
   return message ? {type: 'error' as const, message} : undefined;
 }
 
-export function TorrentSettings({isPrimary}: {isPrimary: boolean}) {
+export interface TorrentSettingsProps {
+  isPrimary: boolean;
+  /** STASH_ALLOW_NO_VPN is on: there is no VPN for torrents or web downloads to use. */
+  isNoVpn?: boolean;
+}
+
+export function TorrentSettings({isPrimary, isNoVpn = false}: TorrentSettingsProps) {
   const showToast = useToast();
   const form = useSettingsDraft(pick);
   const [errors, setErrors] = useState<Errors>({});
@@ -188,7 +194,7 @@ export function TorrentSettings({isPrimary}: {isPrimary: boolean}) {
         <div {...stylex.props(styles.field)}>
           <NumberInput
             label="Torrents at once"
-            description="Others wait in line."
+            description="Others wait in line. Seeding and paused torrents do not count."
             value={draft.max_active}
             onChange={value => set('max_active', value)}
             min={1}
@@ -233,7 +239,11 @@ export function TorrentSettings({isPrimary}: {isPrimary: boolean}) {
 
       <SettingsGroup
         title="Web downloads"
-        description="Links you add from a browser or the Chrome extension. Torrents always use the VPN.">
+        description={
+          isNoVpn
+            ? 'Links you add from a browser or the Chrome extension. With STASH_ALLOW_NO_VPN on there is no VPN, so this choice has no effect.'
+            : 'Links you add from a browser or the Chrome extension. Torrents always use the VPN.'
+        }>
         <RadioList
           label="Web downloads use the VPN"
           value={draft.http_via_vpn}

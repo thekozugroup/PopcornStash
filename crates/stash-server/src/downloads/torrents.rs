@@ -15,7 +15,7 @@ use stash_core::paths::{self, StashLayout, Zone};
 use stash_core::{new_id, now};
 use tokio_util::sync::CancellationToken;
 
-use super::manager::{DownloadManager, MSG_WAITING_FOR_VPN, NewDownload};
+use super::manager::{DownloadManager, MSG_WAITING_FOR_VPN, NewDownload, slot_message};
 use crate::error::{ApiError, ApiResult};
 use crate::torrentd_client::TorrentdError;
 
@@ -147,7 +147,8 @@ impl Drop for InFlight<'_> {
 
 impl DownloadManager {
     /// Create the row and hand the torrent to the engine. When the VPN or the engine is
-    /// down the row stays `queued` and the poller adds it later.
+    /// down, or every slot of "Torrents at once" is taken, the row stays `queued` and the
+    /// poller adds it later.
     pub(crate) async fn add_torrent(
         &self,
         user_id: &str,
@@ -187,6 +188,19 @@ impl DownloadManager {
                 .execute(&self.db)
                 .await;
             return Err(ApiError::internal());
+        }
+        // Deciding and starting happen under one lock, so two adds never take one slot.
+        let _slots = self.torrent_slots.lock().await;
+        if let Err(waiting) = self.torrent_slot(&id).await? {
+            sqlx::query("UPDATE downloads SET error = ?, updated_at = ? WHERE id = ?")
+                .bind(&waiting)
+                .bind(now())
+                .bind(&id)
+                .execute(&self.db)
+                .await?;
+            tracing::info!(download = %id, "torrent waits for a free slot");
+            self.torrent_wake.notify_one();
+            return self.publish_id(&id).await;
         }
         match self.torrentd.add(request).await {
             Ok(added) => {
@@ -471,13 +485,10 @@ async fn poll_once(manager: &Arc<DownloadManager>, poller: &mut Poller) -> Durat
         .retain(|id, _| rows.iter().any(|row| &row.id == id));
 
     let by_id: HashMap<&str, &EngineTorrent> = list.iter().map(|t| (t.id.as_str(), t)).collect();
-    let mut pending = Vec::new();
     let mut busy = false;
     for row in rows {
+        // Not in the engine yet: [`fill_slots`] adds it when it may start.
         let Some(engine_id) = row.engine_id.clone() else {
-            if row.state == DownloadState::Queued && !manager.adding.contains(&row.id) {
-                pending.push(row);
-            }
             continue;
         };
         match by_id.get(engine_id.as_str()) {
@@ -508,10 +519,7 @@ async fn poll_once(manager: &Arc<DownloadManager>, poller: &mut Poller) -> Durat
             }
         }
     }
-    if !pending.is_empty() {
-        busy = true;
-        add_pending(manager, pending).await;
-    }
+    busy |= fill_slots(manager).await;
     if busy {
         tuning.torrent_fast
     } else {
@@ -535,41 +543,209 @@ async fn push_limits(manager: &DownloadManager, poller: &mut Poller) {
     }
 }
 
-/// Add torrents that were queued while the VPN was down, once the engine runs.
+/// Torrents that hold a slot (running in the engine) or wait for one, oldest first.
+async fn slot_rows(manager: &DownloadManager) -> ApiResult<Vec<DownloadRow>> {
+    Ok(sqlx::query_as::<_, DownloadRow>(
+        "SELECT * FROM downloads WHERE kind = 'torrent'
+           AND ((state = 'downloading' AND engine_id IS NOT NULL) OR state = 'queued')
+         ORDER BY created_at, id",
+    )
+    .fetch_all(&manager.db)
+    .await?)
+}
+
+/// "Torrents at once" (`torrent.max_active`, read on every poll so a change applies at
+/// once). Torrents beyond the limit wait in line as `queued`, oldest first: a lowered
+/// limit pauses the newest running torrents in the engine and puts them back in line,
+/// and a free slot starts the next one (adding it to the engine if it waited for the
+/// VPN). Seeding and paused torrents take no slot. Returns true while any torrent waits.
+pub(super) async fn fill_slots(manager: &DownloadManager) -> bool {
+    let _slots = manager.torrent_slots.lock().await;
+    let max_active = manager.settings.get().await.torrent.max_active.max(1);
+    let max = usize::try_from(max_active).unwrap_or(usize::MAX);
+    let rows = match slot_rows(manager).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read torrents waiting for a slot");
+            return false;
+        }
+    };
+    // A row still being added decides for itself once it holds the lock.
+    let (mut running, waiting): (Vec<DownloadRow>, Vec<DownloadRow>) = rows
+        .into_iter()
+        .filter(|row| !manager.adding.contains(&row.id))
+        .partition(|row| row.state == DownloadState::Downloading);
+    while running.len() > max {
+        let Some(newest) = running.pop() else { break };
+        if !requeue(manager, &newest, &slot_message(max_active)).await {
+            // Still running; it is tried again on the next poll.
+            running.push(newest);
+            break;
+        }
+    }
+    if waiting.is_empty() {
+        return false;
+    }
+    let engine_runs = matches!(
+        manager.torrentd.health().await,
+        Ok(health) if health.engine.state == EngineRunState::Running
+    );
+    let mut free = max.saturating_sub(running.len());
+    for row in &waiting {
+        if !engine_runs {
+            note_waiting(manager, row, MSG_WAITING_FOR_VPN).await;
+        } else if free == 0 {
+            note_waiting(manager, row, &slot_message(max_active)).await;
+        } else {
+            match start_waiting(manager, row).await {
+                Started::Yes => free -= 1,
+                Started::No => {}
+                Started::EngineDown => break,
+            }
+        }
+    }
+    true
+}
+
+enum Started {
+    Yes,
+    No,
+    /// The engine stopped taking torrents (VPN down, unreachable): try again later.
+    EngineDown,
+}
+
+/// Start one torrent that waited in line: resume it in the engine when it was paused
+/// there for a slot, else add it from its saved request.
+async fn start_waiting(manager: &DownloadManager, row: &DownloadRow) -> Started {
+    let Some(engine_id) = row.engine_id.as_deref() else {
+        return add_waiting(manager, row).await;
+    };
+    match manager.torrentd.resume(engine_id).await {
+        Ok(()) => {
+            let started = sqlx::query(
+                "UPDATE downloads SET state = 'downloading', error = NULL, updated_at = ?
+                 WHERE id = ? AND state = 'queued'",
+            )
+            .bind(now())
+            .bind(&row.id)
+            .execute(&manager.db)
+            .await;
+            if started.is_ok_and(|r| r.rows_affected() > 0) {
+                tracing::info!(download = %row.id, "torrent took a free slot");
+                let _ = manager.publish_id(&row.id).await;
+                Started::Yes
+            } else {
+                Started::No
+            }
+        }
+        Err(
+            TorrentdError::Blocked(_) | TorrentdError::Unreachable(_) | TorrentdError::Disabled,
+        ) => Started::EngineDown,
+        // Gone from the engine: the poll judges it missing and fails it.
+        Err(e) => {
+            tracing::warn!(error = %e, download = %row.id, "could not resume a torrent that waited for a slot");
+            Started::No
+        }
+    }
+}
+
+/// Add a torrent that has not reached the engine yet (it waited for the VPN or a slot).
+async fn add_waiting(manager: &DownloadManager, row: &DownloadRow) -> Started {
+    let request: Option<AddTorrentRequest> =
+        match tokio::fs::read(manager.pending_path(&row.id)).await {
+            Ok(bytes) => serde_json::from_slice(&bytes).ok(),
+            Err(_) => None,
+        };
+    let Some(request) = request else {
+        manager.fail_waiting(&row.id, MSG_RESTORE).await;
+        return Started::No;
+    };
+    match manager.torrentd.add(&request).await {
+        Ok(added) => match manager.attach_engine(&row.id, &added).await {
+            Ok(id) => {
+                tracing::info!(download = %id, "queued torrent added to the engine");
+                let _ = manager.publish_id(&id).await;
+                Started::Yes
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, download = %row.id, "could not record a queued torrent");
+                Started::No
+            }
+        },
+        Err(
+            TorrentdError::Blocked(_) | TorrentdError::Unreachable(_) | TorrentdError::Disabled,
+        ) => Started::EngineDown,
+        Err(TorrentdError::Api { status, message }) => {
+            tracing::warn!(status, message = %message, download = %row.id, "the engine refused a queued torrent");
+            let _ = tokio::fs::remove_file(manager.pending_path(&row.id)).await;
+            manager.fail_waiting(&row.id, MSG_ENGINE_REFUSED).await;
+            Started::No
+        }
+    }
+}
+
+/// Add torrents that waited, once the engine runs, without looking at slots (tests drive
+/// a poll's stale rows through this).
+#[cfg(test)]
 pub(super) async fn add_pending(manager: &DownloadManager, rows: Vec<DownloadRow>) {
     match manager.torrentd.health().await {
         Ok(health) if health.engine.state == EngineRunState::Running => {}
         _ => return,
     }
     for row in rows {
-        let request: Option<AddTorrentRequest> =
-            match tokio::fs::read(manager.pending_path(&row.id)).await {
-                Ok(bytes) => serde_json::from_slice(&bytes).ok(),
-                Err(_) => None,
-            };
-        let Some(request) = request else {
-            manager.fail_waiting(&row.id, MSG_RESTORE).await;
-            continue;
-        };
-        match manager.torrentd.add(&request).await {
-            Ok(added) => match manager.attach_engine(&row.id, &added).await {
-                Ok(id) => {
-                    tracing::info!(download = %id, "queued torrent added to the engine");
-                    let _ = manager.publish_id(&id).await;
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, download = %row.id, "could not record a queued torrent")
-                }
-            },
-            Err(
-                TorrentdError::Blocked(_) | TorrentdError::Unreachable(_) | TorrentdError::Disabled,
-            ) => return,
-            Err(TorrentdError::Api { status, message }) => {
-                tracing::warn!(status, message = %message, download = %row.id, "the engine refused a queued torrent");
-                let _ = tokio::fs::remove_file(manager.pending_path(&row.id)).await;
-                manager.fail_waiting(&row.id, MSG_ENGINE_REFUSED).await;
-            }
+        if let Started::EngineDown = add_waiting(manager, &row).await {
+            return;
         }
+    }
+}
+
+/// Pause a running torrent in the engine and put it back in line (the limit was lowered).
+async fn requeue(manager: &DownloadManager, row: &DownloadRow, message: &str) -> bool {
+    let Some(engine_id) = row.engine_id.as_deref() else {
+        return false;
+    };
+    if let Err(e) = manager.torrentd.pause(engine_id).await {
+        tracing::warn!(error = %e, download = %row.id, "could not pause a torrent beyond the limit");
+        return false;
+    }
+    let queued = sqlx::query(
+        "UPDATE downloads SET state = 'queued', error = ?, down_bps = 0, up_bps = 0, eta_s = NULL, updated_at = ?
+         WHERE id = ? AND state = 'downloading'",
+    )
+    .bind(message)
+    .bind(now())
+    .bind(&row.id)
+    .execute(&manager.db)
+    .await;
+    match queued {
+        Ok(done) if done.rows_affected() > 0 => {
+            tracing::info!(download = %row.id, "torrent waits for a free slot again");
+            let _ = manager.publish_id(&row.id).await;
+            true
+        }
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!(error = %e, download = %row.id, "could not put a torrent back in line");
+            false
+        }
+    }
+}
+
+/// Say why a queued torrent waits, when the reason changed.
+async fn note_waiting(manager: &DownloadManager, row: &DownloadRow, message: &str) {
+    if row.error.as_deref() == Some(message) {
+        return;
+    }
+    let noted = sqlx::query(
+        "UPDATE downloads SET error = ?, updated_at = ? WHERE id = ? AND state = 'queued'",
+    )
+    .bind(message)
+    .bind(now())
+    .bind(&row.id)
+    .execute(&manager.db)
+    .await;
+    if noted.is_ok_and(|r| r.rows_affected() > 0) {
+        let _ = manager.publish_id(&row.id).await;
     }
 }
 
@@ -619,10 +795,20 @@ async fn apply(
             DownloadState::Seeding
         }
     } else if torrent.state == EngineTorrentState::Paused {
-        DownloadState::Paused
+        // Paused in the engine while it waits for a free slot: still in line, not
+        // paused by hand.
+        if row.state == DownloadState::Queued {
+            DownloadState::Queued
+        } else {
+            DownloadState::Paused
+        }
     } else {
         DownloadState::Downloading
     };
+    // Only a torrent still in line keeps its reason.
+    let error = (state == DownloadState::Queued)
+        .then(|| row.error.clone())
+        .flatten();
 
     let progress = match total {
         Some(total) => (torrent.done_bytes as f64 / total as f64).clamp(0.0, 1.0),
@@ -642,7 +828,7 @@ async fn apply(
         up_bps: as_i64(torrent.up_bps),
         peers: torrent.peers.map(i64::from),
         eta_s: torrent.eta_s.map(as_i64),
-        error: None,
+        error,
         rel_path: rel_path.or_else(|| row.rel_path.clone()),
         info_hash: Some(torrent.info_hash.clone())
             .filter(|h| !h.is_empty())
@@ -668,7 +854,7 @@ async fn apply(
     }
     let written = sqlx::query(
         "UPDATE downloads SET name = ?, state = ?, progress = ?, total_bytes = ?, done_bytes = ?, down_bps = ?,
-                up_bps = ?, peers = ?, eta_s = ?, error = NULL, rel_path = ?, info_hash = ?, completed_at = ?,
+                up_bps = ?, peers = ?, eta_s = ?, error = ?, rel_path = ?, info_hash = ?, completed_at = ?,
                 updated_at = ?
          WHERE id = ? AND state = ?",
     )
@@ -681,6 +867,7 @@ async fn apply(
     .bind(updated.up_bps)
     .bind(updated.peers)
     .bind(updated.eta_s)
+    .bind(&updated.error)
     .bind(&updated.rel_path)
     .bind(&updated.info_hash)
     .bind(updated.completed_at)

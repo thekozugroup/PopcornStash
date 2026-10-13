@@ -115,7 +115,9 @@ test('an HEVC/AC-3 MKV is transcoded to HLS on the fly', async ({page}) => {
 
   const segmentResponse = await segment;
   expect(segmentResponse.status()).toBe(200);
-  const body = await segmentResponse.body();
+  // Fetched again rather than read from the player's response: a browser that plays the
+  // stream as a media element keeps no response body for DevTools to hand back.
+  const body = await (await page.request.get(segmentResponse.url())).body();
   expect(body.length).toBeGreaterThan(1000);
   // MPEG-TS packets start with the 0x47 sync byte every 188 bytes.
   expect(body[0]).toBe(0x47);
@@ -244,4 +246,82 @@ test('HLS segments line up and a stream can start part way through', async ({pag
   expect(info.start).toBeCloseTo(16, 0);
   expect(info.duration).toBeGreaterThan(1);
   await page.request.delete(`/api/stream/${second.session_id}`, {headers: origin});
+});
+
+test('resuming a converted video starts at the resume point, even where the browser offers native HLS', async ({
+  page,
+  baseURL,
+}) => {
+  // Chrome answers "maybe" for native HLS now. Its player loads the start of the stream
+  // and only then seeks, which made the server restart ffmpeg twice on every resume.
+  // Every Chromium is told the same here, so the player must still pick hls.js, which
+  // starts at the resume point.
+  await page.addInitScript(() => {
+    const original = HTMLMediaElement.prototype.canPlayType;
+    HTMLMediaElement.prototype.canPlayType = function (type: string) {
+      return /mpegurl/i.test(type) ? 'maybe' : original.call(this, type);
+    };
+  });
+  // A minute of HEVC/AC-3, so it is converted and long enough to resume part way.
+  const name = 'Quiet.Harbor.2017.720p.WEB.x265.mkv';
+  const made = path.join(env.work, name);
+  execFileSync('ffmpeg', [
+    '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=24:duration=60',
+    '-f', 'lavfi', '-i', 'sine=frequency=520:sample_rate=48000:duration=60',
+    '-map', '0:v', '-map', '1:a', '-c:v', 'libx265', '-preset', 'ultrafast', '-crf', '32', '-pix_fmt', 'yuv420p',
+    '-x265-params', 'log-level=error', '-c:a', 'ac3', '-b:a', '96k', '-shortest', made,
+  ]);
+  const hourAgo = new Date(Date.now() - 3_600_000);
+  fs.utimesSync(made, hourAgo, hourAgo);
+  fs.renameSync(made, path.join(env.stash, 'Inbox', name));
+  let id = '';
+  await expect
+    .poll(
+      async () => {
+        // Probed (its length known) before it can be streamed.
+        const item = (await findItem(page.request, 'Quiet Harbor').catch(() => null)) as {
+          id: string;
+          duration_s?: number | null;
+        } | null;
+        id = item && (item.duration_s ?? 0) > 50 ? item.id : '';
+        return id;
+      },
+      {timeout: 90_000},
+    )
+    .not.toBe('');
+  const saved = await page.request.put(`/api/items/${id}/progress`, {
+    data: {position_s: 36, duration_s: 60},
+    headers: {Origin: baseURL ?? ''},
+  });
+  expect(saved.status()).toBe(204);
+
+  const requested: string[] = [];
+  page.on('request', request => {
+    const match = /\/api\/stream\/[0-9a-f]{32}\/(.+)$/.exec(request.url());
+    if (match?.[1]) requested.push(match[1]);
+  });
+  const logBefore = fs.readFileSync(env.serverLog, 'utf8').length;
+  const firstSegment = page.waitForRequest(request => /\/api\/stream\/[0-9a-f]{32}\/\d+\.ts$/.test(request.url()), {
+    timeout: 40_000,
+  });
+  await page.goto(`/item/${id}`);
+  await page.getByRole('button', {name: 'Resume from 0:36'}).click();
+  // 36 s is the start of the seventh 6 s segment.
+  expect((await firstSegment).url()).toMatch(/\/6\.ts$/);
+  if (await canDecodeH264(page)) {
+    await expect.poll(() => currentTime(page), {timeout: 30_000}).toBeGreaterThan(37);
+  } else {
+    // Nothing decodes here, but whatever else the player asked for is in by now.
+    await expect(page.getByText('This video could not be played in this browser.', {exact: false})).toBeVisible({
+      timeout: 20_000,
+    });
+  }
+  const segments = requested.filter(file => file.endsWith('.ts'));
+  expect(requested[0], 'the playlist comes first').toBe('index.m3u8');
+  expect(segments[0]).toBe('6.ts');
+  // Nothing from before the resume point, so ffmpeg never restarts behind the session.
+  expect(segments.filter(file => Number.parseInt(file, 10) < 6)).toEqual([]);
+  expect(fs.readFileSync(env.serverLog, 'utf8').slice(logBefore)).not.toContain('restarting ffmpeg');
+  await page.goto('/');
 });

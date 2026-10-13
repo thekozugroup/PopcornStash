@@ -46,7 +46,9 @@ export function describeVpn(status: VpnStatus | null, unavailable = false): VpnS
       : {tone: 'neutral', label: 'Checking VPN', detail: 'Checking the VPN connection.'};
   }
 
-  if (status.allow_no_vpn && status.state === 'not_configured') {
+  // STASH_ALLOW_NO_VPN: torrents run on this network whatever VPN is saved, so this
+  // warning wins over every tunnel state (a saved VPN is not used).
+  if (status.allow_no_vpn && !status.torrents_off) {
     return {
       tone: 'warning',
       label: 'No VPN: torrents use this network',

@@ -5,6 +5,7 @@
  */
 
 import {listDownloads, type Connection} from './lib/api';
+import {MENU_ITEMS, onMenuClicked} from './lib/context-menu';
 import type {Problem} from './lib/errors';
 import {chromeCopyOutcome, serverProgress, shouldIntercept, type ServerProgress} from './lib/intercept';
 import {linkName} from './lib/links';
@@ -12,13 +13,6 @@ import {isExtensionMessage} from './lib/messages';
 import {stashIdentity} from './lib/payload';
 import {sendToStash, usableConnection, type SendResult} from './lib/send';
 import {getConnection, getPrefs} from './lib/storage';
-
-const MENU = {
-  link: 'popcornstash-send-link',
-  video: 'popcornstash-send-video',
-  audio: 'popcornstash-send-audio',
-  image: 'popcornstash-send-image',
-} as const;
 
 const ICON = 'icons/icon-128.png';
 
@@ -28,10 +22,7 @@ const ICON = 'icons/icon-128.png';
 
 function createMenus(): void {
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({id: MENU.link, title: 'Send link to PopcornStash', contexts: ['link']});
-    chrome.contextMenus.create({id: MENU.video, title: 'Send video to PopcornStash', contexts: ['video']});
-    chrome.contextMenus.create({id: MENU.audio, title: 'Send audio to PopcornStash', contexts: ['audio']});
-    chrome.contextMenus.create({id: MENU.image, title: 'Send image to PopcornStash', contexts: ['image']});
+    for (const item of MENU_ITEMS) chrome.contextMenus.create(item);
   });
 }
 
@@ -41,10 +32,7 @@ chrome.runtime.onInstalled.addListener(details => {
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  const url = info.menuItemId === MENU.link ? info.linkUrl : info.srcUrl;
-  if (!url) return;
-  const pageUrl = info.frameUrl ?? info.pageUrl ?? tab?.url;
-  void sendToStash({url, pageUrl}).then(result => notifyResult(result, url));
+  void onMenuClicked(info, tab, {send: sendToStash, report: notifyResult});
 });
 
 // ---------------------------------------------------------------------------

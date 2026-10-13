@@ -81,6 +81,10 @@ pub async fn run(options: SupervisorOptions) -> anyhow::Result<()> {
     if let Err(e) = prepare(&options, &layout, torrents) {
         tracing::error!(error = %format!("{e:#}"), "could not prepare folders and ownership");
     }
+    // The web server cannot start without it, and its own error names no folder.
+    if let Some(problem) = library_write_problem(&options).await {
+        tracing::error!("{problem}");
+    }
     if torrents {
         match full(&options, &layout).await {
             Ok(()) => return Ok(()),
@@ -94,6 +98,45 @@ pub async fn run(options: SupervisorOptions) -> anyhow::Result<()> {
         }
     }
     degraded(&options, off_reason.as_deref()).await
+}
+
+/// The web server's user (PUID:PGID) must be able to create folders in the library
+/// folder. Checked as that user with `test -w`, so ACLs and read-only mounts count.
+/// Returns the sentence to log when it cannot; None when it can or the check could not run.
+async fn library_write_problem(options: &SupervisorOptions) -> Option<String> {
+    let test = sys::which("test")?;
+    let root = options.stash_root.display().to_string();
+    let spec = ChildSpec {
+        name: "library-check",
+        program: test,
+        args: vec![
+            "-w".into(),
+            root.clone(),
+            "-a".into(),
+            "-x".into(),
+            root.clone(),
+        ],
+        env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+        cwd: PathBuf::from("/"),
+        credentials: Some(Credentials {
+            uid: options.puid,
+            gid: options.pgid,
+            umask: None,
+            extra_gid: None,
+        }),
+        capture_stdout: false,
+    };
+    let mut child = children::spawn(&spec).ok()?;
+    let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
+        .await
+        .ok()?
+        .ok()?;
+    (!status.success()).then(|| {
+        let (puid, pgid) = (options.puid, options.pgid);
+        format!(
+            "The library folder {root} is not writable by PUID {puid}, so PopcornStash cannot start: on the host, run `chown {puid}:{pgid}` on the folder mounted at {root}, or set PUID and PGID to its owner."
+        )
+    })
 }
 
 /// `run` as a non-root user behaves like `serve`.
@@ -1078,6 +1121,42 @@ mod tests {
         opts.engine_uid = 6881;
         opts.puid = 0;
         assert!(preflight(&opts).await.is_err());
+    }
+
+    /// A library folder the web server's user cannot write gets one plain sentence in the
+    /// log that names the folder and the fix (instead of only a pathless crash loop).
+    #[tokio::test]
+    async fn an_unwritable_library_folder_is_named_with_the_fix() {
+        if !nix::unistd::geteuid().is_root() {
+            eprintln!("skipped: needs root");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        // PUID must be able to reach the folder at all.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let stash = dir.path().join("stash");
+        std::fs::create_dir(&stash).unwrap();
+        std::fs::set_permissions(&stash, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut options = options(dir.path());
+        options.stash_root = stash.clone();
+        options.puid = 4242;
+        options.pgid = 4343;
+        let problem = library_write_problem(&options)
+            .await
+            .expect("root's 0755 folder is not writable by PUID");
+        assert_eq!(
+            problem,
+            format!(
+                "The library folder {0} is not writable by PUID 4242, so PopcornStash cannot start: on the host, run `chown 4242:4343` on the folder mounted at {0}, or set PUID and PGID to its owner.",
+                stash.display()
+            )
+        );
+        std::os::unix::fs::chown(&stash, Some(4242), Some(4343)).unwrap();
+        assert_eq!(library_write_problem(&options).await, None);
+        // Group-writable for PGID is enough too.
+        std::os::unix::fs::chown(&stash, Some(0), Some(4343)).unwrap();
+        std::fs::set_permissions(&stash, std::fs::Permissions::from_mode(0o775)).unwrap();
+        assert_eq!(library_write_problem(&options).await, None);
     }
 
     #[test]
