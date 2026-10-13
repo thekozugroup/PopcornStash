@@ -27,7 +27,7 @@ use super::source::{self, Magnet};
 use super::ssrf::AddressGuard;
 use super::torrents::InFlight;
 use crate::error::{ApiError, ApiResult, ErrorCode};
-use crate::torrentd_client::{MSG_DISABLED, TorrentdClient, TorrentdError};
+use crate::torrentd_client::{TorrentdClient, TorrentdError};
 
 /// Largest `.torrent` file accepted (upload or link).
 pub const MAX_TORRENT_FILE: usize = 10 * 1024 * 1024;
@@ -756,7 +756,7 @@ impl DownloadManager {
         if self.torrentd.enabled() {
             Ok(())
         } else {
-            Err(ApiError::new(ErrorCode::VpnUnavailable, MSG_DISABLED))
+            Err(ApiError::new(ErrorCode::VpnUnavailable, crate::torrentd_client::disabled_message(&self.config)))
         }
     }
 

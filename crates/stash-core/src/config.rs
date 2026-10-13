@@ -58,6 +58,8 @@ pub struct Config {
     pub internal_token: Option<String>,
     /// The supervisor's adopt socket. None when `serve` runs without the supervisor.
     pub supervisor_socket: Option<PathBuf>,
+    /// Why the supervisor turned torrents off (for example no NET_ADMIN), as a sentence for the UI.
+    pub torrents_off_reason: Option<String>,
     pub hwaccel: HwAccel,
     /// Optional assetlinks.json body for future Android passkeys.
     pub android_assetlinks: Option<String>,
@@ -79,6 +81,7 @@ impl std::fmt::Debug for Config {
             .field("torrentd_proxy", &self.torrentd_proxy.as_ref().map(Url::as_str))
             .field("internal_token", &self.internal_token.as_ref().map(|_| "<redacted>"))
             .field("supervisor_socket", &self.supervisor_socket)
+            .field("torrents_off_reason", &self.torrents_off_reason)
             .field("hwaccel", &self.hwaccel)
             .field("android_assetlinks", &self.android_assetlinks.as_ref().map(|_| "<set>"))
             .finish()
@@ -142,6 +145,7 @@ impl Config {
             torrentd_proxy,
             internal_token: env("STASH_INTERNAL_TOKEN"),
             supervisor_socket: env("STASH_SUPERVISOR_SOCKET").map(PathBuf::from),
+            torrents_off_reason: env("STASH_TORRENTS_OFF_REASON"),
             hwaccel: env("STASH_HWACCEL").unwrap_or_default().parse()?,
             android_assetlinks: env("STASH_ANDROID_ASSETLINKS"),
         })
@@ -162,6 +166,7 @@ impl Config {
             torrentd_proxy: None,
             internal_token: None,
             supervisor_socket: None,
+            torrents_off_reason: None,
             hwaccel: HwAccel::None,
             android_assetlinks: None,
         }

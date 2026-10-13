@@ -30,6 +30,11 @@ const POLL_FAST: Duration = Duration::from_secs(1);
 const FAST_WINDOW: Duration = Duration::from_secs(30);
 
 pub const MSG_DISABLED: &str = "Torrents are turned off on this server.";
+
+/// Why torrents are off: the supervisor's reason when it gave one, else [`MSG_DISABLED`].
+pub fn disabled_message(config: &Config) -> &str {
+    config.torrents_off_reason.as_deref().unwrap_or(MSG_DISABLED)
+}
 pub const MSG_UNREACHABLE: &str = "The torrent container is not running or not reachable.";
 const MSG_TOKEN_REJECTED: &str =
     "The torrent engine did not accept the internal token. Restart the PopcornStash container.";
@@ -264,6 +269,10 @@ impl TorrentdClient {
             }
             health => combine_status(meta.as_ref(), health),
         };
+        let mut status = status;
+        if status.error.as_deref() == Some(MSG_DISABLED) {
+            status.error = Some(disabled_message(&self.config).to_string());
+        }
         *lock(&self.status) = Some(CachedStatus {
             at: Instant::now(),
             status: status.clone(),

@@ -2896,6 +2896,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "reqwest",
  "stash-core",
  "stash-server",
  "stash-torrentd",

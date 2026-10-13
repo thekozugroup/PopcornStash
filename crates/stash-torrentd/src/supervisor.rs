@@ -77,7 +77,8 @@ pub async fn run(options: SupervisorOptions) -> anyhow::Result<()> {
     let layout = Layout::new(&options);
     let preflight = preflight(&options).await;
     let torrents = preflight.is_ok();
-    if let Err(reason) = &preflight {
+    let mut off_reason = preflight.as_ref().err().map(|reason| reason.to_string());
+    if let Some(reason) = &off_reason {
         tracing::warn!("{reason}");
     }
     if let Err(e) = prepare(&options, &layout, torrents) {
@@ -89,10 +90,13 @@ pub async fn run(options: SupervisorOptions) -> anyhow::Result<()> {
             Err(e) => {
                 tracing::error!(error = %format!("{e:#}"), "the VPN kill switch could not be set up; torrents are turned off");
                 cleanup_rules(&options).await;
+                off_reason = Some(
+                    "Torrents are off because the VPN kill switch could not be set up. Check the container log.".into(),
+                );
             }
         }
     }
-    degraded(&options).await
+    degraded(&options, off_reason.as_deref()).await
 }
 
 /// `run` as a non-root user behaves like `serve`.
@@ -103,6 +107,10 @@ fn exec_serve(options: &SupervisorOptions) -> anyhow::Result<()> {
     for key in children::INTERNAL_VARS {
         command.env_remove(key);
     }
+    command.env(
+        "STASH_TORRENTS_OFF_REASON",
+        "Torrents are off because the container runs as a non-root user. Remove the --user setting to use torrents.",
+    );
     let error = command.exec();
     Err(anyhow::anyhow!("could not start the web server: {error}"))
 }
@@ -432,17 +440,34 @@ fn env_inputs(options: &SupervisorOptions, layout: &Layout, token: &str) -> EnvI
     }
 }
 
-fn serve_spec(options: &SupervisorOptions, inputs: &EnvInputs, torrents: bool) -> ChildSpec {
+/// GPU render node used for VAAPI and Quick Sync transcoding.
+const RENDER_DEVICE: &str = "/dev/dri/renderD128";
+
+/// The render device's group, when the web server needs it to transcode with the GPU.
+/// Never the root group, and nothing when PGID already covers it.
+fn render_group(pgid: u32) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    let gid = std::fs::metadata(RENDER_DEVICE).ok()?.gid();
+    (gid != 0 && gid != pgid).then_some(gid)
+}
+
+/// `off_reason` is the sentence the UI shows when torrents are off (degraded mode).
+fn serve_spec(options: &SupervisorOptions, inputs: &EnvInputs, torrents: bool, off_reason: Option<&str>) -> ChildSpec {
+    let mut env = children::serve_env(inputs, torrents);
+    if let (false, Some(reason)) = (torrents, off_reason) {
+        env.push(("STASH_TORRENTS_OFF_REASON".into(), reason.to_string()));
+    }
     ChildSpec {
         name: "serve",
         program: options.exe.clone(),
         args: vec!["serve".into()],
-        env: children::serve_env(inputs, torrents),
+        env,
         cwd: PathBuf::from("/"),
         credentials: Some(Credentials {
             uid: options.puid,
             gid: options.pgid,
             umask: None,
+            extra_gid: render_group(options.pgid),
         }),
         capture_stdout: false,
     }
@@ -459,6 +484,7 @@ fn engine_spec(options: &SupervisorOptions, inputs: &EnvInputs) -> ChildSpec {
             uid: options.engine_uid,
             gid: options.pgid,
             umask: Some(0o002),
+            extra_gid: None,
         }),
         capture_stdout: false,
     }
@@ -542,12 +568,12 @@ async fn child_loop(
 }
 
 /// Degraded mode: only the web server, torrents off.
-async fn degraded(options: &SupervisorOptions) -> anyhow::Result<()> {
+async fn degraded(options: &SupervisorOptions, off_reason: Option<&str>) -> anyhow::Result<()> {
     let layout = Layout::new(options);
     let cancel = CancellationToken::new();
     wait_for_signal(cancel.clone());
     let inputs = env_inputs(options, &layout, "");
-    let mut spec = serve_spec(options, &inputs, false);
+    let mut spec = serve_spec(options, &inputs, false, off_reason);
     if options.puid == 0 {
         tracing::warn!("PUID is 0, so the web server runs as root");
         spec.credentials = None;
@@ -634,7 +660,7 @@ async fn full(options: &SupervisorOptions, layout: &Layout) -> anyhow::Result<()
     // Step 6: children.
     let inputs = env_inputs(options, layout, &token);
     let serve_task = tokio::spawn(child_loop(
-        serve_spec(options, &inputs, true),
+        serve_spec(options, &inputs, true, None),
         cancel.clone(),
         None,
     ));

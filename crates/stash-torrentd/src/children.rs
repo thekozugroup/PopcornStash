@@ -31,6 +31,8 @@ pub struct Credentials {
     pub gid: u32,
     /// umask for the child (the engine uses 0002 so the web server's group can move its files).
     pub umask: Option<u32>,
+    /// One supplementary group, e.g. the GPU render device's group for the web server.
+    pub extra_gid: Option<u32>,
 }
 
 /// Everything needed to start one child.
@@ -145,7 +147,11 @@ fn drop_privileges(credentials: Credentials) -> std::io::Result<()> {
     let errno = |e: nix::errno::Errno| std::io::Error::from_raw_os_error(e as i32);
     let gid = Gid::from_raw(credentials.gid);
     let uid = Uid::from_raw(credentials.uid);
-    nix::unistd::setgroups(&[]).map_err(errno)?;
+    // A stack array, so nothing is allocated between fork and exec.
+    match credentials.extra_gid {
+        Some(extra) => nix::unistd::setgroups(&[Gid::from_raw(extra)]).map_err(errno)?,
+        None => nix::unistd::setgroups(&[]).map_err(errno)?,
+    }
     nix::unistd::setresgid(gid, gid, gid).map_err(errno)?;
     nix::unistd::setresuid(uid, uid, uid).map_err(errno)?;
     nix::sys::prctl::set_no_new_privs().map_err(errno)?;
@@ -303,7 +309,7 @@ mod tests {
             args: vec!["-c".into(), "id -u; id -g; id -G; umask; grep -E '^(NoNewPrivs|CapEff)' /proc/self/status; echo \"secret=$SECRET\"".into()],
             env: vec![("PATH".into(), DEFAULT_PATH.into())],
             cwd: PathBuf::from("/"),
-            credentials: Some(Credentials { uid: 6881, gid: 4343, umask: Some(0o002) }),
+            credentials: Some(Credentials { uid: 6881, gid: 4343, umask: Some(0o002), extra_gid: None }),
             capture_stdout: true,
         };
         let mut child = spawn(&spec).unwrap();

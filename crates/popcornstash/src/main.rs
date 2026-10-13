@@ -60,7 +60,7 @@ enum Command {
 enum AdminCommand {
     /// Print a one-time link that lets the owner register a new passkey (valid 30 minutes).
     ResetOwner,
-    /// Print the current first-run setup code (only while no owner exists).
+    /// Print a new first-run setup code (only while no owner exists). The code in the log stops working.
     SetupCode,
 }
 
@@ -121,7 +121,9 @@ async fn main() -> anyhow::Result<()> {
                 AdminCommand::SetupCode => {
                     let auth = stash_server::auth::AuthService::new(std::sync::Arc::new(config), db)?;
                     match auth.ensure_setup_code().await.map_err(|e| anyhow::anyhow!("{e}"))? {
-                        Some(code) => println!("Setup code: {code}"),
+                        Some(code) => println!(
+                            "Setup code: {code}\nThis new code is valid for 24 hours. The code in the server log no longer works."
+                        ),
                         None => println!("An owner already exists. Use `popcornstash admin reset-owner` to recover access."),
                     }
                 }
@@ -136,7 +138,22 @@ async fn healthcheck() -> anyhow::Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let bind = std::env::var("STASH_BIND").unwrap_or_else(|_| "0.0.0.0:8788".into());
     let port = bind.rsplit(':').next().unwrap_or("8788").to_string();
-    let (addr, path) = (format!("127.0.0.1:{port}"), "/api/health");
+    let tls = std::env::var("STASH_TLS_CERT").is_ok_and(|v| !v.trim().is_empty());
+    if tls {
+        // Built-in HTTPS: the certificate names the public host, not 127.0.0.1, so only
+        // this loopback health probe skips certificate checks.
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .timeout(std::time::Duration::from_secs(3))
+            .build()?;
+        let response = client.get(format!("https://127.0.0.1:{port}/api/health")).send().await?;
+        if response.status().is_success() {
+            return Ok(());
+        }
+        anyhow::bail!("unhealthy: HTTP {}", response.status());
+    }
+    let addr = format!("127.0.0.1:{port}");
+    let path = "/api/health";
     let mut stream = tokio::time::timeout(std::time::Duration::from_secs(3), tokio::net::TcpStream::connect(&addr)).await??;
     stream
         .write_all(format!("GET {path} HTTP/1.0\r\nHost: localhost\r\n\r\n").as_bytes())
