@@ -13,6 +13,7 @@ import {Text} from '@astryxdesign/core/Text';
 import type {LucideIcon} from 'lucide-react';
 import type {ReactNode} from 'react';
 import {formatPercent} from '../../lib/format';
+import {BreakableName} from '../BreakableName';
 
 export const rowStyles = stylex.create({
   list: {
@@ -56,7 +57,6 @@ const styles = stylex.create({
     minWidth: 0,
     alignSelf: {default: 'start', '@media (max-width: 559px)': 'center'},
     paddingTop: {default: 2, '@media (max-width: 559px)': 0},
-    overflowWrap: 'anywhere',
   },
   body: {
     gridArea: 'body',
@@ -133,7 +133,7 @@ export function TransferRow({icon: Icon, name, stateText, progress, tone = 'acti
         <Icon size={20} strokeWidth={1.75} />
       </span>
       <Text type="label" as="p" maxLines={2} wordBreak="break-word" xstyle={styles.title}>
-        {name}
+        <BreakableName name={name} />
       </Text>
       <div {...stylex.props(styles.body)}>
         <div {...stylex.props(styles.stateLine)}>

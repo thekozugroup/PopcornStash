@@ -1,6 +1,8 @@
 //! Item queries used by the API (section 8). All functions take the requesting
 //! user's id where per-user playback progress is part of the result.
 
+use std::collections::BTreeMap;
+
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sqlx::{QueryBuilder, Sqlite};
@@ -77,7 +79,11 @@ pub struct LibrarySummary {
     pub counts: LibraryCounts,
     pub total_bytes: i64,
     pub needs_review: i64,
+    /// Up to [`RECENT_PER_CATEGORY`] newest items of each category, newest first.
     pub recently_added: Vec<Item>,
+    /// Poster item id for each show with an episode in `recently_added`, chosen the
+    /// same way as in [`shows`] and [`show`].
+    pub show_posters: BTreeMap<String, String>,
     pub continue_watching: Vec<Item>,
 }
 
@@ -99,6 +105,8 @@ pub struct Season {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShowDetail {
     pub show_name: String,
+    /// The episode whose picture stands for the show (the same one [`shows`] lists).
+    pub poster_item_id: Option<String>,
     pub seasons: Vec<Season>,
 }
 
@@ -130,7 +138,22 @@ pub const MAX_LIMIT: u32 = 200;
 /// Items per timeline page when the caller does not say (whole months are always returned).
 pub const DEFAULT_TIMELINE_LIMIT: u32 = 200;
 const SUMMARY_ROW: i64 = 12;
+/// Newest items per category in the summary's `recently_added`, so a burst of one
+/// kind (a season of episodes, a phone's worth of photos) never pushes the others off Home.
+pub const RECENT_PER_CATEGORY: i64 = 12;
 const INBOX_MAX: i64 = 500;
+
+/// A show's poster, as one SQL subquery: its first episode in season and episode order
+/// that has a thumbnail, else its first episode. Home ([`summary`]), Shows ([`shows`]) and
+/// the show's page ([`show`]) all pick it this way, so a show has one picture everywhere.
+/// `matches` is the condition on `j`, the candidate episode.
+fn show_poster_subquery(matches: &str) -> String {
+    format!(
+        "(SELECT j.id FROM items j
+           WHERE j.category = 'episode' AND j.status = 'ready' AND {matches}
+           ORDER BY (j.thumb_state = 'ready') DESC, j.season, j.episode, j.id LIMIT 1)"
+    )
+}
 
 /// Columns for an item joined with one user's progress. Bind the user id right after this.
 const SELECT_ITEMS: &str = "SELECT i.*, p.position_s AS p_position_s, p.duration_s AS p_duration_s, p.finished AS p_finished \
@@ -591,14 +614,47 @@ pub async fn summary(db: &Db, user_id: &str) -> Result<LibrarySummary> {
             .fetch_one(db)
             .await?;
 
+    // The newest of each category, photos included. One LIMIT per category walks the
+    // (category, added_at) index instead of ranking every item in the library.
     let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
-    qb.push_bind(user_id.to_string())
-        .push(" WHERE i.status = 'ready' AND i.category != 'photo' ORDER BY i.added_at DESC, i.id DESC LIMIT ")
-        .push_bind(SUMMARY_ROW);
+    qb.push_bind(user_id.to_string()).push(" WHERE i.id IN (");
+    for (n, category) in Category::ALL.iter().enumerate() {
+        if n > 0 {
+            qb.push(" UNION ALL ");
+        }
+        qb.push("SELECT id FROM (SELECT id FROM items WHERE status = 'ready' AND category = ")
+            .push_bind(category.as_str())
+            .push(" ORDER BY added_at DESC, id DESC LIMIT ")
+            .push_bind(RECENT_PER_CATEGORY)
+            .push(")");
+    }
+    qb.push(") ORDER BY i.added_at DESC, i.id DESC");
     let recently_added = qb
         .build_query_as::<ItemWithProgress>()
         .fetch_all(db)
         .await?;
+
+    let mut recent_shows: Vec<String> = recently_added
+        .iter()
+        .filter(|r| r.row.category == Category::Episode)
+        .filter_map(|r| r.row.show_name.clone())
+        .filter(|name| !name.is_empty())
+        .collect();
+    recent_shows.sort();
+    recent_shows.dedup();
+    let mut show_posters = BTreeMap::new();
+    if !recent_shows.is_empty() {
+        let mut qb = QueryBuilder::<Sqlite>::new("SELECT s.show_name, ");
+        qb.push(show_poster_subquery("j.show_name = s.show_name"))
+            .push(" FROM (SELECT DISTINCT show_name FROM items WHERE show_name IN (");
+        let mut names = qb.separated(", ");
+        for name in &recent_shows {
+            names.push_bind(name.clone());
+        }
+        qb.push(")) s");
+        let rows: Vec<(String, Option<String>)> = qb.build_query_as().fetch_all(db).await?;
+        show_posters.extend(rows.into_iter().filter_map(|(name, id)| Some((name, id?))));
+    }
 
     let continue_watching = sqlx::query_as::<_, ItemWithProgress>(
         "SELECT i.*, p.position_s AS p_position_s, p.duration_s AS p_duration_s, p.finished AS p_finished
@@ -619,6 +675,7 @@ pub async fn summary(db: &Db, user_id: &str) -> Result<LibrarySummary> {
             .into_iter()
             .map(ItemWithProgress::into_item)
             .collect(),
+        show_posters,
         continue_watching: continue_watching
             .into_iter()
             .map(ItemWithProgress::into_item)
@@ -627,17 +684,15 @@ pub async fn summary(db: &Db, user_id: &str) -> Result<LibrarySummary> {
 }
 
 pub async fn shows(db: &Db) -> Result<Vec<ShowSummary>> {
-    let rows: Vec<(String, i64, i64, i64, Option<String>)> = sqlx::query_as(
-        "SELECT i.show_name, count(*), count(DISTINCT i.season), max(i.added_at),
-           (SELECT j.id FROM items j
-             WHERE j.show_name = i.show_name AND j.category = 'episode' AND j.status = 'ready'
-             ORDER BY (j.thumb_state = 'ready') DESC, j.season, j.episode, j.id LIMIT 1)
+    let sql = format!(
+        "SELECT i.show_name, count(*), count(DISTINCT i.season), max(i.added_at), {}
          FROM items i
          WHERE i.category = 'episode' AND i.status = 'ready' AND i.show_name IS NOT NULL AND i.show_name != ''
          GROUP BY i.show_name",
-    )
-    .fetch_all(db)
-    .await?;
+        show_poster_subquery("j.show_name = i.show_name")
+    );
+    let rows: Vec<(String, i64, i64, i64, Option<String>)> =
+        sqlx::query_as(&sql).fetch_all(db).await?;
     let mut shows: Vec<ShowSummary> = rows
         .into_iter()
         .map(
@@ -668,6 +723,13 @@ pub async fn show(db: &Db, show_name: &str, user_id: &str) -> Result<ShowDetail>
     if rows.is_empty() {
         return Err(CoreError::NotFound);
     }
+    let poster_item_id: Option<String> = sqlx::query_scalar(&format!(
+        "SELECT {}",
+        show_poster_subquery("TRIM(j.show_name) = ?")
+    ))
+    .bind(show_name.trim())
+    .fetch_one(db)
+    .await?;
     let mut seasons: Vec<Season> = Vec::new();
     for row in rows {
         let number = row.row.season.unwrap_or(0);
@@ -682,6 +744,7 @@ pub async fn show(db: &Db, show_name: &str, user_id: &str) -> Result<ShowDetail>
     }
     Ok(ShowDetail {
         show_name: show_name.to_string(),
+        poster_item_id,
         seasons,
     })
 }
@@ -1178,13 +1241,28 @@ pub(crate) mod tests {
         assert_eq!(s.counts.home_videos, 0);
         assert_eq!(s.total_bytes, 15 * 10 + 5 + 3 * 1000);
         assert_eq!(s.needs_review, 1);
-        assert_eq!(s.recently_added.len(), 12);
-        assert!(
+        // Up to twelve per category, photos included, newest first.
+        assert_eq!(s.recently_added.len(), 12 + 1 + 3);
+        assert_eq!(s.recently_added[0].id, "p1");
+        assert_eq!(s.recently_added[1].id, "m14");
+        assert_eq!(
             s.recently_added
                 .iter()
-                .all(|i| i.category != Category::Photo)
+                .filter(|i| i.category == Category::Movie)
+                .count(),
+            12
         );
-        assert_eq!(s.recently_added[0].id, "m14");
+        assert!(
+            !s.recently_added.iter().any(|i| i.id == "m02"),
+            "the oldest movies drop off"
+        );
+        assert_eq!(
+            s.show_posters,
+            BTreeMap::from([
+                ("Severance".to_string(), "e3".to_string()),
+                ("The Office".to_string(), "e1".to_string()),
+            ])
+        );
         let cw: Vec<&str> = s.continue_watching.iter().map(|i| i.id.as_str()).collect();
         assert_eq!(cw.len(), 2);
         assert!(cw.contains(&"m01") && cw.contains(&"m05"));
@@ -1228,6 +1306,82 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn recently_added_keeps_every_category_and_one_poster_per_show() {
+        let db = crate::db::open_memory().await.unwrap();
+        add_user(&db, "u").await;
+        // A burst of new movies and photos, and older home videos and other files.
+        for i in 0..14 {
+            let mut r = row(&format!("m{i:02}"), &format!("Movie {i:02}"));
+            r.added_at = 1_000 + i;
+            insert(&db, &r).await;
+        }
+        for i in 0..13 {
+            let mut r = row(&format!("p{i:02}"), &format!("IMG_{i:02}"));
+            r.category = Category::Photo;
+            r.kind = MediaKind::Photo;
+            r.rel_path = format!("Photos/2024/06/IMG_{i:02}.jpg");
+            r.added_at = 500 + i;
+            insert(&db, &r).await;
+        }
+        for i in 0..2 {
+            let mut r = row(&format!("h{i}"), &format!("VID_{i}"));
+            r.category = Category::HomeVideo;
+            r.rel_path = format!("Home Videos/2023/07/VID_{i}.mp4");
+            r.added_at = 10 + i;
+            insert(&db, &r).await;
+        }
+        let mut doc = row("o1", "Recipe Card");
+        doc.category = Category::Other;
+        doc.kind = MediaKind::Other;
+        doc.rel_path = "Other/Recipe Card.pdf".into();
+        doc.added_at = 5;
+        insert(&db, &doc).await;
+        // Only the second episode has a picture yet; the newest one has none.
+        insert(&db, &episode("a1", "Andor", 1, 1, 20)).await;
+        let mut pictured = episode("a2", "Andor", 1, 2, 21);
+        pictured.thumb_state = ThumbState::Ready;
+        insert(&db, &pictured).await;
+        insert(&db, &episode("a3", "Andor", 1, 3, 22)).await;
+        let mut gone = row("hx", "VID_gone");
+        gone.category = Category::HomeVideo;
+        gone.status = ItemStatus::Missing;
+        gone.added_at = 2_000;
+        insert(&db, &gone).await;
+
+        let s = summary(&db, "u").await.unwrap();
+        let count = |c: Category| s.recently_added.iter().filter(|i| i.category == c).count();
+        assert_eq!(count(Category::Movie), 12, "twelve newest movies");
+        assert_eq!(count(Category::Photo), 12, "photos are on Home too");
+        assert_eq!(
+            count(Category::HomeVideo),
+            2,
+            "new movies do not push home videos off Home"
+        );
+        assert_eq!(count(Category::Other), 1);
+        assert_eq!(count(Category::Episode), 3);
+        assert!(
+            s.recently_added
+                .windows(2)
+                .all(|w| (w[0].added_at, &w[0].id) >= (w[1].added_at, &w[1].id)),
+            "newest first across categories"
+        );
+        assert!(
+            !s.recently_added
+                .iter()
+                .any(|i| i.id == "hx" || i.id == "m00")
+        );
+
+        // Home, Shows and the show's page agree on the poster.
+        let listed = shows(&db).await.unwrap();
+        assert_eq!(listed[0].poster_item_id.as_deref(), Some("a2"));
+        assert_eq!(s.show_posters.get("Andor").map(String::as_str), Some("a2"));
+        let detail = show(&db, "Andor", "u").await.unwrap();
+        assert_eq!(detail.poster_item_id.as_deref(), Some("a2"));
+        let typed = show(&db, " Andor ", "u").await.unwrap();
+        assert_eq!(typed.poster_item_id.as_deref(), Some("a2"));
+    }
+
+    #[tokio::test]
     async fn shows_and_episode_navigation() {
         let db = crate::db::open_memory().await.unwrap();
         insert(&db, &episode("o2", "The Office", 1, 2, 2)).await;
@@ -1261,6 +1415,10 @@ pub(crate) mod tests {
         assert_eq!(list[0].poster_item_id.as_deref(), Some("a1"));
 
         let detail_show = show(&db, "The Office", "u").await.unwrap();
+        assert_eq!(
+            detail_show.poster_item_id, office.poster_item_id,
+            "the show's page uses the poster the Shows grid uses"
+        );
         assert_eq!(detail_show.seasons.len(), 2);
         assert_eq!(
             detail_show.seasons[0]

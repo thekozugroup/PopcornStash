@@ -14,6 +14,9 @@ macro_rules! text_enum {
         pub enum $name { $($variant),+ }
 
         impl $name {
+            /// Every variant, in declaration order.
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+
             pub fn as_str(self) -> &'static str {
                 match self { $(Self::$variant => $text),+ }
             }

@@ -16,6 +16,7 @@ import {Text} from '@astryxdesign/core/Text';
 import {CircleCheck, CircleDashed, CircleX, Inbox, LoaderCircle, CircleMinus, type LucideIcon} from 'lucide-react';
 import type {Download, ItemDetail} from '../../api/types';
 import {formatBytes, formatRelative} from '../../lib/format';
+import {BreakableName} from '../BreakableName';
 import {KIND_ICON} from './DownloadRow';
 import {canRetry, canUploadAgain, finishedOutcome, KIND_LABEL, type FinishedOutcome} from './downloadText';
 import {MediaThumb} from './MediaThumb';
@@ -44,7 +45,6 @@ const styles = stylex.create({
     gridArea: 'title',
     minWidth: 0,
     paddingTop: 2,
-    overflowWrap: 'anywhere',
   },
   body: {
     gridArea: 'body',
@@ -203,7 +203,7 @@ export function FinishedRow({download, items, isOwner, isRetrying, onRetry, onUp
         />
       </span>
       <Text type="label" as="p" maxLines={2} wordBreak="break-word" xstyle={styles.title}>
-        {download.name}
+        <BreakableName name={download.name} />
       </Text>
       <div {...stylex.props(styles.body)}>
         <ul {...stylex.props(styles.meta)} aria-label="Details">

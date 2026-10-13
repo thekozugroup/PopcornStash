@@ -1,0 +1,49 @@
+/*
+ * Photo viewer layout on top of Astryx's Lightbox. The Lightbox has no slots
+ * for its layout container or its controls, so they are reached through its
+ * stable surface (astryx docs styling/styling-advanced): `.popcorn-photo-viewer`
+ * is the dialog, its only child is the layout container, and the container's
+ * direct `.astryx-button` children are Close, Previous and Next (the caption's
+ * buttons sit deeper and are not matched).
+ */
+
+/*
+ * The same inset on every side, so the photo never runs under the counter,
+ * the close button or the arrows: the controls' 12px offset, their 44px
+ * target and the same 12px again. The controls are positioned against the
+ * container's padding box, so they stay in the corners.
+ */
+.popcorn-photo-viewer > div {
+  box-sizing: border-box;
+  padding: calc(var(--size-element-md) + 2 * var(--spacing-3));
+}
+
+/* Phones: the photo runs edge to edge and the arrows sit on it. */
+@media (max-width: 799px) {
+  .popcorn-photo-viewer > div {
+    padding-inline: 0;
+  }
+}
+
+/*
+ * A translucent zinc-950 disc behind each control, so the arrows read on a
+ * bright beach and a night sky alike. 44px targets (the md button size).
+ */
+.popcorn-photo-viewer > div > .astryx-button[data-variant='ghost'] {
+  inline-size: var(--size-element-md);
+  block-size: var(--size-element-md);
+  border-radius: 9999px;
+  background-color: var(--popcorn-media-control);
+  color: var(--color-on-dark);
+}
+
+@media (hover: hover) {
+  .popcorn-photo-viewer > div > .astryx-button[data-variant='ghost']:hover {
+    background-color: var(--popcorn-media-control-hover);
+  }
+}
+
+/* The first and last photo: the arrow stays (focus is never dropped) but steps back. */
+.popcorn-photo-viewer > div > .astryx-button[data-variant='ghost']:is(:disabled, [aria-disabled='true']) {
+  opacity: 0.4;
+}

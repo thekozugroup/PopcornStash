@@ -23,6 +23,7 @@ import {
   displayTitle,
   itemHref,
   itemMeta,
+  posterSources,
   showHref,
   thumbSources,
   timeLeft,
@@ -130,8 +131,16 @@ function itemTile(item: Item, version?: number): TileModel {
   };
 }
 
-/** Recently added, grouped: episodes collapse into one tile per show. */
-function groupRecent(items: Item[], versionOf: (id: string) => number | undefined): Group[] {
+/**
+ * Recently added (up to 12 of each kind from the server), grouped: episodes
+ * collapse into one tile per show, pictured by the show's poster so it looks
+ * the same as on Shows and on the show's page.
+ */
+function groupRecent(
+  items: Item[],
+  posters: Record<string, string>,
+  versionOf: (id: string) => number | undefined,
+): Group[] {
   const groups = new Map<string, Group>();
   const ensure = (key: string, init: Omit<Group, 'tiles' | 'newest'>) => {
     let group = groups.get(key);
@@ -182,12 +191,14 @@ function groupRecent(items: Item[], versionOf: (id: string) => number | undefine
       const sorted = [...episodes].sort((a, b) => (a.season ?? 0) - (b.season ?? 0) || (a.episode ?? 0) - (b.episode ?? 0));
       const newest = episodes.reduce((latest, episode) => (episode.added_at > latest.added_at ? episode : latest));
       const only = sorted.length === 1 ? sorted[0] : undefined;
+      // Episodes without a show name have no poster; their newest frame stands in.
+      const posterId = posters[name];
       group.tiles.push({
         key: `show:${name}`,
         href: showHref(name),
         title: name,
         meta: only ? `New: ${formatEpisodeCode(only.season, only.episode)}` : formatCount(episodes.length, 'new episode'),
-        image: thumbSources(newest, versionOf(newest.id)),
+        image: posterId ? posterSources(posterId, versionOf(posterId)) : thumbSources(newest, versionOf(newest.id)),
       });
       group.newest = Math.max(group.newest, newest.added_at);
     }
@@ -303,7 +314,7 @@ export default function HomePage() {
 
   const versionOf = (id: string) => versions[id];
   const groups = useMemo(
-    () => (summary ? groupRecent(summary.recently_added, id => versions[id]) : []),
+    () => (summary ? groupRecent(summary.recently_added, summary.show_posters, id => versions[id]) : []),
     [summary, versions],
   );
 

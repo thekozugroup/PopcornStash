@@ -340,6 +340,8 @@
     --popcorn-media-hairline: light-dark(oklch(14.1% 0.005 285.823 / 0.08), oklch(100% 0 0 / 0.08));
     --popcorn-media-placeholder: light-dark(oklch(96.7% 0.001 286.375), oklch(27.4% 0.006 286.033));
     --popcorn-stage: oklch(0% 0 0);
+    --popcorn-media-control: oklch(14.1% 0.005 285.823 / 0.62);
+    --popcorn-media-control-hover: oklch(14.1% 0.005 285.823 / 0.8);
     --popcorn-status-connected: oklch(69.6% 0.17 162.48);
     --popcorn-status-warning: oklch(76.9% 0.188 70.08);
     --popcorn-status-error: oklch(63.7% 0.237 25.331);

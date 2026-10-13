@@ -3,7 +3,9 @@
  * keys and the on-screen buttons move between photos, a horizontal swipe
  * does the same on touch screens, and the caption carries the date, the
  * camera and a download of the original file. HEIC, RAW and TIFF photos are
- * shown through `/view`, which serves a browser-friendly rendition.
+ * shown through `/view`, which serves a browser-friendly rendition. The
+ * controls sit on translucent discs and the photo keeps clear of them
+ * (PhotoViewer.css).
  */
 import * as stylex from '@stylexjs/stylex';
 import {Button} from '@astryxdesign/core/Button';
@@ -15,6 +17,7 @@ import {items as itemsApi} from '../../api/client';
 import type {Item} from '../../api/types';
 import {formatDateTime} from '../../lib/format';
 import {fileName, itemHref} from './libraryFormat';
+import './PhotoViewer.css';
 
 const styles = stylex.create({
   // True black stage in both themes, painted on the dialog itself as well as
@@ -144,6 +147,7 @@ export function PhotoViewer({photos, index, onIndexChange, hasDetailsLink = true
         hasZoom={hasZoom}
         onTouchStart={onTouchStart}
         onTouchEnd={onTouchEnd}
+        className="popcorn-photo-viewer"
         xstyle={styles.stage}
       />
     </MediaTheme>

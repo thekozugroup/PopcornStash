@@ -3,6 +3,7 @@
  * token access, browsers from a user agent, and audit events.
  */
 import type {AuditEntry, ClientKind, TokenScope} from '../../api/types';
+import {providerName} from '../../lib/vpn';
 
 export function clientKindName(kind: ClientKind | string): string {
   switch (kind) {
@@ -202,7 +203,7 @@ export function auditDetail(entry: Pick<AuditEntry, 'event' | 'detail'>): string
       return typeof detail.deleted === 'number' ? `${detail.deleted} ${detail.deleted === 1 ? 'item' : 'items'}` : null;
     case 'vpn_configured':
       return (
-        [text(detail.provider) === 'nordvpn' ? 'NordVPN' : text(detail.provider), text(detail.country)]
+        [providerName(text(detail.provider)), text(detail.country)]
           .filter(Boolean)
           .join(', ') || null
       );

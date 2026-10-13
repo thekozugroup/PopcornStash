@@ -16,6 +16,7 @@ colors:
   zinc-ink: "oklch(21% 0.006 285.885)"
   zinc-black: "oklch(14.1% 0.005 285.823)"
   stage-black: "oklch(0% 0 0)"
+  media-control: "oklch(14.1% 0.005 285.823 / 0.62)"
   status-connected: "oklch(69.6% 0.17 162.48)"
   status-warning: "oklch(76.9% 0.188 70.08)"
   status-error: "oklch(63.7% 0.237 25.331)"
@@ -160,6 +161,7 @@ A cool neutral zinc ramp with one saturated blue, plus three status hues that on
 - **Zinc Divider** / **Zinc Dark Divider** (dark): panel borders, row dividers, the settings group rules.
 - **Zinc Subtle** / **Zinc Dark Divider** (dark): status tag fill, media placeholders, the code box in pairing, the selected navigation fill (at low alpha).
 - **Stage Black** (`stage-black`): the player and lightbox stage in both themes, so media is judged against neutral black.
+- **Media Control** (`media-control`, `--popcorn-media-control`: zinc-950 at 62%, 80% on hover): the disc or plate behind controls laid over a picture (the photo viewer's arrows and close button, the full-screen button on a photo), so they read on a bright beach and a night sky alike.
 
 ### Status
 - **Connected** (emerald), **Warning** (amber), **Error** (red): VPN protected, connecting or paused, blocked or off; download failures; low disk space. As text they step to the 700 shade in light and the 400 shade in dark for contrast.
@@ -198,9 +200,11 @@ A cool neutral zinc ramp with one saturated blue, plus three status hues that on
 - **Metadata** (400, 13px): one line under tiles, download and inbox facts, settings group descriptions, helper text. Numbers use tabular figures. Two facts join with a middle dot ("2014 · 1 min"); a strip of three or more ("Upload  Finished 3 minutes ago  345 KB") is spaced 16px apart instead of dotted.
 - **Tag** (400, 12px): status tags and badges.
 
+**File names** ("Saltwater.Choir.2022.1080p.WEB.webm") in Downloads and the Inbox wrap after their dots, underscores and hyphens, never mid-word; only a long run without separators breaks where it must.
+
 **The Sentence Case Rule.** Every label, heading and button is sentence case. No uppercase eyebrows, no letter-spaced labels, no em dashes.
 
-**The Say It Once Rule.** A state is named once per place. A status line has a short name and, only when it adds something, a reason and what still works ("Torrents off" and "Web links and uploads still work.", not "Torrents unavailable" and "Torrents are turned off on this server."). One word per state across the app: "off" when torrents are off on purpose, "unavailable" when the engine is not answering ("Torrents unavailable: the torrent engine is not answering"; "Not answering" for the engine in System), "paused" while the VPN connects, "blocked" when the VPN fails. A VPN reads "Protected · NordVPN · Netherlands", each part once. Facts under a status line never repeat it (no "Provider: NordVPN" under "Protected · NordVPN · Netherlands"), a value never repeats its label ("ffmpeg: 6.1.1", not "ffmpeg: ffmpeg version 6.1.1"), and a form's live preview is the one place that says where a file goes ("Will move to Other", not also "Goes to Other" above it).
+**The Say It Once Rule.** A state is named once per place. A status line has a short name and, only when it adds something, a reason and what still works ("Torrents off" and "Web links and uploads still work.", not "Torrents unavailable" and "Torrents are turned off on this server."). One word per state across the app: "off" when torrents are off on purpose, "unavailable" when the engine is not answering ("Torrents unavailable: the torrent engine is not answering"; "Not answering" for the engine in System), "paused" while the VPN connects, "blocked" when the VPN fails. A VPN reads "Protected · NordVPN · Netherlands", each part once; when it wraps, it wraps between parts and no line starts or ends with a dot. Facts under a status line never repeat it (no "Provider: NordVPN" under "Protected · NordVPN · Netherlands"), a value never repeats its label ("ffmpeg: 6.1.1", not "ffmpeg: ffmpeg version 6.1.1"), and a form's live preview is the one place that says where a file goes ("Will move to Other", not also "Goes to Other" above it).
 
 ## Layout
 
@@ -208,9 +212,9 @@ A cool neutral zinc ramp with one saturated blue, plus three status hues that on
 
 **Page header.** One h1, at most one sentence under it, then 32px to the content. Trailing actions are rare (Inbox's "Accept all suggestions"); when the action is the page's only way forward ("Go to Home" on a not-found page) it sits under the sentence.
 
-**Settings.** The Settings h1, then a tab strip (one tab per section), then the section's one-sentence lead. Each section keeps its h2 for the document outline but hides it, because the selected tab already shows the name. Sections are groups: on screens 1100px and wider, a 200-260px intro column (h3, one or two sentences, and the group's action, such as "Invite someone", "Add a passkey" or "Create a token") beside the controls, with 48px between the columns. Groups are separated by a thin top rule and 32px of padding; wide tables (the audit log) stack the intro above.
+**Settings.** The Settings h1, then a tab strip (one tab per section), then the section's one-sentence lead. Under 640px an owner's six tabs would scroll sideways and hide Library and System, so they become one full-width section picker (Astryx Selector) that lists every section; a member's two tabs fit and stay tabs. Every section keeps its own address (`/settings/vpn`). Each section keeps its h2 for the document outline but hides it, because the selected tab already shows the name. Sections are groups: on screens 1100px and wider, a 200-260px intro column (h3, one or two sentences, and the group's action, such as "Invite someone", "Add a passkey" or "Create a token") beside the controls, with 48px between the columns. Groups are separated by a thin top rule and 32px of padding; wide tables (the audit log) stack the intro above.
 
-**Media grids.** Columns come from `repeat(auto-fill, minmax(…))`, never fixed counts: posters 2:3 at least 148px with 20px columns and 28px rows (Movies, Shows), 16:9 frames at least 208px (Home Videos, Other), square photos at least 112px with 4px gaps grouped by month. Home shelves scroll sideways with snap points: posters 168px, frames 288px, photos 148px (132, 232 and 112px on phones, edge to edge with the gutter kept as scroll padding). Shelves with one or two tiles sit side by side instead of taking a row each.
+**Media grids.** Columns come from `repeat(auto-fill, minmax(…))`, never fixed counts: posters 2:3 at least 148px with 20px columns and 28px rows (Movies, Shows), 16:9 frames at least 208px (Home Videos, Other), square photos at least 112px with 4px gaps grouped by month. Home shelves scroll sideways with snap points: posters 168px, frames 288px, photos 148px (132, 232 and 112px on phones, edge to edge with the gutter kept as scroll padding). Shelves with one or two tiles sit side by side instead of taking a row each. Home's Recently added holds up to twelve of the newest of each kind (movies, shows, home videos, photos, other), so a burst of one kind never pushes another off Home; photos are square tiles without captions. A show is pictured by its poster everywhere (Home, Shows, the show's page): the server's choice, its first episode with a picture.
 
 **Facts.** Short facts (a file's video, audio and size; the VPN's server, protocol and kill switch; background jobs) read as columns: label above value, 32px between columns, wrapping on narrow screens. Longer fact lists use label-beside-value rows.
 
@@ -245,11 +249,11 @@ Gently rounded and consistent: controls 8px, panels and dialogs 16px, media tile
 A Collapsible trigger ("Use a WireGuard or OpenVPN file instead") is a 44px row with the chevron before a semibold label; the theme sets the height (`collapsible-trigger`), so every disclosure keeps the target.
 
 ### Status tag
-- **Style:** Zinc Subtle fill, 6px corners, 12px Zinc Muted text, a 7px status dot. It may wrap in the narrow sidebar.
+- **Style:** Zinc Subtle fill, 6px corners, 12px Zinc Muted text, a 7px status dot. One line: in the narrow sidebar a long VPN name ends in an ellipsis, with the whole label in its tooltip (with the detail) and for screen readers. Only a long reason in a narrow column (System) may wrap.
 - **Use:** the VPN in the sidebar foot and on Downloads, engine and passkey health in System, failed job counts.
 
 ### VPN status panel
-The VPN page opens with a panel: a status dot and a title in words ("Protected · NordVPN · Netherlands", "Torrents are off on this server"), one detail sentence only when it adds a reason or says what still works, an explanation of what the tunnel covers, Reconnect and Remove, and the connection facts (public address, server, protocol for NordVPN, connected since, kill switch, and the provider only while the status line does not already name it).
+The VPN page opens with a panel: a status dot and a title in words ("Protected · NordVPN · Netherlands", "Torrents are off on this server"; a list of names wraps between its parts, each dot staying with the part it introduces and dropping away at the start of a line), one detail sentence only when it adds a reason or says what still works, an explanation of what the tunnel covers, Reconnect and Remove, and the connection facts (public address, server, protocol for NordVPN, connected since, kill switch, and the provider only while the status line does not already name it).
 
 ### Media tile
 - **Character:** the picture is the tile. Thumbnail at its shape's ratio with a 10px radius and the inner hairline, then the title (two lines, then truncated) and one metadata line ("2014 · 1 min", "Jun 13, 2024 · 12 s", "PDF · 592 B").
@@ -265,7 +269,7 @@ Downloads, Inbox decisions, people, devices, passkeys and browsers are rows insi
 Astryx EmptyState in a flat panel: a 28px line icon (stroke 1.5, the same icon as the category's tile placeholder), a short title ("No movies yet"), one or two sentences that say how the space fills, and at most one action. Inside an existing panel the frame is dropped. The sentences add to the page's subtitle and the controls above rather than restating them (empty Inbox: "Everything new was sorted on its own."; empty Downloads: "Every file takes the same path into your library." above the three steps).
 
 ### Player and lightbox
-Native `<video>` (hls.js only when HLS is needed) on the Stage Black stage; Play or "Resume from 0:31" as the primary button over the poster with "Start from the beginning" as a ghost below it; quality, audio and "Next episode" in a bar under the stage. A photo's page shows it on the same stage (24px of black around it on desktop, edge to edge on phones) with a full-screen button on the photo's own top-right corner; photos open in Astryx's Lightbox with arrow keys, a count, the date and camera, and "Download original".
+Native `<video>` (hls.js only when HLS is needed) on the Stage Black stage; Play or "Resume from 0:31" as the primary button over the poster with "Start from the beginning" as a ghost below it; quality, audio and "Next episode" in a bar under the stage. A photo's page shows it on the same stage (24px of black around it on desktop, edge to edge on phones) with a full-screen button on the photo's own top-right corner; photos open in Astryx's Lightbox with arrow keys, a count, the date and camera, and "Download original". In the viewer the photo keeps the same inset on every side on desktop (the controls' 12px offset, their 44px size and 12px again), and runs edge to edge on phones; the close, previous and next controls are 44px Media Control discs, and an arrow at the first or last photo stays in place at 40% opacity.
 
 ### Drop overlay
 The whole app accepts dropped files; a full-window overlay says where they will go.

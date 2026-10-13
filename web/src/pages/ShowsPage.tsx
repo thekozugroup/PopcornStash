@@ -1,17 +1,18 @@
 /**
- * Shows: every series as a poster (the first episode's frame), most recently
- * updated first. The list is small enough to search and sort in the browser.
+ * Shows: every series as its poster (the server's choice, the same picture
+ * Home and the show's page use), most recently updated first. The list is
+ * small enough to search and sort in the browser.
  */
 import {Button} from '@astryxdesign/core/Button';
 import {Tv} from 'lucide-react';
 import {useCallback, useEffect, useMemo, useState, type ReactNode} from 'react';
 import {useSearchParams} from 'react-router';
-import {items as itemsApi, shows as showsApi} from '../api/client';
+import {shows as showsApi} from '../api/client';
 import type {ShowSummary} from '../api/types';
 import {EmptyPanel} from '../components/EmptyPanel';
 import {LibraryToolbar} from '../components/library/LibraryToolbar';
 import {LoadError} from '../components/library/LoadError';
-import {showHref, showMeta} from '../components/library/libraryFormat';
+import {posterSources, showHref, showMeta} from '../components/library/libraryFormat';
 import {useLibraryEvents} from '../components/library/useLibraryEvents';
 import {MediaGrid, MediaGridSkeleton} from '../components/MediaGrid';
 import {MediaTile} from '../components/MediaTile';
@@ -117,17 +118,15 @@ export default function ShowsPage() {
     body = (
       <MediaGrid shape="poster" label="Shows">
         {visible.map(show => {
-          const sm = show.poster_item_id ? itemsApi.thumbUrl(show.poster_item_id, 'sm') : null;
-          const lg = show.poster_item_id ? itemsApi.thumbUrl(show.poster_item_id, 'lg') : null;
-          const v = version ? `&v=${version}` : '';
+          const poster = posterSources(show.poster_item_id, version);
           return (
             <MediaTile
               key={show.show_name}
               href={showHref(show.show_name)}
               title={show.show_name}
               meta={showMeta(show)}
-              imageSrc={sm ? `${sm}${v}` : null}
-              imageSrcSet={sm && lg ? `${sm}${v} 400w, ${lg}${v} 1280w` : null}
+              imageSrc={poster?.src}
+              imageSrcSet={poster?.srcSet}
               shape="poster"
             />
           );

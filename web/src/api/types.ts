@@ -452,7 +452,10 @@ export interface LibrarySummary {
   };
   total_bytes: number;
   needs_review: number;
+  /** Up to 12 newest items per category, photos included, newest first. */
   recently_added: Item[];
+  /** Poster item of each show with an episode in `recently_added` (as in `ShowSummary`). */
+  show_posters: Record<string, Id>;
   continue_watching: Item[];
 }
 
@@ -518,6 +521,8 @@ export interface ShowSummary {
 
 export interface ShowDetail {
   show_name: string;
+  /** The episode whose picture stands for the show, as in `ShowSummary`. */
+  poster_item_id: Id | null;
   seasons: {season: number; episodes: Item[]}[];
 }
 

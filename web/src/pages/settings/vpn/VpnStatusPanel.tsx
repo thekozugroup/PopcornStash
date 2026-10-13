@@ -14,6 +14,7 @@ import {useToast} from '@astryxdesign/core/Toast';
 import type {Ref} from 'react';
 import {vpn} from '../../../api/client';
 import type {VpnStatus} from '../../../api/types';
+import {SeparatedParts} from '../../../components/SeparatedParts';
 import {LoadError} from '../../../components/settings/SectionStates';
 import {useConfirm} from '../../../components/settings/useConfirm';
 import {errorMessage} from '../../../lib/errors';
@@ -167,7 +168,7 @@ export function VpnStatusPanel({status, error, isLoading, onReload, onChange, pa
             <StatusDot variant={DOT[view.tone]} label={view.tone} isPulsing={status.state === 'connecting'} />
           </span>
           <Text as="p" type="large" weight="semibold" xstyle={styles.title}>
-            {view.title}
+            {view.titleParts ? <SeparatedParts parts={view.titleParts} /> : view.title}
           </Text>
           {view.detail ? (
             <Text as="p" color="secondary" xstyle={styles.detail}>

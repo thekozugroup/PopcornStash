@@ -20,9 +20,18 @@ export interface VpnSummary {
   detail: string;
 }
 
+/**
+ * A provider id as its name ("nordvpn" → "NordVPN", "wireguard" → "WireGuard",
+ * "openvpn" → "OpenVPN"). An id this version does not know is shown as stored.
+ */
+export function providerName(provider: string | null | undefined): string | null {
+  if (!provider) return null;
+  return Object.hasOwn(PROVIDER_NAMES, provider) ? PROVIDER_NAMES[provider as VpnProvider] : provider;
+}
+
 /** The provider as a brand: "NordVPN", "WireGuard", "OpenVPN". */
 export function providerBrand(status: VpnStatus): string | null {
-  return status.provider ? PROVIDER_NAMES[status.provider] : null;
+  return providerName(status.provider);
 }
 
 /**
@@ -39,9 +48,19 @@ export function vpnName(status: VpnStatus): string | null {
   return `${base} · ${status.country}`;
 }
 
-/** "Protected · NordVPN · Netherlands" (DESIGN.md), never a part twice. */
+/**
+ * The parts of "Protected · NordVPN · Netherlands" (DESIGN.md), never a part
+ * twice. Status lines that may wrap render them as parts so a line never
+ * starts or ends with a dangling separator.
+ */
+export function protectedParts(status: VpnStatus): string[] {
+  const name = vpnName(status);
+  return ['Protected', ...(name ? name.split(' · ') : [])].filter(part => part.trim() !== '');
+}
+
+/** "Protected · NordVPN · Netherlands" as one line of text. */
 export function protectedLabel(status: VpnStatus): string {
-  return ['Protected', vpnName(status)].filter(Boolean).join(' · ');
+  return protectedParts(status).join(' · ');
 }
 
 /**

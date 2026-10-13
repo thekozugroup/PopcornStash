@@ -1,7 +1,7 @@
 /**
  * Browsing the sample library: Home, Movies, Shows, Home Videos, Photos and Other.
  */
-import {expect, test} from '@playwright/test';
+import {expect, test, type Locator} from '@playwright/test';
 import {env} from '../helpers/env';
 
 /** WCAG contrast ratio of two computed CSS colours (rgb() or oklch()). */
@@ -43,6 +43,9 @@ test('Home shows the library counts and what was recently added', async ({page})
   // Files without a picture show what they are, as on the Other page (not a film clapperboard).
   await expect(recent.getByRole('link', {name: /^Recipe Card PDF/}).locator('svg.lucide-file-text')).toBeVisible();
   await expect(recent.getByRole('link', {name: /^Morning Notes MP3/}).locator('svg.lucide-music')).toBeVisible();
+  // Every kind keeps its shelf (the newest of each kind, not the newest overall), photos included.
+  await expect(recent.getByRole('region', {name: 'Photos'}).getByRole('listitem')).toHaveCount(3);
+  await expect(recent.getByRole('region', {name: 'Home Videos'}).getByRole('listitem')).toHaveCount(2);
 
   // Counts link to their pages.
   await counts.getByRole('link', {name: '4 movies'}).click();
@@ -95,6 +98,33 @@ test('Shows lists each show and the show page lists its seasons', async ({page})
   await expect(season2.getByRole('link', {name: /^Episode 1\b/})).toBeVisible();
 });
 
+test('a show has the same picture on Home, on Shows and on its own page', async ({page}) => {
+  const show = '/api/shows/The%20Lantern%20Keepers';
+  // Wait until every episode has a thumbnail, so the poster choice is settled.
+  await expect
+    .poll(async () => {
+      const detail = (await (await page.request.get(show)).json()) as {seasons: {episodes: {thumb: string | null}[]}[]};
+      return detail.seasons.flatMap(season => season.episodes).every(episode => episode.thumb);
+    }, {timeout: 20_000})
+    .toBe(true);
+  const poster = ((await (await page.request.get(show)).json()) as {poster_item_id: string}).poster_item_id;
+  expect(poster).toBeTruthy();
+  const pictured = async (image: Locator) => /\/api\/items\/([^/]+)\/thumb/.exec((await image.getAttribute('src')) ?? '')?.[1];
+
+  await page.goto('/');
+  const shelf = page.getByRole('region', {name: 'Recently added'}).getByRole('region', {name: 'Shows'});
+  expect(await pictured(shelf.getByRole('link', {name: /^The Lantern Keepers/}).locator('img'))).toBe(poster);
+
+  await page.goto('/shows');
+  const grid = page.getByRole('list', {name: 'Shows'});
+  expect(await pictured(grid.getByRole('link', {name: /^The Lantern Keepers/}).locator('img'))).toBe(poster);
+
+  await page.goto('/shows/The%20Lantern%20Keepers');
+  await expect(page.getByRole('heading', {level: 1, name: 'The Lantern Keepers'})).toBeVisible();
+  // The poster is the first picture on the page, ahead of the episode frames.
+  expect(await pictured(page.getByRole('main').locator('img').first())).toBe(poster);
+});
+
 test('Home Videos shows the phone clip with the date it was filmed', async ({page}) => {
   await page.goto('/home-videos');
   const grid = page.getByRole('list', {name: 'Home Videos'});
@@ -135,6 +165,24 @@ test('the Photos timeline opens the viewer and the arrow keys move between photo
   });
   expect(contrast(colors.text, colors.background), JSON.stringify(colors)).toBeGreaterThan(4.5);
 
+  // The arrows and close button sit on a dark disc that reads on light and dark photos,
+  // with 44px targets, and the photo keeps the same inset at the top as at the sides.
+  for (const name of ['Previous', 'Next', 'Close']) {
+    const control = await viewer.getByRole('button', {name}).evaluate((element: HTMLElement) => {
+      const box = element.getBoundingClientRect();
+      return {width: box.width, height: box.height, background: getComputedStyle(element).backgroundColor};
+    });
+    expect(control.width, name).toBeGreaterThanOrEqual(44);
+    expect(control.height, name).toBeGreaterThanOrEqual(44);
+    expect(control.background, name).not.toBe('rgba(0, 0, 0, 0)');
+  }
+  const inset = await viewer.evaluate((dialog: HTMLElement) => {
+    const style = getComputedStyle(dialog.firstElementChild as HTMLElement);
+    return {top: parseFloat(style.paddingTop), side: parseFloat(style.paddingLeft)};
+  });
+  expect(inset.top).toBeGreaterThanOrEqual(56);
+  expect(inset.top).toBe(inset.side);
+
   await page.keyboard.press('ArrowRight');
   await expect(viewer.locator('img[alt^="Photo taken"]').first()).not.toHaveAttribute('alt', first ?? '');
   const second = await viewer.locator('img[alt^="Photo taken"]').first().getAttribute('alt');
@@ -172,5 +220,20 @@ test.describe('on a phone', () => {
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       expect(overflow, `${path} scrolls sideways by ${overflow}px`).toBeLessThanOrEqual(0);
     }
+  });
+
+  test('Settings offers every section without sideways scrolling, each at its own address', async ({page}) => {
+    await page.goto('/settings/vpn');
+    const picker = page.getByRole('navigation', {name: 'Settings sections'}).getByRole('combobox', {name: 'Section'});
+    await expect(picker).toHaveText('VPN');
+    await picker.click();
+    for (const name of ['VPN', 'Devices', 'People', 'Security', 'Library', 'System']) {
+      await expect(page.getByRole('option', {name})).toBeVisible();
+    }
+    await page.getByRole('option', {name: 'System'}).click();
+    await expect(page).toHaveURL(/\/settings\/system$/);
+    await expect(picker).toHaveText('System');
+    await page.goBack();
+    await expect(page).toHaveURL(/\/settings\/vpn$/);
   });
 });

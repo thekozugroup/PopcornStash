@@ -52,7 +52,7 @@ const DOT_VARIANT = {
 export interface StatusTagProps {
   tone: StatusTone;
   children: ReactNode;
-  /** Allow the words to wrap onto a second line (narrow sidebars). */
+  /** Allow the words to wrap onto more lines (a long reason in a narrow column). Otherwise one line, truncated. */
   wrap?: boolean;
   /** Announce changes politely (live status such as the VPN). */
   live?: boolean;

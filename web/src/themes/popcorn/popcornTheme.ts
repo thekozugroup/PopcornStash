@@ -95,6 +95,10 @@ const localTokens: Record<string, TokenValue> = {
   '--popcorn-media-hairline': [alpha(zinc[950], 0.08), alpha(white, 0.08)],
   '--popcorn-media-placeholder': [zinc[100], zinc[800]],
   '--popcorn-stage': 'oklch(0% 0 0)',
+  // Controls laid over media (the photo viewer's arrows and close button): a
+  // translucent zinc-950 disc that reads on light and dark pictures alike.
+  '--popcorn-media-control': alpha(zinc[950], 0.62),
+  '--popcorn-media-control-hover': alpha(zinc[950], 0.8),
   '--popcorn-status-connected': emerald[500],
   '--popcorn-status-warning': amber[500],
   '--popcorn-status-error': red[500],

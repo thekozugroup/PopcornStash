@@ -171,11 +171,24 @@ export interface ThumbSources {
  * is not ready. `version` busts the browser cache after a live update.
  */
 export function thumbSources(item: Pick<Item, 'id' | 'thumb'>, version?: number): ThumbSources | null {
-  if (!item.thumb) return null;
+  return item.thumb ? sourcesFor(item.id, version) : null;
+}
+
+function sourcesFor(id: string, version?: number): ThumbSources {
   const v = version ? `&v=${version}` : '';
-  const sm = `${itemsApi.thumbUrl(item.id, 'sm')}${v}`;
-  const lg = `${itemsApi.thumbUrl(item.id, 'lg')}${v}`;
+  const sm = `${itemsApi.thumbUrl(id, 'sm')}${v}`;
+  const lg = `${itemsApi.thumbUrl(id, 'lg')}${v}`;
   return {src: sm, srcSet: `${sm} 400w, ${lg} 1280w`};
+}
+
+/**
+ * A show's poster from the server's choice (`poster_item_id` in the shows list,
+ * the show's page and Home's `show_posters`), so a show has one picture
+ * everywhere. A poster without a thumbnail yet fails to load and the tile
+ * falls back to its placeholder.
+ */
+export function posterSources(posterItemId: string | null | undefined, version?: number): ThumbSources | null {
+  return posterItemId ? sourcesFor(posterItemId, version) : null;
 }
 
 /** The large thumbnail alone (player poster, show hero). */

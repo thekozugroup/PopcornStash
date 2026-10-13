@@ -16,6 +16,7 @@ import {FileQuestion, Film, FolderInput, ImageIcon, Info} from 'lucide-react';
 import {useEffect, useRef} from 'react';
 import type {InboxDecision, ItemDetail} from '../../api/types';
 import {formatBytes, formatDuration} from '../../lib/format';
+import {BreakableName} from '../BreakableName';
 import {MediaThumb} from '../downloads/MediaThumb';
 import {InboxEditForm} from './InboxEditForm';
 import {baseName, describeDestination, folderOf} from './places';
@@ -57,9 +58,6 @@ const styles = stylex.create({
     gap: 2,
     minWidth: 0,
     alignSelf: {default: 'start', '@media (max-width: 719px)': 'center'},
-  },
-  name: {
-    overflowWrap: 'anywhere',
   },
   meta: {
     display: 'flex',
@@ -175,8 +173,8 @@ export function InboxRow({
         />
       </span>
       <div {...stylex.props(styles.heading)}>
-        <Text type="label" as="p" maxLines={2} wordBreak="break-word" xstyle={styles.name}>
-          {fileName}
+        <Text type="label" as="p" maxLines={2} wordBreak="break-word">
+          <BreakableName name={fileName} />
         </Text>
         <ul {...stylex.props(styles.meta)} aria-label="Details">
           {meta.map(entry => (

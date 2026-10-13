@@ -1,5 +1,6 @@
 /**
- * One show (`/shows/:name`): the show's frame, how much there is, and one
+ * One show (`/shows/:name`): the show's poster (the server's choice, the same
+ * picture as on Shows and Home), how much there is, and one
  * primary action that resumes the next unwatched episode. Seasons sit in
  * tabs; each season lists its episodes with code, title, runtime and
  * progress.
@@ -222,6 +223,9 @@ export default function ShowPage() {
   }
 
   const upEpisode = up?.episode;
+  // The server's poster for the show; the item carries whether its thumbnail is ready.
+  const allEpisodes = seasons.flatMap(season => season.episodes);
+  const posterEpisode = allEpisodes.find(episode => episode.id === show.poster_item_id) ?? allEpisodes[0];
   // "Resume" only when the player will pick up part-way (the same rule it uses),
   // not for an episode that was opened for a few seconds and starts over.
   const resumes = upEpisode ? resumePosition(upEpisode) > 0 : false;
@@ -264,7 +268,7 @@ export default function ShowPage() {
     <>
       {back}
       <div {...stylex.props(styles.hero)}>
-        <ShowPoster episode={upEpisode ?? seasons[0]?.episodes[0]} />
+        <ShowPoster episode={posterEpisode} />
         <div {...stylex.props(styles.intro)}>
           <Heading level={1} textWrap="balance">
             {show.show_name}

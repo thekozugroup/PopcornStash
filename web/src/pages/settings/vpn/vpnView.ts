@@ -5,12 +5,14 @@
  */
 import type {VpnStatus} from '../../../api/types';
 import type {StatusTone} from '../../../components/StatusTag';
-import {describeVpn, protectedLabel, torrentsOffReason, vpnName} from '../../../lib/vpn';
+import {describeVpn, protectedLabel, protectedParts, torrentsOffReason, vpnName} from '../../../lib/vpn';
 
 export interface VpnView {
   tone: StatusTone;
   /** The status line next to the dot. */
   title: string;
+  /** The same line as parts ("Protected", "WireGuard", "lantern-vpn") when it is a list of names. */
+  titleParts?: string[];
   /** One or two sentences under it, or null. */
   detail: string | null;
   /** Torrents cannot run on this server (degraded container or no torrent engine). */
@@ -58,6 +60,7 @@ export function vpnView(status: VpnStatus | null, isUnavailable: boolean): VpnVi
       return {
         tone: 'connected',
         title: protectedLabel(status),
+        titleParts: protectedParts(status),
         detail: null,
         isDegraded: false,
       };

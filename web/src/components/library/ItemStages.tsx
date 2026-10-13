@@ -65,7 +65,7 @@ const styles = stylex.create({
     top: 12,
     insetInlineEnd: 12,
     borderRadius: 8,
-    backgroundColor: 'color-mix(in oklch, var(--popcorn-stage) 55%, transparent)',
+    backgroundColor: 'var(--popcorn-media-control)',
     color: colorVars['--color-on-dark'],
   },
   panel: {
