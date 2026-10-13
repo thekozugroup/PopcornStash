@@ -157,7 +157,7 @@ A cool neutral zinc ramp with one saturated blue, plus three status hues that on
 - **White Surface** / **Zinc Ink** (dark): panels, cards, inputs, menus, the sidebar.
 - **Zinc Paper** / **Zinc Black** (dark): the page canvas behind everything.
 - **Zinc Ink** / **Zinc Paper** (dark): main text and icons.
-- **Zinc Muted** / **Zinc Dark Muted** (dark): supporting text, labels, ghost buttons, inactive navigation.
+- **Zinc Muted** / **Zinc Dark Muted** (dark): supporting text, labels, ghost buttons, inactive navigation and its icons.
 - **Zinc Divider** / **Zinc Dark Divider** (dark): panel borders, row dividers, the settings group rules.
 - **Zinc Subtle** / **Zinc Dark Divider** (dark): status tag fill, media placeholders, the code box in pairing, the selected navigation fill (at low alpha).
 - **Stage Black** (`stage-black`): the player and lightbox stage in both themes, so media is judged against neutral black.
@@ -208,7 +208,7 @@ A cool neutral zinc ramp with one saturated blue, plus three status hues that on
 
 ## Layout
 
-**Shell.** Desktop: a sticky 228px sidebar (brand; Home, Movies, Shows, Home Videos, Photos, Other; Inbox with its count, Downloads; Settings; a foot with the VPN tag, the person's name and Sign out) and a bounded main column (max 1320px, padding `clamp(24px, 5vw, 64px)`, more at the bottom). Under 800px the sidebar becomes a compact top bar with a menu drawer, and a row of five quick links (Home, Movies, Shows, Photos, Downloads) sits on the 20px page gutter in five equal cells 4px apart, its current pill aligned with the content edge.
+**Shell.** Desktop: a sticky 228px sidebar (brand; Home, Movies, Shows, Home Videos, Photos, Other; Inbox with its count, Downloads; Settings; a foot with the VPN tag, the person's name and Sign out) and a bounded main column (max 1320px, padding `clamp(24px, 5vw, 64px)`, more at the bottom). Under 800px the sidebar becomes a compact top bar with a menu drawer (the same sidebar, icons included), and a row of five quick links (Home, Movies, Shows, Photos, Downloads), each its icon above its label, sits on the 20px page gutter in five equal cells 4px apart, its current pill aligned with the content edge. See Navigation under Components.
 
 **Page header.** One h1, at most one sentence under it, then 32px to the content. Trailing actions are rare (Inbox's "Accept all suggestions"); when the action is the page's only way forward ("Go to Home" on a not-found page) it sits under the sentence.
 
@@ -244,6 +244,12 @@ Gently rounded and consistent: controls 8px, panels and dialogs 16px, media tile
 - **Numbers:** typed or stepped with the arrow keys; no stepper buttons (they cannot hold a 44px target). Units sit inside the field ("KB/s", "days").
 - **Focus:** the border turns Action Blue.
 - **Copyable values:** a value to paste elsewhere (an invite link, a device token, the owner recovery command `docker exec popcornstash popcornstash admin reset-owner`) sits in a Zinc Subtle monospace box with a "Copy" secondary button beside it, under a label that says what to do with it.
+
+### Navigation
+- **Sidebar rows:** 44px tall with 8px corners; an 18px Lucide line icon at stroke 1.5, then 8px, then the 14px medium label, the icon centred on the label's line. Icon and label share one colour: Zinc Muted at rest (Zinc Dark Muted in dark), Zinc Ink (Zinc Paper in dark) on the selected navigation fill when current. No blue, no filled "selected" glyphs, no colour per category. The Inbox count stays a neutral badge at the trailing edge.
+- **One icon per destination, everywhere:** the glyph the category already uses for its empty state and picture-less tiles. Home `house`, Movies `film`, Shows `tv`, Home Videos `clapperboard`, Photos `image`, Other `file-text`, Inbox `inbox`, Downloads `arrow-down-to-line` (as on Home's downloads notice), Settings `settings`. Each destination is defined once with its icon (`web/src/app/navigation.ts`), so the sidebar, the phone menu, the quick links and the Android toolbar never disagree.
+- **Phone:** the menu drawer is the sidebar itself. The quick links stack the same 18px icon over a 12px medium label in a 52px cell, with no side padding so "Downloads" keeps the whole cell; the current one takes the same fill as the sidebar's.
+- **Icons never stand alone on the web:** every icon sits beside or above its label and is hidden from screen readers, so links keep their plain names ("Inbox 1").
 
 ### Disclosure rows
 A Collapsible trigger ("Use a WireGuard or OpenVPN file instead") is a 44px row with the chevron before a semibold label; the theme sets the height (`collapsible-trigger`), so every disclosure keeps the target.
