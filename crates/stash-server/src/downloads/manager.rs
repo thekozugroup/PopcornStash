@@ -604,6 +604,11 @@ impl DownloadManager {
                 }
             }
             DownloadKind::Torrent => {
+                // The poller starts waiting torrents under this lock; pausing waits for it,
+                // so a torrent it is resuming or adding right now is paused afterwards
+                // instead of being started again over the pause.
+                let _slots = self.torrent_slots.lock().await;
+                let row = self.load_row(id).await?;
                 if !matches!(
                     row.state,
                     DownloadState::Queued
@@ -721,6 +726,13 @@ impl DownloadManager {
     }
 
     pub async fn remove(&self, id: &str, delete_files: bool) -> ApiResult<()> {
+        let row = self.load_row(id).await?;
+        // As for pause: a torrent the poller is starting right now is removed once it has
+        // started, never left running in the engine without its row.
+        let _slots = match row.kind {
+            DownloadKind::Torrent => Some(self.torrent_slots.lock().await),
+            _ => None,
+        };
         let row = self.load_row(id).await?;
         if row.state == DownloadState::Sorting && self.sort_pending(&row).await? {
             return Err(ApiError::conflict(MSG_BEING_SORTED));

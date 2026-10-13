@@ -477,6 +477,11 @@ async fn serve_file(State(files): State<Files>, uri: Uri, headers: HeaderMap) ->
 #[derive(Default)]
 struct EngineInner {
     blocked: bool,
+    /// How long an add or a resume takes to answer, and how many arrived.
+    add_delay_ms: u64,
+    add_calls: u32,
+    resume_delay_ms: u64,
+    resume_calls: u32,
     torrents: Vec<EngineTorrent>,
     added: Vec<AddTorrentRequest>,
     removed: Vec<(String, bool)>,
@@ -613,6 +618,12 @@ async fn engine_add(
     if !authorized(&s, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let delay = {
+        let mut inner = s.inner.lock().unwrap();
+        inner.add_calls += 1;
+        inner.add_delay_ms
+    };
+    tokio::time::sleep(Duration::from_millis(delay)).await;
     let mut inner = s.inner.lock().unwrap();
     if inner.blocked {
         return (
@@ -692,6 +703,14 @@ async fn engine_action(
 ) -> Response {
     if !authorized(&s, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if action == "resume" {
+        let delay = {
+            let mut inner = s.inner.lock().unwrap();
+            inner.resume_calls += 1;
+            inner.resume_delay_ms
+        };
+        tokio::time::sleep(Duration::from_millis(delay)).await;
     }
     let mut inner = s.inner.lock().unwrap();
     let Some(t) = inner.torrents.iter_mut().find(|t| t.id == id) else {
@@ -1610,6 +1629,98 @@ async fn torrents_beyond_the_limit_wait_for_a_free_slot() {
     // They stay in line across polls (the engine's "paused" is not a pause by hand).
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(env.row(&ids[2]).await.state, DownloadState::Queued);
+}
+
+/// A torrent paused by hand while the poller is starting torrents that waited, for a free
+/// slot or for the VPN, stays paused: the poller's resume or add of it must not undo the
+/// pause, in the database or in the engine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pause_while_waiting_torrents_start_is_kept() {
+    let env = env(Opts {
+        engine: true,
+        start: true,
+        ..Default::default()
+    })
+    .await;
+    env.settings
+        .update(serde_json::json!({"torrent": {"max_active": 3}}))
+        .await
+        .unwrap();
+    let magnet = |n: u32| format!("magnet:?xt=urn:btih:{:040x}&dn=Clip+{n}", 0xdef000 + n);
+    let mut ids = Vec::new();
+    for n in 1..=3 {
+        ids.push(env.add(&magnet(n)).await.id);
+    }
+    env.settings
+        .update(serde_json::json!({"torrent": {"max_active": 1}}))
+        .await
+        .unwrap();
+    wait_until!(
+        "two torrents to wait for a slot",
+        env.row(&ids[1]).await.state == DownloadState::Queued
+            && env.row(&ids[2]).await.state == DownloadState::Queued
+    );
+    let engine_state = |id: &str| {
+        env.engine()
+            .with(|e| e.torrents.iter().find(|t| t.id == id).map(|t| t.state))
+    };
+    let third = env.row(&ids[2]).await.engine_id.unwrap();
+    assert_eq!(engine_state(&third), Some(EngineTorrentState::Paused));
+
+    // A slot frees up while the engine is slow to answer resumes; meanwhile the person
+    // pauses the third torrent, which is still in line.
+    env.engine().with(|e| {
+        e.resume_delay_ms = 1000;
+        e.resume_calls = 0;
+    });
+    env.settings
+        .update(serde_json::json!({"torrent": {"max_active": 3}}))
+        .await
+        .unwrap();
+    wait_until!(
+        "the poller to start resuming the second torrent",
+        env.engine().with(|e| e.resume_calls) >= 1
+    );
+    let paused = env.manager.pause(&ids[2]).await.unwrap();
+    assert_eq!(paused.state, DownloadState::Paused);
+    // The poller read both torrents as waiting before the pause, so it resumes the third
+    // one too; let that resume land and a few polls pass.
+    wait_until!(
+        "the poller to resume the third torrent",
+        env.engine().with(|e| e.resume_calls) >= 2
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(env.row(&ids[1]).await.state, DownloadState::Downloading);
+    assert_eq!(env.row(&ids[2]).await.state, DownloadState::Paused);
+    assert_eq!(engine_state(&third), Some(EngineTorrentState::Paused));
+
+    // The same while a torrent that waited for the VPN is being added to the engine.
+    env.engine().with(|e| e.resume_delay_ms = 0);
+    env.engine().set_blocked(true);
+    let waiting = env.add(&magnet(4)).await;
+    assert_eq!(waiting.state, DownloadState::Queued);
+    env.engine().with(|e| {
+        e.add_delay_ms = 1000;
+        e.add_calls = 0;
+    });
+    env.engine().set_blocked(false);
+    wait_until!(
+        "the poller to start adding it",
+        env.engine().with(|e| e.add_calls) >= 1
+    );
+    let paused = env.manager.pause(&waiting.id).await.unwrap();
+    assert_eq!(paused.state, DownloadState::Paused);
+    wait_until!(
+        "the engine to have it",
+        env.row(&waiting.id).await.engine_id.is_some()
+    );
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let row = env.row(&waiting.id).await;
+    assert_eq!(row.state, DownloadState::Paused);
+    assert_eq!(
+        engine_state(row.engine_id.as_deref().unwrap()),
+        Some(EngineTorrentState::Paused)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
