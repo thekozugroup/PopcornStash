@@ -1,6 +1,6 @@
 # PopcornStash architecture
 
-This document is the contract between the Rust backend, the web UI, the Chrome extension and the future Android app. Change it in the same commit as any behavior it describes.
+This document is the contract between the Rust backend, the web UI, the Chrome extension and the Android app (`android/`). Change it in the same commit as any behavior it describes.
 
 ## 1. Shape of the system
 
@@ -53,7 +53,7 @@ Degraded modes, each shown in the UI as a plain sentence:
 
 | Crate | Responsibility |
 |---|---|
-| `stash-core` | Config, DB pool + migrations, models, library scanner/watcher/classifier/organizer, media probe/thumbnail/transcode, job queue, filename parser |
+| `stash-core` | Config, DB pool + migrations, models, libraries (definitions, claims, access predicate, icon list), library scanner/watcher/classifier/organizer, media probe/thumbnail/transcode, job queue, filename parser |
 | `stash-server` | axum router, auth (webauthn-rs), sessions/tokens, security middleware, API handlers, download manager, uploads, engine client, supervisor client, NordVPN API client, SSE events, embedded UI |
 | `stash-torrentd` | Supervisor (VPN config parsing, tunnel bring-up, policy routing, nftables kill switch, DNS forwarder, adopt socket, privilege drop, child processes) and the engine (librqbit, Landlock, internal API, CONNECT proxy) |
 | `popcornstash` | clap CLI wiring the above |
@@ -83,16 +83,19 @@ Persistent settings that the UI edits live in the `settings` table (section 6).
 
 ## 3. Folder layout
 
-Created at startup if missing. Names are fixed.
+The fixed folders (`Other/`, `Inbox/`, `Downloads/…`, `.popcornstash/…`) are created at startup if missing and their names never change. Each library adds one top-level folder that the owner names (section 3.1); a fresh stash starts with four.
 
 ```
 <STASH_ROOT>/
-  Movies/                     Movies/Title (Year)/Title (Year).ext
-  Shows/                      Shows/Show Name/Season 01/Show Name - S01E02.ext
-  Home Videos/                Home Videos/2024/06/original-name.ext
-  Photos/                     Photos/2024/06/original-name.ext
-  Other/                      Other/original-name.ext
+  <library folder>/           One per library, named by the owner; a fresh stash has Movies/, Shows/, Home Videos/, Photos/.
+                              A sorted file is laid out by what it is, whatever the library:
+                                movie         <folder>/Title (Year)/Title (Year).ext
+                                TV episode    <folder>/Show Name/Season 01/Show Name - S01E02.ext
+                                camera video  <folder>/2024/06/original-name.ext
+                                photo         <folder>/2024/06/original-name.ext
+  Other/                      Other files (built in, not a library): Other/original-name.ext
   Inbox/                      Drop zone: anything placed here is sorted
+  <any other folder>/         The owner's own top-level folder, not in a library: indexed in place, seen by the owner only
   Downloads/
     In Progress/              Torrents and web downloads while incoming (the engine may write here)
     Completed/                Finished, waiting for the sorter
@@ -123,12 +126,26 @@ Ownership: `/config` and everything `serve` writes belong to `PUID:PGID`. The da
 
 ### Movement rules (safety)
 - Only files under `Inbox/` and `Downloads/Completed/` are moved automatically.
-- Everything else is indexed in place, except the rest of `Downloads/` (anything outside `In Progress/` and `Completed/`, such as another download client's folders), which is never moved and never indexed. Category comes from the top-level folder (`Movies/` → movie, `Shows/` → episode, `Home Videos/` → home_video, `Photos/` → photo, `Other/` → other). Files in the owner's own folders are classified heuristically and never moved without an explicit "Organize" action.
+- Everything else is indexed in place, except the rest of `Downloads/` (anything outside `In Progress/` and `Completed/`, such as another download client's folders), which is never moved and never indexed. What an indexed file is (its `category`) comes from where it is: in a library folder, from the library's type and structure (section 4, Files already in a library); in `Other/`, `other`; anywhere else, the classifier's guess, kept as the suggestion that prefills Organize. Nothing outside `Inbox/` and `Downloads/Completed/` moves without an explicit Organize by the owner.
+- Creating, renaming, reordering or deleting a library, changing who sees it and changing what it claims never move, rename or delete a file.
 - Moves use `rename(2)`; across filesystems, copy + fsync + verify size + remove.
 - Name collisions append ` (2)`, ` (3)` before the extension. Nothing is overwritten.
 - Sidecar files with the same stem (`.srt`, `.ass`, `.vtt`, `.sub`, `.idx`, `.nfo`, `.xmp`, `.aae`) move with their media file.
 - Partial files (`.part`, `.crdownload`, `.!qB`, `.tmp`, `~$*`), hidden files and `.popcornstash/` are ignored.
 - A file is stable when size and mtime are unchanged for 10 seconds (copies over SMB take time).
+
+### 3.1 Libraries and their folders
+
+A library is a row in `libraries` (section 6): a name, an icon, a content type (`video` or `photos`), for video a structure (`episodes` or `one_offs`), the kinds of new file it claims (section 4), who sees it (section 7), its place in the order, and exactly one folder.
+
+- **One top-level folder per library.** The folder is a real directory (not a symlink) directly under `STASH_ROOT`. Everything below it belongs to that library. A subfolder cannot be a library of its own, so libraries never nest, and a folder never belongs to two libraries: `libraries.folder` is unique, compared without regard to case. On a case-sensitive file system a `movies/` beside the library folder `Movies/` is a separate folder that is not in a library, and it cannot become one while `Movies` is a library folder.
+- **Folder names.** 1 to 100 characters after trimming, no `/`, `\`, control characters, leading dot, trailing dot or trailing space, and not `.` or `..`. Reserved, in any case: `Inbox`, `Downloads`, `Other`, and every name starting with a dot.
+- **New or existing.** Creating a library either makes a new folder (refused when anything with that name already exists, in any case) or takes an existing top-level folder that is not a library folder and not reserved. An existing folder's files are indexed in place under the library's rules (section 4) and never moved.
+- **Fixed for life.** A library's folder never changes. Renaming a library changes only its name in the app.
+- **Kept present.** Library folders are created at startup when missing, like the fixed folders, and again when the sorter needs one. A library folder that cannot be created does not stop the server: it is logged, the owner's library list says `folder_state: "missing"`, and files headed there wait in Inbox with the reason "The library's folder is missing."
+- **Deleting a library** removes it from the app only. Its folder and files stay where they are, and the folder becomes a folder that is not in a library.
+- **Folders not in a library.** Every other top-level folder (not a library folder, not `Inbox`, `Downloads`, `Other` or `.popcornstash`, not hidden, not a symlink) and any loose file directly in the stash root are indexed in place and seen by the owner only. Settings lists these folders with "Make a library" (`GET /api/libraries/folders`).
+- **Membership follows the path.** `items.library_id` is the library whose `folder` equals the first component of the item's `rel_path` (exact match), else NULL, and `items.place` says which kind of place holds it (section 6). Both are recomputed whenever a file's path changes (sorting, Organize, a move found by a rescan, restore from Trash) and for every item under the folder when a library is created or deleted. A file moved on disk from one library folder to another changes library at the next rescan and keeps its id, favourite and progress.
 
 ## 4. Classification and sorting
 
@@ -141,11 +158,13 @@ Kinds by extension:
 - everything else: other
 
 Rules, first match wins:
-1. **Photo** → `Photos/YYYY/MM/`. Date from EXIF DateTimeOriginal, else filename date (`20240613`, `2024-06-13`, `IMG_20240613_...`), else mtime. Confidence High (pictures that may be artwork excepted, see below).
-2. **Episode**: `S01E02`, `s1e2`, `1x02`, `Season 1 Episode 2`, `S01E02E03` (first episode). Show name = text before the marker with separators normalized, release tags removed. → `Shows/Show/Season 01/Show - S01E02.ext`. High when show name non-empty.
-3. **Home video**: camera metadata (ffprobe tags `com.apple.quicktime.make`, `make`, `model`, `com.android.version`, handler `GoPro`, encoder `DJI`) or camera filenames (`IMG_####.MOV`, `VID_YYYYMMDD_*`, `PXL_*`, `MVI_*`, `GOPR*`, `GH0*`, `GX0*`, `DJI_*`, `DSC*`, `MOV_*`, `Screen Recording*`, `RPReplay*`). Date from `creation_time` tag, filename, mtime. → `Home Videos/YYYY/MM/`. High.
-4. **Movie**: title followed by a year 1900–2099 (`Title.2019.1080p...`, `Title (2019)`), release tags stripped (resolution, source, codec, group). → `Movies/Title (Year)/Title (Year).ext`. High when title non-empty and the year is plausible; Low when a year is missing but release tags exist.
-5. Anything else → `Other/`. Low.
+1. **Photo** (`photo`, laid out `YYYY/MM/`). Date from EXIF DateTimeOriginal, else filename date (`20240613`, `2024-06-13`, `IMG_20240613_...`), else mtime. Confidence High (pictures that may be artwork excepted, see below).
+2. **Episode**: `S01E02`, `s1e2`, `1x02`, `Season 1 Episode 2`, `S01E02E03` (first episode). Show name = text before the marker with separators normalized, release tags removed. Laid out `Show/Season 01/Show - S01E02.ext`. High when show name non-empty.
+3. **Home video**: camera metadata (ffprobe tags `com.apple.quicktime.make`, `make`, `model`, `com.android.version`, handler `GoPro`, encoder `DJI`) or camera filenames (`IMG_####.MOV`, `VID_YYYYMMDD_*`, `PXL_*`, `MVI_*`, `GOPR*`, `GH0*`, `GX0*`, `DJI_*`, `DSC*`, `MOV_*`, `Screen Recording*`, `RPReplay*`). Date from `creation_time` tag, filename, mtime. Laid out `YYYY/MM/`. High.
+4. **Movie**: title followed by a year 1900–2099 (`Title.2019.1080p...`, `Title (2019)`), release tags stripped (resolution, source, codec, group). Laid out `Title (Year)/Title (Year).ext`. High when title non-empty and the year is plausible; Low when a year is missing but release tags exist.
+5. Anything else (`other`) → `Other/`. Low.
+
+Rules 1 to 4 say what a file is and how it is laid out inside a library folder; which library it goes to comes from the claims below.
 
 Samples (`sample` in name and under 150 MB) and extras inside torrent folders are skipped and left in `Completed/`.
 
@@ -157,7 +176,50 @@ What a sort looks at (one top-level entry of `Inbox/` or `Downloads/Completed/`)
 - A single picture (the extension's "Send image") and a download of only pictures follow rule 1.
 - A download folder is judged together with what earlier sorts took out of it (the items linked to its download).
 
-Auto-sort (setting `auto_sort`, default on) moves High-confidence results immediately. Low-confidence results become items with `status = needs_review`, stay in place, and appear in Inbox with the suggested destination prefilled. The owner can accept, edit and accept, or ignore (marks it reviewed and leaves it in `Completed/`).
+### Where a sorted file goes: claims
+
+Each library claims zero or more kinds of new file, and each kind is claimed by at most one library (`library_claims`, section 6). A claim must fit the library:
+
+| Kind (`category`) | Owner's words | Fits | Layout under the library folder |
+|---|---|---|---|
+| `movie` | movies | Video, One-offs | `Title (Year)/Title (Year).ext` (`Title/Title.ext` without a year) |
+| `episode` | TV episodes | Video, Episodes | `Show Name/Season 01/Show Name - S01E02.ext` (season 1 when unknown) |
+| `home_video` | camera videos | Video, One-offs | `YYYY/MM/original-name.ext` |
+| `photo` | photos | Photos | `YYYY/MM/original-name.ext` |
+
+`other` (music, documents, anything else) cannot be claimed: it always goes to `Other/`, the built-in Other files place.
+
+For each file it takes, the sorter classifies it (rules above), then:
+1. `other`: to `Other/` (High for songs; anything else waits in Inbox, Low, as before).
+2. A claimable kind that no library claims: waits in Inbox (`needs_review`) whatever its confidence, with no suggested library. A person picks a library that fits (`POST /api/inbox/:id`, section 8).
+3. Claimed, but the library's folder is missing or cannot be written: waits in Inbox with the reason "The library's folder is missing."
+4. Claimed, High confidence and `auto_sort` on: moved to `<library folder>/<layout>`; the item gets that `library_id`.
+5. Claimed, Low confidence or `auto_sort` off: waits in Inbox with the suggestion.
+
+The sorter reads the claims when it decides about each file, under the library's move lock (section 5), so a claim change applies from the next file on.
+
+A stored suggestion (`items.suggestion_json`) holds only the classification: kind, title, year, show, season, episode, episode title, date, confidence and reason. The library it points at is worked out every time it is read, from the claims at that moment and the reader's access (`Classification.library_id`, section 8). So moving a claim to another library, or deleting the library that held it, re-points or clears every waiting suggestion at once, and nothing stored goes stale. Claims decide where new files go; they never move files that are already in a library.
+
+Auto-sort (setting `auto_sort`, default on) moves High-confidence results immediately. Waiting results become items with `status = needs_review`, stay in place, and appear in Inbox with the suggestion prefilled. A person who can see the item (section 7) accepts it (into the suggested library or another one that fits, or into Other files), edits and accepts, or ignores it (marks it reviewed and leaves the file where it is).
+
+### Files already in a library (indexed in place)
+
+A file that is in a library folder without having been sorted there (it was in the folder when the library was made, or someone copied it in) is indexed in place. What the library indexes and what each file is follow from its type and structure:
+
+| Library | Indexed | `category` | Metadata from the path |
+|---|---|---|---|
+| Video, Episodes | Video files, except samples and anything inside an extras folder below the show folder (`Extras`, `Featurettes`, `Behind The Scenes`, `Deleted Scenes`, `Interviews` and the rest of the indexer's list, any case) | `episode` | Show from the first folder below the library folder, else the file's title, else the file name; season from a `Season NN` folder or the file name; episode and episode title from the file name |
+| Video, One-offs | Depends on the claims, below | `movie` or `home_video` | Movies: title and year from the `Title (Year)` folder or the file name. Home videos: date from the file name, else the file time |
+| Photos | Photo and video files (phone clips live with the camera roll) | `photo` | Date from the file name, else the file time; EXIF or QuickTime dates replace it after the probe |
+
+For a One-offs library:
+- Claims camera videos and not movies: video and photo files are indexed, all as `home_video`.
+- Claims movies and not camera videos: video files only (samples and anything in an extras folder below a title folder excepted), as `movie`.
+- Claims both or neither: video files are `home_video` when they have camera evidence (rule 3) or sit under a `YYYY/MM/` folder, `movie` otherwise; photo files (artwork and anything inside a `Title (Year)` folder excepted) are `home_video`.
+
+A file keeps the category it was given when it was first indexed; changing claims later affects only files indexed after the change. Files a library does not index (a PDF in a Video library) are left alone and shown nowhere. When a library is made from an existing folder, its items are indexed again under these rules: category and metadata are read again from the path, ids, favourites and progress are kept, and items the library does not index leave the index (the files stay).
+
+The four starting libraries reproduce the old fixed folders exactly: Movies claims movies (so: videos only, `movie`), Shows is Episodes (`episode`), Home Videos claims camera videos (videos and photos, `home_video`), Photos is Photos (`photo`).
 
 ## 5. Processes and pipelines
 
@@ -259,7 +321,20 @@ items(id PK, rel_path UNIQUE, kind, category, status CHECK(status IN ('ready','n
       title, sort_title, year, show_name, season, episode, episode_title,
       size, mtime, quick_hash, mime, duration_s REAL, width, height, media_json, taken_at, camera,
       thumb_state CHECK(thumb_state IN ('pending','ready','failed','none')), suggestion_json NULL,
-      favorite INTEGER DEFAULT 0, source_download_id NULL, added_at, updated_at)
+      favorite INTEGER DEFAULT 0, source_download_id NULL, missing_since NULL,
+      library_id NULL → libraries ON DELETE SET NULL,
+      place CHECK(place IN ('library','other_files','incoming','folder','trash')),
+      added_by NULL → users ON DELETE SET NULL, added_at, updated_at,
+      CHECK((place = 'library') = (library_id IS NOT NULL)))
+libraries(id PK, name /* 1-40 chars, unique ignoring case */, icon /* a name from the icon list, section 8 */,
+          content_type CHECK(content_type IN ('video','photos')),
+          structure NULL CHECK(structure IN ('episodes','one_offs')) /* set for video, NULL for photos */,
+          folder UNIQUE COLLATE NOCASE /* one path component under STASH_ROOT, never changes */,
+          visibility CHECK(visibility IN ('everyone','selected')), position INTEGER /* 0..n-1: sidebar and Home order */,
+          created_by NULL → users ON DELETE SET NULL, created_at, updated_at,
+          CHECK((content_type = 'video') = (structure IS NOT NULL)))
+library_claims(category PK CHECK(category IN ('movie','episode','home_video','photo')), library_id → libraries ON DELETE CASCADE)
+library_members(library_id → libraries ON DELETE CASCADE, user_id → users ON DELETE CASCADE, PRIMARY KEY(library_id, user_id))
 item_progress(user_id, item_id, position_s REAL, duration_s REAL, finished INTEGER, updated_at, PRIMARY KEY(user_id, item_id))
 downloads(id PK, kind CHECK(kind IN ('torrent','http','upload')), name, source /* URL without query secrets, magnet, or filename */,
           state CHECK(state IN ('queued','downloading','paused','seeding','completed','sorting','sorted','failed','cancelled')),
@@ -290,6 +365,33 @@ Settings keys and defaults:
  "trash_retention_days": 30}
 ```
 
+Library columns and tables (migration `0002_libraries.sql`):
+- `items.place`: `library` (under a library folder; `library_id` set), `other_files` (under `Other/`), `incoming` (under `Inbox/` or `Downloads/Completed/`, waiting or ignored), `folder` (in a top-level folder that is not a library folder, or loose in the stash root), `trash` (in `.popcornstash/Trash`). `library_id` and `place` follow the path (section 3.1).
+- `items.added_by`: the person whose download, link, upload or share brought the file in (`downloads.created_by` of the download the sorter took it from), kept across moves and renames. NULL for files that appeared in a folder on their own (copied into `Inbox/` or onto the share). It decides who sees Other files and incoming items (section 7).
+- `library_claims`: the primary key on `category` is what makes "each kind claimed by at most one library" hold. Fit (movie and camera video to Video One-offs, TV episode to Video Episodes, photo to Photos) is checked by the server on every write.
+- `library_members`: the members who see a library whose `visibility` is `selected`. Only members are listed; owners see every library. Rows of a person who becomes an owner are kept and apply again if they return to the member role.
+- Indexes: `items(library_id, status, added_at DESC)`, `items(library_id, category, status)`, `items(place, status)`, `items(added_by)`, `library_members(user_id)`, and a unique index on `libraries(name COLLATE NOCASE)`. `position` is not unique in the schema; every write that changes order rewrites all positions as 0..n-1 in one transaction.
+- Every library write (create, edit, claims, order, access, delete) runs in one transaction together with the `library_id`/`place` updates of the items it affects.
+
+### Migration of existing data
+
+`0002_libraries.sql` runs once, on an existing install and on every fresh install right after `0001_init.sql`, so every stash starts with the same four libraries. It changes nothing on disk.
+
+1. Creates `libraries`, `library_claims` and `library_members`, and rebuilds `items` with `library_id`, `place` (NOT NULL) and `added_by` (SQLite's copy-and-rename rebuild, since a table CHECK cannot be added in place; ids and every other column are copied as they are), then the indexes.
+2. Inserts the four libraries, visible to everyone, with fixed ids:
+
+| id | name | icon | content_type | structure | claims | folder | position |
+|---|---|---|---|---|---|---|---|
+| `0192a000-0000-7000-8000-000000000001` | Movies | `film` | `video` | `one_offs` | `movie` | `Movies` | 0 |
+| `0192a000-0000-7000-8000-000000000002` | Shows | `tv` | `video` | `episodes` | `episode` | `Shows` | 1 |
+| `0192a000-0000-7000-8000-000000000003` | Home Videos | `clapperboard` | `video` | `one_offs` | `home_video` | `Home Videos` | 2 |
+| `0192a000-0000-7000-8000-000000000004` | Photos | `image` | `photos` | NULL | `photo` | `Photos` | 3 |
+
+3. Assigns every item by folder: `trash` when `status = 'trashed'`; otherwise `library` with the matching `library_id` when the first path component is one of the four folders, `other_files` for `Other/`, `incoming` for `Inbox/` and `Downloads/Completed/`, `folder` for everything else. `category`, metadata, favourites and progress stay as they are.
+4. Fills `added_by` from `downloads.created_by`, through `items.source_download_id`, else through `download_items`.
+
+What changes for existing households: items in other top-level folders (seen by everyone before) are seen by the owner only until the owner makes their folder a library, and Other files and incoming items are seen by the owner and the person who added them (section 7). Everything in the four starting libraries looks and sorts exactly as before.
+
 ## 7. Security model
 
 - **Passkeys only.** No passwords. webauthn-rs, user verification required, discoverable credentials (passkeys) so sign-in needs no username. RP ID = host of `STASH_PUBLIC_URL`.
@@ -307,11 +409,49 @@ Settings keys and defaults:
 - **Secrets at rest:** VPN files 0600; the database 0600; `cache/`, `secrets/`, `pending-torrents/` and `.popcornstash/uploads/` 0700. Device token plaintext is shown once (pairing delivers it once, then the row is wiped).
 - **Logs:** request spans (debug level) carry the method and the path only; invite and recovery codes in paths are replaced with `<redacted>` and query strings are never logged.
 - **Engine answers:** the web server reads at most 8 MiB from the engine and passes on at most 300 characters (one line) of any engine message, so a compromised engine cannot exhaust its memory or put a long text in front of people.
-- **Roles:** owner can do everything. Member can browse, play, upload, add downloads, review Inbox, manage own passkeys/sessions/devices. Owner-only: VPN, settings, people/invites, trash emptying, deleting items, audit log.
+- **Roles:** owner can do everything and sees every library, Other file and folder. Member can browse and play the libraries they can see, upload, add downloads, review the Inbox items they can see, and manage own passkeys/sessions/devices. Owner-only: libraries (create, edit, claims, access, order, delete), folders not in a library, Organize, VPN, settings, people/invites, trash, deleting items, audit log.
+- **Android passkeys:** when `STASH_ANDROID_ASSETLINKS` lists the app (`com.thekozugroup.popcornstash` with `delegate_permission/common.get_login_creds`), the server also accepts the WebAuthn origin `android:apk-key-hash:<base64url of the SHA-256 certificate fingerprint>` for each `sha256_cert_fingerprints` entry of that statement, with the same RP ID. No other `android:` origin is accepted.
+
+### Library access
+
+One rule decides who sees an item, and every route that returns, counts or touches items applies it. It lives once in `stash-core` (`library::access`: a SQL predicate `visible_items(user)` used inside every item query, and `can_see(user, item)` for single items), so no handler writes its own check.
+
+Owners (role `owner`) see every item. A member sees an item when:
+
+| `items.place` | Visible to a member when |
+|---|---|
+| `library` | the library's `visibility` is `everyone`, or the member is in `library_members` for it |
+| `other_files` | `added_by` is the member |
+| `incoming` | `added_by` is the member, or the item waits for review (`needs_review`), its kind is claimed, and the claiming library is visible to the member |
+| `folder`, `trash` | never |
+
+A library is visible to a member when its `visibility` is `everyone` or the member is listed; otherwise it does not exist for them.
+
+Enforcement, route by route (an invisible item or library is "not found": the same 404 `not_found` and message as for one that never existed, "That item no longer exists." or "That library no longer exists.", never 403):
+- `GET/PATCH /api/items/:id`, `/thumb`, `/file`, `/view`, `/playback`, `/progress`, `/organize` (owner only anyway): `can_see` before anything else, on every request.
+- `GET /api/items`, `/api/libraries/:id/shows`, `/shows/:name`, `/timeline`, `/api/home`, `/api/inbox`: the predicate is part of the query, so lists, counts, cursors, `next_cursor`, search (`q`), favourites (`favorite=true`), years and totals only ever cover visible items. A list filtered by an invisible `library_id` answers 404.
+- Shows: grouped per library. A show's seasons, episode count, poster and `next_episode_id` / `previous_episode_id` come only from episodes in the same library, so an episode in another library (visible or not) is never offered as next and never pictures the show.
+- Continue watching and progress: only visible items are returned. Progress rows of an item a person can no longer see are kept and come back if access returns; `PUT /progress` on an invisible item answers 404 and saves nothing.
+- Favourites (`items.favorite`, one flag the household shares) can be read and set only on visible items.
+- HLS: a session belongs to the person who started it; another person's requests for it answer 404. Every playlist, segment and `DELETE /api/stream/:session` request checks that the session's person still sees the item; if not, it answers 404 and the server stops the session (ffmpeg killed, folder deleted).
+- Downloads (`GET /api/downloads`, the `download` event, pause, resume, delete): `item_ids` and `destinations` list only visible items. A member who did not create a download does not see it at all once it has linked items and none of them is visible to them (a sorted download whose files all went to libraries or Other files they cannot see); pause, resume and delete then answer 404. Downloads still in progress, and finished ones with no linked items, are seen by everyone with `downloads:read`, as before.
+- Trash: owner only (unchanged), so it needs no filter.
+- Library definitions: members get only visible libraries and never `folder`, `visibility` or `member_ids` (null in `Library`).
+- Live events: see below.
+
+**While watching.** Access is checked on every request, not once per playback: after a library is hidden from someone, their next HLS playlist or segment request, next direct-play range request and next progress save answer 404, and the HLS session is stopped. Clients then say "This video is no longer available." and go back. Seconds already buffered on the device may still play.
+
+**Caching.** Thumbnails, photo views and files are served `private`. What a device already loaded stays in its own cache until it is cleared; losing access stops every new request, not what a browser already holds. The service worker caches no `/api/*` response.
+
+**Live events.** Every published event carries, server side only, what decides who may see it: the item's `library_id`, `place`, `added_by`, `status` and kind for `library` and `job` events; the item ids for `download` events. Each SSE connection keeps its caller's role and visible library ids and reloads them whenever a `libraries` event passes (and at the 60 s re-check), then:
+- `library` and `job` events about an item go only to connections that can see the item; `job` events without an item (a scan) go to every connection with `library:read`. A change that takes an item out of someone's view (Organize into another library, a claim or access change, a move found by a rescan) reaches them as `library` `{type:"removed", item_id}`; one that brings it into view reaches them as `added`.
+- `download` events are rewritten per connection exactly as `GET /api/downloads` would answer that person, and not sent when the download is hidden from them.
+- `inbox` `{count}` is computed per connection: the number of waiting items that person can see.
+- `libraries` `{}` goes to every connection with `library:read` whenever any library is created, edited, reordered, deleted, or its claims or people change. It carries nothing; clients refetch `GET /api/libraries` (and the page they show).
 
 ## 8. HTTP API
 
-JSON, snake_case. Errors: `{"error": {"code": "not_found", "message": "Human readable sentence."}}` with matching HTTP status. Codes: `bad_request`, `unauthorized`, `forbidden`, `not_found`, `method_not_allowed` (405), `conflict`, `payload_too_large` (413), `rate_limited`, `setup_required`, `passkeys_unavailable`, `vpn_unavailable`, `internal`.
+JSON, snake_case. Errors: `{"error": {"code": "not_found", "message": "Human readable sentence.", "field": "name"}}` with matching HTTP status. Codes: `bad_request`, `unauthorized`, `forbidden`, `not_found`, `method_not_allowed` (405), `conflict`, `payload_too_large` (413), `rate_limited`, `setup_required`, `passkeys_unavailable`, `vpn_unavailable`, `internal`. `field` is present only when one request field is at fault; it names it as the request spells it (`name`, `icon`, `folder.name`, `claims`, `library_id`, `member_ids`), so a form can put the message under that field. Messages are complete sentences meant for people and may be shown as they are.
 
 Lists use cursor pagination: `?limit=50&cursor=<opaque>` → `{"items": [...], "next_cursor": "..." | null}`.
 
@@ -325,13 +465,33 @@ Item {
   id, kind: "video"|"photo"|"audio"|"other", category: "movie"|"episode"|"home_video"|"photo"|"other",
   status: "ready"|"needs_review"|"missing"|"trashed", title, year|null, show_name|null, season|null, episode|null,
   episode_title|null, rel_path, size, duration_s|null, width|null, height|null, taken_at|null, camera|null,
-  thumb: string|null /* URL */, favorite: bool, added_at, progress: {position_s, duration_s, finished}|null
+  thumb: string|null /* URL */, favorite: bool, added_at, progress: {position_s, duration_s, finished}|null,
+  library_id: string|null, place: "library"|"other_files"|"incoming"|"folder"|"trash"
 }
 ItemDetail = Item & { media: MediaSummary|null, mime|null, suggestion: Classification|null, source_download_id|null,
-  next_episode_id|null, previous_episode_id|null }
-Classification { category, title, year, show_name, season, episode, episode_title, taken_at, confidence: "high"|"low", reason, destination: string /* rel path */ }
+  next_episode_id|null, previous_episode_id|null /* same library only */ }
+Classification { category, title, year, show_name, season, episode, episode_title, taken_at, confidence: "high"|"low", reason,
+  place: "library"|"other_files"|null /* null: no library the reader can see claims this kind */,
+  library_id: string|null /* the claiming library, worked out when read; null when unclaimed or not visible to the reader */,
+  destination: string|null /* rel path the file would get; null when place is null */ }
 Download { id, kind: "torrent"|"http"|"upload", name, source, state, progress, total_bytes|null, done_bytes,
-  down_bps, up_bps, peers|null, eta_s|null, error|null, created_at, completed_at|null, item_ids: string[] }
+  down_bps, up_bps, peers|null, eta_s|null, error|null, created_at, completed_at|null, item_ids: string[] /* visible only */,
+  destinations: [{place: "library"|"other_files"|"incoming", library_id: string|null, count: number}] /* where its visible items are now, grouped, in first-seen order */ }
+LibraryIcon = string /* one of the names in the icon list below */
+Library {
+  id, name, icon: LibraryIcon, content_type: "video"|"photos", structure: "episodes"|"one_offs"|null /* null for photos */,
+  claims: ("movie"|"episode"|"home_video"|"photo")[],
+  layout: "posters"|"frames"|"series"|"timeline" /* how clients draw it, below */,
+  position: number, item_count: number /* ready items */, show_count: number|null /* episodes structure only */,
+  created_at, updated_at,
+  /* owners only; null for members: */
+  folder: string|null, visibility: "everyone"|"selected"|null, member_ids: string[]|null,
+  folder_state: "ok"|"missing"|null, is_empty: boolean|null /* type and structure can change only while true */
+}
+UnassignedFolder { name, item_count, video_count, photo_count,
+  suggested: {content_type: "video"|"photos", structure: "episodes"|"one_offs"|null} }
+HomeLibrary { library: Library, recent: Item[] /* up to 12 newest ready items, newest first */,
+  show_posters: {[show_name]: item_id} /* for each show with an episode in recent, from this library */ }
 VpnStatus { configured: bool, reachable: bool /* torrentd answered */, state: "connected"|"connecting"|"disconnected"|"error"|"not_configured"|"unreachable",
   provider: "nordvpn"|"wireguard"|"openvpn"|null, protocol: "wireguard"|"openvpn"|null, label|null, server|null, country|null,
   public_ip|null, protected: bool|null, since|null, error|null, kill_switch: bool, allow_no_vpn: bool,
@@ -366,11 +526,22 @@ VpnStatus { configured: bool, reachable: bool /* torrentd answered */, state: "c
 | GET/POST/DELETE | `/api/tokens[/:id]` | full | create `{name, scopes}` → `Token & {token}` (once) |
 | GET | `/api/pairing/pending` | full | → `[{pairing_id, user_code, client_name, client_kind, ip, created_at}]` |
 | POST | `/api/pairing/approve` / `/deny` | full | `{user_code}` → `{ok:true}` |
-| GET | `/api/library/summary` | library:read | → `{counts:{movies, shows, episodes, home_videos, photos, other}, total_bytes, needs_review, recently_added: Item[] /* up to 12 newest per category, photos included, newest first */, show_posters: {[show_name]: item_id} /* poster of each show with an episode in recently_added */, continue_watching: Item[]}` |
-| GET | `/api/items` | library:read | `?category&q&sort=added|title|taken|size&order=asc|desc&favorite&year&status&cursor&limit` → page of `Item`. `status` defaults to `ready`; `status=trashed` is refused (400, the trash has its own route) |
+| GET | `/api/home` | library:read | → `{continue_watching: Item[] /* up to 12, visible items in any library */, libraries: HomeLibrary[] /* every library the caller sees, in order */, other_files_count, inbox_count /* waiting items the caller sees */, total_bytes /* of the caller's visible ready items */}` |
+| GET | `/api/libraries` | library:read | → `{libraries: Library[]}`: the libraries the caller sees, in order |
+| GET | `/api/libraries/:id` | library:read | → `Library` (404 when not visible) |
+| POST | `/api/libraries` | owner | create (Libraries, below) → 201 `Library` |
+| PATCH | `/api/libraries/:id` | owner | edit (below) → `Library` |
+| PUT | `/api/libraries/order` | owner | `{ids: string[]}` (every library exactly once) → `{libraries: Library[]}` |
+| DELETE | `/api/libraries/:id` | owner | → 204 (files untouched, below) |
+| GET | `/api/libraries/folders` | owner | → `{folders: UnassignedFolder[]}` (top-level folders not in a library, by name) |
+| GET | `/api/libraries/icons` | library:read | → `{icons: LibraryIcon[]}` in picker order |
+| GET | `/api/libraries/:id/shows` | library:read | Episodes libraries → `[{show_name, item_count, season_count, poster_item_id, last_added_at}]`; other libraries 400 |
+| GET | `/api/libraries/:id/shows/:name` | library:read | → `{show_name, poster_item_id|null, seasons:[{season, episodes: Item[]}]}` (this library's episodes of that show; 404 when it has none) |
+| GET | `/api/libraries/:id/timeline` | library:read | Photos libraries, `?cursor&limit` → `{months:[{month:"2024-06", count, items: Item[]}], next_cursor}`; other libraries 400 |
+| GET | `/api/items` | library:read | `?library_id&place&category&q&sort=added|title|taken|size&order=asc|desc&favorite&year&status&cursor&limit` → page of visible `Item`. `status` defaults to `ready`; `status=trashed` is refused (400, the trash has its own route). `library_id` of a library the caller cannot see → 404. `place=other_files` lists Other files; `place=folder` lists folders not in a library (owners; empty for members) |
 | GET | `/api/items/:id` | library:read | → `ItemDetail` |
 | PATCH | `/api/items/:id` | full | `{title?, year?, favorite?, show_name?, season?, episode?, episode_title?}` → `ItemDetail` (metadata only, no move) |
-| POST | `/api/items/:id/organize` | full | `{category, title?, year?, show_name?, season?, episode?}` → `ItemDetail` (moves the file; explicit action) |
+| POST | `/api/items/:id/organize` | owner | `{place?: "library"|"other_files", library_id?, category?, title?, year?, show_name?, season?, episode?}` → `ItemDetail` (moves the file; explicit action; target rules as for Inbox accept, below) |
 | DELETE | `/api/items/:id` | owner | → 204 (moves to `.popcornstash/Trash`) |
 | GET | `/api/items/:id/thumb?size=sm|lg` | library:read | → `image/webp` (404 when not ready) |
 | GET | `/api/items/:id/file?download=1` | library:read | → original bytes, Range supported |
@@ -379,11 +550,8 @@ VpnStatus { configured: bool, reachable: bool /* torrentd answered */, state: "c
 | GET | `/api/stream/:session/index.m3u8`, `/api/stream/:session/:segment` | library:read | HLS playlist/segments |
 | DELETE | `/api/stream/:session` | library:read | → 204 |
 | PUT | `/api/items/:id/progress` | library:read | `{position_s, duration_s}` → 204 |
-| GET | `/api/shows` | library:read | → `[{show_name, item_count, season_count, poster_item_id, last_added_at}]` |
-| GET | `/api/shows/:name` | library:read | → `{show_name, poster_item_id|null, seasons:[{season, episodes: Item[]}]}` |
-| GET | `/api/photos/timeline` | library:read | `?cursor&limit` → `{months:[{month:"2024-06", count, items: Item[]}], next_cursor}` |
-| GET | `/api/inbox` | library:read | → `{items: ItemDetail[]}` (status needs_review) |
-| POST | `/api/inbox/:id` | full | `{action:"accept"|"ignore", category?, title?, year?, show_name?, season?, episode?}` → `ItemDetail` |
+| GET | `/api/inbox` | library:read | → `{items: ItemDetail[] /* waiting (needs_review), oldest first */, ignored: ItemDetail[] /* ignored, still in Inbox/ or Downloads/Completed/ */}`, visible items only |
+| POST | `/api/inbox/:id` | full | `{action:"accept"|"ignore", place?: "library"|"other_files", library_id?, category?, title?, year?, show_name?, season?, episode?}` → `ItemDetail` (accept rules below; accepting an ignored item works the same) |
 | POST | `/api/library/rescan` | full | → 202 `{job_id}` |
 | GET | `/api/trash` / POST `/api/trash/:id/restore` / DELETE `/api/trash` | owner | list / restore / empty |
 | GET | `/api/downloads` | downloads:read | `?state=active|finished|all&limit` → `{items: Download[]}` |
@@ -408,11 +576,85 @@ VpnStatus { configured: bool, reachable: bool /* torrentd answered */, state: "c
 | GET | `/api/users` / PATCH `/api/users/:id` `{role}` / DELETE `/api/users/:id` | owner | |
 | GET/POST/DELETE | `/api/invites[/:id]` | owner | create `{role, expires_in_hours}` → `{id, url, code, role, expires_at}` |
 | GET | `/api/audit?limit&cursor` | owner | → page of `{id, at, user, event, detail, ip}` |
-| GET | `/api/events` | any | SSE: `download` (Download), `library` `{type:"added"|"updated"|"removed", item_id}`, `vpn` (VpnStatus), `inbox` `{count}`, `job` `{kind, state, item_id}` |
+| GET | `/api/events` | any | SSE, filtered per connection (section 7, Live events): `download` (Download), `library` `{type:"added"|"updated"|"removed", item_id, library_id|null}`, `libraries` `{}`, `vpn` (VpnStatus), `inbox` `{count}`, `job` `{kind, state, item_id}` |
 
 The VPN setup routes (`POST /api/vpn/nordvpn`, `/api/vpn/wireguard` and `/api/vpn/openvpn`) answer 409 `conflict` while torrents run without a VPN (`STASH_ALLOW_NO_VPN`: the status reports `allow_no_vpn: true` with `torrents_off: false`), before reading the body or contacting NordVPN, with the message "Torrents run without a VPN on this server, so a VPN saved here would not be used. To use one, remove STASH_ALLOW_NO_VPN from the container settings and recreate the container." `DELETE /api/vpn` still removes a saved VPN then.
 
-Non-API routes: `/` and all client routes serve the SPA (`index.html`, `Cache-Control: no-cache`); `/assets/*` immutable; `/manifest.webmanifest`; `/sw.js`; `/share` (PWA share target: Android posts `multipart/form-data` with `title`, `text`, `url` and `files` to `/share`. The service worker (`sw.js`) answers it. Files are kept in Cache Storage on the device (`popcornstash-shared-files-v1`, deleted once uploaded or cancelled, after 7 days, or when anyone signs out on the device) and the page opens `/share?files=<id>`. The web app remembers interrupted uploads in localStorage (`popcornstash.uploads.v1`) with the user id of the person who started each one, and continues them only for that person; signing out cancels that person's partial uploads (`DELETE /api/uploads/:id`) and forgets them. A share without files opens `/share?title&text&url`, and a failure opens `/share?failed=files`. The server serves only GET; a POST that reaches it gets 405.); `GET /third-party-licenses.txt` (the web app's npm notices, image builds); `/.well-known/assetlinks.json` (from `STASH_ANDROID_ASSETLINKS`, future Android passkeys).
+### Libraries
+
+These replace the fixed-category routes, which are removed and answer 404: `GET /api/library/summary` (now `GET /api/home`), `GET /api/shows` and `/api/shows/:name` (now per library), `GET /api/photos/timeline` (now per library). `GET /api/items?category=` still filters by kind, across the libraries the caller sees.
+
+**Create** `POST /api/libraries` (owner):
+```json
+{"name": "Kids", "icon": "baby", "content_type": "video", "structure": "episodes",
+ "claims": [], "folder": {"mode": "new", "name": "Kids"},
+ "visibility": "selected", "member_ids": ["0192..."]}
+```
+- `name` (required): trimmed, 1 to 40 characters, no control characters; unique among libraries ignoring case; not one of the fixed places (`Home`, `Other files`, `Inbox`, `Downloads`, `Settings`, ignoring case).
+- `icon` (required): exactly one name from the icon list (case-sensitive).
+- `content_type` (required): `video` or `photos`. `structure`: required (`episodes` or `one_offs`) for video, absent or null for photos.
+- `claims` (default `[]`): kinds that fit (section 4). A kind another library claims moves to this one in the same transaction; the other library loses it. Clients show the current holder beside each choice before saving ("Sorted into Films now").
+- `folder` (required): `{"mode": "new", "name"}` makes the folder; `{"mode": "existing", "name"}` takes a folder from `GET /api/libraries/folders`. Rules in section 3.1. Web and Android prefill a new folder's name with the library name.
+- `visibility` (default `everyone`): `everyone` or `selected`. `member_ids` (default `[]`): members who see a `selected` library; ignored for `everyone` and kept for a later switch back. Owners always see every library and cannot be listed.
+- `position` (optional): where to insert; default last. At most 24 libraries.
+- Effects: the folder is created or taken and the answer comes back at once. A taken folder's items join the library in the same transaction; a scan job then indexes the folder under the library's rules, so `item_count` grows and `library` events report items as it runs. A `libraries` event is sent and an audit entry `library_created` is written.
+
+**Edit** `PATCH /api/libraries/:id` (owner): any of `name`, `icon`, `content_type`, `structure`, `claims` (the full new set), `visibility`, `member_ids` (the full new set). `folder` is refused. Changing `content_type` or `structure` is allowed only while the library holds no items (`is_empty`: no item with this `library_id` in any status, so missing files count); the folder is then indexed again under the new rules. Claims are checked against the type and structure after the change, so one request may change both; a listed kind that another library holds moves here, as in create, and a kind left out is no longer claimed by anyone. Visibility and people apply at once to every route and open stream (section 7). Audit entry `library_changed` with the names of the fields changed.
+
+**Order** `PUT /api/libraries/order` (owner): `{ids}` must list every library exactly once; positions become 0..n-1 in that order. Audit entry `libraries_reordered`.
+
+**Delete** `DELETE /api/libraries/:id` (owner): removes the library, its claims and its people. Its items get `library_id` NULL and `place = 'folder'` (seen by the owner only), keeping their ids, favourites and progress; the folder and every file stay. Its claimed kinds become unclaimed, so new files of those kinds wait in Inbox, and every waiting suggestion that pointed at it now has no library. Open HLS sessions of members who no longer see the item stop at their next request. Making a library from the same folder later brings the items back with their history. Audit entry `library_deleted` with the name and folder.
+
+**Folders** `GET /api/libraries/folders` (owner): every top-level folder that is not a library folder or reserved, with counts of the items indexed in it and a suggested type: `photos` when most of its items are photos; `video` + `episodes` when most of its videos are episodes; otherwise `video` + `one_offs`. "Make a library" sends a create with `folder.mode = "existing"`.
+
+**Icons** `GET /api/libraries/icons`: the curated list below, in picker order. The list is a constant in `stash-core` (`library::LIBRARY_ICONS`), checked on every create and edit. Each name is a Lucide icon name (kebab case) from the Lucide release the web app pins (`lucide-react` 1.55.0); the web draws it with lucide-react and Android ships the same glyphs as vector drawables from the same release (section 10). The fixed places' icons (`house`, `file-text`, `inbox`, `arrow-down-to-line`, `settings`) are not in the list, so a library never looks like Home or Inbox. Two libraries may share an icon. A client that meets a name it does not know (a newer server) draws `folder`. Adding or removing a name is a contract change for the server, web and Android together.
+
+```
+film, clapperboard, tv, popcorn, projector, video, drama,
+image, images, camera, aperture,
+users, baby, heart, cake, party-popper, graduation-cap, gift,
+plane, tree-palm, mountain-snow, tent, sun, snowflake,
+gamepad-2, music, book-open, trophy, paw-print, bike,
+star, folder
+```
+
+**Layout** (`Library.layout`, worked out by the server, so web and Android agree): `timeline` for Photos; `series` for Video Episodes; for Video One-offs, `frames` when it claims camera videos and not movies, `posters` when it claims movies, and otherwise (claims neither) `posters` when at least half of its ready videos are movies, else `frames`.
+
+**Errors** for library writes:
+
+| Situation | Status | `code` | `field` |
+|---|---|---|---|
+| Not an owner | 403 | `forbidden` | |
+| Library missing or not visible | 404 | `not_found` | |
+| Name empty, longer than 40 characters, or with control characters | 400 | `bad_request` | `name` |
+| Name used by another library or a fixed place | 409 | `conflict` | `name` |
+| Icon not in the list | 400 | `bad_request` | `icon` |
+| Unknown `content_type`, or `structure` missing for video or set for photos | 400 | `bad_request` | `content_type` or `structure` |
+| Type or structure change while the library holds items: "Change the type only while the library is empty. Move its files out first, or make a new library." | 409 | `conflict` | `content_type` or `structure` |
+| A claim that does not fit the type and structure, or an unknown kind | 400 | `bad_request` | `claims` |
+| `folder` in an edit: "A library's folder cannot change." | 400 | `bad_request` | `folder` |
+| Folder name invalid or reserved | 400 | `bad_request` | `folder.name` |
+| New folder: something with that name exists | 409 | `conflict` | `folder.name` |
+| Existing folder: not found, not a directory, or a symlink | 404 | `not_found` | `folder.name` |
+| Existing folder: already a library's folder | 409 | `conflict` | `folder.name` |
+| The folder cannot be created or read (permissions, read-only share): the layout sentence that names the folder and PUID:PGID | 409 | `conflict` | `folder.name` |
+| `member_ids` with an unknown id or an owner | 400 | `bad_request` | `member_ids` |
+| A 25th library | 409 | `conflict` | |
+| Order that does not list every library exactly once | 400 | `bad_request` | `ids` |
+
+**Inbox accept and Organize: the target.** `POST /api/inbox/:id` with `action: "accept"` and `POST /api/items/:id/organize` take the same target fields:
+- `place` omitted: the suggestion decides (`other_files` for `other`; otherwise the library in `suggestion.library_id`). When the suggestion has no library the reader can see: 400 `bad_request`, field `library_id`, "Choose a library for this file."
+- `place: "library"` with `library_id` (or the suggested one): the caller must see the library (else 404, field `library_id`). The file must fit it:
+  - Photos: a photo or video file; becomes `photo`, laid out `YYYY/MM/`.
+  - Video, Episodes: a video file; becomes `episode`; needs a show name and an episode number (from the body, else the suggestion; season 1 when none): missing ones are 400 with field `show_name` or `episode`.
+  - Video, One-offs: a video file; becomes `category` from the body when that is `movie` or `home_video`, else the suggestion's kind when it is one of those, else the library's in-place kind (section 4); a movie needs a title.
+  - Anything else is 400, field `library_id`: "Photos go in a photos library." for a photo into a Video library, "Only videos and photos go in a library. This file goes in Other files." for songs and documents.
+- `place: "other_files"`: any file; becomes `other`, moved to `Other/<name>`.
+- Inbox accept on an item that is no longer waiting or ignored (accepted or moved by someone else a moment ago) is 409 `conflict` "That file was already sorted." Accept needs `full` and works for anyone who sees the item; Organize needs the owner and works on any item, wherever it is.
+
+"Accept all suggestions" (web Inbox, Android Downloads) accepts, one request per item, every waiting item whose suggestion has a `place`, oldest first, and leaves the rest with "Choose a library for N files." Items whose request fails stay listed with their error.
+
+Non-API routes: `/` and all client routes serve the SPA (`index.html`, `Cache-Control: no-cache`); `/assets/*` immutable; `/manifest.webmanifest`; `/sw.js`; `/share` (PWA share target: Android posts `multipart/form-data` with `title`, `text`, `url` and `files` to `/share`. The service worker (`sw.js`) answers it. Files are kept in Cache Storage on the device (`popcornstash-shared-files-v1`, deleted once uploaded or cancelled, after 7 days, or when anyone signs out on the device) and the page opens `/share?files=<id>`. The web app remembers interrupted uploads in localStorage (`popcornstash.uploads.v1`) with the user id of the person who started each one, and continues them only for that person; signing out cancels that person's partial uploads (`DELETE /api/uploads/:id`) and forgets them. A share without files opens `/share?title&text&url`, and a failure opens `/share?failed=files`. The server serves only GET; a POST that reaches it gets 405.); `GET /third-party-licenses.txt` (the web app's npm notices, image builds); `/.well-known/assetlinks.json` (from `STASH_ANDROID_ASSETLINKS`, Android passkeys, section 7).
 
 ## 9. Internal engine API (127.0.0.1:9091)
 
@@ -433,8 +675,24 @@ Bearer internal token on every route except `/livez`. The engine binds to 127.0.
 ## 10. Clients
 
 - **Web UI** (`web/`): React 19, Vite, TypeScript, Astryx (`@astryxdesign/core` + StyleX via `@astryxdesign/build/vite`) with a custom Popcorn theme. Built into `web/dist` and embedded in the binary (rust-embed). PWA manifest with a `share_target` (POST, multipart, files of any type) so Android Chrome can share links, photos, videos and other files to PopcornStash. Shared files are uploaded through the resumable upload queue after the person confirms. The service worker answers nothing else, and static routes send `/api/*` and `/assets/*` straight to the network.
-- **Chrome extension** (`extension/`): Manifest V3. Device pairing (section 8), context menu "Send to PopcornStash" for links/media/magnets, optional "send all browser downloads" with optional cookie forwarding (optional host permissions), popup with recent downloads.
-- **Android app:** later. Uses `login/finish` with `want_token` (a bearer session, section 7), device pairing with `client_kind: "android"`, the same API, and `/.well-known/assetlinks.json`. Until then, Android phones use the web app, installed from Chrome, and its share target.
+  - Sidebar (and the phone menu): Home, then every library the person sees (`GET /api/libraries`, in order, each with its icon and name), then Other files, Inbox, Downloads, Settings. The phone quick links are Home, the first three libraries the person sees, and Downloads.
+  - Routes: `/libraries/:id` (the library page for its `layout`), `/libraries/:id/shows/:name`, `/other` (Other files: `GET /api/items?place=other_files`), `/item/:id`, `/inbox`, `/downloads`, `/settings/libraries` (owner: the list, folders not in a library, sorting, rescan, trash), `/settings/libraries/new`, `/settings/libraries/:id`. `/settings/library` redirects to `/settings/libraries`.
+  - Old addresses redirect (replace, no history entry) to the library that claims the kind, when the person sees it, else to Home: `/movies` (movie), `/shows` and `/shows/:name` (episode, to `/libraries/:id/shows/:name`), `/home-videos` (home_video), `/photos` (photo).
+  - A `libraries` event refetches the list; a library page whose library disappears shows the not-found page with "Go to Home".
+- **Chrome extension** (`extension/`): Manifest V3. Device pairing (section 8), context menu "Send to PopcornStash" for links/media/magnets, optional "send all browser downloads" with optional cookie forwarding (optional host permissions), popup with recent downloads. It never reads library routes.
+- **Android app** (`android/`): Kotlin, Jetpack Compose, Material 3 themed with the Popcorn tokens (`android/DESIGN.md`), package `com.thekozugroup.popcornstash`, minSdk 28, latest stable compile and target SDK, edge to edge, light and dark from the system. Gradle Kotlin DSL with a version catalog; the wrapper is committed. It uses only the API in section 8, with `Authorization: Bearer` on every request, SSE included.
+  - **Server address:** `https://` only; `http://` is accepted for `localhost`, `127.0.0.1` and `10.0.2.2` in debug builds only. The address is reduced to scheme, host and port, then checked with `GET /api/health` (must answer `status: "ok"`) and `GET /api/auth/state`.
+  - **Pairing:** `POST /api/pairing/request` `{client_name: "<device model>", client_kind: "android"}`, show `user_code` large, open `verify_url` (`<server>/pair`) in a Custom Tab, poll `POST /api/pairing/poll` every `interval` seconds until 200 (store `token`; scopes `full`), 410 (say "Expired" or "Not allowed" with "Start again") or 404 (start again).
+  - **Passkeys:** offered only when `GET /.well-known/assetlinks.json` lists `com.thekozugroup.popcornstash` with `delegate_permission/common.get_login_creds`. `POST /api/auth/login/start` `{}` → Credential Manager `GetPublicKeyCredentialOption` with the `options.publicKey` JSON → `POST /api/auth/login/finish` `{flow_id, credential, want_token: true, device_name}` → `{user, token}` (a bearer session, section 7). The server accepts the app's `android:apk-key-hash:` origin (section 7).
+  - **Token storage:** encrypted with AES-GCM under a non-exportable Android Keystore key, kept in app-private storage excluded from cloud backup and device transfer (`dataExtractionRules`, `fullBackupContent`), never logged (no HTTP body or header logging in release builds; `Authorization` redacted in debug). A 401 on any request clears it and returns to sign-in. Sign out calls `POST /api/auth/logout`, cancels running uploads (`DELETE /api/uploads/:id`) and deletes the token and key.
+  - **Tabs:** Downloads (left), Home (centre, the start tab), Settings (right) in a floating toolbar; design in `android/DESIGN.md`.
+  - **Home:** `GET /api/home`. The carousel is `continue_watching`; below it every `HomeLibrary` with its icon, name and `recent`. A library opens with `GET /api/items?library_id=` (one-offs, `layout` posters or frames), `GET /api/libraries/:id/shows` and `/shows/:name` (series), or `/timeline` (photos, full-screen viewer with `/api/items/:id/view`). Other files (when `other_files_count > 0`) opens `GET /api/items?place=other_files`. Live updates from `library` and `libraries` events.
+  - **Item and player:** `GET /api/items/:id`; Media3 ExoPlayer. `POST /api/items/:id/playback` with this device's real decoder capabilities from `MediaCodecList` (`video_codecs` from `h264`, `hevc`, `av1`, `vp9`; `audio_codecs` from `aac`, `mp3`, `opus`, `flac`; `hdr` from the display's HDR capabilities and an HDR-capable decoder profile; `max_height` from the decoder and display), `start_s` from `progress.position_s` when resuming, `audio_index` when chosen. `direct`: play `url` with the bearer header (Range requests). `hls`: play `url` (the playlist; segments with the bearer header), `DELETE /api/stream/:session` when leaving. Progress `PUT /api/items/:id/progress` every 10 s while playing, on pause, on leaving and when the video ends. At the end, `next_episode_id` offers "Play next episode" (no automatic start). Picture-in-picture on leaving the app while playing (auto-enter on Android 12 and later). A 404 during playback (access removed, file gone) stops with "This video is no longer available."
+  - **Downloads:** `GET /api/downloads?state=all` and `GET /api/vpn/status`, then `download`, `vpn` and `inbox` events; pause, resume and remove (`DELETE /api/downloads/:id`); add a link or magnet (`POST /api/downloads`). Imports: `GET /api/inbox` (waiting and ignored), `POST /api/inbox/:id` to accept (with `library_id` and an edited `title`), ignore, or accept all (section 8). A finished download names where it went from `destinations`.
+  - **Share sheet:** `ACTION_SEND` and `ACTION_SEND_MULTIPLE`. Text with an `http(s)` link or a magnet goes to Downloads after a confirm (`POST /api/downloads`). Photos, videos and other files are accepted only as `content://` URIs; after the signed-in person confirms (the sheet names them), a WorkManager job uploads each through `POST /api/uploads`, `PUT /api/uploads/:id?offset=` in 16 MiB chunks and `/complete`, with a foreground notification showing progress. After an interruption it asks `GET /api/uploads/:id` for `received` and continues there. If the share's read grant is gone (the app was killed), the notification says "Share the file again to finish uploading." A job never continues under another person: signing out cancels it.
+  - **Events:** `GET /api/events` over OkHttp's SSE client with the bearer header, open only while the app is in the foreground, reconnecting after 1, 2, 5, 10 then every 30 seconds.
+  - **Settings:** `GET /api/me`, the server address and `/api/health` version, sign out. Owners: native library management with the same fields and rules as the web (`/api/libraries`, `/folders`, `/icons`, `/order`, `GET /api/users` for the people picker). VPN, people, devices, security and system open `<server>/settings/<section>` in a Custom Tab; the browser has its own sign-in, so the person signs in there with their passkey the first time. Members see Devices and Security there.
+  - **Tests:** JVM unit tests, Robolectric Compose UI tests and Roborazzi screenshots (no emulator on the build machine).
 
 ## 11. Behaviour details
 
@@ -446,7 +704,20 @@ Decisions made during implementation that clients rely on.
 - **Files:** library files are served with a sandboxed CSP; HTML, SVG, XML and JS are always sent as attachments so a downloaded page cannot run as the signed-in user. Thumbnail URLs with `v=` are immutable; without it they revalidate with ETags.
 - **Streams:** session ids are 32 lowercase hex characters. Segment timestamps start at 10 + 6n seconds so segments from restarted ffmpeg runs line up. Videos longer than 72 hours are refused. NVENC/QSV force IDR keyframes; a hardware encoder that fails falls back to libx264 for that encoder until restart.
 - **Events:** SSE re-checks the session or token every 60 s and closes the stream once it is gone. `job` events carry `kind` (`scan`, `probe`, `thumb`, `sort`) and `state` (`running`, `done`, `queued` for a retry, `failed`).
-- **Library:** rescans refuse to mark anything missing when the stash folder has no files but the database has items (an unmounted share), and they apply `trash_retention_days`. Items marked Ignore in the Inbox are never moved automatically. Media in the owner's own folders carries a suggestion so Organize can be prefilled. Episode items use `title` "Show S01E02" with `episode_title` separate. A show's poster is its first episode in season and episode order that has a thumbnail, else its first episode; `/api/shows`, `/api/shows/:name` and the summary's `show_posters` all use that choice, so a show has one picture everywhere.
+- **Library:** rescans refuse to mark anything missing when the stash folder has no files but the database has items (an unmounted share), and they apply `trash_retention_days`. Items marked Ignore in the Inbox are never moved automatically. Media in the owner's own folders carries a suggestion so Organize can be prefilled. Episode items use `title` "Show S01E02" with `episode_title` separate. A show's poster is its first episode in season and episode order that has a thumbnail, else its first episode, counting only that library's episodes; `/api/libraries/:id/shows`, `/shows/:name` and `HomeLibrary.show_posters` all use that choice, so a show has one picture everywhere in a library.
+- **Libraries, edge cases:**
+  - *Two libraries and one folder:* impossible. `folder` is unique ignoring case, a folder already used by a library is refused (409, `folder.name`), and a symlinked folder is refused, so two names cannot reach one directory.
+  - *Nested folders:* only top-level folders can be libraries. A subfolder of a library folder belongs to that library; a subfolder of a folder that is not a library is part of that folder and cannot become a library by itself (the owner moves it to the top level on disk first).
+  - *A claim moving to another library:* the claim moves in one transaction (create or edit with that kind). Files sorted before stay where they are. Items waiting in Inbox now suggest the new library to the people who can see it, and stop showing a library to people who cannot (for them they are no longer visible unless they added them). A sort already deciding finishes with the claims it read.
+  - *Changing type or structure when not empty:* refused with 409. The owner moves the items out (Organize) or deletes the library and makes a new one from the same folder with the other type: the files stay, items keep their ids and history, and the folder is indexed under the new rules.
+  - *Deleting a library with items in Inbox pointing at it:* nothing stored points at a library, so those items simply show no suggested library ("Choose a library") until a person picks one; a person who could see them only through that library no longer sees them. An accept that names the deleted library answers 404 with field `library_id`.
+  - *Deleting or hiding a library while someone watches:* their next segment, range or progress request answers 404 and the player says "This video is no longer available." (section 7, While watching).
+  - *An episode whose show spans libraries:* each library shows its own part of the show (its seasons and episodes, its poster, its counts). Next and previous episode stay inside the library, so playback never leads into another library, visible or not. Continue watching shows the episode in whichever library it is in.
+  - *A file moved on disk between library folders:* matched by size and quick hash as before; it changes library and keeps its id, favourite and progress. If it moved into a library the person cannot see, it disappears for them.
+  - *Restore from Trash:* the file goes back to its original path and gets the library (or place) that path has now. When its kind does not fit that library any more, it is indexed again under the library's rules.
+  - *Loose files at the root and folders not in a library:* owner only; Organize moves them into a library or Other files.
+  - *Member removed or demoted:* their `library_members` rows go with the user (`ON DELETE CASCADE`); a demoted owner sees `selected` libraries only where listed.
+  - *Libraries the person cannot see* never appear in counts, names, icons, suggestions, download destinations or error messages; a request that names one is answered exactly as for an id that never existed.
 - **Media:** rotation is stored clockwise. `taken_at` comes from EXIF or QuickTime capture dates (never the encode date of movies and episodes). The thumbnail job also prepares the browser rendition of HEIC/RAW/TIFF photos.
 - **Downloads:** a stored `source` drops credentials, credential-like query keys and fragments; when anything private was removed, or the download depended on forwarded browser cookies, it ends in `#redacted` and cannot be fetched again after a restart ("Send the link again"). Magnet sources keep only the hash and name. Queued torrents carry why they wait in `error`: "Waiting for the VPN to connect.", "Blocked: VPN not protecting. The public address is not a VPN address." (the engine is blocked because the public address check failed, the status's `protected: false`; it follows the engine's health on every poll), or "Waiting for a free slot (N at once)." Torrents waiting for the VPN are kept in `<config>/pending-torrents/` (folder 0700, files 0600) across restarts. A torrent's files are taken out of the engine only as one entry directly inside `In Progress` (never deeper, never a `.part` file, whatever the engine reports as its folder). A finished torrent can sit in `completed` while its move to `Completed/` is retried. `DELETE /api/downloads/:id` removes the row (after a final `cancelled` event), answers 409 while a sort is pending, and never deletes files once they are sorted. With `http_via_vpn: when_available`, links on ports other than 80/443 go direct; `always` refuses them. Upload 409/400 bodies carry `received` both inside `error` and at the top level.
 - **VPN:** `/api/vpn/nordvpn` defaults `protocol` to `wireguard`. Upload routes accept an optional `filename` for the label; `/api/vpn/openvpn` also accepts JSON `{config, username, password}`. An uploaded `.ovpn` pointing at `*.nordvpn.com` is saved as provider `nordvpn`. The OpenVPN validator mirrors OpenVPN's own line parser and refuses code-running directives, `setenv` outside a small allowlist, and lines OpenVPN would read differently. When the engine does not answer but the supervisor's status file is fresh, the status reports the tunnel's real state with `reachable: false`. A saved VPN that the supervisor has not applied yet (right after a setup, while the engine restarts) reports `connecting`, never `not_configured` with `configured: true` (except with `STASH_ALLOW_NO_VPN`, where it is always `not_configured`). With torrents off (no `STASH_TORRENTD_URL`) the status is `unreachable` with `torrents_off: true` and `error` set to the supervisor's reason (`STASH_TORRENTS_OFF_REASON`) or "Torrents are turned off on this server."; nothing waits for the VPN then, and adding a torrent answers `vpn_unavailable`. NordVPN answering 400, 401 or 403 to the token exchange means the token was not accepted. Settings changes are audit-logged as `settings_changed` (key names only).

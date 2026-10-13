@@ -74,3 +74,9 @@ Started 2026-10-12. See the commit log on main for progress.
   - Shared device: a share that was never confirmed stays on the device (up to 7 days, or until anyone signs out) and the next person signed in could open its `/share?files=` link and upload it themselves.
   - Library: Inbox folders have no download history, so leftovers there become review items; Ignore keeps an `Other` item in `Downloads/Completed`; items indexed earlier under loose `Downloads/` are no longer refreshed.
   - D3 (whether the e2e, VPN and full-stack suites are release gates) is unchanged: `release.sh` runs `check.sh --quick --e2e --audit` and the Docker suites on the release images; the AGENTS.md pre-ship list does not include them.
+
+## Next: libraries the owner defines, and the Android app
+
+Scope (owner's direction, 2026-10-13): the fixed Movies, Shows, Home Videos and Photos categories become libraries the owner defines (name, icon from a curated Lucide list, Video or Photos, Episodes or One-offs, which kinds of new file each claims, a fixed top-level folder, who sees it, order), with per-person access enforced on every item route; the web sidebar lists libraries with their icons; and the Android app (`android/`) has three tabs: Downloads with imports, Home with a resume carousel and the libraries, Settings with native library management.
+
+Contract first, no code yet: docs/architecture.md (sections 3.1, 4, 6 with the `0002_libraries.sql` migration, 7 Library access, 8 Libraries, 10 Android, 11 edge cases), PRODUCT.md, DESIGN.md (library pages, library settings, icon picker, Inbox library choice) and android/DESIGN.md. README, docs/deployment.md and docs/security.md still describe the fixed folders and "members see the whole library"; they change with the implementation.
