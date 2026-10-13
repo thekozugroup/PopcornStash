@@ -6,6 +6,7 @@ use axum::http::{StatusCode, Uri};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use stash_core::CoreError;
 use stash_core::jobs::JobKind;
 use stash_core::library::repo::{self, LibrarySummary, PhotoTimeline, ShowDetail, ShowSummary};
 
@@ -58,15 +59,26 @@ async fn show(
 ) -> ApiResult<Json<ShowDetail>> {
     user.require(Scope::LibraryRead)?;
     // `Path` has already percent-decoded the segment, so "Doctor%20Who" arrives as "Doctor Who".
-    let name = name.trim();
-    if name.is_empty() || name.chars().count() > 300 {
-        return Err(ApiError::not_found("That show is not in the library."));
+    let not_found = || ApiError::not_found("That show is not in the library.");
+    if name.trim().is_empty() || name.chars().count() > 500 {
+        return Err(not_found());
     }
-    let detail = repo::show(&state.db, name, &user.user_id).await?;
-    if detail.seasons.iter().all(|s| s.episodes.is_empty()) {
-        return Err(ApiError::not_found("That show is not in the library."));
+    // The exact name first: links are built from `/api/shows`, and a stored name can
+    // carry spaces (a "Bluey " folder). Then the trimmed form, for typed addresses.
+    let mut candidates = vec![name.as_str()];
+    if name.trim() != name {
+        candidates.push(name.trim());
     }
-    Ok(Json(detail))
+    for candidate in candidates {
+        match repo::show(&state.db, candidate, &user.user_id).await {
+            Ok(detail) if detail.seasons.iter().any(|s| !s.episodes.is_empty()) => {
+                return Ok(Json(detail));
+            }
+            Ok(_) | Err(CoreError::NotFound) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(not_found())
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -342,11 +354,40 @@ mod tests {
         let (status, json) = app.json("/api/shows/Bluey", &token).await;
         assert_eq!(status, StatusCode::OK, "{json}");
         assert_eq!(json["seasons"][0]["season"], 1);
-        let (status, _) = app.json("/api/shows/Nope%20Show", &token).await;
+        let (status, json) = app.json("/api/shows/Nope%20Show", &token).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(json["error"]["message"], "That show is not in the library.");
         let (status, json) = app.json("/api/photos/timeline?limit=10", &token).await;
         assert_eq!(status, StatusCode::OK, "{json}");
         assert!(json["months"].is_array());
+    }
+
+    /// The web links to `/api/shows/<show_name>` exactly as `/api/shows` lists it, so a
+    /// name with surrounding spaces (a folder named "Bluey " on a Linux share) must work.
+    #[tokio::test]
+    async fn show_names_are_matched_exactly() {
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        app.item(
+            "Shows/Bluey /Season 01/Bluey - S01E01.mkv",
+            MediaKind::Video,
+            Category::Episode,
+            ItemStatus::Ready,
+            None,
+        )
+        .await;
+        sqlx::query("UPDATE items SET show_name = 'Bluey ', season = 1, episode = 1")
+            .execute(&app.state.db)
+            .await
+            .unwrap();
+        let (status, json) = app.json("/api/shows", &token).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json[0]["show_name"], "Bluey ");
+        let (status, json) = app.json("/api/shows/Bluey%20", &token).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["show_name"], "Bluey ");
+        let (status, _) = app.json("/api/shows/%20%20", &token).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

@@ -6,8 +6,8 @@
 use axum::body::Bytes;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Path, Request, State};
-use axum::http::header::{self, HeaderMap};
 use axum::http::StatusCode;
+use axum::http::header::{self, HeaderMap};
 use axum::response::{AppendHeaders, IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
 use stash_core::models::Role;
 use stash_core::{new_id, now};
-use webauthn_rs::prelude::{CredentialID, DiscoverableKey, Passkey, PublicKeyCredential, RegisterPublicKeyCredential};
+use webauthn_rs::prelude::{
+    CredentialID, DiscoverableKey, Passkey, PublicKeyCredential, RegisterPublicKeyCredential,
+};
 
 use super::passkeys::{self, Flow};
 use super::sessions::{self, NewSession, SessionKind};
@@ -39,13 +41,22 @@ pub fn routes() -> Router<AppState> {
         .route("/api/auth/recover/finish", post(recover_finish))
         .route("/api/auth/logout", post(sessions::logout))
         .route("/api/me", get(sessions::me))
-        .route("/api/me/passkeys", get(list_passkeys).post(add_passkey_start))
+        .route(
+            "/api/me/passkeys",
+            get(list_passkeys).post(add_passkey_start),
+        )
         .route("/api/me/passkeys/start", post(add_passkey_start))
         .route("/api/me/passkeys/finish", post(add_passkey_finish))
-        .route("/api/me/passkeys/{id}", patch(rename_passkey).delete(delete_passkey))
+        .route(
+            "/api/me/passkeys/{id}",
+            patch(rename_passkey).delete(delete_passkey),
+        )
         .route("/api/me/sessions", get(sessions::list_sessions))
         .route("/api/me/sessions/{id}", delete(sessions::revoke_session))
-        .route("/api/tokens", get(tokens::list_tokens).post(tokens::create_token))
+        .route(
+            "/api/tokens",
+            get(tokens::list_tokens).post(tokens::create_token),
+        )
         .route("/api/tokens/{id}", delete(tokens::delete_token))
         .route("/api/pairing/request", post(pairing::request))
         .route("/api/pairing/poll", post(pairing::poll))
@@ -53,9 +64,18 @@ pub fn routes() -> Router<AppState> {
         .route("/api/pairing/approve", post(pairing::approve))
         .route("/api/pairing/deny", post(pairing::deny))
         .route("/api/users", get(users::list_users))
-        .route("/api/users/{id}", patch(users::update_user).delete(users::delete_user))
-        .route("/api/invites", get(users::list_invites).post(users::create_invite))
-        .route("/api/invites/{key}", get(users::invite_info).delete(users::delete_invite))
+        .route(
+            "/api/users/{id}",
+            patch(users::update_user).delete(users::delete_user),
+        )
+        .route(
+            "/api/invites",
+            get(users::list_invites).post(users::create_invite),
+        )
+        .route(
+            "/api/invites/{key}",
+            get(users::invite_info).delete(users::delete_invite),
+        )
         .route("/api/audit", get(users::list_audit))
 }
 
@@ -74,10 +94,17 @@ where
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         match Json::<T>::from_request(req, state).await {
             Ok(Json(value)) => Ok(Self(value)),
-            Err(JsonRejection::MissingJsonContentType(_)) => Err(ApiError::bad_request("Send the request as JSON.")),
+            Err(JsonRejection::MissingJsonContentType(_)) => {
+                Err(ApiError::bad_request("Send the request as JSON."))
+            }
+            Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => Err(
+                ApiError::new(ErrorCode::PayloadTooLarge, "That request is too large."),
+            ),
             Err(rejection) => {
                 tracing::debug!(error = %rejection.body_text(), "rejected request body");
-                Err(ApiError::bad_request("The request was not understood. Check the details and try again."))
+                Err(ApiError::bad_request(
+                    "The request was not understood. Check the details and try again.",
+                ))
             }
         }
     }
@@ -107,27 +134,55 @@ pub struct PasskeyView {
 }
 
 fn user_agent(headers: &HeaderMap) -> Option<&str> {
-    headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok())
+    headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
 }
 
 fn wrong_flow() -> ApiError {
     ApiError::bad_request("This passkey request does not match. Start again.")
 }
 
+/// `Cache-Control: no-store` for responses that carry a secret.
+pub const NO_STORE: (header::HeaderName, &str) = (header::CACHE_CONTROL, "no-store");
+
 fn with_cookie(state: &AppState, session: &NewSession, body: impl Serialize) -> Response {
-    (AppendHeaders([(header::SET_COOKIE, sessions::session_cookie(&state.config, &session.token))]), Json(body))
+    (
+        AppendHeaders([(
+            header::SET_COOKIE,
+            sessions::session_cookie(&state.config, &session.token),
+        )]),
+        [NO_STORE],
+        Json(body),
+    )
         .into_response()
 }
 
-async fn audit_failure(state: &AppState, ip: &ClientIp, flow: &str, reason: &str, user_id: Option<&str>) {
+async fn audit_failure(
+    state: &AppState,
+    ip: &ClientIp,
+    flow: &str,
+    reason: &str,
+    user_id: Option<&str>,
+) {
     state
         .auth
-        .audit(user_id, "auth_failed", serde_json::json!({"flow": flow, "reason": reason}), ip.as_string().as_deref())
+        .audit(
+            user_id,
+            "auth_failed",
+            serde_json::json!({"flow": flow, "reason": reason}),
+            ip.as_string().as_deref(),
+        )
         .await;
 }
 
 /// Store a verified passkey for `user_id`.
-pub async fn insert_passkey(conn: &mut SqliteConnection, user_id: &str, name: &str, passkey: &Passkey) -> ApiResult<PasskeyView> {
+pub async fn insert_passkey(
+    conn: &mut SqliteConnection,
+    user_id: &str,
+    name: &str,
+    passkey: &Passkey,
+) -> ApiResult<PasskeyView> {
     let id = new_id();
     let now = now();
     let json = serde_json::to_string(passkey).map_err(|e| {
@@ -146,10 +201,15 @@ pub async fn insert_passkey(conn: &mut SqliteConnection, user_id: &str, name: &s
     .execute(&mut *conn)
     .await;
     match result {
-        Ok(_) => Ok(PasskeyView { id, name: name.to_string(), created_at: now, last_used_at: None }),
-        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
-            Err(ApiError::conflict("This passkey is already registered. Use it to sign in."))
-        }
+        Ok(_) => Ok(PasskeyView {
+            id,
+            name: name.to_string(),
+            created_at: now,
+            last_used_at: None,
+        }),
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Err(ApiError::conflict(
+            "This passkey is already registered. Use it to sign in.",
+        )),
         Err(e) => Err(e.into()),
     }
 }
@@ -160,7 +220,12 @@ async fn create_owner_or_member(
     role: Role,
     webauthn_id: &str,
 ) -> ApiResult<UserView> {
-    let user = UserView { id: new_id(), display_name: display_name.to_string(), role, created_at: now() };
+    let user = UserView {
+        id: new_id(),
+        display_name: display_name.to_string(),
+        role,
+        created_at: now(),
+    };
     sqlx::query("INSERT INTO users (id, display_name, role, webauthn_id, created_at) VALUES (?, ?, ?, ?, ?)")
         .bind(&user.id)
         .bind(&user.display_name)
@@ -211,8 +276,14 @@ pub async fn setup_start(
         ));
     };
     let webauthn_id = passkeys::new_user_handle();
-    let (options, reg) = pk.start_registration(webauthn_id, &display_name, &display_name, Vec::new())?;
-    let flow_id = pk.begin(Flow::Setup { reg: Box::new(reg), code_hash, display_name, webauthn_id });
+    let (options, reg) =
+        pk.start_registration(webauthn_id, &display_name, &display_name, Vec::new())?;
+    let flow_id = pk.begin(Flow::Setup {
+        reg: Box::new(reg),
+        code_hash,
+        display_name,
+        webauthn_id,
+    })?;
     Ok(Json(FlowStarted { flow_id, options }))
 }
 
@@ -225,7 +296,13 @@ pub async fn setup_finish(
 ) -> ApiResult<Response> {
     state.rate_limiter.check(&ip.key("auth"))?;
     let pk = &state.auth.inner;
-    let Flow::Setup { reg, code_hash, display_name, webauthn_id } = pk.take(&body.flow_id)? else {
+    let Flow::Setup {
+        reg,
+        code_hash,
+        display_name,
+        webauthn_id,
+    } = pk.take(&body.flow_id)?
+    else {
         return Err(wrong_flow());
     };
     let passkey = match pk.finish_registration(&body.credential, &reg) {
@@ -249,25 +326,50 @@ pub async fn setup_finish(
     .await?;
     if claimed.rows_affected() == 0 {
         tx.rollback().await?;
-        return Err(ApiError::forbidden("That setup code has expired. Restart the container to get a new one."));
+        return Err(ApiError::forbidden(
+            "That setup code has expired. Restart the container to get a new one.",
+        ));
     }
-    let (existing,): (i64,) = sqlx::query_as("SELECT count(*) FROM users").fetch_one(&mut *tx).await?;
+    let (existing,): (i64,) = sqlx::query_as("SELECT count(*) FROM users")
+        .fetch_one(&mut *tx)
+        .await?;
     if existing > 0 {
         tx.rollback().await?;
         return Err(already_set_up());
     }
-    let user = create_owner_or_member(&mut tx, &display_name, Role::Owner, &webauthn_id.to_string()).await?;
+    let user = create_owner_or_member(
+        &mut tx,
+        &display_name,
+        Role::Owner,
+        &webauthn_id.to_string(),
+    )
+    .await?;
     let passkey_view = insert_passkey(&mut tx, &user.id, &name, &passkey).await?;
     tx.commit().await?;
     let ip_text = ip.as_string();
-    let session =
-        sessions::create_session(&state.db, &user.id, SessionKind::Cookie, user_agent(&headers), ip_text.as_deref()).await?;
+    let session = sessions::create_session(
+        &state.db,
+        &user.id,
+        SessionKind::Cookie,
+        user_agent(&headers),
+        ip_text.as_deref(),
+    )
+    .await?;
     state
         .auth
-        .audit(Some(&user.id), "setup_completed", serde_json::json!({"passkey_id": passkey_view.id}), ip_text.as_deref())
+        .audit(
+            Some(&user.id),
+            "setup_completed",
+            serde_json::json!({"passkey_id": passkey_view.id}),
+            ip_text.as_deref(),
+        )
         .await;
     tracing::info!("owner account created");
-    Ok(with_cookie(&state, &session, SignedIn { user, token: None }))
+    Ok(with_cookie(
+        &state,
+        &session,
+        SignedIn { user, token: None },
+    ))
 }
 
 // ───────────────────────────── sign-in ─────────────────────────────
@@ -289,20 +391,30 @@ pub struct LoginFinish {
 }
 
 /// `POST /api/auth/login/start` `{}` → discoverable `RequestChallengeResponse`.
-pub async fn login_start(State(state): State<AppState>, ip: ClientIp, body: Bytes) -> ApiResult<Json<FlowStarted>> {
+pub async fn login_start(
+    State(state): State<AppState>,
+    ip: ClientIp,
+    body: Bytes,
+) -> ApiResult<Json<FlowStarted>> {
     state.rate_limiter.check(&ip.key("auth"))?;
     let body: LoginStart = if body.iter().all(u8::is_ascii_whitespace) {
         LoginStart::default()
     } else {
-        serde_json::from_slice(&body).map_err(|_| ApiError::bad_request("The request was not understood."))?
+        serde_json::from_slice(&body)
+            .map_err(|_| ApiError::bad_request("The request was not understood."))?
     };
     let pk = &state.auth.inner;
     pk.webauthn()?;
     if users::user_count(&state.db).await? == 0 {
-        return Err(ApiError::new(ErrorCode::SetupRequired, "PopcornStash has no owner yet. Finish setup first."));
+        return Err(ApiError::new(
+            ErrorCode::SetupRequired,
+            "PopcornStash has no owner yet. Finish setup first.",
+        ));
     }
     let (options, auth) = pk.start_login(body.conditional)?;
-    let flow_id = pk.begin(Flow::Login { auth: Box::new(auth) });
+    let flow_id = pk.begin(Flow::Login {
+        auth: Box::new(auth),
+    })?;
     Ok(Json(FlowStarted { flow_id, options }))
 }
 
@@ -335,18 +447,22 @@ pub async fn login_finish(
         audit_failure(&state, &ip, "login", "unknown_user", None).await;
         return Err(passkeys::not_recognized());
     };
-    let rows: Vec<PasskeyRow> = sqlx::query_as("SELECT id, passkey_json FROM passkeys WHERE user_id = ?")
-        .bind(&user_id)
-        .fetch_all(&state.db)
-        .await?;
+    let rows: Vec<PasskeyRow> =
+        sqlx::query_as("SELECT id, passkey_json FROM passkeys WHERE user_id = ?")
+            .bind(&user_id)
+            .fetch_all(&state.db)
+            .await?;
     let mut keys: Vec<(String, Passkey)> = Vec::with_capacity(rows.len());
     for (id, json) in rows {
         match serde_json::from_str::<Passkey>(&json) {
             Ok(key) => keys.push((id, key)),
-            Err(e) => tracing::warn!(passkey_id = %id, error = %e, "skipping an unreadable passkey"),
+            Err(e) => {
+                tracing::warn!(passkey_id = %id, error = %e, "skipping an unreadable passkey")
+            }
         }
     }
-    let discoverable: Vec<DiscoverableKey> = keys.iter().map(|(_, k)| DiscoverableKey::from(k)).collect();
+    let discoverable: Vec<DiscoverableKey> =
+        keys.iter().map(|(_, k)| DiscoverableKey::from(k)).collect();
     let result = match pk.finish_login(&body.credential, *auth, &discoverable) {
         Ok(r) => r,
         Err(e) => {
@@ -357,7 +473,9 @@ pub async fn login_finish(
     let now = now();
     let mut used_passkey = None;
     for (id, mut key) in keys {
-        let Some(changed) = key.update_credential(&result) else { continue };
+        let Some(changed) = key.update_credential(&result) else {
+            continue;
+        };
         if changed {
             let json = serde_json::to_string(&key).map_err(|e| {
                 tracing::error!(error = %e, "could not encode a passkey");
@@ -370,27 +488,68 @@ pub async fn login_finish(
                 .execute(&state.db)
                 .await?;
         } else {
-            sqlx::query("UPDATE passkeys SET last_used_at = ? WHERE id = ?").bind(now).bind(&id).execute(&state.db).await?;
+            sqlx::query("UPDATE passkeys SET last_used_at = ? WHERE id = ?")
+                .bind(now)
+                .bind(&id)
+                .execute(&state.db)
+                .await?;
         }
         used_passkey = Some(id);
         break;
     }
-    let user = users::load_user(&state.db, &user_id).await?.ok_or_else(passkeys::not_recognized)?;
+    let user = users::load_user(&state.db, &user_id)
+        .await?
+        .ok_or_else(passkeys::not_recognized)?;
     let ip_text = ip.as_string();
     let detail = serde_json::json!({"passkey_id": used_passkey, "token": body.want_token});
     if body.want_token {
-        let device = match body.device_name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let device = match body
+            .device_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             Some(name) => Some(clean_name(name, "Device name")?),
             None => user_agent(&headers).map(str::to_string),
         };
-        let session = sessions::create_session(&state.db, &user.id, SessionKind::Bearer, device.as_deref(), ip_text.as_deref()).await?;
-        state.auth.audit(Some(&user.id), "login", detail, ip_text.as_deref()).await;
-        return Ok(Json(SignedIn { user, token: Some(session.token) }).into_response());
+        let session = sessions::create_session(
+            &state.db,
+            &user.id,
+            SessionKind::Bearer,
+            device.as_deref(),
+            ip_text.as_deref(),
+        )
+        .await?;
+        state
+            .auth
+            .audit(Some(&user.id), "login", detail, ip_text.as_deref())
+            .await;
+        return Ok((
+            [NO_STORE],
+            Json(SignedIn {
+                user,
+                token: Some(session.token),
+            }),
+        )
+            .into_response());
     }
-    let session =
-        sessions::create_session(&state.db, &user.id, SessionKind::Cookie, user_agent(&headers), ip_text.as_deref()).await?;
-    state.auth.audit(Some(&user.id), "login", detail, ip_text.as_deref()).await;
-    Ok(with_cookie(&state, &session, SignedIn { user, token: None }))
+    let session = sessions::create_session(
+        &state.db,
+        &user.id,
+        SessionKind::Cookie,
+        user_agent(&headers),
+        ip_text.as_deref(),
+    )
+    .await?;
+    state
+        .auth
+        .audit(Some(&user.id), "login", detail, ip_text.as_deref())
+        .await;
+    Ok(with_cookie(
+        &state,
+        &session,
+        SignedIn { user, token: None },
+    ))
 }
 
 // ───────────────────────────── invites ─────────────────────────────
@@ -420,8 +579,15 @@ pub async fn invite_start(
         return Err(invite_gone());
     };
     let webauthn_id = passkeys::new_user_handle();
-    let (options, reg) = pk.start_registration(webauthn_id, &display_name, &display_name, Vec::new())?;
-    let flow_id = pk.begin(Flow::Invite { reg: Box::new(reg), invite_id, role, display_name, webauthn_id });
+    let (options, reg) =
+        pk.start_registration(webauthn_id, &display_name, &display_name, Vec::new())?;
+    let flow_id = pk.begin(Flow::Invite {
+        reg: Box::new(reg),
+        invite_id,
+        role,
+        display_name,
+        webauthn_id,
+    })?;
     Ok(Json(FlowStarted { flow_id, options }))
 }
 
@@ -434,7 +600,14 @@ pub async fn invite_finish(
 ) -> ApiResult<Response> {
     state.rate_limiter.check(&ip.key("auth"))?;
     let pk = &state.auth.inner;
-    let Flow::Invite { reg, invite_id, role, display_name, webauthn_id } = pk.take(&body.flow_id)? else {
+    let Flow::Invite {
+        reg,
+        invite_id,
+        role,
+        display_name,
+        webauthn_id,
+    } = pk.take(&body.flow_id)?
+    else {
         return Err(wrong_flow());
     };
     let passkey = match pk.finish_registration(&body.credential, &reg) {
@@ -447,23 +620,36 @@ pub async fn invite_finish(
     let name = passkeys::passkey_name(body.passkey_name.as_deref(), user_agent(&headers))?;
     let now = now();
     let mut tx = state.db.begin().await?;
-    let claimed = sqlx::query("UPDATE invites SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?")
-        .bind(now)
-        .bind(&invite_id)
-        .bind(now)
-        .execute(&mut *tx)
-        .await?;
+    let claimed = sqlx::query(
+        "UPDATE invites SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?",
+    )
+    .bind(now)
+    .bind(&invite_id)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
     if claimed.rows_affected() == 0 {
         tx.rollback().await?;
         return Err(invite_gone());
     }
-    let user = create_owner_or_member(&mut tx, &display_name, role, &webauthn_id.to_string()).await?;
+    let user =
+        create_owner_or_member(&mut tx, &display_name, role, &webauthn_id.to_string()).await?;
     insert_passkey(&mut tx, &user.id, &name, &passkey).await?;
-    sqlx::query("UPDATE invites SET used_by = ? WHERE id = ?").bind(&user.id).bind(&invite_id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE invites SET used_by = ? WHERE id = ?")
+        .bind(&user.id)
+        .bind(&invite_id)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     let ip_text = ip.as_string();
-    let session =
-        sessions::create_session(&state.db, &user.id, SessionKind::Cookie, user_agent(&headers), ip_text.as_deref()).await?;
+    let session = sessions::create_session(
+        &state.db,
+        &user.id,
+        SessionKind::Cookie,
+        user_agent(&headers),
+        ip_text.as_deref(),
+    )
+    .await?;
     state
         .auth
         .audit(
@@ -473,7 +659,11 @@ pub async fn invite_finish(
             ip_text.as_deref(),
         )
         .await;
-    Ok(with_cookie(&state, &session, SignedIn { user, token: None }))
+    Ok(with_cookie(
+        &state,
+        &session,
+        SignedIn { user, token: None },
+    ))
 }
 
 // ───────────────────────────── owner recovery ─────────────────────────────
@@ -514,7 +704,11 @@ pub async fn recover_start(
     })?;
     // No exclude list: the point is to replace passkeys that no longer work.
     let (options, reg) = pk.start_registration(handle, &display_name, &display_name, Vec::new())?;
-    let flow_id = pk.begin(Flow::Recover { reg: Box::new(reg), code_id, user_id });
+    let flow_id = pk.begin(Flow::Recover {
+        reg: Box::new(reg),
+        code_id,
+        user_id,
+    })?;
     Ok(Json(FlowStarted { flow_id, options }))
 }
 
@@ -527,7 +721,12 @@ pub async fn recover_finish(
 ) -> ApiResult<Response> {
     state.rate_limiter.check(&ip.key("auth"))?;
     let pk = &state.auth.inner;
-    let Flow::Recover { reg, code_id, user_id } = pk.take(&body.flow_id)? else {
+    let Flow::Recover {
+        reg,
+        code_id,
+        user_id,
+    } = pk.take(&body.flow_id)?
+    else {
         return Err(wrong_flow());
     };
     let passkey = match pk.finish_registration(&body.credential, &reg) {
@@ -554,21 +753,41 @@ pub async fn recover_finish(
     }
     let passkey_view = insert_passkey(&mut tx, &user_id, &name, &passkey).await?;
     tx.commit().await?;
-    let user = users::load_user(&state.db, &user_id).await?.ok_or_else(recovery_gone)?;
+    let user = users::load_user(&state.db, &user_id)
+        .await?
+        .ok_or_else(recovery_gone)?;
     let ip_text = ip.as_string();
-    let session =
-        sessions::create_session(&state.db, &user.id, SessionKind::Cookie, user_agent(&headers), ip_text.as_deref()).await?;
+    let session = sessions::create_session(
+        &state.db,
+        &user.id,
+        SessionKind::Cookie,
+        user_agent(&headers),
+        ip_text.as_deref(),
+    )
+    .await?;
     state
         .auth
-        .audit(Some(&user.id), "owner_recovered", serde_json::json!({"passkey_id": passkey_view.id}), ip_text.as_deref())
+        .audit(
+            Some(&user.id),
+            "owner_recovered",
+            serde_json::json!({"passkey_id": passkey_view.id}),
+            ip_text.as_deref(),
+        )
         .await;
-    Ok(with_cookie(&state, &session, SignedIn { user, token: None }))
+    Ok(with_cookie(
+        &state,
+        &session,
+        SignedIn { user, token: None },
+    ))
 }
 
 // ───────────────────────────── my passkeys ─────────────────────────────
 
 /// `GET /api/me/passkeys`.
-pub async fn list_passkeys(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<Vec<PasskeyView>>> {
+pub async fn list_passkeys(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> ApiResult<Json<Vec<PasskeyView>>> {
     user.require(Scope::Full)?;
     let rows = sqlx::query_as(
         "SELECT id, name, created_at, last_used_at FROM passkeys WHERE user_id = ? ORDER BY created_at, id",
@@ -580,7 +799,11 @@ pub async fn list_passkeys(State(state): State<AppState>, user: AuthUser) -> Api
 }
 
 /// `POST /api/me/passkeys/start` (also `POST /api/me/passkeys`): add another passkey.
-pub async fn add_passkey_start(State(state): State<AppState>, ip: ClientIp, user: AuthUser) -> ApiResult<Json<FlowStarted>> {
+pub async fn add_passkey_start(
+    State(state): State<AppState>,
+    ip: ClientIp,
+    user: AuthUser,
+) -> ApiResult<Json<FlowStarted>> {
     user.require(Scope::Full)?;
     state.rate_limiter.check(&ip.key("auth"))?;
     let pk = &state.auth.inner;
@@ -593,17 +816,22 @@ pub async fn add_passkey_start(State(state): State<AppState>, ip: ClientIp, user
         tracing::error!("a WebAuthn user handle is not a UUID");
         ApiError::internal()
     })?;
-    let existing: Vec<(String,)> = sqlx::query_as("SELECT passkey_json FROM passkeys WHERE user_id = ?")
-        .bind(&user.user_id)
-        .fetch_all(&state.db)
-        .await?;
+    let existing: Vec<(String,)> =
+        sqlx::query_as("SELECT passkey_json FROM passkeys WHERE user_id = ?")
+            .bind(&user.user_id)
+            .fetch_all(&state.db)
+            .await?;
     let exclude: Vec<CredentialID> = existing
         .iter()
         .filter_map(|(json,)| serde_json::from_str::<Passkey>(json).ok())
         .map(|k| k.cred_id().clone())
         .collect();
-    let (options, reg) = pk.start_registration(handle, &user.display_name, &user.display_name, exclude)?;
-    let flow_id = pk.begin(Flow::Add { reg: Box::new(reg), user_id: user.user_id.clone() });
+    let (options, reg) =
+        pk.start_registration(handle, &user.display_name, &user.display_name, exclude)?;
+    let flow_id = pk.begin(Flow::Add {
+        reg: Box::new(reg),
+        user_id: user.user_id.clone(),
+    })?;
     Ok(Json(FlowStarted { flow_id, options }))
 }
 
@@ -627,7 +855,14 @@ pub async fn add_passkey_finish(
     let passkey = match pk.finish_registration(&body.credential, &reg) {
         Ok(p) => p,
         Err(e) => {
-            audit_failure(&state, &ip, "add_passkey", "passkey_rejected", Some(&user.user_id)).await;
+            audit_failure(
+                &state,
+                &ip,
+                "add_passkey",
+                "passkey_rejected",
+                Some(&user.user_id),
+            )
+            .await;
             return Err(e);
         }
     };
@@ -637,7 +872,12 @@ pub async fn add_passkey_finish(
     drop(conn);
     state
         .auth
-        .audit(Some(&user.user_id), "passkey_added", serde_json::json!({"passkey_id": view.id}), ip.as_string().as_deref())
+        .audit(
+            Some(&user.user_id),
+            "passkey_added",
+            serde_json::json!({"passkey_id": view.id}),
+            ip.as_string().as_deref(),
+        )
         .await;
     Ok(Json(view))
 }
@@ -688,19 +928,27 @@ pub async fn delete_passkey(
     .execute(&state.db)
     .await?;
     if done.rows_affected() == 0 {
-        let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM passkeys WHERE id = ? AND user_id = ?")
-            .bind(&id)
-            .bind(&user.user_id)
-            .fetch_optional(&state.db)
-            .await?;
+        let exists: Option<(String,)> =
+            sqlx::query_as("SELECT id FROM passkeys WHERE id = ? AND user_id = ?")
+                .bind(&id)
+                .bind(&user.user_id)
+                .fetch_optional(&state.db)
+                .await?;
         return Err(match exists {
-            Some(_) => ApiError::conflict("This is your only passkey. Add another one before removing it."),
+            Some(_) => {
+                ApiError::conflict("This is your only passkey. Add another one before removing it.")
+            }
             None => passkey_gone(),
         });
     }
     state
         .auth
-        .audit(Some(&user.user_id), "passkey_removed", serde_json::json!({"passkey_id": id}), ip.as_string().as_deref())
+        .audit(
+            Some(&user.user_id),
+            "passkey_removed",
+            serde_json::json!({"passkey_id": id}),
+            ip.as_string().as_deref(),
+        )
         .await;
     Ok(StatusCode::NO_CONTENT)
 }

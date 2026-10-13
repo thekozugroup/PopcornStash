@@ -1,15 +1,17 @@
 //! End-to-end tests through the router with a software passkey.
 
+use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
-use axum::Router;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use webauthn_authenticator_rs::WebauthnAuthenticator;
-use webauthn_authenticator_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse, Url};
+use webauthn_authenticator_rs::prelude::{
+    CreationChallengeResponse, RequestChallengeResponse, Url,
+};
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
 
 use crate::state::AppState;
@@ -26,7 +28,11 @@ async fn harness() -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let state = crate::app::test_state(dir.path()).await.unwrap();
     let app = crate::app::router(state.clone());
-    Harness { _dir: dir, state, app }
+    Harness {
+        _dir: dir,
+        state,
+        app,
+    }
 }
 
 /// How a request authenticates.
@@ -50,13 +56,23 @@ impl Reply {
             .get_all(header::SET_COOKIE)
             .iter()
             .filter_map(|v| v.to_str().ok())
-            .find_map(|v| v.strip_prefix("stash=").map(|rest| rest.split(';').next().unwrap_or_default().to_string()))
+            .find_map(|v| {
+                v.strip_prefix("stash=")
+                    .map(|rest| rest.split(';').next().unwrap_or_default().to_string())
+            })
             .filter(|v| !v.is_empty())
     }
 }
 
 impl Harness {
-    async fn send(&self, method: Method, path: &str, who: As<'_>, body: Option<Value>, origin: bool) -> Reply {
+    async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        who: As<'_>,
+        body: Option<Value>,
+        origin: bool,
+    ) -> Reply {
         let mut req = Request::builder().method(method).uri(path);
         if origin {
             req = req.header(header::ORIGIN, ORIGIN);
@@ -73,12 +89,95 @@ impl Harness {
             }
             None => Body::empty(),
         };
-        let response = self.app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+        let response = self
+            .app
+            .clone()
+            .oneshot(req.body(body).unwrap())
+            .await
+            .unwrap();
         let status = response.status();
         let headers = response.headers().clone();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        let body = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap_or(Value::Null) };
-        Reply { status, headers, body }
+        let body = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        };
+        Reply {
+            status,
+            headers,
+            body,
+        }
+    }
+
+    /// Send a request with exactly these headers and this raw body.
+    async fn send_raw(
+        &self,
+        method: Method,
+        path: &str,
+        headers: &[(header::HeaderName, &str)],
+        body: impl Into<Body>,
+    ) -> Reply {
+        let mut req = Request::builder().method(method).uri(path);
+        for (name, value) in headers {
+            req = req.header(name, *value);
+        }
+        let response = self
+            .app
+            .clone()
+            .oneshot(req.body(body.into()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        Reply {
+            status,
+            headers,
+            body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        }
+    }
+
+    /// Invite and register a member; returns `(cookie, user_id)`.
+    async fn add_member(&self, owner: &str, device: &mut Device, name: &str) -> (String, String) {
+        let invite = self
+            .post("/api/invites", As::Cookie(owner), json!({"role": "member"}))
+            .await;
+        assert_eq!(invite.status, StatusCode::OK, "{:?}", invite.body);
+        let start = self
+            .post(
+                "/api/auth/invite/start",
+                As::Nobody,
+                json!({"code": invite.body["code"], "display_name": name}),
+            )
+            .await;
+        assert_eq!(start.status, StatusCode::OK, "{:?}", start.body);
+        let credential = device.register(&start.body["options"]);
+        let finish = self
+            .post(
+                "/api/auth/invite/finish",
+                As::Nobody,
+                json!({"flow_id": start.body["flow_id"], "credential": credential}),
+            )
+            .await;
+        assert_eq!(finish.status, StatusCode::OK, "{:?}", finish.body);
+        let id = finish.body["user"]["id"].as_str().unwrap().to_string();
+        (finish.cookie().unwrap(), id)
+    }
+
+    /// Start pairing as a device; returns the request reply body.
+    async fn pairing_request(&self, kind: &str) -> Value {
+        let reply = self
+            .send(
+                Method::POST,
+                "/api/pairing/request",
+                As::Nobody,
+                Some(json!({"client_name": "Phone", "client_kind": kind})),
+                false,
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+        reply.body
     }
 
     async fn get(&self, path: &str, who: As<'_>) -> Reply {
@@ -96,7 +195,13 @@ impl Harness {
     /// Run setup with a fresh owner passkey; returns the owner's cookie token.
     async fn setup_owner(&self, device: &mut Device) -> String {
         let code = self.state.auth.ensure_setup_code().await.unwrap().unwrap();
-        let start = self.post("/api/auth/setup/start", As::Nobody, json!({"setup_code": code, "display_name": "Ana"})).await;
+        let start = self
+            .post(
+                "/api/auth/setup/start",
+                As::Nobody,
+                json!({"setup_code": code, "display_name": "Ana"}),
+            )
+            .await;
         assert_eq!(start.status, StatusCode::OK, "{:?}", start.body);
         let credential = device.register(&start.body["options"]);
         let finish = self
@@ -113,7 +218,9 @@ impl Harness {
 
     /// Sign in with `device`; returns the reply of login/finish.
     async fn login(&self, device: &mut Device, extra: Value) -> Reply {
-        let start = self.post("/api/auth/login/start", As::Nobody, json!({})).await;
+        let start = self
+            .post("/api/auth/login/start", As::Nobody, json!({}))
+            .await;
         assert_eq!(start.status, StatusCode::OK, "{:?}", start.body);
         let credential = device.authenticate(&start.body["options"]);
         let mut body = json!({"flow_id": start.body["flow_id"], "credential": credential});
@@ -133,7 +240,11 @@ struct Device {
 
 impl Device {
     fn new() -> Self {
-        Self { authenticator: WebauthnAuthenticator::new(SoftPasskey::new(true)), credential_id: None, user_handle: None }
+        Self {
+            authenticator: WebauthnAuthenticator::new(SoftPasskey::new(true)),
+            credential_id: None,
+            user_handle: None,
+        }
     }
 
     fn register(&mut self, options: &Value) -> Value {
@@ -146,9 +257,14 @@ impl Device {
         let mut options = options.clone();
         options["publicKey"]["authenticatorSelection"]["requireResidentKey"] = json!(false);
         options["publicKey"]["authenticatorSelection"]["residentKey"] = json!("discouraged");
-        self.user_handle = options["publicKey"]["user"]["id"].as_str().map(str::to_string);
+        self.user_handle = options["publicKey"]["user"]["id"]
+            .as_str()
+            .map(str::to_string);
         let ccr: CreationChallengeResponse = serde_json::from_value(options).unwrap();
-        let credential = self.authenticator.do_registration(Url::parse(ORIGIN).unwrap(), ccr).unwrap();
+        let credential = self
+            .authenticator
+            .do_registration(Url::parse(ORIGIN).unwrap(), ccr)
+            .unwrap();
         self.credential_id = Some(URL_SAFE_NO_PAD.encode(credential.raw_id.as_slice()));
         serde_json::to_value(credential).unwrap()
     }
@@ -157,9 +273,13 @@ impl Device {
         let mut options = options.clone();
         assert!(options.get("mediation").is_none());
         // Discoverable sign-in: the server names no credentials. Tell the software key which one to use.
-        options["publicKey"]["allowCredentials"] = json!([{"type": "public-key", "id": self.credential_id}]);
+        options["publicKey"]["allowCredentials"] =
+            json!([{"type": "public-key", "id": self.credential_id}]);
         let rcr: RequestChallengeResponse = serde_json::from_value(options).unwrap();
-        let credential = self.authenticator.do_authentication(Url::parse(ORIGIN).unwrap(), rcr).unwrap();
+        let credential = self
+            .authenticator
+            .do_authentication(Url::parse(ORIGIN).unwrap(), rcr)
+            .unwrap();
         let mut value = serde_json::to_value(credential).unwrap();
         // A real passkey returns the user handle stored at registration.
         value["response"]["userHandle"] = json!(self.user_handle);
@@ -180,9 +300,18 @@ async fn auth_state_before_and_after_setup() {
     assert_eq!(state.body["public_url"], ORIGIN);
     assert_eq!(state.body["reason"], Value::Null);
     // Security headers on every response.
-    assert!(state.headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap().contains("frame-ancestors 'none'"));
+    assert!(
+        state.headers[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .contains("frame-ancestors 'none'")
+    );
     assert_eq!(state.headers[header::X_FRAME_OPTIONS], "DENY");
-    assert!(!state.headers.contains_key(header::STRICT_TRANSPORT_SECURITY));
+    assert!(
+        !state
+            .headers
+            .contains_key(header::STRICT_TRANSPORT_SECURITY)
+    );
 
     // No one can sign in before setup.
     let login = h.post("/api/auth/login/start", As::Nobody, json!({})).await;
@@ -199,9 +328,18 @@ async fn auth_state_before_and_after_setup() {
     assert_eq!(state.body["user"]["display_name"], "Ana");
 
     // Setup cannot run twice, even with a fresh code.
-    sqlx::query("DELETE FROM recovery_codes").execute(&h.state.db).await.unwrap();
+    sqlx::query("DELETE FROM recovery_codes")
+        .execute(&h.state.db)
+        .await
+        .unwrap();
     assert!(h.state.auth.ensure_setup_code().await.unwrap().is_none());
-    let again = h.post("/api/auth/setup/start", As::Nobody, json!({"setup_code": "AAAA-BBBB-CCCC", "display_name": "Eve"})).await;
+    let again = h
+        .post(
+            "/api/auth/setup/start",
+            As::Nobody,
+            json!({"setup_code": "AAAA-BBBB-CCCC", "display_name": "Eve"}),
+        )
+        .await;
     assert_eq!(again.status, StatusCode::CONFLICT);
 }
 
@@ -209,13 +347,20 @@ async fn auth_state_before_and_after_setup() {
 async fn setup_with_wrong_code_fails() {
     let h = harness().await;
     let _code = h.state.auth.ensure_setup_code().await.unwrap().unwrap();
-    let reply = h.post("/api/auth/setup/start", As::Nobody, json!({"setup_code": "AAAA-BBBB-CCCC", "display_name": "Eve"})).await;
+    let reply = h
+        .post(
+            "/api/auth/setup/start",
+            As::Nobody,
+            json!({"setup_code": "AAAA-BBBB-CCCC", "display_name": "Eve"}),
+        )
+        .await;
     assert_eq!(reply.status, StatusCode::FORBIDDEN);
     assert_eq!(reply.body["error"]["code"], "forbidden");
-    let (failures,): (i64,) = sqlx::query_as("SELECT count(*) FROM audit_log WHERE event = 'auth_failed'")
-        .fetch_one(&h.state.db)
-        .await
-        .unwrap();
+    let (failures,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM audit_log WHERE event = 'auth_failed'")
+            .fetch_one(&h.state.db)
+            .await
+            .unwrap();
     assert_eq!(failures, 1);
     let state = h.get("/api/auth/state", As::Nobody).await;
     assert_eq!(state.body["setup_required"], true);
@@ -239,10 +384,17 @@ async fn passkey_registration_and_login() {
     assert_eq!(login.body["user"]["display_name"], "Ana");
     assert!(login.body.get("token").is_none());
     let set_cookie = login.headers[header::SET_COOKIE].to_str().unwrap();
-    assert!(set_cookie.contains("HttpOnly") && set_cookie.contains("SameSite=Strict") && set_cookie.contains("Path=/"));
+    assert!(
+        set_cookie.contains("HttpOnly")
+            && set_cookie.contains("SameSite=Strict")
+            && set_cookie.contains("Path=/")
+    );
     let cookie = login.cookie().unwrap();
     assert!(cookie.starts_with("pst_"));
-    assert_eq!(h.get("/api/me", As::Cookie(&cookie)).await.status, StatusCode::OK);
+    assert_eq!(
+        h.get("/api/me", As::Cookie(&cookie)).await.status,
+        StatusCode::OK
+    );
 
     // last_used_at recorded on the passkey.
     let keys = h.get("/api/me/passkeys", As::Cookie(&cookie)).await;
@@ -251,50 +403,108 @@ async fn passkey_registration_and_login() {
     assert!(keys.body[0]["last_used_at"].is_i64());
 
     // The Android app asks for a bearer token instead of a cookie.
-    let app_login = h.login(&mut laptop, json!({"want_token": true, "device_name": "Pixel"})).await;
+    let app_login = h
+        .login(
+            &mut laptop,
+            json!({"want_token": true, "device_name": "Pixel"}),
+        )
+        .await;
     assert_eq!(app_login.status, StatusCode::OK, "{:?}", app_login.body);
     assert!(app_login.headers.get(header::SET_COOKIE).is_none());
+    assert_eq!(app_login.headers[header::CACHE_CONTROL], "no-store");
     let token = app_login.body["token"].as_str().unwrap().to_string();
     assert!(token.starts_with("pst_") && token.len() == 47);
-    assert_eq!(h.get("/api/me", As::Bearer(&token)).await.status, StatusCode::OK);
+    assert_eq!(
+        h.get("/api/me", As::Bearer(&token)).await.status,
+        StatusCode::OK
+    );
     // A bearer session token is not a cookie, and the other way round.
-    assert_eq!(h.get("/api/me", As::Cookie(&token)).await.status, StatusCode::UNAUTHORIZED);
-    assert_eq!(h.get("/api/me", As::Bearer(&cookie)).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        h.get("/api/me", As::Cookie(&token)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        h.get("/api/me", As::Bearer(&cookie)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
 
     let sessions = h.get("/api/me/sessions", As::Cookie(&cookie)).await;
     let list = sessions.body.as_array().unwrap();
     assert_eq!(list.len(), 3);
     assert_eq!(list.iter().filter(|s| s["current"] == true).count(), 1);
-    assert!(list.iter().any(|s| s["kind"] == "bearer" && s["user_agent"] == "Pixel"));
+    assert!(
+        list.iter()
+            .any(|s| s["kind"] == "bearer" && s["user_agent"] == "Pixel")
+    );
 
     // Revoke the app session from the browser.
-    let app_session = list.iter().find(|s| s["kind"] == "bearer").unwrap()["id"].as_str().unwrap().to_string();
-    assert_eq!(h.delete(&format!("/api/me/sessions/{app_session}"), As::Cookie(&cookie)).await.status, StatusCode::NO_CONTENT);
-    assert_eq!(h.get("/api/me", As::Bearer(&token)).await.status, StatusCode::UNAUTHORIZED);
+    let app_session = list.iter().find(|s| s["kind"] == "bearer").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        h.delete(
+            &format!("/api/me/sessions/{app_session}"),
+            As::Cookie(&cookie)
+        )
+        .await
+        .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        h.get("/api/me", As::Bearer(&token)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
 
     // Logout ends the session and clears the cookie.
-    let out = h.post("/api/auth/logout", As::Cookie(&cookie), json!({})).await;
+    let out = h
+        .post("/api/auth/logout", As::Cookie(&cookie), json!({}))
+        .await;
     assert_eq!(out.status, StatusCode::NO_CONTENT);
-    assert!(out.headers[header::SET_COOKIE].to_str().unwrap().contains("Max-Age=0"));
-    assert_eq!(h.get("/api/me", As::Cookie(&cookie)).await.status, StatusCode::UNAUTHORIZED);
+    assert!(
+        out.headers[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .contains("Max-Age=0")
+    );
+    assert_eq!(
+        h.get("/api/me", As::Cookie(&cookie)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
 
     // A flow id works once.
     let start = h.post("/api/auth/login/start", As::Nobody, json!({})).await;
     let credential = laptop.authenticate(&start.body["options"]);
     let body = json!({"flow_id": start.body["flow_id"], "credential": credential});
-    assert_eq!(h.post("/api/auth/login/finish", As::Nobody, body.clone()).await.status, StatusCode::OK);
-    assert_eq!(h.post("/api/auth/login/finish", As::Nobody, body).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        h.post("/api/auth/login/finish", As::Nobody, body.clone())
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.post("/api/auth/login/finish", As::Nobody, body)
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
 
     // A user handle that belongs to nobody is refused and audited.
-    let real_handle = laptop.user_handle.replace(URL_SAFE_NO_PAD.encode(uuid::Uuid::now_v7().as_bytes()));
+    let real_handle = laptop
+        .user_handle
+        .replace(URL_SAFE_NO_PAD.encode(uuid::Uuid::now_v7().as_bytes()));
     let refused = h.login(&mut laptop, json!({})).await;
     assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
-    assert_eq!(refused.body["error"]["message"], "That passkey was not recognized. Try another one.");
+    assert_eq!(
+        refused.body["error"]["message"],
+        "That passkey was not recognized. Try another one."
+    );
     laptop.user_handle = real_handle;
-    let (failures,): (i64,) = sqlx::query_as("SELECT count(*) FROM audit_log WHERE event = 'auth_failed'")
-        .fetch_one(&h.state.db)
-        .await
-        .unwrap();
+    let (failures,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM audit_log WHERE event = 'auth_failed'")
+            .fetch_one(&h.state.db)
+            .await
+            .unwrap();
     assert_eq!(failures, 1);
 }
 
@@ -303,9 +513,20 @@ async fn cookie_post_without_origin_is_rejected() {
     let h = harness().await;
     let mut laptop = Device::new();
     let cookie = h.setup_owner(&mut laptop).await;
-    let no_origin = h.send(Method::POST, "/api/invites", As::Cookie(&cookie), Some(json!({"role": "member"})), false).await;
+    let no_origin = h
+        .send(
+            Method::POST,
+            "/api/invites",
+            As::Cookie(&cookie),
+            Some(json!({"role": "member"})),
+            false,
+        )
+        .await;
     assert_eq!(no_origin.status, StatusCode::FORBIDDEN);
-    assert_eq!(no_origin.body["error"]["message"], "This request came from another site.");
+    assert_eq!(
+        no_origin.body["error"]["message"],
+        "This request came from another site."
+    );
 
     let mut req = Request::builder()
         .method(Method::POST)
@@ -331,10 +552,21 @@ async fn cookie_post_without_origin_is_rejected() {
     assert_eq!(response.status(), StatusCode::OK);
 
     // Public endpoints are covered too.
-    let setup = h.send(Method::POST, "/api/auth/login/start", As::Nobody, Some(json!({})), false).await;
+    let setup = h
+        .send(
+            Method::POST,
+            "/api/auth/login/start",
+            As::Nobody,
+            Some(json!({})),
+            false,
+        )
+        .await;
     assert_eq!(setup.status, StatusCode::FORBIDDEN);
     // GET needs no Origin.
-    assert_eq!(h.get("/api/me", As::Cookie(&cookie)).await.status, StatusCode::OK);
+    assert_eq!(
+        h.get("/api/me", As::Cookie(&cookie)).await.status,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]
@@ -343,23 +575,48 @@ async fn bearer_token_scopes_are_enforced() {
     let mut laptop = Device::new();
     let cookie = h.setup_owner(&mut laptop).await;
     let created = h
-        .post("/api/tokens", As::Cookie(&cookie), json!({"name": "Work laptop", "scopes": ["downloads:create"]}))
+        .post(
+            "/api/tokens",
+            As::Cookie(&cookie),
+            json!({"name": "Work laptop", "scopes": ["downloads:create"]}),
+        )
         .await;
     assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
     let token = created.body["token"].as_str().unwrap().to_string();
+    assert_eq!(created.headers[header::CACHE_CONTROL], "no-store");
     assert_eq!(created.body["prefix"], token[4..12]);
     assert_eq!(created.body["scopes"], json!(["downloads:create"]));
 
     // Any-scope routes work; full-scope and owner routes do not.
-    assert_eq!(h.get("/api/me", As::Bearer(&token)).await.status, StatusCode::OK);
+    assert_eq!(
+        h.get("/api/me", As::Bearer(&token)).await.status,
+        StatusCode::OK
+    );
     let tokens = h.get("/api/tokens", As::Bearer(&token)).await;
     assert_eq!(tokens.status, StatusCode::FORBIDDEN);
-    assert_eq!(h.get("/api/users", As::Bearer(&token)).await.status, StatusCode::FORBIDDEN);
-    assert_eq!(h.get("/api/audit", As::Bearer(&token)).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        h.get("/api/users", As::Bearer(&token)).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        h.get("/api/audit", As::Bearer(&token)).await.status,
+        StatusCode::FORBIDDEN
+    );
     // Bearer requests skip the Origin check but still need the scope.
-    let invite = h.send(Method::POST, "/api/invites", As::Bearer(&token), Some(json!({})), false).await;
+    let invite = h
+        .send(
+            Method::POST,
+            "/api/invites",
+            As::Bearer(&token),
+            Some(json!({})),
+            false,
+        )
+        .await;
     assert_eq!(invite.status, StatusCode::FORBIDDEN);
-    assert_eq!(invite.body["error"]["message"], "Only the owner can do that.");
+    assert_eq!(
+        invite.body["error"]["message"],
+        "Only the owner can do that."
+    );
 
     // last_used_at is recorded.
     let list = h.get("/api/tokens", As::Cookie(&cookie)).await;
@@ -367,14 +624,31 @@ async fn bearer_token_scopes_are_enforced() {
     assert!(list.body[0].get("token").is_none());
 
     // Bad scopes are refused.
-    let bad = h.post("/api/tokens", As::Cookie(&cookie), json!({"name": "x", "scopes": ["root"]})).await;
+    let bad = h
+        .post(
+            "/api/tokens",
+            As::Cookie(&cookie),
+            json!({"name": "x", "scopes": ["root"]}),
+        )
+        .await;
     assert_eq!(bad.status, StatusCode::BAD_REQUEST);
 
     // Revoked tokens stop working.
     let id = created.body["id"].as_str().unwrap();
-    assert_eq!(h.delete(&format!("/api/tokens/{id}"), As::Cookie(&cookie)).await.status, StatusCode::NO_CONTENT);
-    assert_eq!(h.get("/api/me", As::Bearer(&token)).await.status, StatusCode::UNAUTHORIZED);
-    assert_eq!(h.get("/api/me", As::Bearer("pst_nonsense")).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        h.delete(&format!("/api/tokens/{id}"), As::Cookie(&cookie))
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        h.get("/api/me", As::Bearer(&token)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        h.get("/api/me", As::Bearer("pst_nonsense")).await.status,
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 #[tokio::test]
@@ -388,24 +662,46 @@ async fn pairing_delivers_the_token_once() {
         .uri("/api/pairing/request")
         .header(header::ORIGIN, "chrome-extension://abcdefghijklmnop")
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(json!({"client_name": "Chrome on Mac", "client_kind": "chrome-extension"}).to_string()))
+        .body(Body::from(
+            json!({"client_name": "Chrome on Mac", "client_kind": "chrome-extension"}).to_string(),
+        ))
         .unwrap();
     let response = h.app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let req = Reply { status: StatusCode::OK, headers: HeaderMap::new(), body: serde_json::from_slice(&bytes).unwrap() };
+    let req = Reply {
+        status: StatusCode::OK,
+        headers: HeaderMap::new(),
+        body: serde_json::from_slice(&bytes).unwrap(),
+    };
     assert_eq!(req.body["interval"], 6);
     let user_code = req.body["user_code"].as_str().unwrap().to_string();
     assert_eq!(user_code.len(), 9);
-    assert_eq!(req.body["verify_url"], format!("{ORIGIN}/pair?code={user_code}"));
-    let poll_body = json!({"pairing_id": req.body["pairing_id"], "poll_secret": req.body["poll_secret"]});
+    assert_eq!(
+        req.body["verify_url"],
+        format!("{ORIGIN}/pair?code={user_code}")
+    );
+    let poll_body =
+        json!({"pairing_id": req.body["pairing_id"], "poll_secret": req.body["poll_secret"]});
 
     // Native apps send no Origin at all.
-    let pending = h.send(Method::POST, "/api/pairing/poll", As::Nobody, Some(poll_body.clone()), false).await;
+    let pending = h
+        .send(
+            Method::POST,
+            "/api/pairing/poll",
+            As::Nobody,
+            Some(poll_body.clone()),
+            false,
+        )
+        .await;
     assert_eq!(pending.status, StatusCode::ACCEPTED);
     assert_eq!(pending.body["status"], "pending");
     let wrong = h
-        .post("/api/pairing/poll", As::Nobody, json!({"pairing_id": req.body["pairing_id"], "poll_secret": "guess"}))
+        .post(
+            "/api/pairing/poll",
+            As::Nobody,
+            json!({"pairing_id": req.body["pairing_id"], "poll_secret": "guess"}),
+        )
         .await;
     assert_eq!(wrong.status, StatusCode::NOT_FOUND);
 
@@ -414,48 +710,92 @@ async fn pairing_delivers_the_token_once() {
     assert_eq!(list.body[0]["client_kind"], "chrome-extension");
 
     let approve = h
-        .post("/api/pairing/approve", As::Cookie(&cookie), json!({"user_code": user_code.to_lowercase()}))
+        .post(
+            "/api/pairing/approve",
+            As::Cookie(&cookie),
+            json!({"user_code": user_code.to_lowercase()}),
+        )
         .await;
     assert_eq!(approve.status, StatusCode::OK, "{:?}", approve.body);
     assert_eq!(approve.body["ok"], true);
 
-    let delivered = h.post("/api/pairing/poll", As::Nobody, poll_body.clone()).await;
+    let delivered = h
+        .post("/api/pairing/poll", As::Nobody, poll_body.clone())
+        .await;
     assert_eq!(delivered.status, StatusCode::OK, "{:?}", delivered.body);
     assert_eq!(delivered.body["status"], "approved");
-    assert_eq!(delivered.body["scopes"], json!(["downloads:create", "downloads:read"]));
+    assert_eq!(
+        delivered.body["scopes"],
+        json!(["downloads:create", "downloads:read"])
+    );
     assert_eq!(delivered.body["server_name"], "localhost");
     let token = delivered.body["token"].as_str().unwrap().to_string();
 
     let again = h.post("/api/pairing/poll", As::Nobody, poll_body).await;
     assert_eq!(again.status, StatusCode::GONE);
     assert!(again.body.get("token").is_none());
-    let (stored,): (Option<String>,) = sqlx::query_as("SELECT pending_token FROM pairing_requests").fetch_one(&h.state.db).await.unwrap();
-    assert!(stored.is_none());
-
-    // The device token works with its scopes and appears in the owner's devices.
-    assert_eq!(h.get("/api/me", As::Bearer(&token)).await.status, StatusCode::OK);
-    assert_eq!(h.get("/api/pairing/pending", As::Bearer(&token)).await.status, StatusCode::FORBIDDEN);
-    let devices = h.get("/api/tokens", As::Cookie(&cookie)).await;
-    assert_eq!(devices.body[0]["client_kind"], "chrome-extension");
-    assert_eq!(devices.body[0]["name"], "Chrome on Mac");
-    let (paired,): (i64,) = sqlx::query_as("SELECT count(*) FROM audit_log WHERE event = 'device_paired'")
+    let (stored,): (Option<String>,) = sqlx::query_as("SELECT pending_token FROM pairing_requests")
         .fetch_one(&h.state.db)
         .await
         .unwrap();
+    assert!(stored.is_none());
+
+    // The device token works with its scopes and appears in the owner's devices.
+    assert_eq!(
+        h.get("/api/me", As::Bearer(&token)).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.get("/api/pairing/pending", As::Bearer(&token))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let devices = h.get("/api/tokens", As::Cookie(&cookie)).await;
+    assert_eq!(devices.body[0]["client_kind"], "chrome-extension");
+    assert_eq!(devices.body[0]["name"], "Chrome on Mac");
+    let (paired,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM audit_log WHERE event = 'device_paired'")
+            .fetch_one(&h.state.db)
+            .await
+            .unwrap();
     assert_eq!(paired, 1);
 
     // Denied requests answer 410 denied.
     let req = h
-        .post("/api/pairing/request", As::Nobody, json!({"client_name": "Phone", "client_kind": "android"}))
+        .post(
+            "/api/pairing/request",
+            As::Nobody,
+            json!({"client_name": "Phone", "client_kind": "android"}),
+        )
         .await;
     let code = req.body["user_code"].as_str().unwrap();
-    assert_eq!(h.post("/api/pairing/deny", As::Cookie(&cookie), json!({"user_code": code})).await.status, StatusCode::OK);
+    assert_eq!(
+        h.post(
+            "/api/pairing/deny",
+            As::Cookie(&cookie),
+            json!({"user_code": code})
+        )
+        .await
+        .status,
+        StatusCode::OK
+    );
     let denied = h
-        .post("/api/pairing/poll", As::Nobody, json!({"pairing_id": req.body["pairing_id"], "poll_secret": req.body["poll_secret"]}))
+        .post(
+            "/api/pairing/poll",
+            As::Nobody,
+            json!({"pairing_id": req.body["pairing_id"], "poll_secret": req.body["poll_secret"]}),
+        )
         .await;
     assert_eq!(denied.status, StatusCode::GONE);
     assert_eq!(denied.body["status"], "denied");
-    let bad_kind = h.post("/api/pairing/request", As::Nobody, json!({"client_name": "x", "client_kind": "toaster"})).await;
+    let bad_kind = h
+        .post(
+            "/api/pairing/request",
+            As::Nobody,
+            json!({"client_name": "x", "client_kind": "toaster"}),
+        )
+        .await;
     assert_eq!(bad_kind.status, StatusCode::BAD_REQUEST);
 }
 
@@ -464,7 +804,13 @@ async fn invite_creates_a_member() {
     let h = harness().await;
     let mut laptop = Device::new();
     let owner = h.setup_owner(&mut laptop).await;
-    let invite = h.post("/api/invites", As::Cookie(&owner), json!({"role": "member", "expires_in_hours": 48})).await;
+    let invite = h
+        .post(
+            "/api/invites",
+            As::Cookie(&owner),
+            json!({"role": "member", "expires_in_hours": 48}),
+        )
+        .await;
     assert_eq!(invite.status, StatusCode::OK, "{:?}", invite.body);
     let code = invite.body["code"].as_str().unwrap().to_string();
     assert_eq!(code.len(), 22);
@@ -474,14 +820,27 @@ async fn invite_creates_a_member() {
     assert_eq!(info.body["valid"], true);
     assert_eq!(info.body["role"], "member");
     let unknown = h.get("/api/invites/not-a-code", As::Nobody).await;
-    assert_eq!(unknown.body, json!({"valid": false, "role": null, "expires_at": null}));
+    assert_eq!(
+        unknown.body,
+        json!({"valid": false, "role": null, "expires_at": null})
+    );
 
     let mut phone = Device::new();
-    let start = h.post("/api/auth/invite/start", As::Nobody, json!({"code": code, "display_name": "Ben"})).await;
+    let start = h
+        .post(
+            "/api/auth/invite/start",
+            As::Nobody,
+            json!({"code": code, "display_name": "Ben"}),
+        )
+        .await;
     assert_eq!(start.status, StatusCode::OK, "{:?}", start.body);
     let credential = phone.register(&start.body["options"]);
     let finish = h
-        .post("/api/auth/invite/finish", As::Nobody, json!({"flow_id": start.body["flow_id"], "credential": credential}))
+        .post(
+            "/api/auth/invite/finish",
+            As::Nobody,
+            json!({"flow_id": start.body["flow_id"], "credential": credential}),
+        )
         .await;
     assert_eq!(finish.status, StatusCode::OK, "{:?}", finish.body);
     assert_eq!(finish.body["user"]["role"], "member");
@@ -492,12 +851,24 @@ async fn invite_creates_a_member() {
     // Single use.
     let info = h.get(&format!("/api/invites/{code}"), As::Nobody).await;
     assert_eq!(info.body["valid"], false);
-    let reuse = h.post("/api/auth/invite/start", As::Nobody, json!({"code": code, "display_name": "Cy"})).await;
+    let reuse = h
+        .post(
+            "/api/auth/invite/start",
+            As::Nobody,
+            json!({"code": code, "display_name": "Cy"}),
+        )
+        .await;
     assert_eq!(reuse.status, StatusCode::NOT_FOUND);
 
     // Members cannot manage people; the member signs in with their own passkey.
-    assert_eq!(h.get("/api/users", As::Cookie(&member)).await.status, StatusCode::FORBIDDEN);
-    assert_eq!(h.login(&mut phone, json!({})).await.body["user"]["display_name"], "Ben");
+    assert_eq!(
+        h.get("/api/users", As::Cookie(&member)).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        h.login(&mut phone, json!({})).await.body["user"]["display_name"],
+        "Ben"
+    );
     let people = h.get("/api/users", As::Cookie(&owner)).await;
     assert_eq!(people.body.as_array().unwrap().len(), 2);
     let invites = h.get("/api/invites", As::Cookie(&owner)).await;
@@ -505,23 +876,57 @@ async fn invite_creates_a_member() {
     assert_eq!(invites.body[0]["used_by_name"], "Ben");
 
     // The last owner cannot be demoted or removed; members can be promoted and removed.
-    let owner_id = h.get("/api/me", As::Cookie(&owner)).await.body["id"].as_str().unwrap().to_string();
+    let owner_id = h.get("/api/me", As::Cookie(&owner)).await.body["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let member_id = me.body["id"].as_str().unwrap().to_string();
     let demote = h
-        .send(Method::PATCH, &format!("/api/users/{owner_id}"), As::Cookie(&owner), Some(json!({"role": "member"})), true)
+        .send(
+            Method::PATCH,
+            &format!("/api/users/{owner_id}"),
+            As::Cookie(&owner),
+            Some(json!({"role": "member"})),
+            true,
+        )
         .await;
     assert_eq!(demote.status, StatusCode::CONFLICT);
-    assert_eq!(h.delete(&format!("/api/users/{owner_id}"), As::Cookie(&owner)).await.status, StatusCode::CONFLICT);
+    assert_eq!(
+        h.delete(&format!("/api/users/{owner_id}"), As::Cookie(&owner))
+            .await
+            .status,
+        StatusCode::CONFLICT
+    );
     let promote = h
-        .send(Method::PATCH, &format!("/api/users/{member_id}"), As::Cookie(&owner), Some(json!({"role": "owner"})), true)
+        .send(
+            Method::PATCH,
+            &format!("/api/users/{member_id}"),
+            As::Cookie(&owner),
+            Some(json!({"role": "owner"})),
+            true,
+        )
         .await;
     assert_eq!(promote.body["role"], "owner");
     let demote = h
-        .send(Method::PATCH, &format!("/api/users/{member_id}"), As::Cookie(&owner), Some(json!({"role": "member"})), true)
+        .send(
+            Method::PATCH,
+            &format!("/api/users/{member_id}"),
+            As::Cookie(&owner),
+            Some(json!({"role": "member"})),
+            true,
+        )
         .await;
     assert_eq!(demote.status, StatusCode::OK);
-    assert_eq!(h.delete(&format!("/api/users/{member_id}"), As::Cookie(&owner)).await.status, StatusCode::NO_CONTENT);
-    assert_eq!(h.get("/api/me", As::Cookie(&member)).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        h.delete(&format!("/api/users/{member_id}"), As::Cookie(&owner))
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        h.get("/api/me", As::Cookie(&member)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
 
     // The audit log shows who did what, newest first, with pagination.
     let page = h.get("/api/audit?limit=2", As::Cookie(&owner)).await;
@@ -530,10 +935,21 @@ async fn invite_creates_a_member() {
     assert_eq!(page.body["items"][0]["event"], "user_removed");
     assert_eq!(page.body["items"][0]["user"]["display_name"], "Ana");
     let cursor = page.body["next_cursor"].as_str().unwrap();
-    let next = h.get(&format!("/api/audit?limit=50&cursor={cursor}"), As::Cookie(&owner)).await;
+    let next = h
+        .get(
+            &format!("/api/audit?limit=50&cursor={cursor}"),
+            As::Cookie(&owner),
+        )
+        .await;
     let first_next = next.body["items"][0]["id"].as_i64().unwrap();
     assert!(first_next < page.body["items"][1]["id"].as_i64().unwrap());
-    assert!(next.body["items"].as_array().unwrap().iter().any(|e| e["event"] == "invite_accepted"));
+    assert!(
+        next.body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["event"] == "invite_accepted")
+    );
 }
 
 #[tokio::test]
@@ -543,27 +959,53 @@ async fn last_passkey_cannot_be_deleted() {
     let cookie = h.setup_owner(&mut laptop).await;
     let keys = h.get("/api/me/passkeys", As::Cookie(&cookie)).await;
     let first = keys.body[0]["id"].as_str().unwrap().to_string();
-    let refused = h.delete(&format!("/api/me/passkeys/{first}"), As::Cookie(&cookie)).await;
+    let refused = h
+        .delete(&format!("/api/me/passkeys/{first}"), As::Cookie(&cookie))
+        .await;
     assert_eq!(refused.status, StatusCode::CONFLICT);
 
     // Add a second passkey, rename it, then the first can go.
     let mut phone = Device::new();
-    let start = h.post("/api/me/passkeys/start", As::Cookie(&cookie), json!({})).await;
+    let start = h
+        .post("/api/me/passkeys/start", As::Cookie(&cookie), json!({}))
+        .await;
     assert_eq!(start.status, StatusCode::OK, "{:?}", start.body);
-    let exclude = start.body["options"]["publicKey"]["excludeCredentials"].as_array().unwrap();
+    let exclude = start.body["options"]["publicKey"]["excludeCredentials"]
+        .as_array()
+        .unwrap();
     assert_eq!(exclude.len(), 1);
     let credential = phone.register(&start.body["options"]);
     let added = h
-        .post("/api/me/passkeys/finish", As::Cookie(&cookie), json!({"flow_id": start.body["flow_id"], "credential": credential}))
+        .post(
+            "/api/me/passkeys/finish",
+            As::Cookie(&cookie),
+            json!({"flow_id": start.body["flow_id"], "credential": credential}),
+        )
         .await;
     assert_eq!(added.status, StatusCode::OK, "{:?}", added.body);
     let second = added.body["id"].as_str().unwrap().to_string();
     let renamed = h
-        .send(Method::PATCH, &format!("/api/me/passkeys/{second}"), As::Cookie(&cookie), Some(json!({"name": "Phone"})), true)
+        .send(
+            Method::PATCH,
+            &format!("/api/me/passkeys/{second}"),
+            As::Cookie(&cookie),
+            Some(json!({"name": "Phone"})),
+            true,
+        )
         .await;
     assert_eq!(renamed.body["name"], "Phone");
-    assert_eq!(h.delete(&format!("/api/me/passkeys/{first}"), As::Cookie(&cookie)).await.status, StatusCode::NO_CONTENT);
-    assert_eq!(h.delete(&format!("/api/me/passkeys/{second}"), As::Cookie(&cookie)).await.status, StatusCode::CONFLICT);
+    assert_eq!(
+        h.delete(&format!("/api/me/passkeys/{first}"), As::Cookie(&cookie))
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        h.delete(&format!("/api/me/passkeys/{second}"), As::Cookie(&cookie))
+            .await
+            .status,
+        StatusCode::CONFLICT
+    );
     // The phone passkey signs in; the removed laptop passkey does not.
     assert_eq!(h.login(&mut phone, json!({})).await.status, StatusCode::OK);
     let refused = h.login(&mut laptop, json!({})).await;
@@ -576,25 +1018,49 @@ async fn recovery_link_works_once() {
     let h = harness().await;
     let mut laptop = Device::new();
     h.setup_owner(&mut laptop).await;
-    let link = super::create_owner_reset_link(&h.state.db, &h.state.config).await.unwrap();
+    let link = super::create_owner_reset_link(&h.state.db, &h.state.config)
+        .await
+        .unwrap();
     let code = link.rsplit('/').next().unwrap().to_string();
 
     let mut new_phone = Device::new();
-    let start = h.post("/api/auth/recover/start", As::Nobody, json!({"code": code})).await;
+    let start = h
+        .post("/api/auth/recover/start", As::Nobody, json!({"code": code}))
+        .await;
     assert_eq!(start.status, StatusCode::OK, "{:?}", start.body);
     // Same account: the new passkey carries the owner's user handle.
-    assert_eq!(start.body["options"]["publicKey"]["user"]["id"].as_str(), laptop.user_handle.as_deref());
+    assert_eq!(
+        start.body["options"]["publicKey"]["user"]["id"].as_str(),
+        laptop.user_handle.as_deref()
+    );
     let credential = new_phone.register(&start.body["options"]);
     let finish = h
-        .post("/api/auth/recover/finish", As::Nobody, json!({"flow_id": start.body["flow_id"], "credential": credential}))
+        .post(
+            "/api/auth/recover/finish",
+            As::Nobody,
+            json!({"flow_id": start.body["flow_id"], "credential": credential}),
+        )
         .await;
     assert_eq!(finish.status, StatusCode::OK, "{:?}", finish.body);
     assert_eq!(finish.body["user"]["role"], "owner");
     let cookie = finish.cookie().unwrap();
-    assert_eq!(h.get("/api/me/passkeys", As::Cookie(&cookie)).await.body.as_array().unwrap().len(), 2);
-    assert_eq!(h.login(&mut new_phone, json!({})).await.status, StatusCode::OK);
+    assert_eq!(
+        h.get("/api/me/passkeys", As::Cookie(&cookie))
+            .await
+            .body
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        h.login(&mut new_phone, json!({})).await.status,
+        StatusCode::OK
+    );
 
-    let again = h.post("/api/auth/recover/start", As::Nobody, json!({"code": code})).await;
+    let again = h
+        .post("/api/auth/recover/start", As::Nobody, json!({"code": code}))
+        .await;
     assert_eq!(again.status, StatusCode::NOT_FOUND);
 }
 
@@ -607,14 +1073,28 @@ async fn passkeys_unavailable_without_https() {
     config.public_url = Some(url::Url::parse("http://192.168.1.20:8788").unwrap());
     config.extra_origins = vec![url::Url::parse(ORIGIN).unwrap()];
     let state = crate::app::build_state(config).await.unwrap();
-    let h = Harness { _dir: dir, app: crate::app::router(state.clone()), state };
+    let h = Harness {
+        _dir: dir,
+        app: crate::app::router(state.clone()),
+        state,
+    };
     let auth = h.get("/api/auth/state", As::Nobody).await;
     assert_eq!(auth.body["passkeys_ready"], false);
-    assert!(auth.body["reason"].as_str().unwrap().contains("STASH_PUBLIC_URL"));
+    assert!(
+        auth.body["reason"]
+            .as_str()
+            .unwrap()
+            .contains("STASH_PUBLIC_URL")
+    );
     let start = h.post("/api/auth/login/start", As::Nobody, json!({})).await;
     assert_eq!(start.status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(start.body["error"]["code"], "passkeys_unavailable");
-    assert!(start.body["error"]["message"].as_str().unwrap().contains("HTTPS"));
+    assert!(
+        start.body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("HTTPS")
+    );
 }
 
 #[tokio::test]
@@ -622,7 +1102,390 @@ async fn auth_endpoints_are_rate_limited() {
     let h = harness().await;
     let mut last = StatusCode::OK;
     for _ in 0..25 {
-        last = h.post("/api/auth/setup/start", As::Nobody, json!({"setup_code": "AAAA-BBBB-CCCC", "display_name": "Eve"})).await.status;
+        last = h
+            .post(
+                "/api/auth/setup/start",
+                As::Nobody,
+                json!({"setup_code": "AAAA-BBBB-CCCC", "display_name": "Eve"}),
+            )
+            .await
+            .status;
     }
     assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// The JSON error body every client parses: `{"error": {"code", "message"}}`.
+fn assert_api_error(reply: &Reply, status: StatusCode, code: &str) {
+    assert_eq!(reply.status, status, "{:?}", reply.body);
+    assert_eq!(reply.body["error"]["code"], code, "{:?}", reply.body);
+    assert!(
+        reply.body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.ends_with('.')),
+        "{:?}",
+        reply.body
+    );
+}
+
+#[tokio::test]
+async fn malformed_requests_get_the_json_error_shape() {
+    let h = harness().await;
+    let mut laptop = Device::new();
+    let owner = h.setup_owner(&mut laptop).await;
+    let json_type = (header::CONTENT_TYPE, "application/json");
+    let origin = (header::ORIGIN, ORIGIN);
+    let cookie_header = format!("stash={owner}");
+    let cookie = (header::COOKIE, cookie_header.as_str());
+
+    // Public device endpoints: wrong field types, broken JSON, missing content type.
+    let reply = h
+        .send_raw(
+            Method::POST,
+            "/api/pairing/request",
+            std::slice::from_ref(&json_type),
+            r#"{"client_name": 5, "client_kind": "other"}"#,
+        )
+        .await;
+    assert_api_error(&reply, StatusCode::BAD_REQUEST, "bad_request");
+    let reply = h
+        .send_raw(
+            Method::POST,
+            "/api/pairing/poll",
+            std::slice::from_ref(&json_type),
+            "{not json",
+        )
+        .await;
+    assert_api_error(&reply, StatusCode::BAD_REQUEST, "bad_request");
+    let reply = h
+        .send_raw(
+            Method::POST,
+            "/api/pairing/request",
+            &[],
+            r#"{"client_name": "x", "client_kind": "other"}"#,
+        )
+        .await;
+    assert_api_error(&reply, StatusCode::BAD_REQUEST, "bad_request");
+
+    // Signed-in endpoints.
+    for (method, path, body) in [
+        (Method::POST, "/api/pairing/approve", "{}"),
+        (Method::POST, "/api/pairing/deny", r#"{"user_code": 7}"#),
+        (Method::POST, "/api/tokens", r#"{"name": "x"}"#),
+        (Method::POST, "/api/invites", r#"{"role": "king"}"#),
+        (Method::PATCH, "/api/users/someone", r#"{"role": "admin"}"#),
+    ] {
+        let reply = h
+            .send_raw(
+                method,
+                path,
+                &[json_type.clone(), origin.clone(), cookie.clone()],
+                body,
+            )
+            .await;
+        assert_api_error(&reply, StatusCode::BAD_REQUEST, "bad_request");
+    }
+    let reply = h
+        .send_raw(
+            Method::GET,
+            "/api/audit?limit=lots",
+            std::slice::from_ref(&cookie),
+            Body::empty(),
+        )
+        .await;
+    assert_api_error(&reply, StatusCode::BAD_REQUEST, "bad_request");
+
+    // Oversized bodies are 413, not a confusing "not understood".
+    let huge = format!(r#"{{"flow_id": "{}"}}"#, "x".repeat(3 * 1024 * 1024));
+    let reply = h
+        .send_raw(
+            Method::POST,
+            "/api/auth/login/finish",
+            &[json_type.clone(), origin.clone()],
+            huge,
+        )
+        .await;
+    assert_api_error(&reply, StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+}
+
+#[tokio::test]
+async fn unsafe_requests_with_a_body_must_be_json_or_an_upload() {
+    let h = harness().await;
+    let mut laptop = Device::new();
+    let owner = h.setup_owner(&mut laptop).await;
+    let origin = (header::ORIGIN, ORIGIN);
+    let cookie_header = format!("stash={owner}");
+    let cookie = (header::COOKIE, cookie_header.as_str());
+
+    // login/start reads its optional body itself, so only the guard can enforce the type.
+    for content_type in ["text/plain", "application/x-www-form-urlencoded"] {
+        let reply = h
+            .send_raw(
+                Method::POST,
+                "/api/auth/login/start",
+                &[origin.clone(), (header::CONTENT_TYPE, content_type)],
+                "{}",
+            )
+            .await;
+        assert_api_error(&reply, StatusCode::BAD_REQUEST, "bad_request");
+    }
+    let reply = h
+        .send_raw(
+            Method::POST,
+            "/api/auth/login/start",
+            std::slice::from_ref(&origin),
+            "{}",
+        )
+        .await;
+    assert_api_error(&reply, StatusCode::BAD_REQUEST, "bad_request");
+    let reply = h
+        .send_raw(
+            Method::POST,
+            "/api/auth/login/start",
+            &[origin.clone(), (header::CONTENT_TYPE, "application/json")],
+            "{}",
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+
+    // Body-less unsafe requests need no content type.
+    let reply = h
+        .send_raw(
+            Method::POST,
+            "/api/auth/logout",
+            &[origin.clone(), cookie.clone()],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT, "{:?}", reply.body);
+}
+
+#[tokio::test]
+async fn forwarded_for_cannot_dodge_the_rate_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let stash = dir.path().join("stash");
+    std::fs::create_dir_all(&stash).unwrap();
+    let mut config = stash_core::config::Config::for_tests(&stash, &dir.path().join("config"));
+    config.trust_proxy = true;
+    let state = crate::app::build_state(config).await.unwrap();
+    let h = Harness {
+        _dir: dir,
+        app: crate::app::router(state.clone()),
+        state,
+    };
+    let mut statuses = Vec::new();
+    for i in 0..25 {
+        // The client invents a new address each time; the proxy appends the real one.
+        let forwarded = format!("198.51.100.{i}, 203.0.113.9");
+        let reply = h
+            .send_raw(
+                Method::POST,
+                "/api/auth/setup/start",
+                &[
+                    (header::ORIGIN, ORIGIN),
+                    (header::CONTENT_TYPE, "application/json"),
+                    (
+                        header::HeaderName::from_static("x-forwarded-for"),
+                        &forwarded,
+                    ),
+                ],
+                r#"{"setup_code": "AAAA-BBBB-CCCC", "display_name": "Eve"}"#,
+            )
+            .await;
+        statuses.push(reply.status);
+    }
+    assert_eq!(statuses.last(), Some(&StatusCode::TOO_MANY_REQUESTS));
+    let (ip,): (Option<String>,) =
+        sqlx::query_as("SELECT ip FROM audit_log WHERE event = 'auth_failed' LIMIT 1")
+            .fetch_one(&h.state.db)
+            .await
+            .unwrap();
+    assert_eq!(ip.as_deref(), Some("203.0.113.9"));
+}
+
+#[tokio::test]
+async fn uncollected_pairing_tokens_stop_working() {
+    let h = harness().await;
+    let mut laptop = Device::new();
+    let owner = h.setup_owner(&mut laptop).await;
+
+    // Collected normally: the device keeps a token with no expiry.
+    let collected = h.pairing_request("android").await;
+    let approve = h
+        .post(
+            "/api/pairing/approve",
+            As::Cookie(&owner),
+            json!({"user_code": collected["user_code"]}),
+        )
+        .await;
+    assert_eq!(approve.status, StatusCode::OK);
+    let poll =
+        json!({"pairing_id": collected["pairing_id"], "poll_secret": collected["poll_secret"]});
+    let delivered = h.post("/api/pairing/poll", As::Nobody, poll).await;
+    assert_eq!(delivered.status, StatusCode::OK, "{:?}", delivered.body);
+    let token = delivered.body["token"].as_str().unwrap();
+    let (expiry,): (Option<i64>,) =
+        sqlx::query_as("SELECT t.expires_at FROM api_tokens t JOIN pairing_requests p ON p.token_id = t.id WHERE p.id = ?")
+            .bind(collected["pairing_id"].as_str())
+            .fetch_one(&h.state.db)
+            .await
+            .unwrap();
+    assert_eq!(expiry, None);
+    assert_eq!(
+        h.get("/api/me", As::Bearer(token)).await.status,
+        StatusCode::OK
+    );
+
+    // Approved but never collected: the waiting token must not live on in the database.
+    let abandoned = h.pairing_request("android").await;
+    let approve = h
+        .post(
+            "/api/pairing/approve",
+            As::Cookie(&owner),
+            json!({"user_code": abandoned["user_code"]}),
+        )
+        .await;
+    assert_eq!(approve.status, StatusCode::OK);
+    let id = abandoned["pairing_id"].as_str().unwrap();
+    let (waiting, token_id): (Option<String>, String) =
+        sqlx::query_as("SELECT pending_token, token_id FROM pairing_requests WHERE id = ?")
+            .bind(id)
+            .fetch_one(&h.state.db)
+            .await
+            .unwrap();
+    let waiting = waiting.unwrap();
+    let (expiry,): (Option<i64>,) =
+        sqlx::query_as("SELECT expires_at FROM api_tokens WHERE id = ?")
+            .bind(&token_id)
+            .fetch_one(&h.state.db)
+            .await
+            .unwrap();
+    let (request_expiry,): (i64,) =
+        sqlx::query_as("SELECT expires_at FROM pairing_requests WHERE id = ?")
+            .bind(id)
+            .fetch_one(&h.state.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        expiry,
+        Some(request_expiry + super::pairing::DELIVERY_GRACE_S)
+    );
+
+    // An hour passes. Nobody polls and nobody starts another pairing.
+    for table in ["pairing_requests", "api_tokens"] {
+        sqlx::query(&format!(
+            "UPDATE {table} SET expires_at = expires_at - 3600 WHERE expires_at IS NOT NULL"
+        ))
+        .execute(&h.state.db)
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        h.get("/api/me", As::Bearer(&waiting)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let poll = json!({"pairing_id": id, "poll_secret": abandoned["poll_secret"]});
+    let late = h.post("/api/pairing/poll", As::Nobody, poll).await;
+    assert_eq!(late.status, StatusCode::GONE);
+    assert_eq!(late.body["status"], "expired");
+    // The collected device is unaffected.
+    assert_eq!(
+        h.get("/api/me", As::Bearer(token)).await.status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn waiting_pairing_requests_are_capped() {
+    let h = harness().await;
+    let now = stash_core::now();
+    for _ in 0..super::pairing::MAX_PENDING_PAIRINGS {
+        sqlx::query(
+            "INSERT INTO pairing_requests (id, user_code, poll_secret_hash, client_name, client_kind, status, created_at, expires_at) \
+             VALUES (?, ?, 'x', 'Spam', 'android', 'pending', ?, ?)",
+        )
+        .bind(stash_core::new_id())
+        .bind(super::codes::new_user_code())
+        .bind(now)
+        .bind(now + 600)
+        .execute(&h.state.db)
+        .await
+        .unwrap();
+    }
+    let full = h
+        .send(
+            Method::POST,
+            "/api/pairing/request",
+            As::Nobody,
+            Some(json!({"client_name": "Phone", "client_kind": "android"})),
+            false,
+        )
+        .await;
+    assert_api_error(&full, StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    // Expired requests do not count.
+    sqlx::query("UPDATE pairing_requests SET expires_at = ? WHERE id = (SELECT id FROM pairing_requests LIMIT 1)")
+        .bind(now - 1)
+        .execute(&h.state.db)
+        .await
+        .unwrap();
+    h.pairing_request("android").await;
+}
+
+#[tokio::test]
+async fn owner_cannot_mint_full_access_for_someone_else() {
+    let h = harness().await;
+    let mut laptop = Device::new();
+    let owner = h.setup_owner(&mut laptop).await;
+    let mut phone = Device::new();
+    let (member, member_id) = h.add_member(&owner, &mut phone, "Ben").await;
+
+    // Full access would let the owner act as Ben, including adding a passkey to his account.
+    for scopes in [json!(["full"]), json!(["library:read", "full"])] {
+        let reply = h
+            .post(
+                "/api/tokens",
+                As::Cookie(&owner),
+                json!({"name": "Ben's laptop", "scopes": scopes, "user_id": member_id}),
+            )
+            .await;
+        assert_api_error(&reply, StatusCode::FORBIDDEN, "forbidden");
+    }
+    let (count,): (i64,) = sqlx::query_as("SELECT count(*) FROM api_tokens WHERE user_id = ?")
+        .bind(&member_id)
+        .fetch_one(&h.state.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+
+    // A limited device for someone else is still fine.
+    let reply = h
+        .post(
+            "/api/tokens",
+            As::Cookie(&owner),
+            json!({"name": "Ben's Chrome", "scopes": ["downloads:create"], "user_id": member_id}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    let token = reply.body["token"].as_str().unwrap();
+    let me = h.get("/api/me", As::Bearer(token)).await;
+    assert_eq!(me.body["id"], member_id);
+
+    // Members only ever create devices for themselves.
+    let owner_id = h.get("/api/me", As::Cookie(&owner)).await.body["id"].clone();
+    let reply = h
+        .post(
+            "/api/tokens",
+            As::Cookie(&member),
+            json!({"name": "x", "scopes": ["downloads:create"], "user_id": owner_id}),
+        )
+        .await;
+    assert_api_error(&reply, StatusCode::FORBIDDEN, "forbidden");
+    // Their own full-access device works.
+    let reply = h
+        .post(
+            "/api/tokens",
+            As::Cookie(&member),
+            json!({"name": "Ben's tablet", "scopes": ["full"]}),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
 }

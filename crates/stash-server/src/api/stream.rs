@@ -25,12 +25,19 @@ fn stream_gone() -> ApiError {
     ApiError::not_found("This stream has ended. Start playback again.")
 }
 
-/// Session ids are hyphenated UUIDs; anything else cannot exist.
+/// Session ids are 128-bit values written as 32 lowercase hex digits (what the
+/// transcoder issues) or as a hyphenated UUID; anything else cannot exist.
 fn valid_session(id: &str) -> ApiResult<&str> {
-    let ok = id.len() == 36
-        && id.bytes().all(|b| b == b'-' || b.is_ascii_hexdigit())
+    let lower_hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
+    let simple = id.len() == 32 && id.bytes().all(lower_hex);
+    let hyphenated = id.len() == 36
+        && id.bytes().all(|b| b == b'-' || lower_hex(b))
         && uuid::Uuid::try_parse(id).is_ok();
-    if ok { Ok(id) } else { Err(stream_gone()) }
+    if simple || hyphenated {
+        Ok(id)
+    } else {
+        Err(stream_gone())
+    }
 }
 
 /// `<n>.ts`, `<n>.m4s` (n up to 6 digits) or `init.mp4`; returns the content type.
@@ -127,11 +134,15 @@ mod tests {
     use crate::api::library::testing::TestApp;
 
     #[test]
-    fn session_ids_must_be_uuids() {
+    fn session_ids_must_be_128_bit_ids() {
         assert!(valid_session("0192f5a4-7c1e-7b3a-9c4d-2e5f6a7b8c9d").is_ok());
+        assert!(valid_session("0192f5a47c1e7b3a9c4d2e5f6a7b8c9d").is_ok());
+        assert!(valid_session(&hex::encode(rand::random::<[u8; 16]>())).is_ok());
         assert!(valid_session("../../etc").is_err());
-        assert!(valid_session("0192f5a47c1e7b3a9c4d2e5f6a7b8c9d").is_err());
+        assert!(valid_session("0192F5A47C1E7B3A9C4D2E5F6A7B8C9D").is_err());
+        assert!(valid_session("0192f5a47c1e7b3a9c4d2e5f6a7b8c9").is_err());
         assert!(valid_session("{0192f5a4-7c1e-7b3a-9c4d-2e5f6a7b8c9}").is_err());
+        assert!(valid_session("0192f5a4-7c1e-7b3a-9c4d-2e5f6a7b8c9z").is_err());
     }
 
     #[test]
@@ -175,6 +186,136 @@ mod tests {
                 &token,
             )
             .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// A short H.264 + AAC clip, or None when ffmpeg is not installed.
+    fn make_clip(path: &std::path::Path, seconds: u32) -> Option<()> {
+        std::fs::create_dir_all(path.parent()?).ok()?;
+        let status = std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+            ])
+            .arg(format!("testsrc=s=320x180:r=25:d={seconds}"))
+            .args(["-f", "lavfi", "-i"])
+            .arg(format!("sine=frequency=440:d={seconds}"))
+            .args([
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .args(["-c:a", "aac", "-shortest"])
+            .arg(path)
+            .status()
+            .ok()?;
+        status.success().then_some(())
+    }
+
+    #[tokio::test]
+    async fn playback_decides_direct_or_hls_end_to_end() {
+        use stash_core::models::{Category, ItemStatus, MediaKind};
+
+        use crate::api::library::testing::request;
+
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        let root = app.state.config.stash_root.clone();
+        let mp4 = "Home Videos/2024/06/clip.mp4";
+        let mkv = "Movies/Clip (2020)/Clip (2020).mkv";
+        if make_clip(&root.join(mp4), 3).is_none() || make_clip(&root.join(mkv), 8).is_none() {
+            eprintln!("skipping: ffmpeg with libx264 is not available");
+            return;
+        }
+        let caps =
+            serde_json::json!({"video_codecs": ["h264"], "audio_codecs": ["aac"], "hdr": false});
+
+        // MP4 with H.264 + AAC plays directly.
+        let direct = app
+            .item(
+                mp4,
+                MediaKind::Video,
+                Category::HomeVideo,
+                ItemStatus::Ready,
+                None,
+            )
+            .await;
+        let (status, _, body) = app
+            .send(request(
+                "POST",
+                &format!("/api/items/{direct}/playback"),
+                Some(&token),
+                Some(caps.clone()),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"mode": "direct", "url": format!("/api/items/{direct}/file")})
+        );
+
+        // Matroska is not a browser container, so it is transcoded to HLS.
+        let hls = app
+            .item(
+                mkv,
+                MediaKind::Video,
+                Category::Movie,
+                ItemStatus::Ready,
+                None,
+            )
+            .await;
+        let (status, _, body) = app
+            .send(request(
+                "POST",
+                &format!("/api/items/{hls}/playback"),
+                Some(&token),
+                Some(caps),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["mode"], "hls", "{json}");
+        let session = json["session_id"].as_str().unwrap().to_string();
+        let url = json["url"].as_str().unwrap().to_string();
+        assert_eq!(url, format!("/api/stream/{session}/index.m3u8"));
+
+        let (status, headers, body) = app.get(&url, Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            headers[header::CONTENT_TYPE],
+            "application/vnd.apple.mpegurl"
+        );
+        assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
+        let playlist = String::from_utf8(body.to_vec()).unwrap();
+        assert!(playlist.contains("\n0.ts\n"), "{playlist}");
+
+        let (status, headers, body) = app
+            .get(&format!("/api/stream/{session}/0.ts"), Some(&token))
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CONTENT_TYPE], "video/mp2t");
+        assert_eq!(body.first(), Some(&0x47), "MPEG-TS sync byte");
+        assert_eq!(headers[header::CONTENT_LENGTH], body.len().to_string());
+
+        let (status, _, _) = app
+            .send(request(
+                "DELETE",
+                &format!("/api/stream/{session}"),
+                Some(&token),
+                None,
+            ))
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, _, _) = app.get(&url, Some(&token)).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 }

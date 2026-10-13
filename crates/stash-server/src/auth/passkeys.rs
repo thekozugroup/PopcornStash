@@ -12,8 +12,9 @@ use dashmap::DashMap;
 use stash_core::config::Config;
 use stash_core::models::Role;
 use webauthn_rs::prelude::{
-    AuthenticationResult, CredentialID, DiscoverableAuthentication, DiscoverableKey, Passkey, PasskeyRegistration,
-    PublicKeyCredential, RegisterPublicKeyCredential, Url, Uuid, Webauthn, WebauthnBuilder,
+    AuthenticationResult, CredentialID, DiscoverableAuthentication, DiscoverableKey, Passkey,
+    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential, Url, Uuid, Webauthn,
+    WebauthnBuilder,
 };
 
 use super::codes;
@@ -22,21 +23,44 @@ use crate::error::{ApiError, ApiResult, ErrorCode};
 /// How long a started ceremony stays valid.
 pub const FLOW_TTL: Duration = Duration::from_secs(300);
 const SWEEP_EVERY: Duration = Duration::from_secs(60);
+/// Most ceremonies in flight at once. `login/start` needs no account, so this bounds
+/// memory even when the per-address rate limit is spread over many addresses.
+pub const MAX_FLOWS: usize = 10_000;
 /// Shown by authenticators next to the account name.
 pub const RP_NAME: &str = "PopcornStash";
 
 /// What a started ceremony will do when it finishes.
 pub(crate) enum Flow {
     /// First owner. `code_hash` is the setup code that started it.
-    Setup { reg: Box<PasskeyRegistration>, code_hash: String, display_name: String, webauthn_id: Uuid },
+    Setup {
+        reg: Box<PasskeyRegistration>,
+        code_hash: String,
+        display_name: String,
+        webauthn_id: Uuid,
+    },
     /// New person from an invite.
-    Invite { reg: Box<PasskeyRegistration>, invite_id: String, role: Role, display_name: String, webauthn_id: Uuid },
+    Invite {
+        reg: Box<PasskeyRegistration>,
+        invite_id: String,
+        role: Role,
+        display_name: String,
+        webauthn_id: Uuid,
+    },
     /// New passkey for the first owner from an owner reset link.
-    Recover { reg: Box<PasskeyRegistration>, code_id: String, user_id: String },
+    Recover {
+        reg: Box<PasskeyRegistration>,
+        code_id: String,
+        user_id: String,
+    },
     /// Signed-in user adds another passkey.
-    Add { reg: Box<PasskeyRegistration>, user_id: String },
+    Add {
+        reg: Box<PasskeyRegistration>,
+        user_id: String,
+    },
     /// Discoverable sign-in.
-    Login { auth: Box<DiscoverableAuthentication> },
+    Login {
+        auth: Box<DiscoverableAuthentication>,
+    },
 }
 
 struct PendingFlow {
@@ -49,6 +73,7 @@ pub struct PasskeyState {
     webauthn: Option<Webauthn>,
     reason: String,
     flows: DashMap<String, PendingFlow>,
+    max_flows: usize,
     last_sweep: Mutex<Instant>,
 }
 
@@ -97,6 +122,7 @@ impl PasskeyState {
             webauthn: build_webauthn(config),
             reason: unavailable_reason(config),
             flows: DashMap::new(),
+            max_flows: MAX_FLOWS,
             last_sweep: Mutex::new(Instant::now()),
         })
     }
@@ -108,15 +134,37 @@ impl PasskeyState {
 
     /// The relying party, or `passkeys_unavailable`.
     pub fn webauthn(&self) -> ApiResult<&Webauthn> {
-        self.webauthn.as_ref().ok_or_else(|| ApiError::new(ErrorCode::PasskeysUnavailable, self.reason.clone()))
+        self.webauthn
+            .as_ref()
+            .ok_or_else(|| ApiError::new(ErrorCode::PasskeysUnavailable, self.reason.clone()))
     }
 
-    /// Store ceremony state; returns its flow id.
-    pub(crate) fn begin(&self, flow: Flow) -> String {
+    /// Store ceremony state; returns its flow id. Refuses with `rate_limited` when
+    /// [`MAX_FLOWS`] ceremonies are already in flight.
+    pub(crate) fn begin(&self, flow: Flow) -> ApiResult<String> {
         self.sweep_if_due();
+        if self.flows.len() >= self.max_flows {
+            self.flows.retain(|_, p| p.created.elapsed() <= FLOW_TTL);
+            if self.flows.len() >= self.max_flows {
+                tracing::warn!(
+                    in_flight = self.flows.len(),
+                    "too many passkey ceremonies in progress"
+                );
+                return Err(ApiError::new(
+                    ErrorCode::RateLimited,
+                    "Too many sign-ins are in progress. Wait a minute and try again.",
+                ));
+            }
+        }
         let flow_id = codes::random_b64::<16>();
-        self.flows.insert(flow_id.clone(), PendingFlow { created: Instant::now(), flow });
-        flow_id
+        self.flows.insert(
+            flow_id.clone(),
+            PendingFlow {
+                created: Instant::now(),
+                flow,
+            },
+        );
+        Ok(flow_id)
     }
 
     /// Remove and return ceremony state. Expired or unknown ids fail.
@@ -135,7 +183,9 @@ impl PasskeyState {
     }
 
     fn sweep_if_due(&self) {
-        let Ok(mut last) = self.last_sweep.try_lock() else { return };
+        let Ok(mut last) = self.last_sweep.try_lock() else {
+            return;
+        };
         if last.elapsed() < SWEEP_EVERY {
             return;
         }
@@ -157,10 +207,12 @@ impl PasskeyState {
     ) -> ApiResult<(serde_json::Value, PasskeyRegistration)> {
         let webauthn = self.webauthn()?;
         let exclude = (!exclude.is_empty()).then_some(exclude);
-        let (ccr, reg) = webauthn.start_passkey_registration(user_handle, user_name, display_name, exclude).map_err(|e| {
-            tracing::error!(error = %e, "could not start passkey registration");
-            ApiError::internal()
-        })?;
+        let (ccr, reg) = webauthn
+            .start_passkey_registration(user_handle, user_name, display_name, exclude)
+            .map_err(|e| {
+                tracing::error!(error = %e, "could not start passkey registration");
+                ApiError::internal()
+            })?;
         let mut options = serde_json::to_value(&ccr).map_err(|e| {
             tracing::error!(error = %e, "could not encode passkey options");
             ApiError::internal()
@@ -170,20 +222,32 @@ impl PasskeyState {
     }
 
     /// Verify a registration response against its ceremony state.
-    pub(crate) fn finish_registration(&self, credential: &RegisterPublicKeyCredential, reg: &PasskeyRegistration) -> ApiResult<Passkey> {
-        self.webauthn()?.finish_passkey_registration(credential, reg).map_err(|e| {
-            tracing::info!(error = %e, "passkey registration rejected");
-            ApiError::bad_request("Your passkey could not be verified. Try again.")
-        })
+    pub(crate) fn finish_registration(
+        &self,
+        credential: &RegisterPublicKeyCredential,
+        reg: &PasskeyRegistration,
+    ) -> ApiResult<Passkey> {
+        self.webauthn()?
+            .finish_passkey_registration(credential, reg)
+            .map_err(|e| {
+                tracing::info!(error = %e, "passkey registration rejected");
+                ApiError::bad_request("Your passkey could not be verified. Try again.")
+            })
     }
 
     /// Start a username-less sign-in. `conditional` keeps `mediation: "conditional"` for autofill UI;
     /// otherwise the options suit a "Sign in with a passkey" button.
-    pub(crate) fn start_login(&self, conditional: bool) -> ApiResult<(serde_json::Value, DiscoverableAuthentication)> {
-        let (rcr, auth) = self.webauthn()?.start_discoverable_authentication().map_err(|e| {
-            tracing::error!(error = %e, "could not start passkey sign-in");
-            ApiError::internal()
-        })?;
+    pub(crate) fn start_login(
+        &self,
+        conditional: bool,
+    ) -> ApiResult<(serde_json::Value, DiscoverableAuthentication)> {
+        let (rcr, auth) = self
+            .webauthn()?
+            .start_discoverable_authentication()
+            .map_err(|e| {
+                tracing::error!(error = %e, "could not start passkey sign-in");
+                ApiError::internal()
+            })?;
         let mut options = serde_json::to_value(&rcr).map_err(|e| {
             tracing::error!(error = %e, "could not encode passkey options");
             ApiError::internal()
@@ -196,10 +260,13 @@ impl PasskeyState {
 
     /// The user handle and credential id from a discoverable sign-in response.
     pub(crate) fn identify(&self, credential: &PublicKeyCredential) -> ApiResult<(Uuid, Vec<u8>)> {
-        let (uuid, cred_id) = self.webauthn()?.identify_discoverable_authentication(credential).map_err(|e| {
-            tracing::info!(error = %e, "passkey sign-in without a usable user handle");
-            not_recognized()
-        })?;
+        let (uuid, cred_id) = self
+            .webauthn()?
+            .identify_discoverable_authentication(credential)
+            .map_err(|e| {
+                tracing::info!(error = %e, "passkey sign-in without a usable user handle");
+                not_recognized()
+            })?;
         Ok((uuid, cred_id.to_vec()))
     }
 
@@ -210,21 +277,28 @@ impl PasskeyState {
         auth: DiscoverableAuthentication,
         keys: &[DiscoverableKey],
     ) -> ApiResult<AuthenticationResult> {
-        self.webauthn()?.finish_discoverable_authentication(credential, auth, keys).map_err(|e| {
-            tracing::info!(error = %e, "passkey sign-in rejected");
-            not_recognized()
-        })
+        self.webauthn()?
+            .finish_discoverable_authentication(credential, auth, keys)
+            .map_err(|e| {
+                tracing::info!(error = %e, "passkey sign-in rejected");
+                not_recognized()
+            })
     }
 }
 
 /// The sign-in failure every client sees, whatever the cause.
 pub fn not_recognized() -> ApiError {
-    ApiError::new(ErrorCode::Unauthorized, "That passkey was not recognized. Try another one.")
+    ApiError::new(
+        ErrorCode::Unauthorized,
+        "That passkey was not recognized. Try another one.",
+    )
 }
 
 /// Force `authenticatorSelection.residentKey = "required"` and `requireResidentKey = true`.
 pub fn require_resident_key(options: &mut serde_json::Value) {
-    let Some(public_key) = options.get_mut("publicKey").and_then(|v| v.as_object_mut()) else { return };
+    let Some(public_key) = options.get_mut("publicKey").and_then(|v| v.as_object_mut()) else {
+        return;
+    };
     let selection = public_key
         .entry("authenticatorSelection")
         .or_insert_with(|| serde_json::json!({"userVerification": "required"}));
@@ -286,7 +360,11 @@ pub fn passkey_name(requested: Option<&str>, user_agent: Option<&str>) -> ApiRes
 
 /// Origin check helper for tests: the relying party's allowed origins.
 pub fn allowed_origins(state: &PasskeyState) -> Vec<Url> {
-    state.webauthn.as_ref().map(|w| w.get_allowed_origins().to_vec()).unwrap_or_default()
+    state
+        .webauthn
+        .as_ref()
+        .map(|w| w.get_allowed_origins().to_vec())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -303,7 +381,11 @@ mod tests {
 
     #[test]
     fn unavailable_without_secure_url() {
-        for url in [None, Some("http://192.168.1.20:8788"), Some("http://stash.example.com")] {
+        for url in [
+            None,
+            Some("http://192.168.1.20:8788"),
+            Some("http://stash.example.com"),
+        ] {
             let state = PasskeyState::new(&config(url)).unwrap();
             assert!(!state.ready());
             let err = state.start_login(false).unwrap_err();
@@ -320,7 +402,9 @@ mod tests {
         let state = PasskeyState::new(&c).unwrap();
         assert!(state.ready());
         assert_eq!(allowed_origins(&state).len(), 2);
-        let (options, _reg) = state.start_registration(new_user_handle(), "Ana", "Ana", vec![]).unwrap();
+        let (options, _reg) = state
+            .start_registration(new_user_handle(), "Ana", "Ana", vec![])
+            .unwrap();
         let pk = &options["publicKey"];
         assert_eq!(pk["rp"]["id"], "stash.example.com");
         assert_eq!(pk["rp"]["name"], RP_NAME);
@@ -347,7 +431,11 @@ mod tests {
     fn flows_are_single_use() {
         let state = PasskeyState::new(&config(Some("http://localhost:8788"))).unwrap();
         let (_, auth) = state.start_login(false).unwrap();
-        let id = state.begin(Flow::Login { auth: Box::new(auth) });
+        let id = state
+            .begin(Flow::Login {
+                auth: Box::new(auth),
+            })
+            .unwrap();
         assert_eq!(id.len(), 22);
         assert_eq!(state.pending_flows(), 1);
         assert!(state.take(&id).is_ok());
@@ -356,12 +444,47 @@ mod tests {
     }
 
     #[test]
+    fn in_flight_ceremonies_are_capped() {
+        let mut state = PasskeyState::new(&config(Some("http://localhost:8788"))).unwrap();
+        state.max_flows = 3;
+        let login = |state: &PasskeyState| {
+            let (_, auth) = state.start_login(false).unwrap();
+            state.begin(Flow::Login {
+                auth: Box::new(auth),
+            })
+        };
+        let first = login(&state).unwrap();
+        login(&state).unwrap();
+        login(&state).unwrap();
+        let err = login(&state).unwrap_err();
+        assert_eq!(err.code, ErrorCode::RateLimited);
+        assert_eq!(state.pending_flows(), 3);
+        // A finished ceremony frees its slot.
+        assert!(state.take(&first).is_ok());
+        let fourth = login(&state).unwrap();
+        // Expired ceremonies are dropped to make room, without waiting for the periodic sweep.
+        let stale = Instant::now()
+            .checked_sub(FLOW_TTL + Duration::from_secs(1))
+            .unwrap();
+        state.flows.get_mut(&fourth).unwrap().created = stale;
+        assert!(login(&state).is_ok());
+        assert_eq!(state.pending_flows(), 3);
+        assert!(state.take(&fourth).is_err());
+    }
+
+    #[test]
     fn passkey_names() {
         let iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit";
         assert_eq!(default_passkey_name(Some(iphone)), "Passkey on iPhone");
         assert_eq!(default_passkey_name(None), "Passkey");
-        assert_eq!(passkey_name(Some("  Kitchen iPad "), None).unwrap(), "Kitchen iPad");
-        assert_eq!(passkey_name(Some("  "), Some("Windows NT")).unwrap(), "Passkey on Windows");
+        assert_eq!(
+            passkey_name(Some("  Kitchen iPad "), None).unwrap(),
+            "Kitchen iPad"
+        );
+        assert_eq!(
+            passkey_name(Some("  "), Some("Windows NT")).unwrap(),
+            "Passkey on Windows"
+        );
     }
 
     #[test]

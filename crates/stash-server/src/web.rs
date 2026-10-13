@@ -124,6 +124,10 @@ fn route_fallback(
             .insert(header::ALLOW, HeaderValue::from_static("GET, HEAD"));
         return response;
     }
+    // Well-known URIs are machine-read; answering them with the app page would mislead clients.
+    if path.starts_with("/.well-known/") {
+        return plain_not_found();
+    }
     serve_page(path, headers, lookup)
 }
 
@@ -145,10 +149,10 @@ fn dist_name(path: &str) -> Option<String> {
 
 /// Top-level files from the build (favicon, icons) or the SPA's index.html.
 fn serve_page(path: &str, headers: &HeaderMap, lookup: Lookup<'_>) -> Response {
-    if let Some(name) = dist_name(path).filter(|n| n != "index.html") {
-        if let Some(file) = lookup(&name) {
-            return file_response(file, &content_type(&name), SHORT_CACHE, headers);
-        }
+    if let Some(name) = dist_name(path).filter(|n| n != "index.html")
+        && let Some(file) = lookup(&name)
+    {
+        return file_response(file, &content_type(&name), SHORT_CACHE, headers);
     }
     match lookup("index.html") {
         Some(file) => file_response(file, "text/html; charset=utf-8", NO_CACHE, headers),
@@ -369,6 +373,13 @@ mod tests {
         }
         let response = route_fallback(&Method::POST, "/movies", &HeaderMap::new(), &lookup);
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let response = route_fallback(
+            &Method::GET,
+            "/.well-known/security.txt",
+            &HeaderMap::new(),
+            &lookup,
+        );
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -458,5 +469,41 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
         assert!(body_text(response).await.contains("delegate_permission"));
+    }
+
+    /// Runs only when `web/dist` has been built: the real build is served as the contract says.
+    #[tokio::test]
+    async fn serves_the_real_build_when_present() {
+        let Some(index) = Dist::get("index.html") else {
+            eprintln!("skipping: web/dist is not built");
+            return;
+        };
+        let app = TestApp::new().await;
+        let (status, headers, body) = app.get("/shows/Doctor%20Who", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
+        assert_eq!(&body[..], &index.data[..]);
+
+        let script = Dist::iter().find(|p| p.starts_with("assets/") && p.ends_with(".js"));
+        if let Some(script) = script {
+            let (status, headers, _) = app.get(&format!("/{script}"), None).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(headers[header::CACHE_CONTROL], IMMUTABLE);
+            assert_eq!(
+                headers[header::CONTENT_TYPE],
+                "text/javascript; charset=utf-8"
+            );
+        }
+        if Dist::get("manifest.webmanifest").is_some() {
+            let (status, headers, _) = app.get("/manifest.webmanifest", None).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(headers[header::CONTENT_TYPE], "application/manifest+json");
+        }
+        if Dist::get("sw.js").is_some() {
+            let (status, headers, _) = app.get("/sw.js", None).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
+            assert_eq!(headers["service-worker-allowed"], "/");
+        }
     }
 }

@@ -39,7 +39,12 @@ pub fn new_token() -> String {
 
 /// The 8-character display prefix of a token (first 8 characters after `pst_`).
 pub fn token_display_prefix(token: &str) -> String {
-    token.strip_prefix(TOKEN_PREFIX).unwrap_or(token).chars().take(8).collect()
+    token
+        .strip_prefix(TOKEN_PREFIX)
+        .unwrap_or(token)
+        .chars()
+        .take(8)
+        .collect()
 }
 
 /// Groups of 4 characters from [`CODE_ALPHABET`], joined with `-`.
@@ -75,7 +80,11 @@ pub fn normalize_code(input: &str, groups: usize) -> Option<String> {
         .filter(|c| !c.is_whitespace() && *c != '-')
         .map(|c| c.to_ascii_uppercase())
         .collect();
-    if chars.len() != groups * 4 || !chars.iter().all(|c| c.is_ascii() && CODE_ALPHABET.contains(&(*c as u8))) {
+    if chars.len() != groups * 4
+        || !chars
+            .iter()
+            .all(|c| c.is_ascii() && CODE_ALPHABET.contains(&(*c as u8)))
+    {
         return None;
     }
     let mut out = String::with_capacity(groups * 5);
@@ -106,7 +115,11 @@ mod tests {
         let t = new_token();
         assert!(t.starts_with("pst_"));
         assert_eq!(t.len(), 4 + 43);
-        assert!(t[4..].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(
+            t[4..]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        );
         assert_ne!(new_token(), t);
         assert_eq!(token_display_prefix(&t), t[4..12]);
         assert_eq!(token_display_prefix(&t).len(), 8);
@@ -135,7 +148,11 @@ mod tests {
         assert_eq!(setup.len(), 14);
         let parts: Vec<&str> = setup.split('-').collect();
         assert_eq!(parts.len(), 3);
-        assert!(parts.iter().all(|p| p.len() == 4 && p.bytes().all(|b| CODE_ALPHABET.contains(&b))));
+        assert!(
+            parts
+                .iter()
+                .all(|p| p.len() == 4 && p.bytes().all(|b| CODE_ALPHABET.contains(&b)))
+        );
         let user = new_user_code();
         assert_eq!(user.len(), 9);
         assert_eq!(user.as_bytes()[4], b'-');
@@ -144,8 +161,14 @@ mod tests {
     #[test]
     fn normalize_typed_codes() {
         assert_eq!(normalize_code("abcd-efgh", 2).as_deref(), Some("ABCD-EFGH"));
-        assert_eq!(normalize_code(" ab cd efgh ", 2).as_deref(), Some("ABCD-EFGH"));
-        assert_eq!(normalize_code("ABCDEFGHJKMN", 3).as_deref(), Some("ABCD-EFGH-JKMN"));
+        assert_eq!(
+            normalize_code(" ab cd efgh ", 2).as_deref(),
+            Some("ABCD-EFGH")
+        );
+        assert_eq!(
+            normalize_code("ABCDEFGHJKMN", 3).as_deref(),
+            Some("ABCD-EFGH-JKMN")
+        );
         assert_eq!(normalize_code("ABCD-EFG", 2), None);
         assert_eq!(normalize_code("ABCD-EFG0", 2), None);
         assert_eq!(normalize_code("ABCD-EFGHI", 2), None);
@@ -155,7 +178,10 @@ mod tests {
 
     #[test]
     fn hashing() {
-        assert_eq!(sha256_hex("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            sha256_hex("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
         assert_eq!(sha256_hex("x").len(), 64);
         assert!(constant_time_eq("abc", "abc"));
         assert!(!constant_time_eq("abc", "abd"));

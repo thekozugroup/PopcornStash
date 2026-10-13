@@ -3,19 +3,24 @@
 //! 1. The device calls `POST /api/pairing/request` and shows `user_code`.
 //! 2. A signed-in person approves the code in Settings (or at `verify_url`).
 //! 3. The device polls with its `poll_secret` and receives its token exactly once.
+//!
+//! An approved token waits in `pending_token` until the device collects it. Until then
+//! it carries an expiry ([`DELIVERY_GRACE_S`] past the request's), so a token nobody
+//! collects stops working on its own even if no cleanup ever runs.
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::{Deserialize, Serialize};
 use stash_core::db::Db;
 use stash_core::{new_id, now};
 
 use super::codes;
+use super::handlers::JsonBody;
 use super::tokens::{self, CLIENT_KINDS};
 use super::{AuthUser, Scope};
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiResult, ErrorCode};
 use crate::security::ClientIp;
 use crate::state::AppState;
 
@@ -25,6 +30,9 @@ pub const PAIRING_TTL_S: i64 = 10 * 60;
 pub const DELIVERY_GRACE_S: i64 = 10 * 60;
 /// Suggested seconds between polls (fits the 10/min pairing rate limit).
 pub const POLL_INTERVAL_S: i64 = 6;
+/// Most devices that may wait for approval at once. Requests are unauthenticated, so
+/// this bounds the table and keeps the approval list readable.
+pub const MAX_PENDING_PAIRINGS: i64 = 50;
 
 /// Scopes a newly paired device receives.
 pub fn scopes_for(client_kind: &str) -> Vec<Scope> {
@@ -67,7 +75,10 @@ async fn expire_undelivered(db: &Db, id: &str, token_id: Option<&str>) -> ApiRes
     if done.rows_affected() == 1
         && let Some(token_id) = token_id
     {
-        sqlx::query("DELETE FROM api_tokens WHERE id = ?").bind(token_id).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM api_tokens WHERE id = ?")
+            .bind(token_id)
+            .execute(&mut *tx)
+            .await?;
     }
     tx.commit().await?;
     Ok(())
@@ -94,15 +105,30 @@ pub struct PairingStarted {
 pub async fn request(
     State(state): State<AppState>,
     ip: ClientIp,
-    Json(body): Json<PairingRequestBody>,
+    JsonBody(body): JsonBody<PairingRequestBody>,
 ) -> ApiResult<Json<PairingStarted>> {
     state.rate_limiter.check(&ip.key("pairing"))?;
     let client_name = super::users::clean_name(&body.client_name, "Device name")?;
     let client_kind = body.client_kind.trim();
     if !CLIENT_KINDS.contains(&client_kind) {
-        return Err(ApiError::bad_request("Device type must be chrome-extension, android or other."));
+        return Err(ApiError::bad_request(
+            "Device type must be chrome-extension, android or other.",
+        ));
     }
     cleanup(&state.db).await?;
+    let (waiting,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM pairing_requests WHERE status = 'pending' AND expires_at > ?",
+    )
+    .bind(now())
+    .fetch_one(&state.db)
+    .await?;
+    if waiting >= MAX_PENDING_PAIRINGS {
+        tracing::warn!(waiting, "too many devices are waiting to pair");
+        return Err(ApiError::new(
+            ErrorCode::RateLimited,
+            "Too many devices are waiting to pair. Try again in a few minutes.",
+        ));
+    }
     let pairing_id = new_id();
     let poll_secret = codes::random_b64::<32>();
     let now = now();
@@ -130,8 +156,52 @@ pub async fn request(
             Err(e) => return Err(e.into()),
         }
     }
-    let verify_url = format!("{}/pair?code={user_code}", super::public_base(&state.config).unwrap_or_default());
-    Ok(Json(PairingStarted { pairing_id, user_code, poll_secret, expires_at, verify_url, interval: POLL_INTERVAL_S }))
+    let verify_url = format!(
+        "{}/pair?code={user_code}",
+        super::public_base(&state.config).unwrap_or_default()
+    );
+    Ok(Json(PairingStarted {
+        pairing_id,
+        user_code,
+        poll_secret,
+        expires_at,
+        verify_url,
+        interval: POLL_INTERVAL_S,
+    }))
+}
+
+/// Mark an approved request delivered and hand out its token plaintext, exactly once.
+async fn take_pending_token(db: &Db, pairing_id: &str) -> ApiResult<Option<String>> {
+    let mut tx = db.begin().await?;
+    // Claim first: the write lock makes concurrent polls wait, and only one sees rows_affected = 1.
+    let claimed = sqlx::query(
+        "UPDATE pairing_requests SET status = 'delivered' WHERE id = ? AND status = 'approved'",
+    )
+    .bind(pairing_id)
+    .execute(&mut *tx)
+    .await?;
+    if claimed.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+    // Delivered: the device keeps its token for as long as nobody revokes it.
+    sqlx::query(
+        "UPDATE api_tokens SET expires_at = NULL WHERE id = (SELECT token_id FROM pairing_requests WHERE id = ?)",
+    )
+    .bind(pairing_id)
+    .execute(&mut *tx)
+    .await?;
+    let (token,): (Option<String>,) =
+        sqlx::query_as("SELECT pending_token FROM pairing_requests WHERE id = ?")
+            .bind(pairing_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    sqlx::query("UPDATE pairing_requests SET pending_token = NULL WHERE id = ?")
+        .bind(pairing_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(token)
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,33 +213,50 @@ pub struct PollBody {
 type PairingRow = (String, String, i64, Option<String>);
 
 fn gone(status: &str) -> Response {
-    (StatusCode::GONE, Json(serde_json::json!({ "status": status }))).into_response()
+    (
+        StatusCode::GONE,
+        Json(serde_json::json!({ "status": status })),
+    )
+        .into_response()
 }
 
 /// Name shown by the device once paired: the server's host name.
 fn server_name(state: &AppState) -> String {
-    state.config.rp_id().unwrap_or_else(|| "PopcornStash".to_string())
+    state
+        .config
+        .rp_id()
+        .unwrap_or_else(|| "PopcornStash".to_string())
 }
 
 /// `POST /api/pairing/poll` (public, rate limited):
 /// 202 pending, 200 approved (token delivered once), 410 denied or expired.
-pub async fn poll(State(state): State<AppState>, ip: ClientIp, Json(body): Json<PollBody>) -> ApiResult<Response> {
+pub async fn poll(
+    State(state): State<AppState>,
+    ip: ClientIp,
+    JsonBody(body): JsonBody<PollBody>,
+) -> ApiResult<Response> {
     state.rate_limiter.check(&ip.key("pairing-poll"))?;
-    let row: Option<PairingRow> =
-        sqlx::query_as("SELECT poll_secret_hash, status, expires_at, token_id FROM pairing_requests WHERE id = ?")
-            .bind(&body.pairing_id)
-            .fetch_optional(&state.db)
-            .await?;
-    let unknown = || ApiError::not_found("That pairing request does not exist. Start pairing again.");
-    let Some((secret_hash, status, expires_at, token_id)) = row else { return Err(unknown()) };
+    let row: Option<PairingRow> = sqlx::query_as(
+        "SELECT poll_secret_hash, status, expires_at, token_id FROM pairing_requests WHERE id = ?",
+    )
+    .bind(&body.pairing_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let unknown =
+        || ApiError::not_found("That pairing request does not exist. Start pairing again.");
+    let Some((secret_hash, status, expires_at, token_id)) = row else {
+        return Err(unknown());
+    };
     if !codes::constant_time_eq(&secret_hash, &codes::sha256_hex(&body.poll_secret)) {
         return Err(unknown());
     }
     let now = now();
     match status.as_str() {
-        "pending" if expires_at > now => {
-            Ok((StatusCode::ACCEPTED, Json(serde_json::json!({ "status": "pending" }))).into_response())
-        }
+        "pending" if expires_at > now => Ok((
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "status": "pending" })),
+        )
+            .into_response()),
         "pending" | "delivered" => Ok(gone("expired")),
         "denied" => Ok(gone("denied")),
         "approved" if expires_at + DELIVERY_GRACE_S <= now => {
@@ -177,22 +264,24 @@ pub async fn poll(State(state): State<AppState>, ip: ClientIp, Json(body): Json<
             Ok(gone("expired"))
         }
         "approved" => {
-            let delivered: Option<(Option<String>,)> = sqlx::query_as(
-                "UPDATE pairing_requests SET status = 'delivered', pending_token = NULL \
-                 WHERE id = ? AND status = 'approved' RETURNING pending_token",
-            )
-            .bind(&body.pairing_id)
-            .fetch_optional(&state.db)
-            .await?;
-            let Some((Some(token),)) = delivered else { return Ok(gone("expired")) };
-            let scopes: Option<(String,)> = sqlx::query_as("SELECT scopes FROM api_tokens WHERE id = ?")
-                .bind(token_id.as_deref())
-                .fetch_optional(&state.db)
-                .await?;
-            let Some((scopes,)) = scopes else { return Ok(gone("expired")) };
-            let scopes: Vec<&str> = Scope::parse_json(&scopes).into_iter().map(Scope::as_str).collect();
+            let Some(token) = take_pending_token(&state.db, &body.pairing_id).await? else {
+                return Ok(gone("expired"));
+            };
+            let scopes: Option<(String,)> =
+                sqlx::query_as("SELECT scopes FROM api_tokens WHERE id = ?")
+                    .bind(token_id.as_deref())
+                    .fetch_optional(&state.db)
+                    .await?;
+            let Some((scopes,)) = scopes else {
+                return Ok(gone("expired"));
+            };
+            let scopes: Vec<&str> = Scope::parse_json(&scopes)
+                .into_iter()
+                .map(Scope::as_str)
+                .collect();
             Ok((
                 StatusCode::OK,
+                [super::handlers::NO_STORE],
                 Json(serde_json::json!({
                     "status": "approved",
                     "token": token,
@@ -217,7 +306,10 @@ pub struct PendingPairing {
 }
 
 /// `GET /api/pairing/pending`: devices waiting for approval.
-pub async fn pending(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<Vec<PendingPairing>>> {
+pub async fn pending(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> ApiResult<Json<Vec<PendingPairing>>> {
     user.require(Scope::Full)?;
     let rows = sqlx::query_as(
         "SELECT id AS pairing_id, user_code, client_name, client_kind, ip, created_at FROM pairing_requests \
@@ -235,7 +327,9 @@ pub struct UserCodeBody {
 }
 
 fn no_such_code() -> ApiError {
-    ApiError::not_found("No device is waiting with that code. Check the code on the device, or start pairing again.")
+    ApiError::not_found(
+        "No device is waiting with that code. Check the code on the device, or start pairing again.",
+    )
 }
 
 async fn find_pending(db: &Db, typed: &str) -> ApiResult<(String, String, String)> {
@@ -255,13 +349,14 @@ pub async fn approve(
     State(state): State<AppState>,
     ip: ClientIp,
     user: AuthUser,
-    Json(body): Json<UserCodeBody>,
+    JsonBody(body): JsonBody<UserCodeBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     user.require(Scope::Full)?;
     let (pairing_id, client_name, client_kind) = find_pending(&state.db, &body.user_code).await?;
     let scopes = scopes_for(&client_kind);
     let mut tx = state.db.begin().await?;
-    let created = tokens::insert_token(&mut tx, &user.user_id, &client_name, &scopes, &client_kind).await?;
+    let created =
+        tokens::insert_token(&mut tx, &user.user_id, &client_name, &scopes, &client_kind).await?;
     let done = sqlx::query(
         "UPDATE pairing_requests SET status = 'approved', token_id = ?, pending_token = ?, approved_by = ? \
          WHERE id = ? AND status = 'pending'",
@@ -276,6 +371,15 @@ pub async fn approve(
         tx.rollback().await?;
         return Err(no_such_code());
     }
+    // Until the device collects it, the token only lives as long as the request may be polled.
+    sqlx::query(
+        "UPDATE api_tokens SET expires_at = (SELECT expires_at FROM pairing_requests WHERE id = ?) + ? WHERE id = ?",
+    )
+    .bind(&pairing_id)
+    .bind(DELIVERY_GRACE_S)
+    .bind(&created.info.id)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     state
         .auth
@@ -300,14 +404,16 @@ pub async fn deny(
     State(state): State<AppState>,
     ip: ClientIp,
     user: AuthUser,
-    Json(body): Json<UserCodeBody>,
+    JsonBody(body): JsonBody<UserCodeBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     user.require(Scope::Full)?;
     let (pairing_id, client_name, client_kind) = find_pending(&state.db, &body.user_code).await?;
-    sqlx::query("UPDATE pairing_requests SET status = 'denied' WHERE id = ? AND status = 'pending'")
-        .bind(&pairing_id)
-        .execute(&state.db)
-        .await?;
+    sqlx::query(
+        "UPDATE pairing_requests SET status = 'denied' WHERE id = ? AND status = 'pending'",
+    )
+    .bind(&pairing_id)
+    .execute(&state.db)
+    .await?;
     state
         .auth
         .audit(
@@ -326,7 +432,10 @@ mod tests {
 
     #[test]
     fn device_scopes() {
-        assert_eq!(scopes_for("chrome-extension"), vec![Scope::DownloadsCreate, Scope::DownloadsRead]);
+        assert_eq!(
+            scopes_for("chrome-extension"),
+            vec![Scope::DownloadsCreate, Scope::DownloadsRead]
+        );
         assert_eq!(scopes_for("android"), vec![Scope::Full]);
         assert_eq!(scopes_for("other"), vec![Scope::DownloadsCreate]);
     }

@@ -170,10 +170,10 @@ pub fn safe_join(root: &Path, rel: &Path) -> Result<PathBuf> {
             None => break,
         }
     }
-    if let (Ok(real_root), Ok(real)) = (root.canonicalize(), existing.canonicalize()) {
-        if !real.starts_with(&real_root) {
-            return Err(CoreError::PathEscape(rel.to_path_buf()));
-        }
+    if let (Ok(real_root), Ok(real)) = (root.canonicalize(), existing.canonicalize())
+        && !real.starts_with(&real_root)
+    {
+        return Err(CoreError::PathEscape(rel.to_path_buf()));
     }
     Ok(out)
 }

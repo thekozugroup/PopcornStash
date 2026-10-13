@@ -5,12 +5,12 @@
 //! the Android app receives one as a bearer token from `login/finish`.
 //! Device tokens (`api_tokens`) are bearer-only and carry scopes.
 
+use axum::Json;
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::http::header::{self, HeaderMap, HeaderValue};
 use axum::http::request::Parts;
-use axum::http::StatusCode;
 use axum::response::{AppendHeaders, IntoResponse, Response};
-use axum::Json;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use serde::Serialize;
 use stash_core::config::Config;
@@ -53,7 +53,11 @@ impl SessionKind {
 
 /// `__Host-stash` on HTTPS, `stash` on plain-HTTP localhost.
 pub fn cookie_name(config: &Config) -> &'static str {
-    if config.is_https() { "__Host-stash" } else { "stash" }
+    if config.is_https() {
+        "__Host-stash"
+    } else {
+        "stash"
+    }
 }
 
 fn base_cookie(config: &Config, value: String) -> Cookie<'static> {
@@ -82,7 +86,8 @@ pub fn clear_cookie(config: &Config) -> HeaderValue {
 
 fn header_value(cookie: &Cookie<'_>) -> HeaderValue {
     // Cookie values are base64url and attribute names are ASCII, so this cannot fail.
-    HeaderValue::from_str(&cookie.encoded().to_string()).unwrap_or_else(|_| HeaderValue::from_static(""))
+    HeaderValue::from_str(&cookie.encoded().to_string())
+        .unwrap_or_else(|_| HeaderValue::from_static(""))
 }
 
 /// The session token from the request's cookie header, if any.
@@ -152,7 +157,11 @@ pub async fn create_session(
     .bind(ip)
     .execute(db)
     .await?;
-    Ok(NewSession { id, token, expires_at })
+    Ok(NewSession {
+        id,
+        token,
+        expires_at,
+    })
 }
 
 pub(crate) fn truncate(value: &str, max: usize) -> String {
@@ -177,12 +186,15 @@ pub async fn authenticate(parts: &mut Parts, state: &AppState) -> ApiResult<Auth
             let hash = codes::sha256_hex(&token);
             match session_user(&state.db, &hash, SessionKind::Bearer, ip.as_deref()).await? {
                 Some(user) => user,
-                None => token_user(&state.db, &hash).await?.ok_or_else(ApiError::unauthorized)?,
+                None => token_user(&state.db, &hash)
+                    .await?
+                    .ok_or_else(ApiError::unauthorized)?,
             }
         }
         Some(None) => return Err(ApiError::unauthorized()),
         None => {
-            let token = token_from_cookie(&parts.headers, &state.config).ok_or_else(ApiError::unauthorized)?;
+            let token = token_from_cookie(&parts.headers, &state.config)
+                .ok_or_else(ApiError::unauthorized)?;
             let hash = codes::sha256_hex(&token);
             session_user(&state.db, &hash, SessionKind::Cookie, ip.as_deref())
                 .await?
@@ -195,7 +207,12 @@ pub async fn authenticate(parts: &mut Parts, state: &AppState) -> ApiResult<Auth
 
 type SessionRow = (String, i64, i64, i64, String, Role);
 
-async fn session_user(db: &Db, id: &str, kind: SessionKind, ip: Option<&str>) -> ApiResult<Option<AuthUser>> {
+async fn session_user(
+    db: &Db,
+    id: &str,
+    kind: SessionKind,
+    ip: Option<&str>,
+) -> ApiResult<Option<AuthUser>> {
     let row: Option<SessionRow> = sqlx::query_as(
         "SELECT s.user_id, s.created_at, s.last_seen_at, s.expires_at, u.display_name, u.role \
          FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ? AND s.kind = ?",
@@ -210,7 +227,10 @@ async fn session_user(db: &Db, id: &str, kind: SessionKind, ip: Option<&str>) ->
     let now = now();
     let hard_limit = created_at + SESSION_MAX_AGE_S;
     if expires_at <= now || hard_limit <= now {
-        sqlx::query("DELETE FROM sessions WHERE id = ?").bind(id).execute(db).await?;
+        sqlx::query("DELETE FROM sessions WHERE id = ?")
+            .bind(id)
+            .execute(db)
+            .await?;
         return Ok(None);
     }
     if now - last_seen_at >= SESSION_REFRESH_S {
@@ -233,7 +253,15 @@ async fn session_user(db: &Db, id: &str, kind: SessionKind, ip: Option<&str>) ->
     }))
 }
 
-type TokenRow = (String, String, String, Option<i64>, Option<i64>, String, Role);
+type TokenRow = (
+    String,
+    String,
+    String,
+    Option<i64>,
+    Option<i64>,
+    String,
+    Role,
+);
 
 async fn token_user(db: &Db, hash: &str) -> ApiResult<Option<AuthUser>> {
     let row: Option<TokenRow> = sqlx::query_as(
@@ -243,7 +271,8 @@ async fn token_user(db: &Db, hash: &str) -> ApiResult<Option<AuthUser>> {
     .bind(hash)
     .fetch_optional(db)
     .await?;
-    let Some((token_id, user_id, scopes, last_used_at, expires_at, display_name, role)) = row else {
+    let Some((token_id, user_id, scopes, last_used_at, expires_at, display_name, role)) = row
+    else {
         return Ok(None);
     };
     let now = now();
@@ -251,13 +280,24 @@ async fn token_user(db: &Db, hash: &str) -> ApiResult<Option<AuthUser>> {
         return Ok(None);
     }
     if last_used_at.is_none_or(|t| now - t >= TOKEN_TOUCH_S) {
-        sqlx::query("UPDATE api_tokens SET last_used_at = ? WHERE id = ?").bind(now).bind(&token_id).execute(db).await?;
+        sqlx::query("UPDATE api_tokens SET last_used_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(&token_id)
+            .execute(db)
+            .await?;
     }
     let scopes = Scope::parse_json(&scopes);
     if scopes.is_empty() {
         return Ok(None);
     }
-    Ok(Some(AuthUser { user_id, display_name, role, scopes, session_id: None, token_id: Some(token_id) }))
+    Ok(Some(AuthUser {
+        user_id,
+        display_name,
+        role,
+        scopes,
+        session_id: None,
+        token_id: Some(token_id),
+    }))
 }
 
 // ───────────────────────────── handlers ─────────────────────────────
@@ -274,8 +314,13 @@ pub struct AuthState {
     pub reason: Option<String>,
 }
 
-pub async fn auth_state(State(state): State<AppState>, MaybeAuthUser(user): MaybeAuthUser) -> ApiResult<Json<AuthState>> {
-    let (users,): (i64,) = sqlx::query_as("SELECT count(*) FROM users").fetch_one(&state.db).await?;
+pub async fn auth_state(
+    State(state): State<AppState>,
+    MaybeAuthUser(user): MaybeAuthUser,
+) -> ApiResult<Json<AuthState>> {
+    let (users,): (i64,) = sqlx::query_as("SELECT count(*) FROM users")
+        .fetch_one(&state.db)
+        .await?;
     let user = match user {
         Some(u) => super::users::load_user(&state.db, &u.user_id).await?,
         None => None,
@@ -295,19 +340,44 @@ pub async fn auth_state(State(state): State<AppState>, MaybeAuthUser(user): Mayb
 
 /// `GET /api/me`.
 pub async fn me(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<UserView>> {
-    super::users::load_user(&state.db, &user.user_id).await?.map(Json).ok_or_else(ApiError::unauthorized)
+    super::users::load_user(&state.db, &user.user_id)
+        .await?
+        .map(Json)
+        .ok_or_else(ApiError::unauthorized)
 }
 
 /// `POST /api/auth/logout`: ends this session (or revokes this device token) and clears the cookie.
-pub async fn logout(State(state): State<AppState>, ip: ClientIp, user: AuthUser) -> ApiResult<Response> {
+pub async fn logout(
+    State(state): State<AppState>,
+    ip: ClientIp,
+    user: AuthUser,
+) -> ApiResult<Response> {
     if let Some(session_id) = &user.session_id {
-        sqlx::query("DELETE FROM sessions WHERE id = ?").bind(session_id).execute(&state.db).await?;
+        sqlx::query("DELETE FROM sessions WHERE id = ?")
+            .bind(session_id)
+            .execute(&state.db)
+            .await?;
     }
     if let Some(token_id) = &user.token_id {
-        sqlx::query("DELETE FROM api_tokens WHERE id = ?").bind(token_id).execute(&state.db).await?;
+        sqlx::query("DELETE FROM api_tokens WHERE id = ?")
+            .bind(token_id)
+            .execute(&state.db)
+            .await?;
     }
-    state.auth.audit(Some(&user.user_id), "logout", serde_json::json!({}), ip.as_string().as_deref()).await;
-    Ok((StatusCode::NO_CONTENT, AppendHeaders([(header::SET_COOKIE, clear_cookie(&state.config))])).into_response())
+    state
+        .auth
+        .audit(
+            Some(&user.user_id),
+            "logout",
+            serde_json::json!({}),
+            ip.as_string().as_deref(),
+        )
+        .await;
+    Ok((
+        StatusCode::NO_CONTENT,
+        AppendHeaders([(header::SET_COOKIE, clear_cookie(&state.config))]),
+    )
+        .into_response())
 }
 
 /// `Session` (section 8).
@@ -324,7 +394,10 @@ pub struct SessionView {
 }
 
 /// `GET /api/me/sessions`.
-pub async fn list_sessions(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<Vec<SessionView>>> {
+pub async fn list_sessions(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> ApiResult<Json<Vec<SessionView>>> {
     user.require(Scope::Full)?;
     let mut rows: Vec<SessionView> = sqlx::query_as(
         "SELECT id, kind, created_at, last_seen_at, user_agent, ip FROM sessions \
@@ -358,10 +431,19 @@ pub async fn revoke_session(
     }
     state
         .auth
-        .audit(Some(&user.user_id), "session_revoked", serde_json::json!({}), ip.as_string().as_deref())
+        .audit(
+            Some(&user.user_id),
+            "session_revoked",
+            serde_json::json!({}),
+            ip.as_string().as_deref(),
+        )
         .await;
     if user.session_id.as_deref() == Some(id.as_str()) {
-        return Ok((StatusCode::NO_CONTENT, AppendHeaders([(header::SET_COOKIE, clear_cookie(&state.config))])).into_response());
+        return Ok((
+            StatusCode::NO_CONTENT,
+            AppendHeaders([(header::SET_COOKIE, clear_cookie(&state.config))]),
+        )
+            .into_response());
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -411,18 +493,30 @@ mod tests {
     fn reads_cookie_and_bearer() {
         let c = config("https://stash.example.com");
         let mut h = HeaderMap::new();
-        h.insert(header::COOKIE, HeaderValue::from_static("a=b; __Host-stash=pst_xyz; stash=pst_other"));
+        h.insert(
+            header::COOKIE,
+            HeaderValue::from_static("a=b; __Host-stash=pst_xyz; stash=pst_other"),
+        );
         assert_eq!(token_from_cookie(&h, &c).as_deref(), Some("pst_xyz"));
         let local = config("http://localhost:8788");
         assert_eq!(token_from_cookie(&h, &local).as_deref(), Some("pst_other"));
-        h.insert(header::COOKIE, HeaderValue::from_static("__Host-stash=nope"));
+        h.insert(
+            header::COOKIE,
+            HeaderValue::from_static("__Host-stash=nope"),
+        );
         assert_eq!(token_from_cookie(&h, &c), None);
 
         let mut h = HeaderMap::new();
         assert_eq!(bearer_token(&h), None);
-        h.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer pst_tok"));
+        h.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pst_tok"),
+        );
         assert_eq!(bearer_token(&h), Some(Some("pst_tok".into())));
-        h.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer other"));
+        h.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer other"),
+        );
         assert_eq!(bearer_token(&h), Some(None));
         h.insert(header::AUTHORIZATION, HeaderValue::from_static("Basic abc"));
         assert_eq!(bearer_token(&h), Some(None));

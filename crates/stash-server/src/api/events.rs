@@ -90,6 +90,9 @@ async fn still_signed_in(state: &AppState, headers: &HeaderMap) -> bool {
     }
 }
 
+/// One turn of the stream loop. Lives on the stack for a moment only, so the
+/// size difference between variants does not matter.
+#[allow(clippy::large_enum_variant)]
 enum Step {
     Received(Result<Event, RecvError>),
     Revalidate,
@@ -100,8 +103,21 @@ async fn events(
     user: AuthUser,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
-    let filter = Filter::for_user(&user);
-    let credentials = credentials(&headers);
+    Ok(sse_response(event_stream(
+        state, &user, &headers, REVALIDATE,
+    )))
+}
+
+/// The SSE stream for one caller: initial VPN status, then every allowed event until
+/// the bus closes or a re-check every `revalidate` finds the caller signed out.
+fn event_stream(
+    state: AppState,
+    user: &AuthUser,
+    headers: &HeaderMap,
+    revalidate: Duration,
+) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + use<> {
+    let filter = Filter::for_user(user);
+    let credentials = credentials(headers);
     // Subscribe before anything else so no event published from here on is missed.
     let mut rx = state.events.subscribe();
     // The VPN status comes from another service; fetch it on its own task so a
@@ -111,7 +127,7 @@ async fn events(
         tokio::spawn(async move { torrentd.vpn_status().await })
     });
 
-    let stream = async_stream::stream! {
+    async_stream::stream! {
         if let Some(task) = initial_vpn {
             match tokio::time::timeout(INITIAL_VPN_TIMEOUT, task).await {
                 Ok(Ok(status)) => yield Ok::<_, Infallible>(to_sse(&Event::Vpn(status))),
@@ -119,7 +135,7 @@ async fn events(
                 Err(_) => tracing::debug!("VPN status was slow; the event stream starts without it"),
             }
         }
-        let mut check = tokio::time::interval_at(tokio::time::Instant::now() + REVALIDATE, REVALIDATE);
+        let mut check = tokio::time::interval_at(tokio::time::Instant::now() + revalidate, revalidate);
         check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             let step = tokio::select! {
@@ -144,8 +160,7 @@ async fn events(
                 }
             }
         }
-    };
-    Ok(sse_response(stream))
+    }
 }
 
 fn sse_response<S>(stream: S) -> Response
@@ -308,6 +323,44 @@ mod tests {
         let seen = read_until(&mut body, "visible").await;
         assert!(seen.contains("event: vpn"), "{seen}");
         assert!(!seen.contains("hidden"), "{seen}");
+    }
+
+    /// Signing out (or revoking a device) ends an open stream at the next re-check.
+    #[tokio::test]
+    async fn open_streams_close_after_sign_out() {
+        use futures::StreamExt;
+
+        let app = TestApp::new().await;
+        let (user_id, token) = app.user("member").await;
+        let device = app.device_token(&user_id, &["library:read"]).await;
+        for (secret, revoke) in [
+            (token, "DELETE FROM sessions"),
+            (device, "DELETE FROM api_tokens"),
+        ] {
+            let mut parts = request("GET", "/api/events", Some(&secret), None)
+                .into_parts()
+                .0;
+            let user = crate::auth::sessions::authenticate(&mut parts, &app.state)
+                .await
+                .unwrap();
+            let stream = event_stream(
+                app.state.clone(),
+                &user,
+                &parts.headers,
+                Duration::from_millis(50),
+            );
+            let mut stream = Box::pin(stream);
+            app.state.events.publish(Event::Inbox { count: 1 });
+            let first = tokio::time::timeout(Duration::from_secs(5), stream.next())
+                .await
+                .expect("an event arrives");
+            assert!(first.is_some(), "{revoke}");
+            sqlx::query(revoke).execute(&app.state.db).await.unwrap();
+            let end = tokio::time::timeout(Duration::from_secs(5), stream.next())
+                .await
+                .expect("the stream ends after the re-check");
+            assert!(end.is_none(), "{revoke}: stream stayed open");
+        }
     }
 
     #[tokio::test]

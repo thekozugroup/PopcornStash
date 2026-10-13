@@ -19,6 +19,7 @@ use axum::{Json, Router};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use stash_core::CoreError;
 use stash_core::events::{Event, LibraryChange};
 use stash_core::library::OrganizeRequest;
 use stash_core::library::repo::{self, ItemPatch, ItemQuery, Page};
@@ -30,15 +31,25 @@ use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
 use crate::auth::{AuthUser, Scope};
-use crate::error::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiResult, ErrorCode};
+use crate::security::ClientIp;
 use crate::state::AppState;
 
-/// Cache policy for thumbnails: their URL carries `v=<updated_at>`.
+/// Cache policy for versioned thumbnail URLs (`Item.thumb` carries `v=<updated_at>`).
 const THUMB_CACHE: &str = "private, max-age=31536000, immutable";
+/// Cache policy for thumbnail URLs without a version: revalidated with the ETag,
+/// so a regenerated thumbnail shows up.
+const THUMB_REVALIDATE: &str = "private, no-cache";
 /// Cache policy for originals: revalidated with ETag / Last-Modified.
 const FILE_CACHE: &str = "private, no-cache";
 /// Cache policy for photo views (original or rendition).
 const VIEW_CACHE: &str = "private, max-age=3600";
+/// Library files are untrusted (anything a torrent brings in). When one is opened
+/// directly in a tab it runs in a sandbox: no scripts, no forms, an opaque origin.
+/// The policy does not affect `<video>` or `<img>` elements that load the file.
+const FILE_CSP: &str = "default-src 'none'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'unsafe-inline'; sandbox";
+/// Chrome's PDF viewer refuses to run in a sandboxed document; PDFs get the rest of the policy.
+const PDF_CSP: &str = "default-src 'none'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'unsafe-inline'";
 /// Longest accepted search text.
 const MAX_SEARCH_CHARS: usize = 200;
 /// Largest page the list endpoint returns.
@@ -81,6 +92,12 @@ where
 
 fn json_rejection(rejection: JsonRejection) -> ApiError {
     tracing::debug!(detail = %rejection.body_text(), "rejected JSON body");
+    if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        return ApiError::new(
+            ErrorCode::PayloadTooLarge,
+            "The request is too large. Send less at once.",
+        );
+    }
     match rejection {
         JsonRejection::MissingJsonContentType(_) => {
             ApiError::bad_request("Send the request as JSON.")
@@ -192,43 +209,47 @@ async fn detail(
     Ok(Json(visible_detail(&state, &id, &user.user_id).await?))
 }
 
+/// Longest accepted text field in a metadata edit.
+const MAX_TEXT_CHARS: usize = 500;
+
 /// Build an [`ItemPatch`] from raw JSON so `null` (clear) and a missing key
-/// (leave alone) stay distinct.
+/// (leave alone) stay distinct. Types are checked here; value ranges (year,
+/// season and episode numbers) are checked by the library.
 fn patch_from_json(body: serde_json::Map<String, serde_json::Value>) -> ApiResult<ItemPatch> {
     use serde_json::Value;
 
     fn int(
         body: &serde_json::Map<String, Value>,
         key: &str,
-        range: std::ops::RangeInclusive<i64>,
-        msg: &str,
+        label: &str,
     ) -> ApiResult<Option<Option<i64>>> {
         match body.get(key) {
             None => Ok(None),
             Some(Value::Null) => Ok(Some(None)),
-            Some(v) => match v.as_i64() {
-                Some(n) if range.contains(&n) => Ok(Some(Some(n))),
-                _ => Err(ApiError::bad_request(msg)),
-            },
+            Some(v) => v.as_i64().map(|n| Some(Some(n))).ok_or_else(|| {
+                ApiError::bad_request(format!("The {label} must be a whole number."))
+            }),
         }
     }
     fn text(
         body: &serde_json::Map<String, Value>,
         key: &str,
-        msg: &str,
+        label: &str,
     ) -> ApiResult<Option<Option<String>>> {
         match body.get(key) {
             None => Ok(None),
             Some(Value::Null) => Ok(Some(None)),
-            Some(Value::String(s)) if s.chars().count() <= 300 => {
+            Some(Value::String(s)) if s.chars().count() <= MAX_TEXT_CHARS => {
                 let s = s.trim();
                 Ok(Some((!s.is_empty()).then(|| s.to_string())))
             }
-            Some(_) => Err(ApiError::bad_request(msg)),
+            Some(_) => Err(ApiError::bad_request(format!(
+                "The {label} must be text of {MAX_TEXT_CHARS} characters or fewer."
+            ))),
         }
     }
 
-    let title = match text(&body, "title", "The title is too long.")? {
+    let title = match text(&body, "title", "title")? {
         None => None,
         Some(Some(title)) => Some(title),
         Some(None) => return Err(ApiError::bad_request("The title cannot be empty.")),
@@ -240,19 +261,13 @@ fn patch_from_json(body: serde_json::Map<String, serde_json::Value>) -> ApiResul
     };
     Ok(ItemPatch {
         title,
-        year: int(&body, "year", 1800..=2200, "The year is not valid.")?,
+        year: int(&body, "year", "year")?,
         favorite,
         // The patch has no way to express "clear"; an empty name clears it.
-        show_name: text(&body, "show_name", "The show name is too long.")?
-            .map(Option::unwrap_or_default),
-        season: int(&body, "season", 0..=9999, "The season number is not valid.")?,
-        episode: int(
-            &body,
-            "episode",
-            0..=9999,
-            "The episode number is not valid.",
-        )?,
-        episode_title: text(&body, "episode_title", "The episode title is too long.")?,
+        show_name: text(&body, "show_name", "show name")?.map(Option::unwrap_or_default),
+        season: int(&body, "season", "season number")?,
+        episode: int(&body, "episode", "episode number")?,
+        episode_title: text(&body, "episode_title", "episode title")?,
     })
 }
 
@@ -273,6 +288,33 @@ async fn update(
     Ok(Json(visible_detail(&state, &id, &user.user_id).await?))
 }
 
+/// Highest season or episode number accepted, the same bound metadata edits use.
+const MAX_NUMBER: i64 = 10_000;
+
+/// Check an organize or accept request with the limits metadata edits use: the
+/// title and show name end up in the database and in folder names. The year range
+/// is checked by the library.
+pub(crate) fn check_organize(request: &OrganizeRequest) -> ApiResult<()> {
+    for (value, label) in [(&request.title, "title"), (&request.show_name, "show name")] {
+        if value
+            .as_deref()
+            .is_some_and(|v| v.chars().count() > MAX_TEXT_CHARS)
+        {
+            return Err(ApiError::bad_request(format!(
+                "The {label} must be {MAX_TEXT_CHARS} characters or fewer."
+            )));
+        }
+    }
+    for (value, label) in [(request.season, "season"), (request.episode, "episode")] {
+        if value.is_some_and(|n| !(0..=MAX_NUMBER).contains(&n)) {
+            return Err(ApiError::bad_request(format!(
+                "The {label} number must be between 0 and {MAX_NUMBER}."
+            )));
+        }
+    }
+    Ok(())
+}
+
 async fn organize(
     State(state): State<AppState>,
     user: AuthUser,
@@ -280,6 +322,7 @@ async fn organize(
     JsonBody(request): JsonBody<OrganizeRequest>,
 ) -> ApiResult<Json<ItemDetail>> {
     user.require(Scope::Full)?;
+    check_organize(&request)?;
     visible_item(&state, &id).await?;
     state.library.organize(&id, request).await?;
     Ok(Json(visible_detail(&state, &id, &user.user_id).await?))
@@ -288,6 +331,7 @@ async fn organize(
 async fn remove(
     State(state): State<AppState>,
     user: AuthUser,
+    ip: ClientIp,
     UrlPath(id): UrlPath<String>,
 ) -> ApiResult<StatusCode> {
     user.require_owner()?;
@@ -297,9 +341,9 @@ async fn remove(
         .auth
         .audit(
             Some(&user.user_id),
-            "item.trashed",
+            "item_trashed",
             serde_json::json!({ "item_id": id, "title": item.title, "rel_path": item.rel_path }),
-            None,
+            ip.as_string().as_deref(),
         )
         .await;
     Ok(StatusCode::NO_CONTENT)
@@ -313,35 +357,48 @@ async fn remove(
 #[serde(default)]
 struct ThumbQuery {
     size: Option<ThumbSize>,
+    /// Cache buster from `Item.thumb` (`updated_at`). Only versioned URLs are immutable.
+    v: Option<String>,
 }
 
 async fn thumb(
     State(state): State<AppState>,
     user: AuthUser,
     UrlPath(id): UrlPath<String>,
-    uri: Uri,
+    req: Request,
 ) -> ApiResult<Response> {
     user.require(Scope::LibraryRead)?;
-    let query: ThumbQuery = parse_query(&uri)?;
+    let query: ThumbQuery = parse_query(req.uri())?;
     let size = query.size.unwrap_or(ThumbSize::Sm);
     let item = visible_item(&state, &id).await?;
     let path = state.media.thumb_path(&item.id, size);
-    let bytes = match tokio::fs::read(&path).await {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(ApiError::not_found("This picture is not ready yet."));
-        }
-        Err(e) => return Err(e.into()),
+    let not_ready = || ApiError::not_found("This picture is not ready yet.");
+    if !tokio::fs::metadata(&path)
+        .await
+        .is_ok_and(|meta| meta.is_file())
+    {
+        return Err(not_ready());
+    }
+    let cache = if query.v.is_some() {
+        THUMB_CACHE
+    } else {
+        THUMB_REVALIDATE
     };
-    Ok((
-        [
-            (header::CONTENT_TYPE, "image/webp"),
-            (header::CACHE_CONTROL, THUMB_CACHE),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-        ],
-        bytes,
-    )
-        .into_response())
+    let thumbs = state.config.thumbs_dir();
+    let mut response = serve_path(req, &path, &thumbs, cache).await.map_err(|e| {
+        if e.code == ErrorCode::NotFound {
+            not_ready()
+        } else {
+            e
+        }
+    })?;
+    // Thumbnails are always WebP, whatever the cache file is called.
+    if response.status().is_success() {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/webp"));
+    }
+    Ok(response)
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -374,14 +431,47 @@ async fn file(
         .next()
         .unwrap_or(&item.rel_path)
         .to_string();
-    let disposition = content_disposition(if download { "attachment" } else { "inline" }, &name);
-    let mut response = serve_path(req, &abs, FILE_CACHE).await?;
-    if let Ok(value) = HeaderValue::from_str(&disposition) {
+    let mut response = serve_path(req, &abs, state.layout.root(), FILE_CACHE).await?;
+    // Markup and scripts are always downloaded, never rendered in our origin.
+    let active = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(is_active_content);
+    if active {
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/octet-stream"),
+        );
+    }
+    let kind = if download || active {
+        "attachment"
+    } else {
+        "inline"
+    };
+    if let Ok(value) = HeaderValue::from_str(&content_disposition(kind, &name)) {
         response
             .headers_mut()
             .insert(header::CONTENT_DISPOSITION, value);
     }
     Ok(response)
+}
+
+/// Types a browser would execute or render as a document with scripts.
+fn is_active_content(content_type: &str) -> bool {
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    essence.ends_with("+xml")
+        || essence.contains("javascript")
+        || essence.contains("ecmascript")
+        || matches!(
+            essence.as_str(),
+            "text/html" | "text/xml" | "application/xml" | "text/xsl" | "application/xslt+xml"
+        )
 }
 
 async fn view(
@@ -397,7 +487,16 @@ async fn view(
     }
     // Make sure the original is still there before asking for a rendition.
     item_file(&state, &item).await?;
-    let path = state.media.photo_view(&item).await?;
+    let path = state.media.photo_view(&item).await.map_err(|e| match e {
+        // vips and ffmpeg both failed (damaged file, or a format they cannot read).
+        CoreError::External(detail) => {
+            tracing::warn!(item = %item.id, error = %detail, "could not prepare a photo for viewing");
+            ApiError::conflict(
+                "This photo could not be shown in the browser. Download the original instead.",
+            )
+        }
+        other => other.into(),
+    })?;
     if !tokio::fs::metadata(&path)
         .await
         .map(|m| m.is_file())
@@ -407,7 +506,14 @@ async fn view(
             "This photo could not be prepared for viewing.",
         ));
     }
-    let mut response = serve_path(req, &path, VIEW_CACHE).await?;
+    // The original lives in the stash; a rendition in the config cache.
+    let renditions = state.config.renditions_dir();
+    let root = if path.starts_with(&renditions) {
+        renditions.as_path()
+    } else {
+        state.layout.root()
+    };
+    let mut response = serve_path(req, &path, root, VIEW_CACHE).await?;
     response.headers_mut().insert(
         header::CONTENT_DISPOSITION,
         HeaderValue::from_static("inline"),
@@ -472,38 +578,111 @@ fn etag_matches(list: &str, etag: &str) -> bool {
         .any(|candidate| candidate == "*" || candidate.trim_start_matches("W/") == bare)
 }
 
-/// Serve a file with Range, If-Range, ETag / If-None-Match and Last-Modified support.
+/// A file opened for serving whose real location was checked.
+struct PinnedFile {
+    /// Held open until ServeFile has opened `serve`, so the descriptor number stays ours.
+    _file: std::fs::File,
+    meta: std::fs::Metadata,
+    /// What ServeFile opens: `/proc/self/fd/<n>` (the very file checked) on Linux,
+    /// else the resolved path.
+    serve: PathBuf,
+}
+
+/// Open `path` and make sure the file actually opened, after every symlink, lies
+/// under `root`. Checking the opened descriptor rather than the name means a file
+/// swapped for a symlink after an earlier check (for example over an SMB share)
+/// cannot escape. Directories, FIFOs and devices are refused without blocking.
+fn pin_file(path: &Path, root: &Path) -> std::io::Result<PinnedFile> {
+    use std::io::{Error, ErrorKind};
+
+    let outside = || Error::new(ErrorKind::PermissionDenied, "outside its root");
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Opening a FIFO for reading would otherwise wait for a writer.
+        options.custom_flags(nix::libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(Error::new(ErrorKind::NotFound, "not a regular file"));
+    }
+    let real_root = root.canonicalize()?;
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let fd_path = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+        if let Ok(real) = std::fs::read_link(&fd_path) {
+            if !real.starts_with(&real_root) {
+                return Err(outside());
+            }
+            return Ok(PinnedFile {
+                _file: file,
+                meta,
+                serve: fd_path,
+            });
+        }
+    }
+    // Without /proc, check the resolved name instead.
+    let real = path.canonicalize()?;
+    if !real.starts_with(&real_root) {
+        return Err(outside());
+    }
+    Ok(PinnedFile {
+        _file: file,
+        meta,
+        serve: real,
+    })
+}
+
+/// Serve the file at `path`, which must lie under `root` once opened, with Range,
+/// If-Range, ETag / If-None-Match and Last-Modified support. The content type comes
+/// from the name in `path`.
 pub(crate) async fn serve_path(
     mut req: Request,
     path: &Path,
+    root: &Path,
     cache_control: &'static str,
 ) -> ApiResult<Response> {
-    let meta = match tokio::fs::metadata(path).await {
-        Ok(meta) if meta.is_file() => meta,
-        _ => return Err(missing_file()),
+    let (owned_path, owned_root) = (path.to_path_buf(), root.to_path_buf());
+    let pinned = match tokio::task::spawn_blocking(move || pin_file(&owned_path, &owned_root)).await
+    {
+        Ok(Ok(pinned)) => pinned,
+        Ok(Err(e)) => {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                tracing::warn!(error = %e, "refusing to serve a file that resolves outside its folder");
+            }
+            return Err(missing_file());
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "file open task failed");
+            return Err(ApiError::internal());
+        }
     };
-    let etag = etag_for(&meta);
+    let meta = &pinned.meta;
+    let etag = etag_for(meta);
     let safe_method = matches!(*req.method(), Method::GET | Method::HEAD);
     let headers = req.headers_mut();
-    if let Some(etag) = &etag {
-        if let Some(inm) = headers
+    if let Some(etag) = &etag
+        && let Some(inm) = headers
             .get(header::IF_NONE_MATCH)
             .and_then(|v| v.to_str().ok())
-        {
-            if etag_matches(inm, etag) && safe_method {
-                let mut response = StatusCode::NOT_MODIFIED.into_response();
-                if let Ok(value) = HeaderValue::from_str(etag) {
-                    response.headers_mut().insert(header::ETAG, value);
-                }
-                response.headers_mut().insert(
-                    header::CACHE_CONTROL,
-                    HeaderValue::from_static(cache_control),
-                );
-                return Ok(response);
+    {
+        if etag_matches(inm, etag) && safe_method {
+            let mut response = StatusCode::NOT_MODIFIED.into_response();
+            if let Ok(value) = HeaderValue::from_str(etag) {
+                response.headers_mut().insert(header::ETAG, value);
             }
-            // If-None-Match takes precedence over If-Modified-Since (RFC 9110 13.2.2).
-            headers.remove(header::IF_MODIFIED_SINCE);
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static(cache_control),
+            );
+            return Ok(response);
         }
+        // If-None-Match takes precedence over If-Modified-Since (RFC 9110 13.2.2).
+        headers.remove(header::IF_MODIFIED_SINCE);
     }
     let headers = req.headers_mut();
     if let Some(if_range) = headers
@@ -516,22 +695,37 @@ pub(crate) async fn serve_path(
             // Strong comparison only.
             etag.as_deref() == Some(if_range.as_str())
         } else {
-            http_date(&meta).as_deref() == Some(if_range.as_str())
+            http_date(meta).as_deref() == Some(if_range.as_str())
         };
         if !fresh {
             headers.remove(header::RANGE);
         }
         headers.remove(header::IF_RANGE);
     }
-    let response = match ServeFile::new(path).oneshot(req).await {
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    let response = match ServeFile::new_with_mime(&pinned.serve, &mime)
+        .oneshot(req)
+        .await
+    {
         Ok(response) => response,
         Err(never) => match never {},
     };
+    // ServeFile has its own handle (or failed) by now.
+    drop(pinned);
     let mut response = response.map(Body::new);
     if response.status() == StatusCode::NOT_FOUND {
         return Err(missing_file());
     }
+    let pdf = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("application/pdf"));
     let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(if pdf { PDF_CSP } else { FILE_CSP }),
+    );
     headers.insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static(cache_control),
@@ -558,15 +752,14 @@ pub enum PlaybackResponse {
 }
 
 fn validate_caps(caps: &ClientCaps) -> ApiResult<()> {
-    if let Some(start) = caps.start_s {
-        if !start.is_finite() || start < 0.0 {
-            return Err(ApiError::bad_request("The start position is not valid."));
-        }
+    if caps
+        .start_s
+        .is_some_and(|start| !start.is_finite() || start < 0.0)
+    {
+        return Err(ApiError::bad_request("The start position is not valid."));
     }
-    if let Some(h) = caps.max_height {
-        if !(144..=8640).contains(&h) {
-            return Err(ApiError::bad_request("The maximum height is not valid."));
-        }
+    if caps.max_height.is_some_and(|h| !(144..=8640).contains(&h)) {
+        return Err(ApiError::bad_request("The maximum height is not valid."));
     }
     if caps.video_codecs.len() > 32 || caps.audio_codecs.len() > 32 {
         return Err(ApiError::bad_request("Too many codecs were listed."));
@@ -673,6 +866,30 @@ mod tests {
         assert!(HeaderValue::from_str(&v).is_ok());
         let v = content_disposition("inline", "a\nb.mkv");
         assert!(HeaderValue::from_str(&v).is_ok());
+    }
+
+    #[test]
+    fn active_content_is_detected() {
+        for t in [
+            "text/html",
+            "text/html; charset=utf-8",
+            "image/svg+xml",
+            "application/xhtml+xml",
+            "text/javascript",
+            "application/javascript",
+            "application/xml",
+        ] {
+            assert!(is_active_content(t), "{t}");
+        }
+        for t in [
+            "video/mp4",
+            "image/jpeg",
+            "application/pdf",
+            "text/plain",
+            "application/octet-stream",
+        ] {
+            assert!(!is_active_content(t), "{t}");
+        }
     }
 
     #[test]
@@ -882,6 +1099,185 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
+    /// Only a versioned thumbnail URL (`v=<updated_at>`) may be cached forever; the
+    /// web asks for `?size=lg` without a version, which must be revalidated.
+    #[tokio::test]
+    async fn unversioned_thumbnails_are_revalidated() {
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        let id = app
+            .item(
+                "Photos/2024/06/b.jpg",
+                MediaKind::Photo,
+                Category::Photo,
+                ItemStatus::Ready,
+                None,
+            )
+            .await;
+        let path = app.state.media.thumb_path(&id, ThumbSize::Lg);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"RIFFoldxWEBP").unwrap();
+
+        let uri = format!("/api/items/{id}/thumb?size=lg");
+        let (status, headers, body) = app.get(&uri, Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&body[..], b"RIFFoldxWEBP");
+        let cache = headers[header::CACHE_CONTROL].to_str().unwrap();
+        assert!(!cache.contains("immutable"), "{cache}");
+        assert!(cache.contains("no-cache"), "{cache}");
+        let etag = headers[header::ETAG].to_str().unwrap().to_string();
+        let req = with_header(
+            request("GET", &uri, Some(&token), None),
+            header::IF_NONE_MATCH,
+            &etag,
+        );
+        let (status, _, _) = app.send(req).await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+
+        // A regenerated thumbnail is picked up by the unversioned URL.
+        std::fs::write(&path, b"RIFFnew!WEBP!").unwrap();
+        let (status, _, body) = app.get(&uri, Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&body[..], b"RIFFnew!WEBP!");
+
+        let (status, headers, _) = app.get(&format!("{uri}&v=17"), Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CACHE_CONTROL], THUMB_CACHE);
+        assert_eq!(headers[header::CONTENT_TYPE], "image/webp");
+    }
+
+    #[tokio::test]
+    async fn organize_limits_text_and_numbers_like_edits() {
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        let id = app
+            .item(
+                "Other/clip.mkv",
+                MediaKind::Video,
+                Category::Other,
+                ItemStatus::Ready,
+                Some(b"clip"),
+            )
+            .await;
+        let long = "x".repeat(MAX_TEXT_CHARS + 1);
+        for body in [
+            serde_json::json!({"category": "movie", "title": long}),
+            serde_json::json!({"category": "episode", "show_name": long, "season": 1, "episode": 1}),
+            serde_json::json!({"category": "episode", "show_name": "Bluey", "season": 20_000, "episode": 1}),
+            serde_json::json!({"category": "episode", "show_name": "Bluey", "season": 1, "episode": 1_000_000}),
+        ] {
+            let (status, _, bytes) = app
+                .send(request(
+                    "POST",
+                    &format!("/api/items/{id}/organize"),
+                    Some(&token),
+                    Some(body.clone()),
+                ))
+                .await;
+            assert_eq!(
+                status,
+                StatusCode::BAD_REQUEST,
+                "{body}: {}",
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+        // Nothing was moved or renamed.
+        let (_, json) = app.json(&format!("/api/items/{id}"), &token).await;
+        assert_eq!(json["rel_path"], "Other/clip.mkv", "{json}");
+        assert_eq!(json["title"], "clip.mkv", "{json}");
+    }
+
+    #[tokio::test]
+    async fn oversized_json_is_payload_too_large() {
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        let id = app
+            .item(
+                "Other/a.bin",
+                MediaKind::Other,
+                Category::Other,
+                ItemStatus::Ready,
+                Some(b"x"),
+            )
+            .await;
+        let body = serde_json::json!({"title": "y".repeat(3 * 1024 * 1024)});
+        let (status, _, bytes) = app
+            .send(request(
+                "PATCH",
+                &format!("/api/items/{id}"),
+                Some(&token),
+                Some(body),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "payload_too_large");
+    }
+
+    #[tokio::test]
+    async fn unconvertible_photos_explain_themselves() {
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        let id = app
+            .item(
+                "Photos/2024/06/broken.heic",
+                MediaKind::Photo,
+                Category::Photo,
+                ItemStatus::Ready,
+                Some(b"not really a photo"),
+            )
+            .await;
+        let (status, _, bytes) = app
+            .get(&format!("/api/items/{id}/view"), Some(&token))
+            .await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "conflict");
+        assert!(
+            !json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("container logs"),
+            "{json}"
+        );
+
+        // A browser-friendly original is served as is.
+        let jpg = app
+            .item(
+                "Photos/2024/06/fine.jpg",
+                MediaKind::Photo,
+                Category::Photo,
+                ItemStatus::Ready,
+                Some(b"\xff\xd8\xff\xe0jpeg"),
+            )
+            .await;
+        let (status, headers, body) = app
+            .get(&format!("/api/items/{jpg}/view"), Some(&token))
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
+        assert_eq!(headers[header::CONTENT_DISPOSITION], "inline");
+        assert_eq!(&body[..], b"\xff\xd8\xff\xe0jpeg");
+        let video = app
+            .item(
+                "Movies/a.mp4",
+                MediaKind::Video,
+                Category::Movie,
+                ItemStatus::Ready,
+                Some(b"mp4"),
+            )
+            .await;
+        let (status, _, _) = app
+            .get(&format!("/api/items/{video}/view"), Some(&token))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
     #[tokio::test]
     async fn files_support_ranges_and_downloads() {
         let app = TestApp::new().await;
@@ -910,6 +1306,8 @@ mod tests {
                 .starts_with("inline; ")
         );
         let etag = headers[header::ETAG].to_str().unwrap().to_string();
+        let csp = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+        assert!(csp.ends_with("sandbox"), "{csp}");
 
         let req = with_header(
             request("GET", &uri, Some(&token), None),
@@ -978,6 +1376,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn markup_from_the_library_is_never_rendered() {
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        for (rel, body) in [
+            ("Other/evil.html", "<script>alert(1)</script>"),
+            ("Other/evil.svg", "<svg onload=alert(1)/>"),
+        ] {
+            let id = app
+                .item(
+                    rel,
+                    MediaKind::Other,
+                    Category::Other,
+                    ItemStatus::Ready,
+                    Some(body.as_bytes()),
+                )
+                .await;
+            let (status, headers, _) = app
+                .get(&format!("/api/items/{id}/file"), Some(&token))
+                .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(
+                headers[header::CONTENT_TYPE],
+                "application/octet-stream",
+                "{rel}"
+            );
+            assert!(
+                headers[header::CONTENT_DISPOSITION]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("attachment; ")
+            );
+            assert!(
+                headers[header::CONTENT_SECURITY_POLICY]
+                    .to_str()
+                    .unwrap()
+                    .contains("sandbox")
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn stored_paths_cannot_escape_the_stash() {
         let app = TestApp::new().await;
         let (_, token) = app.user("member").await;
@@ -1024,6 +1463,61 @@ mod tests {
             assert_eq!(status, StatusCode::NOT_FOUND);
             assert!(!body.windows(6).any(|w| w == b"secret"));
         }
+    }
+
+    /// `serve_path` re-checks the file it actually opens, so a file swapped for a
+    /// symlink after `item_file` checked the path (a race over an SMB share) is refused.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn serving_pins_the_file_inside_its_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("stash");
+        std::fs::create_dir_all(root.join("Movies")).unwrap();
+        let secret = dir.path().join("secret.db");
+        std::fs::write(&secret, b"secret").unwrap();
+        std::fs::write(root.join("Movies/real.mkv"), b"inside").unwrap();
+        let escape = root.join("Movies/escape.mkv");
+        std::os::unix::fs::symlink(&secret, &escape).unwrap();
+        let alias = root.join("Movies/alias.mkv");
+        std::os::unix::fs::symlink(root.join("Movies/real.mkv"), &alias).unwrap();
+        let fifo = root.join("Movies/pipe.mkv");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).unwrap();
+        let get = || request("GET", "/", None, None);
+
+        let err = serve_path(get(), &escape, &root, FILE_CACHE)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotFound);
+        // A FIFO is refused at once instead of blocking a worker thread.
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            serve_path(get(), &fifo, &root, FILE_CACHE),
+        )
+        .await
+        .expect("does not block")
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotFound);
+
+        for (path, expected) in [(root.join("Movies/real.mkv"), "inside"), (alias, "inside")] {
+            let response = serve_path(get(), &path, &root, FILE_CACHE).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers()[header::CONTENT_TYPE],
+                "video/x-matroska",
+                "the type still comes from the real name"
+            );
+            let body = http_body_util::BodyExt::collect(response.into_body())
+                .await
+                .unwrap()
+                .to_bytes();
+            assert_eq!(&body[..], expected.as_bytes());
+        }
+        let req = with_header(get(), header::RANGE, "bytes=1-3");
+        let response = serve_path(req, &root.join("Movies/real.mkv"), &root, FILE_CACHE)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes 1-3/6");
     }
 
     #[tokio::test]
@@ -1085,5 +1579,106 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN);
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn edits_metadata_organizes_and_saves_progress() {
+        let app = TestApp::new().await;
+        let (user_id, token) = app.user("member").await;
+        let id = app
+            .item(
+                "Other/heat.mkv",
+                MediaKind::Video,
+                Category::Other,
+                ItemStatus::Ready,
+                Some(b"heat"),
+            )
+            .await;
+        let mut events = app.state.events.subscribe();
+
+        let patch = serde_json::json!({"title": "Heat", "year": 1995, "favorite": true});
+        let (status, _, body) = app
+            .send(request(
+                "PATCH",
+                &format!("/api/items/{id}"),
+                Some(&token),
+                Some(patch),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            (
+                json["title"].as_str(),
+                json["year"].as_i64(),
+                json["favorite"].as_bool()
+            ),
+            (Some("Heat"), Some(1995), Some(true))
+        );
+        assert_eq!(
+            json["rel_path"], "Other/heat.mkv",
+            "metadata edits never move files"
+        );
+        let event = events.try_recv().unwrap();
+        assert_eq!(event.name(), "library");
+
+        let (status, _, body) = app
+            .send(request(
+                "PATCH",
+                &format!("/api/items/{id}"),
+                Some(&token),
+                Some(serde_json::json!({"year": null})),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["year"].is_null());
+        let (status, _, _) = app
+            .send(request(
+                "PATCH",
+                &format!("/api/items/{id}"),
+                Some(&token),
+                Some(serde_json::json!({"year": 1066})),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let reader = app.device_token(&user_id, &["library:read"]).await;
+        let (status, _, _) = app
+            .send(request(
+                "PATCH",
+                &format!("/api/items/{id}"),
+                Some(&reader),
+                Some(serde_json::json!({"favorite": false})),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let organize = serde_json::json!({"category": "movie", "title": "Heat", "year": 1995});
+        let (status, _, body) = app
+            .send(request(
+                "POST",
+                &format!("/api/items/{id}/organize"),
+                Some(&token),
+                Some(organize),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["rel_path"], "Movies/Heat (1995)/Heat (1995).mkv");
+        assert_eq!(json["category"], "movie");
+
+        let progress = serde_json::json!({"position_s": 30.0, "duration_s": 100.0});
+        let (status, _, _) = app
+            .send(request(
+                "PUT",
+                &format!("/api/items/{id}/progress"),
+                Some(&reader),
+                Some(progress),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, json) = app.json(&format!("/api/items/{id}"), &token).await;
+        assert_eq!(json["progress"]["position_s"], 30.0, "{json}");
     }
 }

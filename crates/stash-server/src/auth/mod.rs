@@ -13,9 +13,9 @@ pub mod users;
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
-use axum::Router;
 use serde::{Deserialize, Serialize};
 use stash_core::config::Config;
 use stash_core::db::Db;
@@ -38,7 +38,12 @@ pub enum Scope {
 }
 
 impl Scope {
-    pub const ALL: [Scope; 4] = [Scope::Full, Scope::DownloadsCreate, Scope::DownloadsRead, Scope::LibraryRead];
+    pub const ALL: [Scope; 4] = [
+        Scope::Full,
+        Scope::DownloadsCreate,
+        Scope::DownloadsRead,
+        Scope::LibraryRead,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -64,7 +69,8 @@ impl Scope {
 
     /// JSON array text for `api_tokens.scopes`.
     pub fn to_json(scopes: &[Scope]) -> String {
-        serde_json::to_string(&scopes.iter().map(|s| s.as_str()).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into())
+        serde_json::to_string(&scopes.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+            .unwrap_or_else(|_| "[]".into())
     }
 }
 
@@ -79,7 +85,10 @@ pub struct UserView {
 
 /// The public URL without a trailing slash, used to build links.
 pub fn public_base(config: &Config) -> Option<String> {
-    config.public_url.as_ref().map(|u| u.as_str().trim_end_matches('/').to_string())
+    config
+        .public_url
+        .as_ref()
+        .map(|u| u.as_str().trim_end_matches('/').to_string())
 }
 
 /// The authenticated caller. Extracting it rejects unauthenticated requests with 401.
@@ -104,7 +113,9 @@ impl AuthUser {
         if self.has(scope) {
             Ok(())
         } else {
-            Err(ApiError::forbidden("This device is not allowed to do that."))
+            Err(ApiError::forbidden(
+                "This device is not allowed to do that.",
+            ))
         }
     }
 
@@ -113,14 +124,21 @@ impl AuthUser {
     }
 
     pub fn require_owner(&self) -> ApiResult<()> {
-        if self.is_owner() { Ok(()) } else { Err(ApiError::owner_only()) }
+        if self.is_owner() {
+            Ok(())
+        } else {
+            Err(ApiError::owner_only())
+        }
     }
 }
 
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         sessions::authenticate(parts, state).await
     }
 }
@@ -132,7 +150,10 @@ pub struct MaybeAuthUser(pub Option<AuthUser>);
 impl FromRequestParts<AppState> for MaybeAuthUser {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         match sessions::authenticate(parts, state).await {
             Ok(user) => Ok(Self(Some(user))),
             Err(e) if e.code == crate::error::ErrorCode::Unauthorized => Ok(Self(None)),
@@ -160,7 +181,13 @@ impl AuthService {
     }
 
     /// Append to the audit log. Never fails the caller.
-    pub async fn audit(&self, user_id: Option<&str>, event: &str, detail: serde_json::Value, ip: Option<&str>) {
+    pub async fn audit(
+        &self,
+        user_id: Option<&str>,
+        event: &str,
+        detail: serde_json::Value,
+        ip: Option<&str>,
+    ) {
         users::audit(&self.db, user_id, event, detail, ip).await
     }
 }
