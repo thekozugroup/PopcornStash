@@ -1,7 +1,9 @@
 /**
  * Settings, Devices (everyone): pairing requests waiting for approval, the
  * devices and tokens connected to this account, a way to create a token by
- * hand, and how to install the Chrome extension.
+ * hand, how to install the Chrome extension, and how to add PopcornStash to
+ * an Android phone's share sheet (installing the web app from Chrome; it
+ * needs no token).
  */
 import * as stylex from '@stylexjs/stylex';
 import {colorVars, typographyVars} from '@astryxdesign/core/theme/tokens.stylex';
@@ -221,7 +223,7 @@ export default function DevicesSettingsPage() {
             <LoadError title="Devices did not load" error={tokenList.error} onRetry={tokenList.reload} />
           ) : (tokenList.data ?? []).length === 0 ? (
             <EmptyRows>
-              No devices yet. Pair the Chrome extension or the Android app, or create a token for a script.
+              No devices yet. Pair the Chrome extension, or create a token for a script.
             </EmptyRows>
           ) : (
             <PanelList density="spacious">
@@ -249,6 +251,18 @@ export default function DevicesSettingsPage() {
               Open it and enter this address: <span {...stylex.props(styles.url)}>{serverAddress}</span>
             </>
             <>It shows a code. Approve it on the page it opens, or here, once the codes match.</>
+          </Steps>
+        </SettingsGroup>
+
+        <SettingsGroup
+          title="Android phones"
+          description="Share links, photos and videos to PopcornStash from any app on the phone.">
+          <Steps label="How to share from an Android phone">
+            <>
+              Open <span {...stylex.props(styles.url)}>{serverAddress}</span> in Chrome on the phone and sign in.
+            </>
+            <>In Chrome’s menu, choose Install app or Add to Home screen.</>
+            <>In any app, choose Share, then PopcornStash.</>
           </Steps>
         </SettingsGroup>
       </div>
