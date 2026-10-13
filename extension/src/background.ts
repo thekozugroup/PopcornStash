@@ -6,9 +6,10 @@
 
 import {listDownloads, type Connection} from './lib/api';
 import type {Problem} from './lib/errors';
-import {serverProgress, shouldIntercept, type ServerProgress} from './lib/intercept';
+import {chromeCopyOutcome, serverProgress, shouldIntercept, type ServerProgress} from './lib/intercept';
 import {linkName} from './lib/links';
 import {isExtensionMessage} from './lib/messages';
+import {stashIdentity} from './lib/payload';
 import {sendToStash, usableConnection, type SendResult} from './lib/send';
 import {getConnection, getPrefs} from './lib/storage';
 
@@ -145,7 +146,7 @@ async function onDownloadCreated(item: chrome.downloads.DownloadItem): Promise<v
   if (!prefs.interceptDownloads) return;
   const stored = await getConnection();
   if (!stored) return;
-  const decision = shouldIntercept(item, stored.server);
+  const decision = shouldIntercept(item, stashIdentity(stored.server, stored.serverName));
   if (!decision.intercept) return;
 
   handling.add(item.id);
@@ -177,18 +178,12 @@ async function onDownloadCreated(item: chrome.downloads.DownloadItem): Promise<v
     }
 
     const [current] = await chrome.downloads.search({id: item.id});
-    if (current && current.state === 'in_progress') {
+    const outcome = chromeCopyOutcome(current?.state);
+    if (outcome.cancel) {
       await settle(chrome.downloads.cancel(item.id));
       await settle(chrome.downloads.erase({id: item.id}));
-      notify('downloads', 'Sent to PopcornStash', result.name, result.note ?? 'Chrome stopped its own copy.');
-    } else {
-      notify(
-        'downloads',
-        'Sent to PopcornStash',
-        result.name,
-        'Chrome had already finished its copy, so it stays in your Downloads folder too.',
-      );
     }
+    notify('downloads', 'Sent to PopcornStash', result.name, (outcome.cancel ? result.note : null) ?? outcome.note);
   } finally {
     handling.delete(item.id);
   }

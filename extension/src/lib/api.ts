@@ -130,6 +130,18 @@ export async function listDownloads(connection: Connection, limit: number): Prom
   return Array.isArray(body?.items) ? body.items : [];
 }
 
+/**
+ * Sign this browser out: `POST /api/auth/logout` with the device token
+ * revokes that token on the server (it disappears from Settings, Devices).
+ */
+export async function revokeToken(connection: Connection): Promise<void> {
+  await request<null>(connection.server, '/api/auth/logout', {
+    method: 'POST',
+    token: connection.token,
+    context: {action: 'revoke'},
+  });
+}
+
 export async function vpnStatus(connection: Connection): Promise<VpnStatus> {
   const {body} = await request<VpnStatus>(connection.server, '/api/vpn/status', {
     token: connection.token,

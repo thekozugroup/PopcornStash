@@ -221,14 +221,23 @@ impl Walker {
     }
 }
 
+/// `(device, inode)` of an open file, to name a directory the walk skips.
+pub fn file_id(fd: &impl AsFd) -> std::io::Result<(u64, u64)> {
+    fstat(fd)
+        .map(|st| (st.st_dev, st.st_ino))
+        .map_err(|e| std::io::Error::from_raw_os_error(e as i32))
+}
+
 /// Give the tree at `path` to `uid:gid` without following symlinks or leaving
-/// its filesystem, skipping the directory `skip` (if inside). Used at start-up
-/// for `/config` (PUID) and the engine state directory (engine user).
+/// its filesystem, skipping the directory whose `(device, inode)` is `skip`.
+/// Used at start-up for `/config` (PUID). `path` itself is trusted (an
+/// environment setting); everything below it is opened without following
+/// symlinks.
 pub fn own_tree(
     path: &Path,
     uid: u32,
     gid: u32,
-    skip: Option<&Path>,
+    skip: Option<(u64, u64)>,
     max_entries: u64,
 ) -> Result<AdoptReport, AdoptError> {
     let parent = path
@@ -243,11 +252,21 @@ pub fn own_tree(
         Mode::empty(),
     )
     .map_err(io)?;
-    let st = nix::sys::stat::fstatat(&parent_fd, c_name.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW)
-        .map_err(io)?;
-    let skip = skip
-        .and_then(|p| nix::sys::stat::lstat(p).ok())
-        .map(|s| (s.st_dev, s.st_ino));
+    own_tree_at(parent_fd.as_fd(), &c_name, uid, gid, skip, max_entries)
+}
+
+/// Like [`own_tree`] for the entry `name` inside the directory `parent`
+/// (opened by the caller without following symlinks). `skip` is the
+/// `(dev, inode)` of a directory to leave alone.
+pub fn own_tree_at(
+    parent: BorrowedFd<'_>,
+    name: &CStr,
+    uid: u32,
+    gid: u32,
+    skip: Option<(u64, u64)>,
+    max_entries: u64,
+) -> Result<AdoptReport, AdoptError> {
+    let st = nix::sys::stat::fstatat(parent, name, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(io)?;
     let mut walker = Walker {
         uid,
         gid,
@@ -257,7 +276,7 @@ pub fn own_tree(
         max_entries,
         report: AdoptReport::default(),
     };
-    walker.visit(parent_fd.as_fd(), &c_name, 0)?;
+    walker.visit(parent, name, 0)?;
     Ok(walker.report)
 }
 
@@ -578,11 +597,12 @@ mod tests {
         std::fs::hard_link(&system, config.join("planted")).unwrap();
         std::os::unix::fs::symlink(&system, config.join("symlink")).unwrap();
 
+        let engine = nix::sys::stat::lstat(&config.join("torrent/engine")).unwrap();
         let report = own_tree(
             &config,
             PUID,
             PGID,
-            Some(&config.join("torrent/engine")),
+            Some((engine.st_dev, engine.st_ino)),
             1000,
         )
         .unwrap();

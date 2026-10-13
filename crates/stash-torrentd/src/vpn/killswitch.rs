@@ -24,7 +24,9 @@ pub struct KillSwitch {
     pub dns_forwarder: SocketAddrV4,
     pub tcp_ports: Vec<u16>,
     pub udp_ports: Vec<u16>,
-    /// Conntrack mark for flows that use the tunnel (leak guard).
+    /// Conntrack mark for flows that use the tunnel (leak guard), and the
+    /// socket mark of the DNS forwarder's upstream sockets (same value): marked
+    /// packets may only leave through the tunnel, whatever routing decides.
     pub ct_mark: u32,
 }
 
@@ -78,6 +80,7 @@ table inet {NFT_TABLE} {{
 
 	chain output {{
 		type filter hook output priority 0; policy accept;
+		meta mark {mark} oifname != \"{tun}\" counter drop
 		ct mark {mark} oifname != {{ \"lo\", \"{tun}\" }} counter drop
 		oifname \"{tun}\" ct mark set {mark}
 		meta skuid {uid} oifname \"lo\" ct state established,related accept
@@ -168,6 +171,7 @@ table inet popcornstash {
 
 	chain output {
 		type filter hook output priority 0; policy accept;
+		meta mark 0x5150 oifname != \"psw0\" counter drop
 		ct mark 0x5150 oifname != { \"lo\", \"psw0\" } counter drop
 		oifname \"psw0\" ct mark set 0x5150
 		meta skuid 6881 oifname \"lo\" ct state established,related accept
@@ -191,6 +195,26 @@ table inet popcornstash {
     #[test]
     fn ruleset_snapshot() {
         assert_eq!(KillSwitch::new(6881).ruleset(), EXPECTED);
+    }
+
+    /// The DNS forwarder's upstream sockets carry the mark. Policy routing sends
+    /// them to table 51820, but a loopback or local destination (an upstream of
+    /// 127.0.0.11 is Docker's resolver, which answers from the host network)
+    /// is routed by the `local` table first. Marked packets may only leave
+    /// through the tunnel.
+    #[test]
+    fn marked_sockets_only_leave_through_the_tunnel() {
+        let text = KillSwitch::new(6881).ruleset();
+        let output = text.split("chain output").nth(1).unwrap();
+        let rule = "meta mark 0x5150 oifname != \"psw0\" counter drop";
+        assert!(output.contains(rule), "{output}");
+        // Before any rule that accepts.
+        let first_accept = output
+            .lines()
+            .position(|l| l.trim_end().ends_with(" accept") && !l.contains("policy"))
+            .unwrap();
+        let position = output.lines().position(|l| l.trim() == rule).unwrap();
+        assert!(position < first_accept);
     }
 
     #[test]

@@ -11,7 +11,7 @@ pub mod routes;
 pub mod wireguard;
 
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use stash_core::internal_api::{
     OPENVPN_AUTH_FILE, OPENVPN_FILE, VPN_META_FILE, VpnMeta, VpnProtocol, VpnProvider,
@@ -26,11 +26,24 @@ use self::wireguard::WireGuardTunnel;
 #[derive(Debug, Clone)]
 pub enum TunnelSpec {
     WireGuard(WireGuardPlan),
+    /// The validated text itself, not paths: OpenVPN (root) is handed a
+    /// root-only copy, so the web server's user cannot swap the file between
+    /// the check and OpenVPN reading it.
     OpenVpn {
         plan: OpenVpnPlan,
-        config: PathBuf,
-        auth: PathBuf,
+        config_text: String,
+        auth: Secret,
     },
+}
+
+/// A secret string whose `Debug` output is redacted.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
 }
 
 /// The VPN directory's contents, validated.
@@ -77,15 +90,67 @@ impl VpnSource {
     }
 }
 
+/// Largest file read from the VPN folder.
+pub const MAX_VPN_FILE: u64 = 512 * 1024;
+
+/// Read a file from the VPN folder as root. The folder belongs to the web
+/// server's user, so the file is opened without following a symlink and
+/// without blocking (a FIFO), and only a small regular file is read.
 fn read_optional(path: &Path) -> Result<Option<String>, ConfigError> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(ConfigError(format!(
-            "Could not read {}: {e}",
-            path.display()
-        ))),
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.raw_os_error() == Some(nix::libc::ELOOP) => {
+            return Err(ConfigError(format!(
+                "{name} in the VPN folder is a symbolic link. Upload the VPN settings again."
+            )));
+        }
+        Err(e) => {
+            return Err(ConfigError(format!(
+                "Could not read {}: {e}",
+                path.display()
+            )));
+        }
+    };
+    let meta = file
+        .metadata()
+        .map_err(|e| ConfigError(format!("Could not read {}: {e}", path.display())))?;
+    if !meta.is_file() {
+        return Err(ConfigError(format!(
+            "{name} in the VPN folder is not a regular file. Upload the VPN settings again."
+        )));
     }
+    if meta.len() > MAX_VPN_FILE {
+        return Err(ConfigError(format!(
+            "{name} in the VPN folder is too large."
+        )));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_VPN_FILE + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| ConfigError(format!("Could not read {}: {e}", path.display())))?;
+    if bytes.len() as u64 > MAX_VPN_FILE {
+        return Err(ConfigError(format!(
+            "{name} in the VPN folder is too large."
+        )));
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| ConfigError(format!("{name} in the VPN folder is not a text file.")))
+}
+
+fn present(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
 }
 
 /// Read and validate the VPN directory. `Ok(None)` when nothing is configured.
@@ -103,8 +168,8 @@ pub fn load(vpn_dir: &Path) -> Result<Option<VpnSource>, ConfigError> {
     let auth_path = vpn_dir.join(OPENVPN_AUTH_FILE);
     let protocol = match meta.as_ref().map(|m| m.protocol) {
         Some(p) => Some(p),
-        None if wg_path.exists() => Some(VpnProtocol::Wireguard),
-        None if ovpn_path.exists() => Some(VpnProtocol::Openvpn),
+        None if present(&wg_path) => Some(VpnProtocol::Wireguard),
+        None if present(&ovpn_path) => Some(VpnProtocol::Openvpn),
         None => None,
     };
     let spec = match protocol {
@@ -133,8 +198,8 @@ pub fn load(vpn_dir: &Path) -> Result<Option<VpnSource>, ConfigError> {
             }
             TunnelSpec::OpenVpn {
                 plan,
-                config: ovpn_path,
-                auth: auth_path,
+                config_text: text,
+                auth: Secret(auth),
             }
         }
     };
@@ -168,11 +233,11 @@ impl Tunnel {
                 .await
                 .map(Tunnel::WireGuard)
                 .map_err(|e| e.to_string()),
-            TunnelSpec::OpenVpn { config, auth, .. } => {
-                OpenVpnTunnel::bring_up(config, auth, run_dir, ifname)
-                    .await
-                    .map(Tunnel::OpenVpn)
-            }
+            TunnelSpec::OpenVpn {
+                config_text, auth, ..
+            } => OpenVpnTunnel::bring_up(config_text, &auth.0, run_dir, ifname)
+                .await
+                .map(Tunnel::OpenVpn),
         }
     }
 
@@ -260,6 +325,57 @@ mod tests {
         let source = load(dir.path()).unwrap().unwrap();
         assert_eq!(source.protocol(), VpnProtocol::Openvpn);
         assert!(source.configured_dns().is_empty());
+    }
+
+    /// The VPN folder belongs to the web server's user; root must not follow
+    /// links out of it, hang on a FIFO or read an endless file.
+    #[test]
+    fn load_reads_only_small_regular_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = dir.path().join("elsewhere.conf");
+        std::fs::write(&elsewhere, WG).unwrap();
+        let vpn = dir.path().join("vpn");
+        std::fs::create_dir(&vpn).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, vpn.join(WIREGUARD_FILE)).unwrap();
+        let e = load(&vpn).unwrap_err();
+        assert!(e.0.contains("symbolic link"), "{e}");
+
+        std::fs::remove_file(vpn.join(WIREGUARD_FILE)).unwrap();
+        nix::unistd::mkfifo(&vpn.join(WIREGUARD_FILE), nix::sys::stat::Mode::S_IRWXU).unwrap();
+        let started = std::time::Instant::now();
+        let e = load(&vpn).unwrap_err();
+        assert!(e.0.contains("not a regular file"), "{e}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+        std::fs::remove_file(vpn.join(WIREGUARD_FILE)).unwrap();
+        let big = format!("{WG}{}", "#".repeat(MAX_VPN_FILE as usize));
+        std::fs::write(vpn.join(WIREGUARD_FILE), big).unwrap();
+        assert!(load(&vpn).unwrap_err().0.contains("too large"));
+    }
+
+    /// OpenVPN gets the text that was checked, not a path the web server's
+    /// user can swap after the check.
+    #[test]
+    fn openvpn_spec_keeps_the_validated_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = "client\nremote a.example 1194\nauth-user-pass\n";
+        std::fs::write(dir.path().join(OPENVPN_FILE), good).unwrap();
+        std::fs::write(dir.path().join(OPENVPN_AUTH_FILE), "user\npass\n").unwrap();
+        let source = load(dir.path()).unwrap().unwrap();
+        std::fs::write(
+            dir.path().join(OPENVPN_FILE),
+            "client\nremote a.example 1194\nroute-up /bin/sh\n",
+        )
+        .unwrap();
+        let TunnelSpec::OpenVpn {
+            config_text, auth, ..
+        } = &source.spec
+        else {
+            panic!("expected OpenVPN");
+        };
+        assert_eq!(config_text, good);
+        assert_eq!(auth.0, "user\npass\n");
+        assert!(!format!("{:?}", source.spec).contains("pass\n"));
     }
 
     #[test]

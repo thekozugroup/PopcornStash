@@ -5,6 +5,10 @@
  *
  * A second listener on `localhost` plays "some other website" with a page
  * that links to a slow file download (for download interception tests).
+ *
+ * Links whose path contains `/refused/` are rejected with 400; links whose
+ * path contains `/server-fails/` are accepted, then listed as failed (the
+ * server's own fetch failed).
  */
 
 import {createServer, type IncomingMessage, type Server, type ServerResponse} from 'node:http';
@@ -45,6 +49,10 @@ export interface MockServer {
   approve(): void;
   /** Revoke the device token: every bearer call answers 401 from now on. */
   revoke(): void;
+  /** The device token was revoked (Settings, Devices, or the device signed out). */
+  isRevoked(): boolean;
+  /** Make `GET /api/downloads` answer 500 (or recover). */
+  failList(fail: boolean): void;
   pairingRequested(): boolean;
   sentDownloads(): RecordedRequest[];
   close(): Promise<void>;
@@ -166,6 +174,31 @@ function apiError(response: ServerResponse, status: number, code: string, messag
   json(response, status, {error: {code, message}});
 }
 
+/**
+ * A 512 KiB file sent over about three seconds, so Chrome's download is still
+ * running when the extension pauses it, and finishes once it is resumed.
+ */
+function trickle(request: IncomingMessage, response: ServerResponse, name: string): void {
+  const total = 512 * 1024;
+  const chunk = 32 * 1024;
+  response.writeHead(200, {
+    'content-type': 'application/octet-stream',
+    'content-disposition': `attachment; filename="${name}"`,
+    'content-length': String(total),
+  });
+  let sent = 0;
+  const timer = setInterval(() => {
+    if (sent >= total) {
+      clearInterval(timer);
+      response.end();
+      return;
+    }
+    response.write(Buffer.alloc(chunk));
+    sent += chunk;
+  }, 200);
+  request.on('close', () => clearInterval(timer));
+}
+
 function listen(server: Server, host: string): Promise<string> {
   return new Promise(resolve => {
     server.listen(0, host, () => {
@@ -180,6 +213,7 @@ export async function startMockServer(): Promise<MockServer> {
   const downloads = seedDownloads();
   let pairing: {id: string; secret: string; status: 'pending' | 'approved' | 'delivered'} | null = null;
   let revoked = false;
+  let listFails = false;
   let nextId = 1;
   let origin = '';
 
@@ -230,9 +264,24 @@ export async function startMockServer(): Promise<MockServer> {
         }
         return;
       }
+      case 'POST /api/auth/logout': {
+        // A bearer request ends that device token (crates/stash-server/src/auth/sessions.rs).
+        if (!authorized) {
+          apiError(response, 401, 'unauthorized', 'Sign in again.');
+          return;
+        }
+        revoked = true;
+        response.writeHead(204);
+        response.end();
+        return;
+      }
       case 'GET /api/downloads': {
         if (!authorized) {
           apiError(response, 401, 'unauthorized', 'Sign in again.');
+          return;
+        }
+        if (listFails) {
+          apiError(response, 500, 'internal', 'The database is busy.');
           return;
         }
         const limit = Number(url.searchParams.get('limit') ?? '100');
@@ -247,6 +296,10 @@ export async function startMockServer(): Promise<MockServer> {
         const payload = (body ?? {}) as {url?: string};
         if (!payload.url) {
           apiError(response, 400, 'bad_request', 'Paste a link to download.');
+          return;
+        }
+        if (payload.url.includes('/refused/')) {
+          apiError(response, 400, 'bad_request', 'That site does not allow downloads from servers.');
           return;
         }
         const magnet = payload.url.startsWith('magnet:');
@@ -271,7 +324,11 @@ export async function startMockServer(): Promise<MockServer> {
           completed_at: null,
           item_ids: [],
         };
-        downloads.unshift(created);
+        downloads.unshift(
+          payload.url.includes('/server-fails/')
+            ? {...created, state: 'failed', progress: 0, done_bytes: 0, down_bps: 0, error: 'The site answered 403.'}
+            : created,
+        );
         json(response, 200, created);
         return;
       }
@@ -283,6 +340,10 @@ export async function startMockServer(): Promise<MockServer> {
         json(response, 200, VPN_STATUS);
         return;
       }
+      case 'GET /files/own.bin':
+        // A file saved from PopcornStash itself (Download original).
+        trickle(request, response, 'own.bin');
+        return;
       case 'GET /pair':
       case 'GET /':
       case 'GET /downloads':
@@ -307,6 +368,24 @@ export async function startMockServer(): Promise<MockServer> {
       response.end(
         '<!doctype html><title>Films</title><a id="file" href="/files/Big%20Buck%20Bunny.mkv">Download Big Buck Bunny</a>',
       );
+      return;
+    }
+    if (url.pathname === '/files/edge.html') {
+      response.writeHead(200, {'content-type': 'text/html'});
+      response.end(
+        [
+          '<!doctype html><title>Edge cases</title>',
+          '<a id="refused" href="/files/refused/refused.bin">Refused by PopcornStash</a>',
+          '<a id="server-fails" href="/files/server-fails/server-fails.bin">PopcornStash cannot fetch it</a>',
+          '<a id="data" href="data:text/plain;base64,SGVsbG8=" download="inline.txt">Built into the page</a>',
+          `<a id="own" href="${origin}/files/own.bin">From PopcornStash</a>`,
+        ].join(''),
+      );
+      return;
+    }
+    const finite = /^\/files\/(?:refused|server-fails)\/([a-z-]+\.bin)$/.exec(url.pathname);
+    if (finite?.[1]) {
+      trickle(request, response, finite[1]);
       return;
     }
     if (url.pathname === '/files/Big%20Buck%20Bunny.mkv') {
@@ -343,6 +422,12 @@ export async function startMockServer(): Promise<MockServer> {
     },
     revoke() {
       revoked = true;
+    },
+    isRevoked() {
+      return revoked;
+    },
+    failList(fail: boolean) {
+      listFails = fail;
     },
     pairingRequested() {
       return pairing !== null;

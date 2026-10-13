@@ -45,18 +45,20 @@ fn s(args: &[&str]) -> Vec<String> {
 }
 
 /// `ip` commands that configure the interface after `wg setconf`.
+///
+/// Addresses are added as host addresses (/32, /128) whatever prefix the file
+/// gives: an `Address = 10.0.0.2/24` would make the kernel add
+/// `10.0.0.0/24 dev psw0` to the main table, pulling the web server's traffic
+/// for that subnet (often the home LAN) into the tunnel. The engine needs no
+/// subnet route; table 51820 sends everything through `psw0`.
 pub fn address_commands(plan: &WireGuardPlan, ifname: &str) -> Vec<Vec<String>> {
     let mut commands = Vec::new();
     for address in &plan.addresses {
-        let family = if address.addr().is_ipv4() { "-4" } else { "-6" };
-        commands.push(s(&[
-            family,
-            "address",
-            "add",
-            &address.to_string(),
-            "dev",
-            ifname,
-        ]));
+        let (family, host) = match address.addr() {
+            std::net::IpAddr::V4(ip) => ("-4", format!("{ip}/32")),
+            std::net::IpAddr::V6(ip) => ("-6", format!("{ip}/128")),
+        };
+        commands.push(s(&[family, "address", "add", &host, "dev", ifname]));
     }
     commands.push(s(&[
         "link",
@@ -304,7 +306,8 @@ mod tests {
 
     #[test]
     fn address_commands_render() {
-        let text = "[Interface]\nPrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\nAddress = 10.5.0.2/32, fd00::2/128\n[Peer]\nPublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=\nEndpoint = 1.2.3.4:51820\nAllowedIPs = 0.0.0.0/0\n";
+        // Subnet prefixes as many providers write them (wg-easy, PiVPN: /24, /64).
+        let text = "[Interface]\nPrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\nAddress = 10.5.0.2/24, fd00::2/64\n[Peer]\nPublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=\nEndpoint = 1.2.3.4:51820\nAllowedIPs = 0.0.0.0/0\n";
         let plan = WireGuardPlan::parse(text).unwrap();
         let rendered: Vec<String> = address_commands(&plan, "psw0")
             .iter()

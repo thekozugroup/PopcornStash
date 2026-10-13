@@ -7,6 +7,10 @@
  * and never for the PopcornStash server itself: its own session cookie must
  * not travel inside a download request. Cookies are matched by host name, not
  * origin, because browsers share cookies across ports.
+ *
+ * The server can have two names: the origin the extension paired with, and
+ * the host of its public URL (the pairing answer's `server_name`), for
+ * example a Tailscale address and stash.example.com. Both count as PopcornStash.
  */
 
 import {isMagnet, isWebUrl} from './links';
@@ -39,8 +43,16 @@ export interface PayloadInput {
   cookies?: readonly CookieLike[] | null | undefined;
   /** The cookie option is on and the cookies permission is granted. */
   allowCookies: boolean;
-  /** The PopcornStash server origin, e.g. "https://stash.example.com". */
-  serverOrigin: string;
+  /** The PopcornStash server: its origin, or its origin and public host name (see {@link stashIdentity}). */
+  serverOrigin: ServerIdentity;
+}
+
+/** The PopcornStash server's origin, or a list of its origins and bare host names. */
+export type ServerIdentity = string | readonly string[];
+
+/** The paired origin plus the host name the server reported at pairing (`server_name`). */
+export function stashIdentity(server: string, serverName?: string | null): string[] {
+  return serverName && serverName.trim() !== '' && serverName !== server ? [server, serverName.trim()] : [server];
 }
 
 function hostnameOf(value: string): string | null {
@@ -51,11 +63,19 @@ function hostnameOf(value: string): string | null {
   }
 }
 
-/** True when `url` is on the PopcornStash server's host (any port). */
-export function isOnServerHost(url: string, serverOrigin: string): boolean {
+/** The host name of an origin ("https://stash.example.com:8443") or of a bare host name ("stash.example.com"). */
+function serverHostname(value: string): string | null {
+  const text = value.trim();
+  if (text === '') return null;
+  return hostnameOf(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`);
+}
+
+/** True when `url` is on a PopcornStash server host (any port). */
+export function isOnServerHost(url: string, server: ServerIdentity): boolean {
   const host = hostnameOf(url);
-  const server = hostnameOf(serverOrigin);
-  return host !== null && server !== null && host === server;
+  if (host === null) return false;
+  const names = typeof server === 'string' ? [server] : server;
+  return names.some(name => serverHostname(name) === host);
 }
 
 /**
@@ -106,8 +126,8 @@ export function cleanFilename(value: string | null | undefined): string | undefi
 }
 
 /** May cookies be attached to a request for `url`? */
-export function cookiesAllowedFor(url: string, allowCookies: boolean, serverOrigin: string): boolean {
-  return allowCookies && isWebUrl(url) && !isOnServerHost(url, serverOrigin);
+export function cookiesAllowedFor(url: string, allowCookies: boolean, server: ServerIdentity): boolean {
+  return allowCookies && isWebUrl(url) && !isOnServerHost(url, server);
 }
 
 export function buildDownloadPayload(input: PayloadInput): DownloadPayload {

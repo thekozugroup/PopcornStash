@@ -69,7 +69,7 @@ What happens to each new download:
 
 Downloads that stay in Chrome:
 
-- files from PopcornStash itself (so saving a film from your library never loops back);
+- files from PopcornStash itself, at the address you paired with or at the server's public address (so saving a film from your library never loops back);
 - incognito windows;
 - downloads started by other extensions;
 - `blob:`, `data:` and `file:` downloads, which only exist in this browser.
@@ -82,7 +82,7 @@ Some sites only let signed-in people download. Turn on **Include this site's sig
 
 The trade-off, in plain words: those cookies can sign in as you on that site. PopcornStash holds them in memory for that one download and never writes them to its database or logs, but anyone in control of the server could use them while the download runs. Only turn this on for a server you run yourself.
 
-Cookies are never sent for magnet links, and never for the PopcornStash server's own host (any port), so your PopcornStash session never travels inside a download request. The extension's own requests to PopcornStash never carry browser cookies either; they use the device key only.
+Cookies are never sent for magnet links, and never for the PopcornStash server's own host names (any port): the address you paired with and the host of the server's public URL, which the server reports when pairing (`server_name`). So your PopcornStash session never travels inside a download request. The extension's own requests to PopcornStash never carry browser cookies either; they use the device key only.
 
 ## What each permission is for
 
@@ -108,8 +108,8 @@ Turning the cookie option off removes Chrome's access to all sites. Chrome may c
 
 ## Disconnect and revoke access
 
-- **Disconnect** in the options page forgets the device key on this computer and removes the extension's access to the server's address.
-- The key still exists on the server until someone removes it. To cut off this browser completely, open PopcornStash, **Settings, Devices**, and remove the device there. The options page links there after you disconnect.
+- **Disconnect** in the options page signs this browser out: it calls `POST /api/auth/logout` with the device key, which makes the server delete that key (it disappears from **Settings, Devices**), then forgets the key on this computer and removes the extension's access to the server's address.
+- If the server cannot be reached (or Chrome no longer lets the extension reach it), the key is still forgotten here, and the options page says plainly that it still works on the server, with a button that opens **Settings, Devices** so you can remove it there.
 - If a key is removed on the server first, the extension notices at its next request (a 401), forgets the key, and asks you to pair again.
 - Removing the extension from Chrome deletes its local storage, including the key. Remove the device in Settings, Devices as well.
 
@@ -125,6 +125,6 @@ Scripts (run with `npm --prefix extension run <name>`):
 |---|---|
 | `build` | Bundle into `dist/` and stamp the manifest with the package version. |
 | `check` | `tsc --noEmit` and the unit tests (Vitest). |
-| `test:e2e` | Build, then load the unpacked extension in Chromium (Playwright, persistent context, headless) against a mock PopcornStash server: pair, send from the popup, take over a browser download with cookies, recover from a revoked key. Uses browsers from `PLAYWRIGHT_BROWSERS_PATH`; it never downloads them. Chrome cannot show permission prompts to an automated test, so the test copy of the manifest pre-grants what a person would allow. Screenshots of the popup and options page in light and dark go to `evidence/extension/`. |
+| `test:e2e` | Build, then load the unpacked extension in Chromium (Playwright, persistent context, headless) against a mock PopcornStash server: pair, send from the popup, take over a browser download with cookies, recover from a revoked key, sign out on Disconnect (and say so when the server is unreachable), finish pairing in a second options tab, and leave refused, failed, `data:` and PopcornStash's own downloads in Chrome. An accessibility audit runs every popup and options view in light and dark: axe-core (WCAG 2.2 A/AA) with no violations, a 44px hit area for every control, and 3:1 contrast for the switches. Uses browsers from `PLAYWRIGHT_BROWSERS_PATH`; it never downloads them. Chrome cannot show permission prompts to an automated test, so the test copy of the manifest pre-grants what a person would allow. Screenshots of the popup and options page in light and dark go to `evidence/extension/`. |
 | `zip` | Build and pack `dist/` into `popcornstash-extension.zip`. |
 | `icons` | Re-render `static/icons/*.png` from `assets/brand-mark.svg` (the web app's "p" mark). Needs `rsvg-convert`. The PNGs are committed. |

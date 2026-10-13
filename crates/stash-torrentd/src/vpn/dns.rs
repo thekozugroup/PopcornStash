@@ -54,6 +54,25 @@ impl Default for ForwarderConfig {
     }
 }
 
+/// True for an upstream the forwarder may use: it must be reached through the
+/// tunnel. Loopback (Docker's resolver is 127.0.0.11 and answers from the
+/// host network), unspecified, multicast and broadcast addresses are refused
+/// (a WireGuard `DNS =` line or a pushed OpenVPN option could name them).
+/// The kill switch also drops marked packets that would not leave via `psw0`.
+pub fn usable_upstream(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            !(v4.is_loopback() || v4.is_unspecified() || v4.is_multicast() || v4.is_broadcast())
+        }
+        IpAddr::V6(v6) => {
+            let mapped_ok = v6
+                .to_ipv4_mapped()
+                .is_none_or(|v4| usable_upstream(&IpAddr::V4(v4)));
+            mapped_ok && !(v6.is_loopback() || v6.is_unspecified() || v6.is_multicast())
+        }
+    }
+}
+
 /// Build a SERVFAIL answer for `query`: same id, opcode, RD and question, QR and RA set.
 /// Returns None when the message is too short or not a query.
 pub fn servfail(query: &[u8]) -> Option<Vec<u8>> {
@@ -225,6 +244,10 @@ pub async fn forward(
         return None;
     }
     for ip in upstreams {
+        if config.mark.is_some() && !usable_upstream(ip) {
+            tracing::debug!(%ip, "skipping a DNS upstream that is not reached through the tunnel");
+            continue;
+        }
         let upstream = SocketAddr::new(*ip, config.upstream_port);
         let result = if prefer_tcp {
             query_tcp(upstream, query, config).await
@@ -260,7 +283,14 @@ impl Forwarder {
     }
 
     fn current_upstreams(&self) -> Vec<IpAddr> {
-        let list = self.upstreams.borrow().clone();
+        let list: Vec<IpAddr> = self
+            .upstreams
+            .borrow()
+            .iter()
+            .copied()
+            // Without a mark (tests) nothing is tunnel-bound, so nothing is filtered.
+            .filter(|ip| self.config.mark.is_none() || usable_upstream(ip))
+            .collect();
         if list.is_empty() {
             DEFAULT_UPSTREAMS.to_vec()
         } else {
@@ -576,5 +606,28 @@ mod tests {
         let (_tx, rx) = watch::channel(Vec::new());
         let forwarder = Forwarder::new(rx, ForwarderConfig::default());
         assert_eq!(forwarder.current_upstreams(), DEFAULT_UPSTREAMS.to_vec());
+    }
+
+    /// `DNS = 127.0.0.11` (Docker's resolver) would send the engine's queries
+    /// out of the host network instead of the tunnel.
+    #[test]
+    fn loopback_and_local_upstreams_are_never_used() {
+        let tunnel_dns: IpAddr = "10.66.0.1".parse().unwrap();
+        let (_tx, rx) = watch::channel(vec![
+            "127.0.0.11".parse().unwrap(),
+            "::1".parse().unwrap(),
+            "::ffff:127.0.0.1".parse().unwrap(),
+            "0.0.0.0".parse().unwrap(),
+            "224.0.0.251".parse().unwrap(),
+            "255.255.255.255".parse().unwrap(),
+            tunnel_dns,
+        ]);
+        let forwarder = Forwarder::new(rx, ForwarderConfig::default());
+        assert_eq!(forwarder.current_upstreams(), vec![tunnel_dns]);
+        let (_tx, rx) = watch::channel(vec!["127.0.0.11".parse().unwrap()]);
+        let forwarder = Forwarder::new(rx, ForwarderConfig::default());
+        assert_eq!(forwarder.current_upstreams(), DEFAULT_UPSTREAMS.to_vec());
+        assert!(usable_upstream(&"192.168.1.1".parse().unwrap()));
+        assert!(usable_upstream(&"2606:4700:4700::1111".parse().unwrap()));
     }
 }

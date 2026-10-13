@@ -373,8 +373,15 @@ pub struct OpenVpnPlan {
     pub port: Option<u16>,
 }
 
-/// Directives that run programs, load code, write files, change directories or
-/// pull in other configuration. Refused outright.
+/// Largest .ovpn file accepted (the web server's limit).
+pub const OPENVPN_MAX_BYTES: usize = 256 * 1024;
+/// Longest line OpenVPN reads in one piece (255 bytes including the newline).
+const OPENVPN_MAX_LINE: usize = 254;
+
+/// Directives that run programs, load code, read or write files, change
+/// directories or pull in other configuration. Refused outright. This is a
+/// superset of the web server's list: the supervisor runs the file as root and
+/// must not trust that the web server checked it.
 const OPENVPN_FORBIDDEN: &[&str] = &[
     "up",
     "down",
@@ -385,6 +392,7 @@ const OPENVPN_FORBIDDEN: &[&str] = &[
     "plugin",
     "client-connect",
     "client-disconnect",
+    "client-crresponse",
     "learn-address",
     "tls-verify",
     "tls-crypt-v2-verify",
@@ -400,15 +408,21 @@ const OPENVPN_FORBIDDEN: &[&str] = &[
     "askpass",
     "engine",
     "providers",
-    "pkcs11-providers",
     "dev-node",
     "replay-persist",
     "tls-export-cert",
     "auth-gen-token-secret",
+    "ifconfig-pool-persist",
+    "client-config-dir",
+    "crl-verify",
+    "capath",
+    "http-proxy-user-pass",
+    "dns-updown",
+    "genkey",
 ];
 
-/// Directives whose first argument names a file. Only inline blocks (`[inline]`)
-/// are accepted: the upload is a single file, and root must not read arbitrary paths.
+/// Directives whose first argument names a file. Only `[inline]` is accepted:
+/// the upload is a single file, and root must not read arbitrary paths.
 const OPENVPN_FILE_ARGS: &[&str] = &[
     "ca",
     "cert",
@@ -416,142 +430,308 @@ const OPENVPN_FILE_ARGS: &[&str] = &[
     "tls-auth",
     "tls-crypt",
     "tls-crypt-v2",
-    "crl-verify",
-    "secret",
-    "pkcs12",
-    "dh",
     "extra-certs",
-    "http-proxy-user-pass",
-    "capath",
+    "pkcs12",
+    "secret",
+    "dh",
+];
+
+/// Inline blocks allowed in the file (certificates and keys only).
+const OPENVPN_INLINE: &[&str] = &[
+    "ca",
+    "cert",
+    "key",
+    "tls-auth",
+    "tls-crypt",
+    "tls-crypt-v2",
+    "extra-certs",
 ];
 
 fn openvpn_forbidden(name: &str) -> bool {
-    OPENVPN_FORBIDDEN.contains(&name) || name.starts_with("management") || name.starts_with("log")
+    OPENVPN_FORBIDDEN.contains(&name)
+        || name.starts_with("management")
+        || name.starts_with("log")
+        || name.starts_with("pkcs11")
 }
 
-/// Split an OpenVPN config line into words, honouring double/single quotes and backslash escapes.
-fn openvpn_words(line: &str) -> Vec<String> {
-    let mut words = Vec::new();
+/// C `isspace()` in the C locale, plus NUL: OpenVPN's `space()`.
+fn c_isspace(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r' | '\0')
+}
+
+/// Split one line exactly the way OpenVPN 2.6's `parse_line()` does: ASCII
+/// whitespace separates tokens; `#` or `;` at the start of a token begins a
+/// comment (even after a backslash); a backslash escapes `\`, `"` or
+/// whitespace outside single quotes; double quotes group, single quotes group
+/// literally; and a closing quote ends the token (`"plugin"/x.so` is two
+/// tokens). Lines OpenVPN refuses or drops are refused, so the check never
+/// sees less than OpenVPN does. (Same algorithm as the web server's validator.)
+fn openvpn_tokens(line: &str) -> Result<Vec<String>, &'static str> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum State {
+        Initial,
+        Unquoted,
+        Quoted,
+        SingleQuoted,
+    }
+    let mut tokens = Vec::new();
     let mut current = String::new();
-    let mut in_word = false;
-    let mut quote: Option<char> = None;
-    let mut chars = line.chars();
-    while let Some(c) = chars.next() {
-        match (quote, c) {
-            (Some(q), c) if c == q => quote = None,
-            (Some('"'), '\\') => {
-                if let Some(next) = chars.next() {
-                    current.push(next);
+    let mut state = State::Initial;
+    let mut backslash = false;
+    // OpenVPN sees the line with its newline (from fgets) and the terminating NUL.
+    for c in line.chars().chain(['\n', '\0']) {
+        if !backslash && c == '\\' && state != State::SingleQuoted {
+            backslash = true;
+            continue;
+        }
+        let mut out = None;
+        let mut done = false;
+        match state {
+            State::Initial => {
+                if !c_isspace(c) {
+                    if c == ';' || c == '#' {
+                        break;
+                    }
+                    if !backslash && c == '"' {
+                        state = State::Quoted;
+                    } else if !backslash && c == '\'' {
+                        state = State::SingleQuoted;
+                    } else {
+                        out = Some(c);
+                        state = State::Unquoted;
+                    }
                 }
             }
-            (Some(_), c) => current.push(c),
-            (None, '"' | '\'') => {
-                quote = Some(c);
-                in_word = true;
-            }
-            (None, '\\') => {
-                if let Some(next) = chars.next() {
-                    current.push(next);
-                    in_word = true;
+            State::Unquoted => {
+                if !backslash && c_isspace(c) {
+                    done = true;
+                } else {
+                    out = Some(c);
                 }
             }
-            (None, c) if c.is_whitespace() => {
-                if in_word {
-                    words.push(std::mem::take(&mut current));
-                    in_word = false;
+            State::Quoted => {
+                if !backslash && c == '"' {
+                    done = true;
+                } else {
+                    out = Some(c);
                 }
             }
-            (None, '#' | ';') if !in_word => break,
-            (None, c) => {
-                current.push(c);
-                in_word = true;
+            State::SingleQuoted => {
+                if c == '\'' {
+                    done = true;
+                } else {
+                    out = Some(c);
+                }
             }
         }
+        if done {
+            tokens.push(std::mem::take(&mut current));
+            state = State::Initial;
+        }
+        if backslash
+            && let Some(o) = out
+            && !(o == '\\' || o == '"' || c_isspace(o))
+        {
+            return Err("has a backslash OpenVPN does not accept");
+        }
+        backslash = false;
+        // NUL ends the line; it is never part of a token.
+        if let Some(o) = out.filter(|&o| o != '\0') {
+            current.push(o);
+        }
     }
-    if in_word {
-        words.push(current);
+    match state {
+        State::Quoted | State::SingleQuoted => return Err("has an unterminated quote"),
+        State::Unquoted => return Err("has an unfinished escape"),
+        State::Initial => {}
     }
-    words
+    if tokens.iter().any(|t| t.contains('\n')) {
+        return Err("ends with a backslash");
+    }
+    Ok(tokens)
+}
+
+/// `setenv` names that are safe to hand to scripts. Anything else
+/// (`LD_PRELOAD`, `PATH`, `GLIBC_TUNABLES`, ...) would reach the root-run hook.
+fn safe_setenv_name(name: &str) -> bool {
+    name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && (name.starts_with("UV_")
+            || name.starts_with("IV_")
+            || matches!(
+                name,
+                "CLIENT_CERT"
+                    | "FORWARD_COMPATIBLE"
+                    | "PUSH_PEER_INFO"
+                    | "SERVER_POLL_TIMEOUT"
+                    | "REMOTE_RANDOM_HOSTNAME"
+                    | "ALLOW_PASSWORD_SAVE"
+                    | "FRIENDLY_NAME"
+            ))
+}
+
+/// Refuse one directive (`name` lower-case, without `--`).
+fn check_openvpn_directive(name: &str, args: &[String], line_no: usize) -> Result<(), ConfigError> {
+    if openvpn_forbidden(name) {
+        return Err(err(format!(
+            "The OpenVPN file uses \"{name}\" on line {line_no}, which PopcornStash does not allow because it runs programs or touches files. Remove that line and upload it again."
+        )));
+    }
+    match name {
+        "auth-user-pass" if !args.is_empty() => Err(err(
+            "The OpenVPN file names a password file in auth-user-pass. Remove the file name; PopcornStash supplies the username and password itself.",
+        )),
+        "server" | "server-bridge" | "tls-server" => Err(err(
+            "This is an OpenVPN server configuration. Upload the client .ovpn file from your VPN provider.",
+        )),
+        "mode"
+            if args
+                .first()
+                .is_some_and(|m| m.eq_ignore_ascii_case("server")) =>
+        {
+            Err(err(
+                "This is an OpenVPN server configuration. Upload the client .ovpn file from your VPN provider.",
+            ))
+        }
+        n if OPENVPN_FILE_ARGS.contains(&n) => match args.first() {
+            Some(arg) if !arg.eq_ignore_ascii_case("[inline]") => Err(err(format!(
+                "The OpenVPN file refers to a separate file for \"{n}\". Use a single .ovpn file with certificates and keys inline."
+            ))),
+            _ => Ok(()),
+        },
+        // `http-proxy host port authfile` / `socks-proxy host port authfile`.
+        "http-proxy" | "socks-proxy"
+            if args.get(2).is_some_and(|a| {
+                !matches!(a.to_ascii_lowercase().as_str(), "auto" | "auto-nct")
+            }) =>
+        {
+            Err(err(format!(
+                "The OpenVPN file points {name} at a password file on line {line_no}. PopcornStash does not allow that."
+            )))
+        }
+        // `setenv opt <directive>` makes OpenVPN run the directive; check it too.
+        "setenv" | "setenv-safe" if args.first().is_some_and(|a| a.eq_ignore_ascii_case("opt")) => {
+            match args.get(1) {
+                Some(inner) => check_openvpn_directive(
+                    &inner.trim_start_matches("--").to_ascii_lowercase(),
+                    &args[2..],
+                    line_no,
+                ),
+                None => Ok(()),
+            }
+        }
+        // Plain `setenv` variables reach the root-run hook unchanged
+        // (`setenv-safe` prefixes them with OPENVPN_ and stays allowed).
+        "setenv" => match args.first() {
+            Some(var) if !safe_setenv_name(var) => Err(err(format!(
+                "The OpenVPN file sets an environment variable on line {line_no} that PopcornStash does not allow."
+            ))),
+            _ => Ok(()),
+        },
+        _ => Ok(()),
+    }
 }
 
 impl OpenVpnPlan {
-    /// Parse and validate an .ovpn file.
+    /// Parse and validate an .ovpn file the way OpenVPN 2.6 reads it. Refuses
+    /// everything the web server's validator refuses, so a file written
+    /// directly into the VPN folder cannot make the root supervisor run code,
+    /// read files or act as a server.
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
+        if text.len() > OPENVPN_MAX_BYTES {
+            return Err(err("The OpenVPN file is larger than 256 KB."));
+        }
+        if text.contains('\0') {
+            return Err(err("The OpenVPN file is not a text file."));
+        }
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let mut remotes = Vec::new();
         let mut proto = None;
         let mut port = None;
-        // Inline blocks other than <connection> hold certificates and keys; skip them.
-        let mut skipping: Option<String> = None;
+        let (mut client, mut tls_client, mut pull) = (false, false, false);
+        // Close tag and start line of the inline block being skipped.
+        let mut block: Option<(String, usize)> = None;
 
-        for raw in text.lines() {
-            let line = raw.trim();
-            if let Some(tag) = &skipping {
-                if line.eq_ignore_ascii_case(&format!("</{tag}>")) {
-                    skipping = None;
+        // Lines are split on '\n' only, like OpenVPN's fgets().
+        for (index, raw) in text.split('\n').enumerate() {
+            let line_no = index + 1;
+            if raw.len() > OPENVPN_MAX_LINE {
+                return Err(err(format!(
+                    "Line {line_no} of the OpenVPN file is longer than OpenVPN allows."
+                )));
+            }
+            if let Some((close, _)) = &block {
+                // OpenVPN ends the block at the first line that starts with the
+                // close tag (case-sensitive, after leading whitespace).
+                if let Some(rest) = raw
+                    .trim_start_matches(c_isspace)
+                    .strip_prefix(close.as_str())
+                {
+                    if !rest.trim_matches(c_isspace).is_empty() {
+                        return Err(err(format!(
+                            "Line {line_no} of the OpenVPN file has text after {close}."
+                        )));
+                    }
+                    block = None;
                 }
                 continue;
             }
-            if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
-                continue;
-            }
-            if let Some(tag) = line.strip_prefix("</") {
-                let tag = tag.trim_end_matches('>').to_ascii_lowercase();
-                if tag == "connection" {
-                    continue;
-                }
-                return Err(err("The OpenVPN file has an unexpected closing tag."));
-            }
-            if let Some(tag) = line.strip_prefix('<') {
-                let tag = tag.trim_end_matches('>').trim().to_ascii_lowercase();
-                if tag.is_empty() || !tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-                    return Err(err("The OpenVPN file has an invalid inline block."));
-                }
-                if tag != "connection" {
-                    skipping = Some(tag);
-                }
-                continue;
-            }
-            let words = openvpn_words(line);
+            let words = openvpn_tokens(raw)
+                .map_err(|e| err(format!("Line {line_no} of the OpenVPN file {e}.")))?;
             let Some(first) = words.first() else { continue };
+            // OpenVPN strips one leading `--` before it looks for `<tag>`.
+            let tag_token = match first.strip_prefix("--") {
+                Some(rest) if first.len() >= 3 => rest,
+                _ => first.as_str(),
+            };
+            if tag_token.starts_with('<') {
+                let tag = tag_token
+                    .strip_prefix('<')
+                    .and_then(|t| t.strip_suffix('>'))
+                    .unwrap_or_default();
+                if words.len() > 1 || tag.is_empty() || tag.starts_with('/') {
+                    return Err(err(format!(
+                        "Line {line_no} of the OpenVPN file is not a valid block tag."
+                    )));
+                }
+                if !OPENVPN_INLINE.contains(&tag) {
+                    return Err(err(format!(
+                        "The OpenVPN file has a <{}> block, which PopcornStash does not support. Only certificate and key blocks are allowed.",
+                        tag.chars()
+                            .filter(|c| !c.is_control())
+                            .take(40)
+                            .collect::<String>()
+                    )));
+                }
+                block = Some((format!("</{tag}>"), line_no));
+                continue;
+            }
             let name = first.trim_start_matches("--").to_ascii_lowercase();
             let args = &words[1..];
-            if openvpn_forbidden(&name) {
-                return Err(err(format!(
-                    "The OpenVPN file uses \"{name}\", which PopcornStash does not allow because it runs programs or writes files. Remove that line and upload it again."
-                )));
-            }
-            if name == "auth-user-pass" && !args.is_empty() {
-                return Err(err(
-                    "The OpenVPN file names a password file in auth-user-pass. Remove the file name; PopcornStash supplies the username and password itself.",
-                ));
-            }
-            if OPENVPN_FILE_ARGS.contains(&name.as_str())
-                && args.first().is_some_and(|a| a != "[inline]")
-            {
-                return Err(err(format!(
-                    "The OpenVPN file refers to a separate file for \"{name}\". Use a single .ovpn file with certificates and keys inline."
-                )));
-            }
+            check_openvpn_directive(&name, args, line_no)?;
             match name.as_str() {
+                "client" => client = true,
+                "tls-client" => tls_client = true,
+                "pull" => pull = true,
                 "remote" => {
                     let host = args.first().ok_or_else(|| {
                         err("The OpenVPN file has a remote line without a server.")
                     })?;
-                    if !host
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '_'))
+                    if host.is_empty()
+                        || !host.chars().all(|c| {
+                            c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '_')
+                        })
                     {
                         return Err(err(format!(
                             "The OpenVPN file has an invalid remote server: {host:?}."
                         )));
                     }
-                    let remote_port = match args.get(1) {
-                        Some(p) => Some(
-                            p.parse::<u16>()
-                                .map_err(|_| err("The OpenVPN file has an invalid remote port."))?,
-                        ),
-                        None => None,
-                    };
+                    let remote_port =
+                        match args.get(1) {
+                            Some(p) => Some(p.parse::<u16>().ok().filter(|p| *p != 0).ok_or_else(
+                                || err("The OpenVPN file has an invalid remote port."),
+                            )?),
+                            None => None,
+                        };
                     remotes.push(OpenVpnRemote {
                         host: host.clone(),
                         port: remote_port,
@@ -569,10 +749,15 @@ impl OpenVpnPlan {
                 _ => {}
             }
         }
-        if let Some(tag) = skipping {
+        if let Some((close, line)) = block {
             return Err(err(format!(
-                "The OpenVPN file has an unterminated <{tag}> block."
+                "The block that starts on line {line} of the OpenVPN file is never closed with {close}."
             )));
+        }
+        if !client && !(tls_client && pull) {
+            return Err(err(
+                "The OpenVPN file is missing the client line. Upload the client .ovpn file from your VPN provider.",
+            ));
         }
         if remotes.is_empty() {
             return Err(err("The OpenVPN file has no remote server."));
@@ -765,21 +950,110 @@ mod tests {
         assert!(OpenVpnPlan::parse("remote $(evil) 1194\n").is_err());
     }
 
+    /// NordVPN's own .ovpn (as served by nordvpn.com), with CRLF line endings too.
     #[test]
-    fn connection_blocks_are_checked() {
-        let text = "client\n<connection>\nremote a.example 1194 udp\n</connection>\n<connection>\nremote b.example 443 tcp\nup /x\n</connection>\n";
-        assert!(OpenVpnPlan::parse(text).is_err());
-        let ok = "client\n<connection>\nremote a.example 1194 udp\n</connection>\n";
-        assert_eq!(OpenVpnPlan::parse(ok).unwrap().remotes.len(), 1);
+    fn accepts_provider_files() {
+        let nord = "client\ndev tun\nproto udp\nremote 185.153.177.12 1194\nresolv-retry infinite\nremote-random\nnobind\n\
+tun-mtu 1500\ntun-mtu-extra 32\nmssfix 1450\npersist-key\npersist-tun\nping 15\nping-restart 0\nping-timer-rem\nreneg-sec 0\n\
+comp-lzo no\nverify-x509-name CN=nl812.nordvpn.com\n\nremote-cert-tls server\n\nauth-user-pass\nverb 3\npull\nfast-io\n\
+cipher AES-256-CBC\nauth SHA512\n<ca>\n-----BEGIN CERTIFICATE-----\nMIIFCjCCAvKgAwIBAgIBATANBgkqhkiG9w0BAQ0FADA5MQswCQYDVQQGEwJQQTEQ\n\
+-----END CERTIFICATE-----\n</ca>\nkey-direction 1\n<tls-auth>\n#\n# 2048 bit OpenVPN static key\n#\n-----BEGIN OpenVPN Static key V1-----\n\
+e685bdaf659a25a200e2b9e39e51ff03\n-----END OpenVPN Static key V1-----\n</tls-auth>\n";
+        let plan = OpenVpnPlan::parse(nord).unwrap();
+        assert_eq!(plan.server().as_deref(), Some("185.153.177.12"));
+        assert!(OpenVpnPlan::parse(&nord.replace('\n', "\r\n")).is_ok());
     }
 
     #[test]
-    fn word_splitting() {
-        assert_eq!(
-            openvpn_words("remote \"a b\" 1 # c"),
-            vec!["remote", "a b", "1"]
-        );
-        assert_eq!(openvpn_words("x 'y z';q"), vec!["x", "y z;q"]);
-        assert_eq!(openvpn_words("a\\ b c"), vec!["a b", "c"]);
+    fn connection_blocks_are_refused() {
+        // The web server never writes <connection> blocks; the supervisor refuses them too.
+        let text = "client\n<connection>\nremote a.example 1194 udp\n</connection>\n";
+        assert!(OpenVpnPlan::parse(text).is_err());
+        let text = "client\nremote a.example 1194\n<connection>\nremote b.example 443 tcp\nup /x\n</connection>\n";
+        assert!(OpenVpnPlan::parse(text).is_err());
+    }
+
+    /// Lines OpenVPN 2.6 reads as a directive that a simpler reader misses. The
+    /// supervisor runs the file as root, so it must refuse at least everything
+    /// the web server refuses (a compromised web server can write the file itself).
+    #[test]
+    fn refuses_what_openvpn_would_read_differently() {
+        let cert = "<ca>\nMIIFCjCCAvKgAwIBAgIBATANBgkqhkiG9w0BAQ0FADA5MQswCQYDVQQGEwJQQTEQ\n";
+        let base = "client\nremote a.example 1194\n";
+        let cases = [
+            // A closing quote ends the token: OpenVPN reads `route-up /tmp/x`.
+            format!("{base}\"route-up\"/tmp/x\n"),
+            format!("{base}'plugin'/tmp/x.so\n"),
+            // Bad escapes make OpenVPN drop or re-read the line.
+            format!("{base}u\\p /bin/sh\n"),
+            // `setenv opt <directive>` still runs the directive.
+            format!("{base}setenv opt route-up /tmp/x\n"),
+            format!("{base}setenv-safe opt plugin /tmp/x.so\n"),
+            // Variables that reach the root-run hook script.
+            format!("{base}setenv LD_PRELOAD /stash/Inbox/x.so\n"),
+            format!("{base}setenv PATH /stash/Inbox\n"),
+            format!("{base}setenv GLIBC_TUNABLES x\n"),
+            // Credential files read by root and sent to a proxy.
+            format!("{base}http-proxy proxy.example 8080 /etc/shadow\n"),
+            format!("{base}socks-proxy proxy.example 1080 /etc/shadow\n"),
+            // Server mode and server-only file directives.
+            format!("{base}server 10.8.0.0 255.255.255.0\n"),
+            format!("{base}mode server\n"),
+            format!("{base}tls-server\n"),
+            format!("{base}ifconfig-pool-persist /etc/passwd\n"),
+            format!("{base}client-config-dir /etc\n"),
+            format!("{base}crl-verify /etc/shadow\n"),
+            format!("{base}capath /etc\n"),
+            format!("{base}dns-updown /bin/sh\n"),
+            format!("{base}genkey secret /config/popcornstash.db\n"),
+            format!("{base}pkcs11-id x\n"),
+            // OpenVPN ends an inline block at a line that starts with the close tag.
+            format!("{base}{cert}</ca>junk\nplugin /tmp/x.so\n{cert}</ca>\n"),
+            // OpenVPN reads 255 bytes at a time: the tail of a long line is its own line.
+            format!(
+                "{base}{cert}{}</ca>\nplugin /tmp/x.so\n{cert}</ca>\n",
+                "A".repeat(255)
+            ),
+            format!("{base}#{}plugin /tmp/x.so\n", "0".repeat(255)),
+            // `--<ca>` opens a block in OpenVPN (it strips one leading `--`).
+            format!("{base}--<ca>\nAAAA\n</ca>junk\nplugin /x.so\n{cert}</ca>\n"),
+            // Unterminated quotes and missing client mode.
+            format!("{base}remote \"unterminated\n"),
+            "remote a.example 1194\n".to_string(),
+        ];
+        let accepted: Vec<&String> = cases
+            .iter()
+            .filter(|text| OpenVpnPlan::parse(text).is_ok())
+            .collect();
+        assert!(accepted.is_empty(), "should refuse: {accepted:#?}");
+        for line in [
+            "setenv CLIENT_CERT 0",
+            "setenv FORWARD_COMPATIBLE 1",
+            "setenv UV_IPV6 yes",
+            "setenv opt block-outside-dns",
+            "setenv-safe FRIENDLY_NAME home",
+            "http-proxy proxy.example 8080 auto",
+            "tls-auth [inline] 1",
+        ] {
+            let text = format!("{base}{line}\n");
+            assert!(OpenVpnPlan::parse(&text).is_ok(), "should allow {line:?}");
+        }
+        let long_form = "tls-client\npull\nremote 1.2.3.4 1194 udp\n";
+        assert!(OpenVpnPlan::parse(long_form).is_ok());
+    }
+
+    #[test]
+    fn word_splitting_matches_openvpn() {
+        let words = |line: &str| openvpn_tokens(line).unwrap();
+        assert_eq!(words("remote \"a b\" 1 # c"), vec!["remote", "a b", "1"]);
+        // A closing quote ends the token, and `;` then starts a comment.
+        assert_eq!(words("x 'y z';q"), vec!["x", "y z"]);
+        assert_eq!(words("a\\ b c"), vec!["a b", "c"]);
+        assert_eq!(words("\"plugin\"/x.so"), vec!["plugin", "/x.so"]);
+        assert_eq!(words("verb 3;still-token"), vec!["verb", "3;still-token"]);
+        assert_eq!(words("up\"x\""), vec!["up\"x\""]);
+        assert!(words("\\# up /x").is_empty());
+        assert!(openvpn_tokens("u\\p /x").is_err());
+        assert!(openvpn_tokens("x \"open").is_err());
     }
 }

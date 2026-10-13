@@ -1,8 +1,11 @@
 /**
  * Loads the built, unpacked extension in Chromium against a mock PopcornStash
  * server: pair from the options page, send a link from the popup, take over a
- * browser download, and recover from a revoked token. Saves screenshots of the
- * popup and the options page in light and dark to evidence/extension/.
+ * browser download, recover from a revoked token, sign out on Disconnect,
+ * finish pairing in a second tab, leave refused, failed, browser-only and
+ * PopcornStash's own downloads in Chrome, and audit every view's
+ * accessibility in light and dark. Saves screenshots of the popup and the
+ * options page in light and dark to evidence/extension/.
  *
  * Chrome cannot show permission prompts to an automated test, so the test
  * copy of the manifest pre-grants what the person would allow in those
@@ -12,6 +15,7 @@
 
 import {test as base, chromium, expect, type BrowserContext, type Page, type Worker} from '@playwright/test';
 import {cp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
+import {createRequire} from 'node:module';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {startMockServer, TOKEN, USER_CODE, type MockServer} from './mock-server';
@@ -106,6 +110,104 @@ async function pair(page: Page, mock: MockServer): Promise<void> {
   expect(mock.pairingRequested()).toBe(true);
   mock.approve();
   await expect(page.getByRole('heading', {name: 'Chrome is connected to PopcornStash'})).toBeVisible({timeout: 15_000});
+}
+
+let axeSource: string | undefined;
+
+/**
+ * The accessibility bar for every view, in light and dark: no axe-core
+ * violations (WCAG 2.2 A/AA), every control has a 44px hit area, and each
+ * switch stands out from the page (and its knob from its track) at 3:1.
+ */
+async function audit(page: Page, label: string): Promise<void> {
+  axeSource ??= await readFile(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
+  for (const scheme of ['light', 'dark'] as const) {
+    await page.emulateMedia({colorScheme: scheme, reducedMotion: 'reduce'});
+    await page.waitForTimeout(100);
+    const where = `${label}, ${scheme}`;
+
+    // DevTools evaluation is not bound by the page's script-src 'self'.
+    if (!(await page.evaluate(() => 'axe' in window))) await page.evaluate(axeSource);
+    const violations = await page.evaluate(async () => {
+      type Result = {violations: {id: string; nodes: {target: string[]}[]}[]};
+      const axe = (window as unknown as {axe: {run(context: Document, options: object): Promise<Result>}}).axe;
+      const result = await axe.run(document, {
+        runOnly: {type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']},
+      });
+      return result.violations.map(v => `${v.id}: ${v.nodes.map(n => n.target.join(' ')).join(', ')}`);
+    });
+    expect(violations, where).toEqual([]);
+
+    const small = await page.evaluate(() => {
+      const found: string[] = [];
+      for (const element of document.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], [role="switch"]')) {
+        if (element.getClientRects().length === 0) continue;
+        element.scrollIntoView({block: 'center'});
+        const box = element.getBoundingClientRect();
+        const x = box.left + box.width / 2;
+        const y = box.top + box.height / 2;
+        const missed: string[] = [];
+        const hits = (px: number, py: number) => {
+          const target = document.elementFromPoint(px, py);
+          const hit = target !== null && (target === element || element.contains(target));
+          if (!hit) missed.push(`(${Math.round(px)},${Math.round(py)}) is ${target ? `${target.tagName.toLowerCase()}.${target.className}` : 'outside'}`);
+          return hit;
+        };
+        // Probe 21px either side of the centre: a 44px hit area with 1px of slack, because
+        // hit testing snaps fractional edges to whole pixels. A 42px target fails.
+        const tall = hits(x, y - 21) && hits(x, y + 21);
+        const wide = box.width >= 44 || (hits(x - 21, y) && hits(x + 21, y));
+        if (!tall || !wide) {
+          const name = (element.textContent || element.getAttribute('aria-label') || element.id).trim();
+          found.push(`${element.tagName.toLowerCase()} "${name}" ${Math.round(box.width)}x${Math.round(box.height)}: ${missed.join('; ')}`);
+        }
+      }
+      return found;
+    });
+    expect(small, `${where}: controls under 44px`).toEqual([]);
+
+    const faint = await page.evaluate(() => {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 1;
+      const paint = canvas.getContext('2d', {willReadFrequently: true});
+      if (!paint) return ['no canvas'];
+      const luminance = (color: string) => {
+        paint.clearRect(0, 0, 1, 1);
+        paint.fillStyle = color;
+        paint.fillRect(0, 0, 1, 1);
+        const [r = 0, g = 0, b = 0] = paint.getImageData(0, 0, 1, 1).data;
+        const lin = (v: number) => ((v /= 255) <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+        return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+      };
+      const ratio = (a: string, b: string) => {
+        const [hi = 0, lo = 0] = [luminance(a), luminance(b)].sort((p, q) => q - p);
+        return (hi + 0.05) / (lo + 0.05);
+      };
+      const pageColor = getComputedStyle(document.body).backgroundColor;
+      const found: string[] = [];
+      for (const control of document.querySelectorAll<HTMLInputElement>('[role="switch"]')) {
+        const track = getComputedStyle(control).backgroundColor;
+        const knob = getComputedStyle(control, '::before').backgroundColor;
+        const edge = ratio(track, pageColor);
+        const thumb = ratio(knob, track);
+        if (edge < 3 || thumb < 3) {
+          found.push(`#${control.id} ${control.checked ? 'on' : 'off'}: track/page ${edge.toFixed(2)}, knob/track ${thumb.toFixed(2)}`);
+        }
+      }
+      return found;
+    });
+    expect(faint, `${where}: switch contrast`).toEqual([]);
+  }
+  await page.emulateMedia({colorScheme: 'light', reducedMotion: 'reduce'});
+}
+
+/** Chrome's own record of the first download whose address contains `needle`. */
+async function chromeDownload(worker: Worker, needle: string): Promise<{state: string; paused: boolean} | null> {
+  return worker.evaluate(async text => {
+    const items = await chrome.downloads.search({});
+    const item = items.find(entry => entry.url.includes(text) || entry.finalUrl.includes(text));
+    return item ? {state: item.state, paused: item.paused} : null;
+  }, needle);
 }
 
 async function shoot(page: Page, name: string, target: 'page' | 'body' = 'page'): Promise<void> {
@@ -252,4 +354,118 @@ test('a revoked token sends the person back to pairing', async ({context, extens
   await expect(options.getByLabel('Server address')).toHaveValue(mock.origin);
   const token = await options.evaluate(async () => (await chrome.storage.local.get('connection')).connection);
   expect(token).toBeUndefined();
+});
+
+test('disconnect signs this browser out of PopcornStash', async ({context, extensionId, mock}) => {
+  const options = await openOptions(context, extensionId);
+  await pair(options, mock);
+  await options.getByRole('button', {name: 'Disconnect'}).click();
+  await expect(options.getByRole('heading', {name: 'Connect Chrome to PopcornStash'})).toBeVisible();
+  await expect(options.getByText(/^Disconnected\. PopcornStash no longer accepts this browser/)).toBeVisible();
+  // The Disconnect button is gone; keyboard focus lands on the address field, not the page body.
+  await expect(options.getByLabel('Server address')).toBeFocused();
+
+  // The key is revoked on the server, with the key itself and no browser cookies.
+  const logout = mock.requests.find(r => r.method === 'POST' && r.path === '/api/auth/logout');
+  expect(logout?.headers.authorization).toBe(`Bearer ${TOKEN}`);
+  expect(logout?.headers.cookie).toBeUndefined();
+  expect(mock.isRevoked()).toBe(true);
+  expect(await options.evaluate(async () => (await chrome.storage.local.get('connection')).connection)).toBeUndefined();
+});
+
+test('disconnect while the server is unreachable says the key still works there', async ({context, extensionId, mock}) => {
+  const options = await openOptions(context, extensionId);
+  await pair(options, mock);
+  await mock.close();
+  await options.getByRole('button', {name: 'Disconnect'}).click();
+  await expect(options.getByText(/could not be reached, so the access key still works there/)).toBeVisible({timeout: 20_000});
+  await expect(options.getByRole('button', {name: 'Open Settings, Devices'})).toBeVisible();
+  expect(await options.evaluate(async () => (await chrome.storage.local.get('connection')).connection)).toBeUndefined();
+});
+
+test('the popup and options page meet the accessibility bar in light and dark', async ({context, extensionId, mock}) => {
+  const unpaired = await openPopup(context, extensionId);
+  await expect(unpaired.getByRole('button', {name: 'Connect to PopcornStash'})).toBeVisible();
+  await audit(unpaired, 'popup, not paired');
+  await unpaired.close();
+
+  const options = await openOptions(context, extensionId);
+  await expect(options.getByRole('heading', {name: 'Connect Chrome to PopcornStash'})).toBeVisible();
+  await audit(options, 'options, not paired');
+
+  await options.getByLabel('Server address').fill(mock.origin);
+  await options.getByRole('button', {name: 'Connect', exact: true}).click();
+  await expect(options.getByText(USER_CODE)).toBeVisible();
+  // Screen readers read the code one character at a time, not as a word.
+  expect(await options.locator('.pairing').ariaSnapshot()).toContain('K Q 7 M, 2 X W D');
+  await audit(options, 'options, pairing');
+
+  mock.approve();
+  await expect(options.getByRole('heading', {name: 'Chrome is connected to PopcornStash'})).toBeVisible({timeout: 15_000});
+  await audit(options, 'options, connected');
+
+  const popup = await openPopup(context, extensionId);
+  await expect(popup.getByText('Night of the Living Dead (1968)')).toBeVisible();
+  await popup.getByLabel('Paste a link or magnet').blur();
+  await audit(popup, 'popup, paired');
+
+  mock.failList(true);
+  await popup.reload();
+  await expect(popup.getByRole('button', {name: 'Try again'})).toBeVisible();
+  await audit(popup, 'popup, downloads failed to load');
+  mock.failList(false);
+  await popup.close();
+
+  await options.getByRole('button', {name: 'Disconnect'}).click();
+  await expect(options.getByRole('heading', {name: 'Connect Chrome to PopcornStash'})).toBeVisible();
+  await audit(options, 'options, disconnected');
+});
+
+test('a second options tab shows the connection instead of an expired code', async ({context, extensionId, mock}) => {
+  const first = await openOptions(context, extensionId);
+  await first.getByLabel('Server address').fill(mock.origin);
+  await first.getByRole('button', {name: 'Connect', exact: true}).click();
+  await expect(first.getByText(USER_CODE)).toBeVisible();
+  const second = await openOptions(context, extensionId);
+  await expect(second.getByText(USER_CODE)).toBeVisible();
+
+  mock.approve();
+  for (const page of [first, second]) {
+    await expect(page.getByRole('heading', {name: 'Chrome is connected to PopcornStash'})).toBeVisible({timeout: 15_000});
+  }
+  await expect(second.getByText(/expired/)).toHaveCount(0);
+});
+
+test('downloads PopcornStash refuses or cannot fetch, browser-only downloads and its own files stay in Chrome', async ({
+  context,
+  extensionId,
+  mock,
+  worker,
+}) => {
+  const options = await openOptions(context, extensionId);
+  await pair(options, mock);
+  await options.getByLabel('Send all my browser downloads to PopcornStash').check();
+  await expect(options.getByLabel('Send all my browser downloads to PopcornStash')).toBeChecked();
+
+  const page = await context.newPage();
+  await page.goto(`${mock.siteOrigin}/files/edge.html`);
+
+  // PopcornStash refuses the link: Chrome's paused copy resumes and finishes.
+  await page.click('#refused');
+  await expect.poll(() => mock.sentDownloads().length, {timeout: 15_000}).toBe(1);
+  await expect.poll(() => chromeDownload(worker, 'refused.bin'), {timeout: 20_000}).toEqual({state: 'complete', paused: false});
+
+  // PopcornStash accepts it, but its own fetch fails at once: Chrome's copy resumes too.
+  await page.click('#server-fails');
+  await expect.poll(() => mock.sentDownloads().length, {timeout: 15_000}).toBe(2);
+  await expect
+    .poll(() => chromeDownload(worker, 'server-fails.bin'), {timeout: 20_000})
+    .toEqual({state: 'complete', paused: false});
+
+  // A data: link and a file saved from PopcornStash itself are never sent.
+  await page.click('#data');
+  await page.click('#own');
+  await expect.poll(() => chromeDownload(worker, 'data:text/plain'), {timeout: 20_000}).toEqual({state: 'complete', paused: false});
+  await expect.poll(() => chromeDownload(worker, '/files/own.bin'), {timeout: 20_000}).toEqual({state: 'complete', paused: false});
+  expect(mock.sentDownloads()).toHaveLength(2);
 });

@@ -8,7 +8,7 @@
  * downloads list. When anything fails, Chrome's own download resumes.
  */
 
-import {isOnServerHost} from './payload';
+import {isOnServerHost, type ServerIdentity} from './payload';
 import type {Download} from './types';
 
 /** The parts of chrome.downloads.DownloadItem the decision reads. */
@@ -32,7 +32,7 @@ function isHttp(value: string | undefined): boolean {
   }
 }
 
-export function shouldIntercept(item: DownloadItemLike, serverOrigin: string): InterceptDecision {
+export function shouldIntercept(item: DownloadItemLike, server: ServerIdentity): InterceptDecision {
   if (item.state !== 'in_progress') return {intercept: false, reason: 'not in progress'};
   if (item.incognito) return {intercept: false, reason: 'incognito'};
   if (item.byExtensionId) return {intercept: false, reason: 'started by an extension'};
@@ -42,7 +42,7 @@ export function shouldIntercept(item: DownloadItemLike, serverOrigin: string): I
     return {intercept: false, reason: 'not a web link'};
   }
   // Files saved from PopcornStash itself stay in Chrome (and must never loop back).
-  if (isOnServerHost(item.url, serverOrigin) || (item.finalUrl && isOnServerHost(item.finalUrl, serverOrigin))) {
+  if (isOnServerHost(item.url, server) || (item.finalUrl && isOnServerHost(item.finalUrl, server))) {
     return {intercept: false, reason: 'from PopcornStash'};
   }
   return {intercept: true, url: item.url};
@@ -70,5 +70,20 @@ export function serverProgress(download: Download | undefined): ServerProgress {
       return download.done_bytes > 0 ? 'started' : 'waiting';
     default:
       return 'waiting';
+  }
+}
+
+/**
+ * What to do with Chrome's own copy once PopcornStash has the download, from
+ * that copy's current state (undefined when it is gone from Chrome's list).
+ */
+export function chromeCopyOutcome(state: string | undefined): {cancel: boolean; note: string} {
+  switch (state) {
+    case 'in_progress':
+      return {cancel: true, note: 'Chrome stopped its own copy.'};
+    case 'complete':
+      return {cancel: false, note: 'Chrome had already finished its copy, so it stays in your Downloads folder too.'};
+    default:
+      return {cancel: false, note: "Chrome's own copy had already stopped."};
   }
 }

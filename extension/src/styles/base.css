@@ -37,6 +37,9 @@
   --fill-hover: oklch(14.1% 0.005 285.823 / 5%);
   --fill-pressed: oklch(14.1% 0.005 285.823 / 10%);
   --track: var(--zinc-200);
+  /* A switch that is off still needs 3:1 against the page (WCAG 1.4.11). */
+  --switch-off: var(--zinc-500);
+  --switch-off-hover: var(--zinc-600);
   --accent: var(--blue-500);
   --accent-hover: var(--blue-400);
   --on-accent: var(--zinc-950);
@@ -81,6 +84,7 @@
     --fill-hover: oklch(100% 0 0 / 6%);
     --fill-pressed: oklch(100% 0 0 / 12%);
     --track: var(--zinc-800);
+    --switch-off-hover: var(--zinc-400);
     --text-accent: var(--blue-400);
     --error-text: oklch(70.4% 0.191 22.216);
     --error-fill: oklch(63.7% 0.237 25.331 / 14%);
@@ -260,14 +264,7 @@ dd {
 }
 
 .button-small {
-  min-height: 36px;
   padding: 0 12px;
-}
-
-@media (pointer: coarse) {
-  .button-small {
-    min-height: var(--target);
-  }
 }
 
 .link-button {

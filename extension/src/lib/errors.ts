@@ -29,7 +29,7 @@ export interface Problem {
 
 export interface ProblemContext {
   /** What the extension was doing. */
-  action: 'send' | 'list' | 'status' | 'pair' | 'poll';
+  action: 'send' | 'list' | 'status' | 'pair' | 'poll' | 'revoke';
   /** The link being sent is a magnet link. */
   magnet?: boolean;
   /** Server host for messages ("stash.example.com"). */

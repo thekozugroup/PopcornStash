@@ -6,7 +6,7 @@
 import {addDownload, type Connection} from './api';
 import {NOT_PAIRED, noHostAccess, toProblem, type Problem} from './errors';
 import {checkLink, linkName} from './links';
-import {buildDownloadPayload, cookiesAllowedFor, type CookieLike} from './payload';
+import {buildDownloadPayload, cookiesAllowedFor, stashIdentity, type CookieLike, type ServerIdentity} from './payload';
 import {displayHost} from './server-url';
 import {forgetConnection, getConnection, getPrefs} from './storage';
 import type {Download} from './types';
@@ -32,7 +32,7 @@ export async function hasHostAccess(server: string): Promise<boolean> {
 }
 
 /** Cookies for `url`, or null unless the option is on and Chrome granted cookie access for that site. */
-async function cookiesFor(url: string, allow: boolean, server: string): Promise<CookieLike[] | null> {
+async function cookiesFor(url: string, allow: boolean, server: ServerIdentity): Promise<CookieLike[] | null> {
   if (!cookiesAllowedFor(url, allow, server) || !chrome.cookies) return null;
   try {
     const origin = new URL(url).origin;
@@ -45,14 +45,22 @@ async function cookiesFor(url: string, allow: boolean, server: string): Promise<
   }
 }
 
-/** The connection, or the problem that stops the extension from using it. */
-export async function usableConnection(): Promise<{connection: Connection} | {problem: Problem; server: string | null}> {
+/**
+ * The connection (and every name the server goes by, for "is this
+ * PopcornStash itself?"), or the problem that stops the extension from using it.
+ */
+export async function usableConnection(): Promise<
+  {connection: Connection; identity: string[]} | {problem: Problem; server: string | null}
+> {
   const stored = await getConnection();
   if (!stored) return {problem: NOT_PAIRED, server: null};
   if (!(await hasHostAccess(stored.server))) {
     return {problem: noHostAccess(displayHost(stored.server)), server: stored.server};
   }
-  return {connection: {server: stored.server, token: stored.token}};
+  return {
+    connection: {server: stored.server, token: stored.token},
+    identity: stashIdentity(stored.server, stored.serverName),
+  };
 }
 
 /** After a 401 the token is useless: forget it and remember why. */
@@ -74,11 +82,11 @@ export async function sendToStash(request: SendRequest): Promise<SendResult> {
 
   const usable = await usableConnection();
   if ('problem' in usable) return {ok: false, problem: usable.problem, server: usable.server};
-  const {connection} = usable;
+  const {connection, identity} = usable;
 
   const prefs = await getPrefs();
   const magnet = check.kind === 'magnet';
-  const cookies = magnet ? null : await cookiesFor(check.url, prefs.includeCookies, connection.server);
+  const cookies = magnet ? null : await cookiesFor(check.url, prefs.includeCookies, identity);
   const payload = buildDownloadPayload({
     url: check.url,
     filename: request.filename,
@@ -86,7 +94,7 @@ export async function sendToStash(request: SendRequest): Promise<SendResult> {
     userAgent: magnet ? null : navigator.userAgent,
     cookies,
     allowCookies: cookies !== null,
-    serverOrigin: connection.server,
+    serverOrigin: identity,
   });
 
   try {

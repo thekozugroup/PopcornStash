@@ -3,6 +3,7 @@
 //! the two unprivileged children.
 
 use std::net::{IpAddr, SocketAddr};
+use std::os::fd::AsFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -156,8 +157,10 @@ fn open_or_create_dir(
         Err(e) => return Err(errno(e)),
     };
     let fd = openat(parent, name, flags, Mode::empty()).map_err(|e| {
-        if e == nix::errno::Errno::ELOOP {
-            std::io::Error::other(format!("{name} is a symbolic link; it must be a folder"))
+        if matches!(e, nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR) {
+            std::io::Error::other(format!(
+                "{name} is a symbolic link or a file; it must be a folder"
+            ))
         } else {
             errno(e)
         }
@@ -220,6 +223,33 @@ fn ensure_dir(path: &Path, mode: u32) -> std::io::Result<()> {
     Ok(())
 }
 
+/// `<config>/torrent`, its `vpn` folder and the engine state folder, opened
+/// without following symlinks. The web server's user owns `torrent`, so it can
+/// replace any of these entries with a symlink; root then refuses instead of
+/// creating, chmodding or chowning at the link's target.
+struct TorrentDirs {
+    torrent: std::os::fd::OwnedFd,
+    vpn: std::os::fd::OwnedFd,
+    engine: std::os::fd::OwnedFd,
+}
+
+fn open_torrent_dirs(config_dir: &Path) -> std::io::Result<TorrentDirs> {
+    let config = open(
+        config_dir,
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(errno)?;
+    let (torrent, _) = open_or_create_dir(&config, "torrent", 0o700)?;
+    let (vpn, _) = open_or_create_dir(&torrent, VPN_DIR, 0o700)?;
+    let (engine, _) = open_or_create_dir(&torrent, ENGINE_DIR, 0o700)?;
+    Ok(TorrentDirs {
+        torrent,
+        vpn,
+        engine,
+    })
+}
+
 /// Step 2: run dir and ownership (section 3).
 fn prepare(options: &SupervisorOptions, layout: &Layout, torrents: bool) -> anyhow::Result<()> {
     ensure_dir(&options.run_dir, 0o755)?;
@@ -229,16 +259,33 @@ fn prepare(options: &SupervisorOptions, layout: &Layout, torrents: bool) -> anyh
     }
 
     ensure_dir(&options.config_dir, 0o755)?;
-    if torrents {
-        ensure_dir(&layout.vpn_dir, 0o700)?;
-        ensure_dir(&layout.engine_dir, 0o700)?;
-    }
+    // A broken torrent folder turns torrents off but must not stop the web
+    // server's folders from being prepared; the error is returned at the end.
+    let mut torrent_error = None;
+    let dirs = if torrents {
+        match open_torrent_dirs(&options.config_dir) {
+            Ok(dirs) => Some(dirs),
+            Err(e) => {
+                torrent_error = Some(anyhow::anyhow!(
+                    "{}: {e}",
+                    options.config_dir.join("torrent").display()
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let skip = match &dirs {
+        Some(dirs) => Some(adopt::file_id(&dirs.engine)?),
+        None => None,
+    };
     let started = Instant::now();
     let report = adopt::own_tree(
         &options.config_dir,
         options.puid,
         options.pgid,
-        torrents.then_some(layout.engine_dir.as_path()),
+        skip,
         MAX_CONFIG_ENTRIES,
     )
     .map_err(|e| {
@@ -262,17 +309,20 @@ fn prepare(options: &SupervisorOptions, layout: &Layout, torrents: bool) -> anyh
             std::fs::Permissions::from_mode((config_mode & 0o7777) | 0o010),
         )?;
     }
-    if torrents {
-        let torrent_dir = options.config_dir.join("torrent");
-        let mode = std::fs::metadata(&torrent_dir)?.mode();
+    if let Some(dirs) = &dirs {
+        let mode = fstat(&dirs.torrent).map_err(errno)?.st_mode;
         if mode & 0o010 == 0 {
-            std::fs::set_permissions(
-                &torrent_dir,
-                std::fs::Permissions::from_mode((mode & 0o7777) | 0o010),
-            )?;
+            fchmod(
+                &dirs.torrent,
+                Mode::from_bits_truncate((mode & 0o7777) | 0o010),
+            )
+            .map_err(errno)?;
         }
-        adopt::own_tree(
-            &layout.engine_dir,
+        // Only the web server's user may list the VPN files.
+        fchmod(&dirs.vpn, Mode::from_bits_truncate(0o700)).map_err(errno)?;
+        adopt::own_tree_at(
+            dirs.torrent.as_fd(),
+            &std::ffi::CString::new(ENGINE_DIR)?,
             options.engine_uid,
             options.pgid,
             None,
@@ -281,10 +331,13 @@ fn prepare(options: &SupervisorOptions, layout: &Layout, torrents: bool) -> anyh
         .map_err(|e| {
             anyhow::anyhow!("the engine state folder could not be given to the engine user: {e}")
         })?;
-        std::fs::set_permissions(&layout.engine_dir, std::fs::Permissions::from_mode(0o700))?;
+        fchmod(&dirs.engine, Mode::from_bits_truncate(0o700)).map_err(errno)?;
     }
     prepare_in_progress(options).map_err(|e| anyhow::anyhow!("Downloads/In Progress: {e}"))?;
-    Ok(())
+    match torrent_error {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// Step 3: routing rules and kill switch.
@@ -1014,6 +1067,55 @@ mod tests {
         std::os::unix::fs::symlink(&target, &layout.in_progress).unwrap();
         assert!(prepare(&opts, &layout, true).is_err());
         assert_eq!(meta(&target).uid(), 0);
+    }
+
+    /// `/config/torrent` belongs to PUID, so the web server's user can replace
+    /// `engine`, `vpn` or `torrent` itself with a symlink. Root must not chmod,
+    /// chown or create anything at the link's target on the next start.
+    #[test]
+    fn prepare_does_not_follow_planted_symlinks() {
+        if !nix::unistd::geteuid().is_root() {
+            eprintln!("skipped: needs root");
+            return;
+        }
+        let meta = |p: &Path| std::fs::symlink_metadata(p).unwrap();
+        for planted in ["engine", "vpn", "torrent"] {
+            let dir = tempfile::tempdir().unwrap();
+            let opts = options(dir.path());
+            let layout = Layout::new(&opts);
+            prepare(&opts, &layout, true).unwrap();
+            let target = dir.path().join("target");
+            std::fs::create_dir(&target).unwrap();
+            std::fs::create_dir(target.join("engine")).unwrap();
+            std::fs::write(target.join("engine/file"), b"x").unwrap();
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let link = if planted == "torrent" {
+                opts.config_dir.join("torrent")
+            } else {
+                opts.config_dir.join("torrent").join(planted)
+            };
+            std::fs::rename(&link, dir.path().join("moved-away")).unwrap();
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+
+            let _ = prepare(&opts, &layout, true);
+            assert_eq!(meta(&target).mode() & 0o7777, 0o755, "{planted}: mode");
+            assert_eq!(
+                (meta(&target).uid(), meta(&target).gid()),
+                (0, 0),
+                "{planted}"
+            );
+            let inner = target.join("engine");
+            assert_eq!(
+                (meta(&inner).uid(), meta(&inner).gid()),
+                (0, 0),
+                "{planted}"
+            );
+            assert_eq!(meta(&inner.join("file")).uid(), 0, "{planted}");
+            assert!(
+                !target.join("vpn").exists(),
+                "{planted}: created through the link"
+            );
+        }
     }
 
     #[test]

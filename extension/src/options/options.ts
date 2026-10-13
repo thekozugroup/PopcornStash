@@ -5,7 +5,7 @@
  * when the person turns the matching thing on.
  */
 
-import {pollPairing, requestPairing} from '../lib/api';
+import {pollPairing, requestPairing, revokeToken} from '../lib/api';
 import {byId, h, mount} from '../lib/dom';
 import {toProblem} from '../lib/errors';
 import {currentClientName} from '../lib/platform';
@@ -73,7 +73,8 @@ function openDevices(server: string): void {
 // Not connected: the address form
 // ---------------------------------------------------------------------------
 
-function renderForm(notice: Notice, prefill: string): void {
+/** `focus`: move keyboard focus to the address field (the control that was focused is gone). */
+function renderForm(notice: Notice, prefill: string, focus = false): void {
   stopPolling();
   title.textContent = 'Connect Chrome to PopcornStash';
   lede.textContent = 'Send links, videos and magnet links from any page to your PopcornStash server.';
@@ -172,6 +173,7 @@ function renderForm(notice: Notice, prefill: string): void {
       'Chrome asks to let the extension reach that address. Your server is the only site it needs for sending links.',
     ),
   );
+  if (focus) input.focus();
 }
 
 // ---------------------------------------------------------------------------
@@ -194,8 +196,15 @@ function renderPairing(pairing: PendingPairing, trouble: string | null): void {
     h(
       'div',
       {class: 'pairing'},
-      h('p', {class: 'label', id: 'code-label'}, `Code for ${displayHost(pairing.server)}`),
-      h('p', {class: 'code', 'aria-labelledby': 'code-label', 'aria-label': spelled(pairing.userCode)}, pairing.userCode),
+      h('p', {class: 'label'}, `Code for ${displayHost(pairing.server)}`),
+      // A paragraph cannot carry an aria-label, so screen readers get the
+      // spelled-out code as hidden text and skip the visible one.
+      h(
+        'p',
+        {class: 'code'},
+        h('span', {class: 'code-text', 'aria-hidden': 'true'}, pairing.userCode),
+        h('span', {class: 'visually-hidden'}, spelled(pairing.userCode)),
+      ),
       h(
         'p',
         {class: 'hint'},
@@ -216,7 +225,7 @@ function renderPairing(pairing: PendingPairing, trouble: string | null): void {
             type: 'button',
             onclick: () => {
               stopPolling();
-              void clearPairing().then(() => renderForm(null, pairing.server));
+              void clearPairing().then(() => renderForm(null, pairing.server, true));
             },
           },
           'Cancel',
@@ -237,8 +246,21 @@ function schedulePoll(pairing: PendingPairing, delayS: number): void {
   pollTimer = window.setTimeout(() => void poll(pairing, delayS, generation), delayS * 1000);
 }
 
+/**
+ * Another options tab may have collected the token first (the server hands it
+ * out once, then answers "expired"). Show that connection instead.
+ */
+async function pairedElsewhere(): Promise<boolean> {
+  const connection = await getConnection();
+  if (!connection) return false;
+  stopPolling();
+  await renderConnected(connection, null);
+  return true;
+}
+
 async function poll(pairing: PendingPairing, delayS: number, generation: number): Promise<void> {
   if (generation !== pollGeneration) return;
+  if (await pairedElsewhere()) return;
   if (Date.now() / 1000 > pairing.expiresAt) {
     await clearPairing();
     renderForm({tone: 'error', text: 'The code expired before anyone approved it. Connect again for a new code.'}, pairing.server);
@@ -266,10 +288,12 @@ async function poll(pairing: PendingPairing, delayS: number, generation: number)
         return;
       }
       case 'denied':
+        if (await pairedElsewhere()) return;
         await clearPairing();
         renderForm({tone: 'error', text: 'Pairing was declined in PopcornStash. Connect again if that was a mistake.'}, pairing.server);
         return;
       case 'expired':
+        if (await pairedElsewhere()) return;
         await clearPairing();
         renderForm({tone: 'error', text: 'The code expired before anyone approved it. Connect again for a new code.'}, pairing.server);
         return;
@@ -279,6 +303,7 @@ async function poll(pairing: PendingPairing, delayS: number, generation: number)
     const problem = toProblem(failure, displayHost(pairing.server));
     if (problem.kind === 'rejected') {
       // The server no longer knows this pairing request.
+      if (await pairedElsewhere()) return;
       await clearPairing();
       renderForm({tone: 'error', text: `${problem.message} Connect again for a new code.`}, pairing.server);
       return;
@@ -337,17 +362,38 @@ async function renderConnected(connection: StoredConnection, notice: Notice): Pr
       'div',
       {class: 'actions'},
       h('button', {class: 'button button-secondary', type: 'button', onclick: () => void chrome.tabs.create({url: connection.server})}, 'Open PopcornStash'),
-      h('button', {class: 'button button-secondary', type: 'button', onclick: () => void disconnect(connection)}, 'Disconnect'),
+      h(
+        'button',
+        {
+          class: 'button button-secondary',
+          type: 'button',
+          onclick: (event: Event) => void disconnect(connection, event.currentTarget as HTMLButtonElement),
+        },
+        'Disconnect',
+      ),
     ),
     h(
       'p',
       {class: 'footnote'},
-      'Disconnect forgets the access key on this computer. To cut off the key on the server as well, remove this browser in PopcornStash, Settings, Devices.',
+      'Disconnect signs this browser out of PopcornStash: the server stops accepting its access key and this computer forgets it.',
     ),
   );
 }
 
-async function disconnect(connection: StoredConnection): Promise<void> {
+async function disconnect(connection: StoredConnection, button: HTMLButtonElement): Promise<void> {
+  button.disabled = true;
+  button.textContent = 'Disconnecting…';
+  // Revoke the key on the server first (it needs the host access removed below).
+  let revoked = false;
+  if (await hasHostAccess(connection.server)) {
+    try {
+      await revokeToken({server: connection.server, token: connection.token});
+      revoked = true;
+    } catch (failure) {
+      // A 401 means the server had already dropped the key.
+      revoked = toProblem(failure).kind === 'token_revoked';
+    }
+  }
   await forgetConnection(null);
   try {
     await chrome.permissions.remove({origins: [`${connection.server}/*`]});
@@ -355,12 +401,18 @@ async function disconnect(connection: StoredConnection): Promise<void> {
     // Access granted through another option stays until that option is turned off.
   }
   renderForm(
-    {
-      tone: 'info',
-      text: 'Disconnected. This browser no longer has an access key. The key still appears in PopcornStash until you remove it in Settings, Devices.',
-      action: {label: 'Open Settings, Devices', run: () => openDevices(connection.server)},
-    },
+    revoked
+      ? {
+          tone: 'info',
+          text: 'Disconnected. PopcornStash no longer accepts this browser, and its access key is gone from this computer.',
+        }
+      : {
+          tone: 'error',
+          text: `Disconnected on this computer, but ${displayHost(connection.server)} could not be reached, so the access key still works there. Remove this browser in PopcornStash, Settings, Devices.`,
+          action: {label: 'Open Settings, Devices', run: () => openDevices(connection.server)},
+        },
     connection.server,
+    true,
   );
 }
 
