@@ -36,10 +36,10 @@ This takes about two minutes and uses NordVPN's fast WireGuard protocol (NordLyn
 1. Sign in to your Nord Account at [my.nordaccount.com](https://my.nordaccount.com).
 2. Open **NordVPN**, then **Set up NordVPN manually** (manual setup). Nord sends a verification code to your email.
 3. Choose **Generate new token**. Pick a short expiry such as 30 days; PopcornStash only needs it once. Copy the token.
-4. In PopcornStash, open **Settings**, then **VPN**, and choose **NordVPN**.
-5. Paste the token, pick a country (or keep the recommended server), keep **WireGuard** selected, and save.
+4. In PopcornStash, open **Settings**, then **VPN**. Under **Connect NordVPN**, paste the token into **Access token**. If a VPN is already set up, the group is called **Use a different VPN**; open **Connect NordVPN with a new token** first.
+5. Pick a **Country** (or keep **Fastest available**), keep **WireGuard (recommended)** as the **Protocol**, and choose **Connect NordVPN**.
 
-PopcornStash uses the token once to fetch your NordLynx key, picks a server, saves a WireGuard configuration in app data (readable only by PopcornStash), and forgets the token. Choosing **OpenVPN** instead works the same way; PopcornStash downloads NordVPN's OpenVPN file for the chosen server.
+PopcornStash uses the token once to fetch your NordLynx key, picks a server, saves a WireGuard configuration in app data (readable only by PopcornStash), and forgets the token. Choosing **OpenVPN** as the protocol works the same way; PopcornStash downloads NordVPN's OpenVPN file for the chosen server.
 
 ## NordVPN with OpenVPN (upload)
 
@@ -47,18 +47,18 @@ Use this if you prefer to pick the server file yourself.
 
 1. In your Nord Account, open **NordVPN**, then **Set up NordVPN manually**, and copy the **service credentials**: a username and password. They are not your email and account password.
 2. Download the `.ovpn` file for a server from NordVPN's server list (UDP is faster, TCP passes more firewalls).
-3. In PopcornStash, open **Settings**, then **VPN**, choose **OpenVPN**, upload the `.ovpn` file, and enter the service username and password.
+3. In PopcornStash, open **Settings**, then **VPN**, and open **Use a WireGuard or OpenVPN file instead**. Choose **OpenVPN file**, pick the `.ovpn` file, enter the **Service username** and **Service password**, and choose **Use this file**.
 
 ## Any WireGuard provider
 
 Most VPN providers (Mullvad, Proton VPN, IVPN, AirVPN, Surfshark and others) let you download a WireGuard configuration file.
 
 1. Create a WireGuard configuration in your provider's account page and download the `.conf` file.
-2. In PopcornStash, open **Settings**, then **VPN**, choose **WireGuard**, and upload the file or paste its contents.
+2. In PopcornStash, open **Settings**, then **VPN**, and open **Use a WireGuard or OpenVPN file instead**. Keep **WireGuard file** selected, pick the `.conf` file, and choose **Use this file**.
 
-The file needs an `[Interface]` with `PrivateKey` and `Address`, and a `[Peer]` with `PublicKey`, `Endpoint` and `AllowedIPs = 0.0.0.0/0`. If it lists `DNS` servers, PopcornStash uses them for the engine's lookups. `Table`, `FwMark` and `SaveConfig` lines are ignored, because PopcornStash manages routing itself. A file with script lines (`PreUp`, `PostUp`, `PreDown` or `PostDown`) is refused: PopcornStash never runs commands from a VPN file, so delete those lines and upload it again.
+The file needs an `[Interface]` with `PrivateKey` and `Address`, and a `[Peer]` with `PublicKey`, `Endpoint` and `AllowedIPs = 0.0.0.0/0`. If it lists `DNS` servers, PopcornStash uses them for the engine's lookups. A valid `FwMark` line is ignored, because PopcornStash manages routing itself. For the same reason a file with a `Table` or `SaveConfig` line is refused: delete those lines and upload it again. A file with script lines (`PreUp`, `PostUp`, `PreDown` or `PostDown`) is refused: PopcornStash never runs commands from a VPN file, so delete those lines and upload it again.
 
-Any provider with OpenVPN files works the same way through the **OpenVPN** choice. The `.ovpn` file must be self-contained, with its certificates and keys inside the file (`<ca>`, `<cert>`, `<key>`, `<tls-auth>` blocks) rather than in separate files. Lines that run programs or write files, such as `up`, `down`, `script-security` or `plugin`, are refused. Delete those lines and upload the file again.
+Any provider with OpenVPN files works the same way through the **OpenVPN file** choice. The `.ovpn` file must be self-contained, with its certificates and keys inside the file (`<ca>`, `<cert>`, `<key>`, `<tls-auth>` blocks) rather than in separate files. Lines that run programs or write files, such as `up`, `down`, `script-security` or `plugin`, are refused. Delete those lines and upload the file again.
 
 ## Checking that it works
 
@@ -66,10 +66,10 @@ Any provider with OpenVPN files works the same way through the **OpenVPN** choic
 
 - whether the tunnel is **Connected**, **Connecting** or **Disconnected**, and since when;
 - the provider, server and country;
-- the **public address** the torrent engine is seen from on the internet, checked through the tunnel every 10 minutes. It should be the VPN's address, not your home address. With NordVPN, PopcornStash also shows whether NordVPN considers the connection protected;
+- the **public address** the torrent engine is seen from on the internet, checked through the tunnel every 10 minutes. It should be the VPN's address, not your home address. With NordVPN, PopcornStash also shows whether NordVPN considers the connection protected; if it says no, torrents stop until a later check (every minute) no longer says so;
 - that the kill switch is on.
 
-When the VPN is not connected, new torrents are added and wait with the message **Waiting for the VPN to connect**.
+When the VPN is not connected, new torrents are added and wait with the message **Waiting for the VPN to connect**. Torrents beyond the **Torrents at once** setting (on the same page) wait with **Waiting for a free slot**.
 
 You can also check from the server. These commands should show the kill switch table and the routing rules for the engine user:
 
@@ -90,6 +90,17 @@ docker exec popcornstash ip rule show
 
 `STASH_ALLOW_NO_VPN=true` runs the torrent engine without a tunnel, routing rules or kill switch. It exists only for networks where the router already sends all traffic through a VPN.
 
-It is off by default because the risk is silent: if the router's VPN ever drops, torrents keep running over your home connection and nothing inside PopcornStash can notice. With the built-in VPN, a drop stops torrents instead. If you turn it on, PopcornStash shows a permanent warning on the VPN and Downloads pages.
+It is off by default because the risk is silent: if the router's VPN ever drops, torrents keep running over your home connection and nothing inside PopcornStash can notice. With the built-in VPN, a drop stops torrents instead. If you turn it on, PopcornStash shows a permanent warning on the VPN and Downloads pages, in the sidebar, on the share page for links and in the extension, even if a VPN is saved. A saved VPN is not used, and the VPN page hides its setup forms.
 
 To turn it on, add `STASH_ALLOW_NO_VPN: "true"` to the `environment` section of `compose.yaml` (on Unraid, add a variable with that name and the value `true`), then recreate the container.
+
+## Not yet tested with real services or hardware
+
+These parts have not been verified against the real services or hardware yet. Each was tested with local stand-ins instead:
+
+- **The NordVPN access token.** The exchange of a token for your service credentials and NordLynx key, and the server choice after it, has only run against a local stand-in for NordVPN's API, never with a real token. The answers of NordVPN's live country list and server recommendations were checked against the code.
+- **A real connection to a VPN provider.** No WireGuard or OpenVPN connection to NordVPN or any other commercial provider has been made yet. The tunnel, the kill switch, DNS through the tunnel and a whole torrent download were tested in Docker against local WireGuard and OpenVPN servers (`scripts/vpn-e2e.sh` and `scripts/fullstack-e2e.sh`). OpenVPN 2.6 read real NordVPN, PIA and Surfshark `.ovpn` files without errors, but whether NordVPN's servers agree on a cipher with it is not known yet.
+- **The public-address proof through a real tunnel.** The test machines could not reach NordVPN's check or ipify through a tunnel. The check is tested against local stand-ins for both services, including a `protected: false` answer that stops torrents.
+- **The VPN on real ARM hardware.** The arm64 image has only run under QEMU emulation, which cannot run the kill switch, so torrents stayed off there.
+
+If you use one of these, check the public address on the VPN page and the commands under [Checking that it works](#checking-that-it-works).

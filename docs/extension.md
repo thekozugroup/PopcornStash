@@ -28,7 +28,7 @@ npm --prefix extension run zip     # builds extension/dist and extension/popcorn
    - Only `https://` addresses are accepted. Plain `http://` works only for `localhost` and `127.0.0.1` (local testing), the same rule PopcornStash itself uses for passkeys.
    - A path is ignored (`https://stash.example.com/downloads` connects to `https://stash.example.com`). Addresses with a user name or password in them are refused.
 2. Chrome asks to let the extension reach that address. This is the only site the extension needs for sending links. Choose **Allow**.
-3. The page shows a code such as `KQ7M-2XWD`. Click **Open PopcornStash to approve**: PopcornStash opens its pairing page with the code filled in. Check that the codes match and approve. You can also type the code in **Settings, Devices**.
+3. The page shows a code such as `KQ7M-2XWD`. Click **Open PopcornStash to approve**: PopcornStash opens its pairing page with the code filled in. Check that the codes match and approve. If you closed that page, open **Settings, Devices** in PopcornStash: the request waits under **Waiting for approval** with its code, and you can approve it there once the codes match. To type a code by hand, open `/pair` on your server (for example `https://stash.example.com/pair`), enter it under **Code on the device** and choose **Find device**.
 4. The options page notices the approval within a few seconds and shows **Chrome is connected to PopcornStash**.
 
 The device appears in PopcornStash as "Chrome on macOS" (or Windows, Linux, ChromeOS). A pairing code works for 10 minutes. The extension checks for approval every 3 seconds, or less often when the server asks it to (the real server suggests 6 seconds to stay inside its pairing rate limit, and the extension backs off further if it is ever rate limited).
@@ -66,6 +66,8 @@ What happens to each new download:
 2. If PopcornStash refuses the link, Chrome's download resumes and a notification says it was kept in Chrome and why.
 3. If PopcornStash accepts it, the extension waits up to 10 seconds for the server to start fetching. If the server's own fetch fails in that time (for example the site answers 403 to the server), Chrome's download resumes.
 4. Once PopcornStash is fetching (or the download is still queued behind others on the server), Chrome's copy is cancelled and removed from Chrome's download list, and a notification says "Sent to PopcornStash". If Chrome had already finished its copy, that file stays in your Downloads folder.
+
+Documents and other files that are not media are kept too: they wait in the Inbox page, then go to `Other/`.
 
 Downloads that stay in Chrome:
 
@@ -117,7 +119,7 @@ Turning the cookie option off removes Chrome's access to all sites. Chrome may c
 
 - TypeScript (strict), bundled with esbuild into `extension/dist`. No framework: the popup and options page are plain DOM code, so the popup opens instantly and the whole extension stays around 30 KB zipped.
 - Styling is plain CSS with custom properties that mirror DESIGN.md and the web app's Popcorn theme: zinc neutrals, blue-500 as the single action and focus colour with zinc-950 text on blue, the system font, flat surfaces with thin dividers, 8px controls, 44px targets, light and dark from the system setting, and reduced motion respected. React and Astryx are not used in the extension (Astryx is a React component library; pulling React into a 344px popup would cost more than it gives).
-- Code layout: `src/background.ts` (context menus, notifications, download takeover), `src/popup/`, `src/options/`, and `src/lib/` (address validation, request payloads, API client, error wording, storage).
+- Code layout: `src/background.ts` (context menus, notifications, download takeover), `src/popup/`, `src/options/`, and `src/lib/` (address validation, request payloads, API client, error wording, storage, and `src/lib/context-menu.ts`: the right-click menu items and what a click sends).
 
 Scripts (run with `npm --prefix extension run <name>`):
 

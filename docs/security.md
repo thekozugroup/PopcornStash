@@ -44,11 +44,12 @@ These are out of scope: someone with a shell on the host or access to Docker, ro
 
 - Every path is resolved under the stash root and refused if it leaves it. This fails closed: a link to a missing target, or a path that cannot be resolved, is refused too.
 - Files are served from the opened file descriptor, so a file swapped for a link after the check cannot escape.
-- The indexer and the sorter never follow links. Only `Inbox/` and `Downloads/Completed/` are moved automatically, and nothing is ever overwritten.
+- The indexer and the sorter never follow links. Only `Inbox/` and `Downloads/Completed/` are moved automatically, and nothing is ever overwritten. Anything else in `Downloads/` (another download client's folders) is neither moved nor indexed.
 - The torrent engine may write only `Downloads/In Progress`, so nothing the web server writes for itself lives there:
   - Partial browser uploads are kept in `.popcornstash/uploads/` (folder 0700, files 0600).
   - A web download's `.part` file is 0600. It is only resumed, written or moved on while it is a regular file the web server owns.
 - The database, the caches (thumbnails, photo renditions, live transcodes), `secrets/`, the VPN files and waiting torrents are private to the web server's user. The engine shares its group but cannot open them, even without Landlock.
+- Files shared from Android are kept in the browser's Cache Storage on that device until they are uploaded or cancelled, and for at most 7 days. Any site could post a share to `/share`, but nothing is uploaded until the signed-in person confirms on the share page, the same as a shared link.
 
 ### Media from strangers
 
@@ -105,7 +106,7 @@ It validates VPN files again before using them:
 
 ## Reporting a vulnerability
 
-Please report security problems privately, not in a public issue. Use GitHub's private vulnerability reporting: open the repository's **Security** tab and choose **Report a vulnerability**. If that is not available, open an issue that asks for a private contact and leave out the details.
+Please report security problems privately, not in a public issue. Use GitHub's private vulnerability reporting: open the repository's **Security** tab and choose **Report a vulnerability**. The maintainer must turn on private vulnerability reporting in the repository's Security settings for that button to appear. If it is not there, open an issue that asks for a private contact and leave out the details.
 
 Include:
 
@@ -134,7 +135,7 @@ These are known and not fixed yet.
 - **Web downloads through the VPN pass through the engine.** While the VPN is connected, web downloads go through the engine's proxy by default (`http_via_vpn`). HTTPS is checked end to end, so a compromised engine sees only the host name. It can read and change a plain `http://` download and any cookies the extension forwards with it, as anyone else on that unencrypted path can.
 - **The VPN page reports what the engine says.** A compromised engine could show "Protected" and a made-up public address. The root kill switch, not the page, keeps torrent traffic in the tunnel.
 - **A compromised owner session can point the tunnel anywhere.** A hostile VPN file can choose the server and the DNS servers, and send WireGuard or OpenVPN handshakes to any address, including the LAN. It cannot run code, read files or route anything but torrent traffic.
-- **Older installs keep their `Downloads/` mode.** Versions before this audit created `Downloads/` group-writable (0775). New installs get 0755, and existing folders are left as the owner set them. Run `chmod 755` on it if nothing else needs group write there.
+- **Pre-release builds left `Downloads/` group-writable.** Builds made from the source before 0.1.0 created `Downloads/` with mode 0775. 0.1.0 creates it 0755 and leaves an existing folder as the owner set it. If you ran such a build, run `chmod 755` on `Downloads/` unless something else needs group write there.
 - **Some dependencies have open advisories.**
   - `ringbuf` 0.4 (RUSTSEC-2026-0293) is used by the uTP code only for bytes, which cannot trigger the bug.
   - `rsa` (RUSTSEC-2023-0071) is in `Cargo.lock` but never built.

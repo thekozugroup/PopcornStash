@@ -4,7 +4,7 @@ PopcornStash is one Docker container. It needs two folders, one HTTPS address, a
 
 ## What you need
 
-- A computer that runs Docker: a NAS, an Unraid server or a Linux PC, with an Intel/AMD (amd64) or ARM (arm64) processor. On ARM, torrents and the VPN have not been tested on real hardware yet; the rest of the app has.
+- A computer that runs Docker: a NAS, an Unraid server or a Linux PC, with an Intel/AMD (amd64) or ARM (arm64) processor. The ARM image passes the Docker smoke test under QEMU emulation on an amd64 PC, apart from the VPN and engine checks that emulation cannot run. It has not run on real ARM hardware yet, so torrents and the VPN on ARM are untested.
 - A folder for your library, for example `/mnt/user/PopcornStash` on Unraid. PopcornStash creates its folders inside it.
 - A folder for app data (database, thumbnails, settings, VPN files), for example `/mnt/user/appdata/popcornstash`. Fast storage such as an SSD or the Unraid cache pool works best.
 - An HTTPS address with a domain name, such as `https://stash.example.com`. Passkeys do not work without it. The next section explains why and shows four ways to get one.
@@ -60,12 +60,14 @@ On Unraid these are the most common choices.
 
 With SWAG, copy one of the included subdomain samples, set the upstream app to your server's IP and port 8788, and add the same lines.
 
+When the proxy runs as a container on the same machine, it can reach PopcornStash by name instead: see [Behind a proxy](#behind-a-proxy).
+
 ### Option 4: Cloudflare Tunnel
 
 A tunnel publishes PopcornStash without opening ports on your router.
 
 1. In Cloudflare Zero Trust, create a tunnel and run its connector (`cloudflared`) on the server, for example as a second container.
-2. Add a public hostname, `stash.example.com`, with the service `http://SERVER-IP:8788`.
+2. Add a public hostname, `stash.example.com`, with the service `http://SERVER-IP:8788` (or `http://popcornstash:8788` when `cloudflared` runs as a container on the same Docker network, see [Behind a proxy](#behind-a-proxy)).
 3. Set `STASH_PUBLIC_URL=https://stash.example.com` and `STASH_TRUST_PROXY=true`.
 
 All video then passes through Cloudflare. Check that your Cloudflare plan allows streaming the amount of video you expect.
@@ -83,7 +85,24 @@ Then set `STASH_PUBLIC_URL=https://stash.example.com:8788`. Restart the containe
 
 ### Behind a proxy
 
-When a proxy sits in front, set `STASH_TRUST_PROXY=true` so sign-in limits and the activity log see each visitor's real address. Then make sure people can only reach PopcornStash through the proxy. If the proxy runs on the same computer, publish the port on the loopback address only by setting `STASH_PORT=127.0.0.1:8788` in `.env`.
+When a proxy sits in front, set `STASH_TRUST_PROXY=true` so sign-in limits and the activity log see each visitor's real address. Then make sure people can only reach PopcornStash through the proxy. How depends on where the proxy runs:
+
+- **A proxy installed on the host itself** (Caddy as a program on the server, Tailscale Serve): publish the port on the loopback address only, by setting `STASH_PORT=127.0.0.1:8788` in `.env`, and point the proxy at `127.0.0.1:8788`.
+- **A proxy in a container** (Nginx Proxy Manager, SWAG, `cloudflared`): do not use the loopback address. Other containers cannot reach the host's loopback, so the proxy would answer with 502 or "connection refused". Instead, put both containers on one Docker network, point the proxy at `http://popcornstash:8788`, and remove the `ports:` entry from `compose.yaml`, so nothing outside that network can reach PopcornStash directly.
+
+  For example, create the network once with `docker network create proxy`, add the proxy container to it, and change the PopcornStash service in `compose.yaml`:
+
+  ```yaml
+  services:
+    popcornstash:
+      # ports: removed; only containers on the proxy network can reach it
+      networks: [proxy]
+  networks:
+    proxy:
+      external: true
+  ```
+
+Otherwise, use your firewall so that only the proxy can reach port 8788.
 
 ## Quick start with Docker Compose
 
@@ -103,6 +122,8 @@ When a proxy sits in front, set `STASH_TRUST_PROXY=true` so sign-in limits and t
    ```
 
 5. Point your HTTPS address at port 8788 (see above), then continue with [First run](#first-run).
+
+If no setup code appears and the container never becomes healthy, the library folder probably does not belong to `PUID:PGID`; see [File ownership](#file-ownership).
 
 To build the image yourself instead of downloading it, run `docker compose build` before `docker compose up -d` (see [Building the image yourself](#building-the-image-yourself)).
 
@@ -135,11 +156,11 @@ PopcornStash uses one template: `unraid/popcornstash.xml`.
 3. Open a terminal on the Unraid server (the **>_** icon) and install the template:
 
    ```sh
-   wget -O /boot/config/plugins/dockerMan/templates-user/my-PopcornStash.xml \
+   wget -O /boot/config/plugins/dockerMan/templates-user/my-popcornstash.xml \
      https://raw.githubusercontent.com/thekozugroup/PopcornStash/main/unraid/popcornstash.xml
    ```
 
-4. Go to **Docker**, choose **Add Container**, and pick **PopcornStash** from the **Template** list (under user templates).
+4. Go to **Docker**, choose **Add Container**, and pick **popcornstash** from the **Template** list (under user templates). Keep the name `popcornstash`: the commands in these docs and in the app (`docker exec popcornstash …`) use it.
 5. Fill in **Public address** with your HTTPS address. Check **App data** and **Library**. Keep **PUID** 99 and **PGID** 100 unless your share uses other owners.
 6. Choose **Apply**. Unraid downloads the image and starts the container.
 7. Point your proxy, Tailscale Serve or tunnel at `http://UNRAID-IP:8788`, then continue with [First run](#first-run).
@@ -148,7 +169,7 @@ The template already adds what torrents need in **Extra Parameters** (visible in
 
 ## First run
 
-1. Find the setup code. On Unraid, click the PopcornStash icon and choose **Logs**. With Compose, run:
+1. Find the setup code. On Unraid, click the popcornstash icon and choose **Logs**. With Compose, run:
 
    ```sh
    docker compose logs popcornstash | grep -A 1 "setup code"
@@ -163,10 +184,14 @@ The setup code is valid for 24 hours and changes every time the container restar
 ## Inviting family
 
 1. Open **Settings**, then **People**, and create an invite. Choose **Member** for family members, or **Owner** for someone who should manage PopcornStash with you.
-2. Send the link. It works once and expires after 72 hours.
+2. Send the link. It works once and expires after the time you choose (1, 3 or 7 days; 3 days by default).
 3. The person opens the link, enters their name and creates a passkey on their device.
 
 Everyone can add more passkeys later (for example a phone and a laptop) under **Settings**, then **Security**. Members can watch, browse, upload, add downloads and review the Inbox. Only owners can change the VPN and settings, manage people, delete items and empty the trash.
+
+### On Android
+
+Open your HTTPS address in Chrome on the phone and sign in. Install PopcornStash from Chrome's menu (Install app or Add to Home screen). Then, in any app, choose Share, then PopcornStash, to send links, photos and videos. Shared files are uploaded through Downloads and sorted like any upload, once you confirm on the share page. **Settings**, then **Devices**, shows the same steps.
 
 ## Recovery
 
@@ -188,25 +213,37 @@ PopcornStash creates these folders inside the library folder on its first start:
 | `Shows/` | `Shows/Show Name/Season 01/Show Name - S01E02.mkv` |
 | `Home Videos/` | `Home Videos/2024/06/original-name.mov` |
 | `Photos/` | `Photos/2024/06/original-name.heic` |
-| `Other/` | Anything that is not a video or photo |
+| `Other/` | Anything that is not a video or photo (documents wait in the Inbox page for one review first) |
 | `Inbox/` | Drop zone: anything you copy here is sorted |
 | `Downloads/In Progress/` | Torrents and web downloads while they arrive |
 | `Downloads/Completed/` | Finished downloads waiting to be sorted |
-| `.popcornstash/` | The trash (kept 30 days), uploads while they arrive (private to `PUID`) and a marker file |
+| `.popcornstash/` | The trash (kept 30 days by default), uploads while they arrive (private to `PUID`) and a marker file |
 
 How files move:
 
 - PopcornStash only moves files by itself out of `Inbox/` and `Downloads/Completed/`.
+- Anything else in `Downloads/` (for example another download client's folders) is never moved or listed, so other apps can share it.
 - Everything else is shown where it is. Files you already keep in `Movies/`, `Shows/` and the other folders are never moved or renamed unless you choose **Organize** on that item.
 - When PopcornStash is not sure where a file belongs, it leaves the file in place and asks you in the Inbox page.
 - Nothing is overwritten. If a name is taken, the new file gets ` (2)`, ` (3)` and so on.
 - Subtitles and other files with the same name (`.srt`, `.ass`, `.nfo`, `.xmp` and similar) move together with their video or photo.
+- Documents, archives and other files that are not videos, photos or music wait in the Inbox page, then go to `Other/`. Release files inside a download (`.nfo`, `.txt`, `.sfv`) stay in `Downloads/Completed/`.
+- Posters, covers and screenshots that come with a movie, show or album are not added to Photos; other pictures in such a download wait in the Inbox page.
 - Files still being copied are left alone until their size has not changed for 10 seconds, so slow network copies are safe.
-- Deleting an item moves it to the trash folder first. It is removed for good after 30 days, or when an owner empties the trash.
+- Deleting an item moves it to the trash folder first. It is removed for good after 30 days (change this in **Settings**, then **Library**, **Trash**), or when an owner empties the trash.
 
 ## File ownership
 
 Every file PopcornStash creates in the library and app data belongs to `PUID:PGID`. On Unraid that is 99:100 (nobody:users), the same as your other shares. Pick the numbers of the user that owns your library folder.
+
+The library folder itself must belong to `PUID:PGID` (or at least be writable by that user). If it is not, PopcornStash cannot start, no setup code appears, and the log says so in two places: the supervisor says it once at start, and the web app says it each time it tries again. With the compose file's 1000:1000, for example:
+
+```text
+The library folder /stash is not writable by PUID 1000, so PopcornStash cannot start: on the host, run `chown 1000:1000` on the folder mounted at /stash, or set PUID and PGID to its owner.
+Cannot create /stash/Movies: permission denied. The folder /stash must belong to PUID:PGID (1000:1000).
+```
+
+Run `sudo chown 1000:1000 <your STASH_PATH>` on the host (with your `PUID:PGID`) and restart the container.
 
 Torrents are downloaded by a separate user, the engine user (`STASH_TORRENT_UID`, 6881 by default), so torrent traffic can be kept inside the VPN. That user only ever writes into `Downloads/In Progress/` and shares your `PGID` group there. When a torrent finishes, PopcornStash hands its files to `PUID:PGID` before moving them, so your library never contains files owned by the engine user. Because the engine shares the group, the database, the thumbnail and transcode caches, the VPN files and uploads in progress are kept private to `PUID` (files 0600, folders 0700). Where the kernel supports Landlock the engine cannot read the rest of the library either; check the log for "Landlock sandbox enforced" (see [Security](security.md)). If 6881 is already used by another account on your server, set `STASH_TORRENT_UID` to an unused number other than 0 and `PUID`.
 
@@ -216,10 +253,12 @@ The container starts as root only so it can set up the VPN and the kill switch. 
 
 Most browsers play most videos directly. PopcornStash only converts a video when the device cannot play it, and by default it uses the processor. A graphics chip can do this faster.
 
-- **Intel or AMD (VAAPI)** and **Intel Quick Sync (QSV)**: add the device line in `compose.yaml` (`- /dev/dri:/dev/dri`) and set `STASH_HWACCEL=vaapi` or `qsv`. On Unraid, add a **Device** to the template with the value `/dev/dri` and set **Hardware encoding**.
-- **NVIDIA (NVENC)**: install the NVIDIA Container Toolkit (on Unraid, the Nvidia Driver plugin). In `compose.yaml`, add `runtime: nvidia` and the environment variables `NVIDIA_VISIBLE_DEVICES=all` and `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility`, then set `STASH_HWACCEL=nvenc`. On Unraid, add `--runtime=nvidia` to **Extra Parameters** and the same two variables.
+- **Intel or AMD (VAAPI)** and **Intel Quick Sync (QSV)**: add the device line in `compose.yaml` (`- /dev/dri:/dev/dri`), recreate the container with `docker compose up -d`, then choose **VAAPI (Intel and AMD)** or **Intel Quick Sync** in **Settings > System > Streaming > Hardware acceleration**. You can instead set `STASH_HWACCEL=vaapi` or `qsv`; while it is set it decides, and Settings shows it greyed out. Leave it empty to choose in the app. On Unraid, add a **Device** to the template with the value `/dev/dri`.
+- **NVIDIA (NVENC)**: install the NVIDIA Container Toolkit (on Unraid, the Nvidia Driver plugin). In `compose.yaml`, add `runtime: nvidia` and the environment variables `NVIDIA_VISIBLE_DEVICES=all` and `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility`, recreate the container with `docker compose up -d`, then choose **NVIDIA NVENC** in **Settings > System > Streaming > Hardware acceleration**. You can instead set `STASH_HWACCEL=nvenc`; while it is set it decides, and Settings shows it greyed out. Leave it empty to choose in the app. On Unraid, add `--runtime=nvidia` to **Extra Parameters** and the same two variables.
 
-The web app runs as `PUID:PGID`, so that user or group must be allowed to use the graphics device. Check with `ls -ln /dev/dri`: `renderD128` must be readable and writable by your `PGID` or by everyone. **Settings**, then **System**, shows which hardware encoders PopcornStash found.
+The web app runs as `PUID:PGID`. PopcornStash adds the group of `/dev/dri/renderD128` to the web app by itself, so the usual render device (group `render` or `video`, mode 0660) works without changes on the host. The one exception is a render device owned by group 0: if `ls -ln /dev/dri` shows `renderD128` with group 0, that group is never added, and the device must be readable and writable by your `PGID` or by everyone. **Settings > System** shows which hardware encoders PopcornStash found.
+
+Hardware encoding has not been tested on a real graphics chip yet (see [CHANGELOG.md](../CHANGELOG.md)). If a hardware encoder fails, PopcornStash falls back to the processor for that encoder until the container restarts, so playback still works, only more slowly.
 
 ## Backups
 
@@ -259,7 +298,7 @@ sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc   # if it is not 
 sudo sh -c 'cat /usr/lib/binfmt.d/qemu-aarch64.conf > /proc/sys/fs/binfmt_misc/register'
 ```
 
-On other Linux distributions, install their `qemu-user-static` package (on Arch, `qemu-user-static-binfmt`). `docker run --rm --platform linux/arm64 debian:trixie-slim uname -m` prints `aarch64` once it works. On Docker Desktop for Mac and Windows emulation is already on. An arm64 image started on an amd64 machine this way runs, but QEMU cannot emulate the netlink calls that the VPN kill switch makes, so torrents stay off there.
+On other Linux distributions, install their `qemu-user-static` package (on Arch, `qemu-user-static-binfmt`). `docker run --rm --platform linux/arm64 debian:trixie-slim uname -m` prints `aarch64` once it works. On Docker Desktop for Mac and Windows emulation is already on. An arm64 image started on an amd64 machine this way runs, but QEMU cannot emulate the netlink calls that the VPN kill switch makes, so torrents stay off there. `PLATFORM=linux/arm64 IMAGE=popcornstash:arm64 SKIP_BUILD=1 scripts/docker-smoke.sh` tests such an image: everything except the VPN and engine checks, which QEMU cannot run, plus a check that torrents stay off.
 
 ## Upgrading
 
@@ -289,7 +328,7 @@ Starting the container as a non-root user (`--user` or `user:` in Compose) has t
 | `STASH_PUBLIC_URL` | none (required) | The HTTPS address people open. Passkeys need it |
 | `PUID`, `PGID` | 99, 100 (compose file: 1000, 1000) | Owner of every file PopcornStash writes |
 | `STASH_TRUST_PROXY` | `false` | `true` behind a reverse proxy or tunnel |
-| `STASH_HWACCEL` | `none` | `none`, `vaapi`, `qsv` or `nvenc` |
+| `STASH_HWACCEL` | empty | `none`, `vaapi`, `qsv` or `nvenc`. When set, it overrides **Settings > System > Streaming** |
 | `STASH_TORRENT_UID` | `6881` | User the torrent engine runs as |
 | `STASH_EXTRA_ORIGINS` | none | Extra allowed addresses on the same domain, comma separated |
 | `STASH_TLS_CERT`, `STASH_TLS_KEY` | none | Certificate and key for built-in HTTPS |

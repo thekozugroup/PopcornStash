@@ -121,8 +121,9 @@ Saved in `evidence/fullstack/` (git-ignored):
   old. Torrents cannot leak in the meantime; the kill switch drops the engine's
   packets whatever the status says (`scripts/vpn-e2e.sh` checks that within
   seconds of the stop).
-- **The public-IP proof** (`api.ipify.org`, NordVPN insights) needs the
-  internet and is not checked, so the VPN page shows no public address here.
+- **The public-IP proof** (`api.ipify.org`, NordVPN insights) is unit-tested
+  in the engine against local fakes, but not checked here, so the VPN page
+  shows no public address here.
 - **H.264.** Playwright's Chromium has no H.264 decoder, which is why the film is
   VP9/Opus; it is played for real.
 - On hosts without the WireGuard kernel module both wgserver and PopcornStash

@@ -89,4 +89,5 @@ container and never printed.
   `Dockerfile`. `scripts/fullstack-e2e.sh` downloads a real torrent through the
   tunnel (see `tests/fullstack/README.md`).
 - The public-IP proof (`api.ipify.org` / NordVPN insights) needs the internet
-  and is not checked here; its failure is only logged.
+  and is not checked here; its failure is only logged. It is unit-tested in the
+  engine against local fakes, including a NordVPN `protected: false` answer.
