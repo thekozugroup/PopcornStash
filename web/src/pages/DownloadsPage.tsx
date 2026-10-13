@@ -107,7 +107,8 @@ function byFinished(a: Download, b: Download): number {
 }
 
 export default function DownloadsPage() {
-  const {isOwner} = useAuth();
+  const {isOwner, user} = useAuth();
+  const userId = user?.id ?? null;
   const location = useLocation();
   const navigate = useNavigate();
   const showToast = useToast();
@@ -135,9 +136,9 @@ export default function DownloadsPage() {
 
   // Interrupted uploads from an earlier visit, and finished uploads joining the list.
   useEffect(() => {
-    restoreInterrupted();
+    if (userId) restoreInterrupted(userId);
     return onUploaded(download => upsert(download));
-  }, [upsert]);
+  }, [upsert, userId]);
 
   const addTorrents = useCallback(
     async (files: File[]) => {
@@ -172,8 +173,8 @@ export default function DownloadsPage() {
     (files: File[]) => {
       const torrents = files.filter(isTorrentFile);
       const others = files.filter(file => !isTorrentFile(file));
-      if (others.length > 0) {
-        const result = addFiles(others);
+      if (others.length > 0 && userId) {
+        const result = addFiles(others, userId);
         const messages: string[] = [];
         if (result.started > 0) {
           messages.push(
@@ -198,7 +199,7 @@ export default function DownloadsPage() {
       }
       if (torrents.length > 0) void addTorrents(torrents);
     },
-    [addTorrents, showToast],
+    [addTorrents, showToast, userId],
   );
 
   // Files dropped anywhere in the app arrive through router state.

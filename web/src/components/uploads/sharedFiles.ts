@@ -7,7 +7,8 @@
  * deletes each kept copy once its upload has finished or was cancelled (the
  * upload queue calls `releaseSharedCopy`), or the whole share on Cancel.
  * While a copy is kept, an upload of it that a reload cut off continues by
- * itself (`findSharedCopy`).
+ * itself (`findSharedCopy`), for the person who started it only. Signing out
+ * deletes every kept file (`discardAllShares`).
  *
  * Every function here is safe to call where Cache Storage is missing (an
  * insecure origin) or fails: it then finds nothing and keeps nothing.
@@ -157,6 +158,16 @@ export async function discardShare(id: string): Promise<void> {
   if (!isShareId(id)) return;
   const cache = await openCache();
   if (cache) await deleteShare(cache, id).catch(() => undefined);
+}
+
+/** Deletes every file kept from shares on this device (signing out). */
+export async function discardAllShares(): Promise<void> {
+  if (typeof caches === 'undefined') return;
+  try {
+    await caches.delete(SHARE_CACHE);
+  } catch {
+    // Old shares are deleted after a week in any case.
+  }
 }
 
 /** The kept copy behind a file read from a share, if it is one. */

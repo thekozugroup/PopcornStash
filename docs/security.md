@@ -50,6 +50,7 @@ These are out of scope: someone with a shell on the host or access to Docker, ro
   - A web download's `.part` file is 0600. It is only resumed, written or moved on while it is a regular file the web server owns.
 - The database, the caches (thumbnails, photo renditions, live transcodes), `secrets/`, the VPN files and waiting torrents are private to the web server's user. The engine shares its group but cannot open them, even without Landlock.
 - Files shared from Android are kept in the browser's Cache Storage on that device until they are uploaded or cancelled, and for at most 7 days. Any site could post a share to `/share`, but nothing is uploaded until the signed-in person confirms on the share page, the same as a shared link.
+- On a device that several people use, an upload never carries over from one person to the next. An interrupted upload continues by itself only for the person who started it. When someone else signs in, or the session ends, the uploads on the page stop. **Sign out** also deletes what the person left on the device: the files kept from shares, the uploads remembered for them, and their partial uploads on the server.
 
 ### Media from strangers
 

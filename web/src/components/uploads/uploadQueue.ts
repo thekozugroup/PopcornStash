@@ -12,6 +12,12 @@
  * (sharedFiles.ts), so those continue by themselves, and their kept copies
  * are deleted once each upload finishes or is cancelled.
  * While anything is sending, closing or reloading the tab asks first.
+ *
+ * The queue belongs to the person signed in. Remembered uploads carry their
+ * user id and continue only for that person; when someone else signs in, or
+ * nobody is, the queue is emptied. Signing out deletes what the person left on
+ * the device: their partial uploads, the remembered uploads and the files kept
+ * from shares (`clearUploadsForSignOut`).
  */
 import {useSyncExternalStore} from 'react';
 import {ApiError, uploads} from '../../api/client';
@@ -20,6 +26,7 @@ import {ResumableUpload, type UploadProgress} from '../../api/upload';
 import {errorMessage} from '../../lib/errors';
 import {
   deleteOldShares,
+  discardAllShares,
   findSharedCopy,
   releaseSharedCopy,
   sharedRecordOf,
@@ -56,6 +63,8 @@ export interface UploadEntry {
 }
 
 interface StoredUpload {
+  /** The person who started the upload; it continues only for them. */
+  userId: string;
   fileKey: string;
   uploadId: string;
   name: string;
@@ -91,12 +100,17 @@ const listeners = new Set<Listener>();
 const uploadedListeners = new Set<UploadedListener>();
 let restored = false;
 let keySeed = 0;
+/** The person whose uploads the queue holds, or null before anyone has used it. */
+let owner: string | null = null;
+/** Bumped each time the queue is emptied; answers that arrive afterwards are dropped. */
+let generation = 0;
 
 // ---------------------------------------------------------------------------
 // Persistence of interrupted uploads
 // ---------------------------------------------------------------------------
 
-function readStored(): StoredUpload[] {
+/** Remembered uploads of everyone who used this device. */
+function readAllStored(): StoredUpload[] {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
@@ -107,6 +121,7 @@ function readStored(): StoredUpload[] {
       (value): value is StoredUpload =>
         typeof value === 'object' &&
         value !== null &&
+        typeof (value as StoredUpload).userId === 'string' &&
         typeof (value as StoredUpload).fileKey === 'string' &&
         typeof (value as StoredUpload).uploadId === 'string' &&
         typeof (value as StoredUpload).name === 'string' &&
@@ -119,6 +134,11 @@ function readStored(): StoredUpload[] {
   }
 }
 
+/** Remembered uploads of `userId` only. */
+function readStored(userId: string | null): StoredUpload[] {
+  return userId === null ? [] : readAllStored().filter(stored => stored.userId === userId);
+}
+
 function writeStored(list: StoredUpload[]) {
   try {
     if (list.length === 0) window.localStorage.removeItem(STORAGE_KEY);
@@ -129,13 +149,63 @@ function writeStored(list: StoredUpload[]) {
 }
 
 function remember(entry: UploadEntry, uploadId: string) {
-  const list = readStored().filter(stored => stored.fileKey !== entry.fileKey);
-  list.push({fileKey: entry.fileKey, uploadId, name: entry.name, size: entry.size, savedAt: Date.now()});
+  if (owner === null) return;
+  const userId = owner;
+  const list = readAllStored().filter(stored => !(stored.userId === userId && stored.fileKey === entry.fileKey));
+  list.push({userId, fileKey: entry.fileKey, uploadId, name: entry.name, size: entry.size, savedAt: Date.now()});
   writeStored(list);
 }
 
 function forget(fileKey: string) {
-  writeStored(readStored().filter(stored => stored.fileKey !== fileKey));
+  if (owner === null) return;
+  const userId = owner;
+  writeStored(readAllStored().filter(stored => !(stored.userId === userId && stored.fileKey === fileKey)));
+}
+
+/**
+ * Empties the queue: every upload stops (the server keeps what it has) and the
+ * entries go. Runs and server answers still on their way are ignored.
+ */
+function resetQueue() {
+  generation += 1;
+  for (const runner of runners.values()) runner.pause();
+  entries = [];
+  runners.clear();
+  files.clear();
+  sharedRecords.clear();
+  samples.clear();
+  pendingOps.clear();
+  activeRuns.clear();
+  resumeAfterRun.clear();
+  restored = false;
+  emit();
+}
+
+/**
+ * Hands the queue to the person signed in (null when nobody is). Uploads of
+ * someone else are stopped and dropped from the queue; their remembered
+ * uploads stay on the device for them.
+ */
+export function setUploadUser(userId: string | null): void {
+  if (owner !== null && owner !== userId) resetQueue();
+  owner = userId;
+}
+
+/**
+ * Signing out on this device: stops every upload and deletes what the person
+ * leaves behind (their partial uploads on the server, their remembered
+ * uploads and the files kept from shares), so none of it reaches whoever
+ * signs in next. Call it while still signed in.
+ */
+export async function clearUploadsForSignOut(): Promise<void> {
+  const userId = owner;
+  const partial = new Set<string>();
+  for (const entry of entries) if (entry.uploadId) partial.add(entry.uploadId);
+  for (const stored of readStored(userId)) partial.add(stored.uploadId);
+  resetQueue();
+  if (userId !== null) writeStored(readAllStored().filter(stored => stored.userId !== userId));
+  owner = null;
+  await Promise.allSettled([...[...partial].map(id => uploads.cancel(id)), discardAllShares()]);
 }
 
 // ---------------------------------------------------------------------------
@@ -280,10 +350,12 @@ function applyPending(runner: ResumableUpload) {
 async function run(key: string) {
   const runner = runners.get(key);
   if (!runner || activeRuns.has(key)) return;
+  const started = generation;
   activeRuns.add(key);
   update(key, {state: 'starting', error: null});
   try {
     const download = await runner.start();
+    if (started !== generation) return;
     const entry = find(key);
     forget(entry?.fileKey ?? fileKeyOf(runner.file));
     releaseShared(key);
@@ -307,10 +379,12 @@ async function run(key: string) {
       });
     }
   } finally {
-    activeRuns.delete(key);
-    resumeAfterRun.delete(key);
-    pendingOps.delete(runner);
-    pump();
+    if (started === generation) {
+      activeRuns.delete(key);
+      resumeAfterRun.delete(key);
+      pendingOps.delete(runner);
+      pump();
+    }
   }
 }
 
@@ -357,23 +431,26 @@ function releaseShared(key: string) {
  * An interrupted upload of a file shared from Android continues from the copy
  * kept on this device. Resolves false when there is no such copy.
  */
-async function continueFromSharedCopy(entry: UploadEntry): Promise<boolean> {
+async function continueFromSharedCopy(entry: UploadEntry, userId: string): Promise<boolean> {
+  const started = generation;
   const file = await findSharedCopy(entry.fileKey);
   if (!file) return false;
-  // Unless it was discarded or chosen again meanwhile. A server that no longer
-  // has the partial upload gets a new one (ResumableUpload starts over).
+  // Unless it was discarded or chosen again meanwhile, or someone else signed in.
+  // A server that no longer has the partial upload gets a new one (ResumableUpload
+  // starts over).
   const current = find(entry.key);
-  if (current && !current.hasFile) addFiles([file]);
+  if (started === generation && current && !current.hasFile) addFiles([file], userId);
   return true;
 }
 
 /** Asks the server whether an interrupted upload can still continue, and drops it when not. */
 function checkWithServer(entry: UploadEntry) {
   if (!entry.uploadId) return;
+  const started = generation;
   uploads
     .status(entry.uploadId)
     .then(status => {
-      if (find(entry.key)?.hasFile) return;
+      if (started !== generation || find(entry.key)?.hasFile) return;
       if (status.state !== 'receiving' || status.size !== entry.size) {
         forget(entry.fileKey);
         removeEntry(entry.key);
@@ -383,7 +460,7 @@ function checkWithServer(entry: UploadEntry) {
     })
     .catch((error: unknown) => {
       // Gone on the server: nothing left to continue.
-      if (find(entry.key)?.hasFile) return;
+      if (started !== generation || find(entry.key)?.hasFile) return;
       if (error instanceof ApiError && (error.status === 404 || error.status === 410)) {
         forget(entry.fileKey);
         removeEntry(entry.key);
@@ -396,14 +473,17 @@ function checkWithServer(entry: UploadEntry) {
 // ---------------------------------------------------------------------------
 
 /**
- * Loads interrupted uploads remembered from earlier visits and checks them
- * with the server. Shared files kept on this device continue by themselves.
+ * Loads the interrupted uploads `userId` started earlier on this device and
+ * checks them with the server. Their shared files kept on this device
+ * continue by themselves; other people's uploads never do.
  */
-export function restoreInterrupted(): void {
-  if (restored || typeof window === 'undefined') return;
+export function restoreInterrupted(userId: string): void {
+  if (typeof window === 'undefined') return;
+  setUploadUser(userId);
+  if (restored) return;
   restored = true;
   void deleteOldShares();
-  const stored = readStored();
+  const stored = readStored(userId);
   if (stored.length === 0) return;
   const known = new Set(entries.map(entry => entry.fileKey));
   const fresh: UploadEntry[] = stored
@@ -426,16 +506,20 @@ export function restoreInterrupted(): void {
   entries = [...entries, ...fresh];
   emit();
   for (const entry of fresh) {
-    void continueFromSharedCopy(entry).then(continued => {
+    void continueFromSharedCopy(entry, userId).then(continued => {
       if (!continued) checkWithServer(entry);
     });
   }
 }
 
-/** Queues files for upload. Files that match an interrupted upload continue it. */
-export function addFiles(list: File[]): AddResult {
+/**
+ * Queues files for upload by `userId`. Files that match an interrupted upload
+ * of theirs continue it.
+ */
+export function addFiles(list: File[], userId: string): AddResult {
+  setUploadUser(userId);
   const result: AddResult = {started: 0, resumed: 0, duplicates: 0};
-  const stored = readStored();
+  const stored = readStored(userId);
   for (const file of list) {
     const fileKey = fileKeyOf(file);
     const existing = entries.find(entry => entry.fileKey === fileKey);

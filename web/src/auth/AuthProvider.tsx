@@ -3,11 +3,16 @@
  *
  * The provider loads the state once, re-checks it whenever any API call
  * answers 401 (registered with the client), and exposes `refresh` for the
- * sign-in, setup and sign-out flows.
+ * sign-in, setup and sign-out flows. It also hands the upload queue to the
+ * person signed in, and signing out clears what they left on the device.
  */
 import {createContext, use, useCallback, useEffect, useMemo, useRef, useState, type ReactNode} from 'react';
 import {ApiError, auth, setUnauthorizedHandler} from '../api/client';
 import type {AuthState, User} from '../api/types';
+import {clearUploadsForSignOut, setUploadUser} from '../components/uploads/uploadQueue';
+
+/** Signing out waits this long at most for the device's uploads to be cleaned up. */
+const SIGN_OUT_CLEANUP_MS = 3000;
 
 export type AuthStatus = 'loading' | 'ready' | 'error';
 
@@ -62,8 +67,17 @@ export function AuthProvider({children}: {children: ReactNode}) {
   // Any 401 from an authenticated call means the session ended: re-check.
   useEffect(() => setUnauthorizedHandler(() => void refresh()), [refresh]);
 
+  // Uploads belong to the person signed in: another person, or nobody, never continues them.
+  const userId = state?.authenticated ? (state.user?.id ?? null) : null;
+  useEffect(() => setUploadUser(userId), [userId]);
+
   const signOut = useCallback(async () => {
     try {
+      // Nothing this person uploads or shares on the device is left for the next one.
+      await Promise.race([
+        clearUploadsForSignOut(),
+        new Promise(resolve => setTimeout(resolve, SIGN_OUT_CLEANUP_MS)),
+      ]).catch(() => undefined);
       await auth.logout();
     } finally {
       await refresh();

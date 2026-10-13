@@ -37,7 +37,7 @@ The first release: the PopcornStash server as one Docker image for amd64 and arm
 ### Bringing files in
 
 - Files arrive from browser uploads (resumable, by button or by dropping on the page), web links, magnet links and `.torrent` files, the Chrome extension, Android's share sheet (install the web app from Chrome; links, photos, videos and other files), and files copied into `Inbox/`.
-- Files shared from Android wait on the phone until the person confirms on the share page, then upload through Downloads like any other upload. An upload cut off by a reload continues from the copy kept on the phone.
+- Files shared from Android wait on the phone until the person confirms on the share page, then upload through Downloads like any other upload. An upload cut off by a reload continues from the copy kept on the phone, for the person who started it only. Signing out deletes the kept files and that person's unfinished uploads, so nothing passes to the next person on a shared phone or tablet.
 - Everything passes through `Downloads/In Progress` and `Downloads/Completed`. The Downloads page shows progress and speed. Torrent upload and download limits, and how many torrents download at once, are set in Settings.
 - Links to private network addresses are refused and never fetched.
 

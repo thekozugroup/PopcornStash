@@ -6,10 +6,11 @@
  * device and opens the share page, where the person checks them and uploads
  * them through Downloads like any other upload. A share without files keeps
  * the link flow. The kept copies are deleted once uploaded or cancelled, and
- * they wait for sign-in when nobody is signed in.
+ * they wait for sign-in when nobody is signed in. On a device that several
+ * people use, nothing one person shared carries over to the next one.
  */
-import {expect, test} from '@playwright/test';
-import {env, expectFile} from '../helpers/env';
+import {expect, test, type Browser, type BrowserContext, type Page} from '@playwright/test';
+import {env, exists, expectFile, ownerContext} from '../helpers/env';
 import {VirtualAuthenticator} from '../helpers/passkeys';
 import {
   makeClip,
@@ -32,7 +33,7 @@ interface DownloadSummary {
   item_ids: string[];
 }
 
-async function downloadsNamed(page: import('@playwright/test').Page, name: string): Promise<DownloadSummary[]> {
+async function downloadsNamed(page: Page, name: string): Promise<DownloadSummary[]> {
   const body = (await (await page.request.get('/api/downloads?state=all')).json()) as {items: DownloadSummary[]};
   return body.items.filter(download => download.name === name);
 }
@@ -210,4 +211,125 @@ test('Settings and the share page explain how to share from an Android phone', a
   const note = page.getByRole('region', {name: 'On Android'});
   await expect(note).toContainText('Install app');
   await expect(note).toContainText('links, photos and videos');
+});
+
+const UPLOADS_KEY = 'popcornstash.uploads.v1';
+
+/** Interrupted uploads the web app remembers on this device (web/src/components/uploads/uploadQueue.ts). */
+async function rememberedUploads(page: Page): Promise<{uploadId: string; name: string}[]> {
+  const raw = await page.evaluate(key => localStorage.getItem(key), UPLOADS_KEY);
+  return raw ? (JSON.parse(raw) as {uploadId: string; name: string}[]) : [];
+}
+
+/** An invite link for a new family member, made by the owner on the owner's own device. */
+async function memberInvite(browser: Browser): Promise<string> {
+  const owner = await ownerContext(browser);
+  const page = await owner.newPage();
+  await page.goto('/settings/people');
+  await page.getByRole('button', {name: 'Invite someone'}).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', {name: 'Create invite link'}).click();
+  await expect(dialog.getByText('Send this link')).toBeVisible();
+  const link = (await dialog.locator('output').textContent())?.trim() ?? '';
+  expect(link).toMatch(/\/invite\//);
+  await owner.close();
+  return link;
+}
+
+/**
+ * One family tablet: the owner signs in on it, shares a clip from another app
+ * and starts its upload, which is held mid-way. Resolves with the upload's id.
+ */
+async function ownerSharesOnTablet(
+  browser: Browser,
+  name: string,
+  hue: number,
+): Promise<{device: BrowserContext; page: Page; uploadId: string}> {
+  const clip = makeClip(name, 3, hue);
+  const device = await browser.newContext({storageState: {cookies: [], origins: []}});
+  const page = await device.newPage();
+  const authenticator = await VirtualAuthenticator.attach(page);
+  await authenticator.load(env.ownerCredential);
+  await withServiceWorker(page, '/login');
+  await page.getByRole('button', {name: 'Sign in with a passkey'}).click();
+  await expect(page).toHaveURL(/\/$/);
+  await authenticator.save(env.ownerCredential);
+
+  await page.route(/\/api\/uploads\/[^/]+\?offset=\d+$/, async route => {
+    await new Promise(resolve => setTimeout(resolve, 2500));
+    await route.continue().catch(() => undefined);
+  });
+  page.on('dialog', dialog => void dialog.accept());
+  const landed = await postShare(page, {files: [{path: clip, type: 'video/mp4'}]});
+  await page.goto(landed.url);
+  await page.getByRole('button', {name: 'Upload to Downloads'}).click();
+  await expect(page).toHaveURL(/\/downloads$/);
+  await expect(page.getByRole('progressbar', {name: `${name} progress`})).toBeVisible();
+  await expect.poll(async () => (await rememberedUploads(page)).map(record => record.name)).toContain(name);
+  const uploadId = (await rememberedUploads(page)).find(record => record.name === name)?.uploadId ?? '';
+  expect(await storedShareKeys(page)).toHaveLength(2);
+  return {device, page, uploadId};
+}
+
+/** A family member joins on the tablet with the invite, then opens Downloads. */
+async function memberJoinsAndOpensDownloads(page: Page, link: string, displayName: string): Promise<void> {
+  await page.goto(link);
+  await page.getByLabel('Your name').fill(displayName);
+  await page.getByRole('button', {name: 'Create passkey and join'}).click();
+  await expect(page).toHaveURL(/\/$/);
+  expect(await (await page.request.get('/api/me')).json()).toMatchObject({role: 'member'});
+  await page.goto('/downloads');
+  await expect(page.getByRole('heading', {level: 1, name: 'Downloads'})).toBeVisible();
+}
+
+/** Gives a wrongly continued upload time to land, then checks that nothing did. */
+async function expectNothingUploaded(page: Page, name: string, sorted: string): Promise<void> {
+  await page.waitForTimeout(8_000);
+  await expect(page.getByRole('progressbar', {name: `${name} progress`})).toHaveCount(0);
+  expect(await downloadsNamed(page, name)).toEqual([]);
+  expect(exists(sorted)).toBe(false);
+}
+
+test('signing out stops shared uploads and deletes the kept files, so the next person gets none of them', async ({
+  browser,
+  baseURL,
+}) => {
+  const link = await memberInvite(browser);
+  const name = 'Quiet.Orchard.2009.720p.WEB.mp4';
+  const {device, page, uploadId} = await ownerSharesOnTablet(browser, name, 140);
+
+  await page.getByRole('button', {name: 'Sign out'}).click();
+  await expect(page).toHaveURL(/\/login/);
+  // Nothing of the owner's is left on the device, and the partial upload is gone from the server.
+  await expect.poll(() => storedShareKeys(page)).toEqual([]);
+  expect(await rememberedUploads(page)).toEqual([]);
+  await page.unroute(/\/api\/uploads\//);
+  const owner = await ownerContext(browser);
+  const status = await owner.request.get(`/api/uploads/${uploadId}`, {headers: {Origin: baseURL ?? ''}});
+  expect(await status.json()).toMatchObject({state: 'cancelled'});
+  await owner.close();
+
+  await memberJoinsAndOpensDownloads(page, link, 'Alex Example');
+  await expectNothingUploaded(page, name, 'Movies/Quiet Orchard (2009)/Quiet Orchard (2009).mp4');
+  await device.close();
+});
+
+test('an upload cut off when the session ends never continues under the next person on the device', async ({browser, baseURL}) => {
+  const link = await memberInvite(browser);
+  const name = 'Paper.Lantern.2013.720p.WEB.mp4';
+  const {device, page} = await ownerSharesOnTablet(browser, name, 260);
+
+  // The session ends without the Sign out button (it expired, or was ended elsewhere).
+  expect((await page.request.post('/api/auth/logout', {data: {}, headers: {Origin: baseURL ?? ''}})).status()).toBe(204);
+  await page.unroute(/\/api\/uploads\//);
+  await page.goto('/login');
+  await expect(page.getByRole('button', {name: 'Sign in with a passkey'})).toBeVisible();
+
+  // Someone else signs in on the same device: the owner's upload does not continue as theirs.
+  await memberJoinsAndOpensDownloads(page, link, 'Jo Example');
+  await expectNothingUploaded(page, name, 'Movies/Paper Lantern (2013)/Paper Lantern (2013).mp4');
+  // It stays the owner's: still remembered on the device for them, and still kept.
+  expect((await rememberedUploads(page)).map(record => record.name)).toContain(name);
+  expect(await storedShareKeys(page)).toHaveLength(2);
+  await device.close();
 });
