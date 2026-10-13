@@ -219,17 +219,16 @@ fn note(pending: &mut HashMap<String, Pending>, rel: &str) {
     }
 }
 
-/// `Inbox/a/b.mkv` → `Inbox/a`; `Downloads/Completed/x/y` → `Downloads/Completed/x`;
-/// `Downloads/loose.mkv` → itself. None for the zone folders themselves.
+/// `Inbox/a/b.mkv` → `Inbox/a`; `Downloads/Completed/x/y` → `Downloads/Completed/x`.
+/// None for the zone folders themselves and for anything outside the two sorted zones
+/// (another client's files in `Downloads/` are not sorted).
 pub(crate) fn top_level_entry(rel: &str) -> Option<String> {
-    let base = [paths::COMPLETED, paths::INBOX, paths::DOWNLOADS]
+    let base = [paths::COMPLETED, paths::INBOX]
         .into_iter()
         .find(|base| rel.starts_with(&format!("{base}/")))?;
     let rest = &rel[base.len() + 1..];
     let first = rest.split('/').next().filter(|s| !s.is_empty())?;
-    let top = format!("{base}/{first}");
-    // Downloads/In Progress and Downloads/Completed are zones, not entries.
-    (top != paths::IN_PROGRESS && top != paths::COMPLETED).then_some(top)
+    Some(format!("{base}/{first}"))
 }
 
 /// `Ok(None)` when the path is gone; `Err` when it could not be read (a share hiccup), in
@@ -367,10 +366,9 @@ mod tests {
             top_level_entry("Downloads/Completed/x/y/z").as_deref(),
             Some("Downloads/Completed/x")
         );
-        assert_eq!(
-            top_level_entry("Downloads/loose.mkv").as_deref(),
-            Some("Downloads/loose.mkv")
-        );
+        // Only Inbox/ and Downloads/Completed/ have entries to sort.
+        assert_eq!(top_level_entry("Downloads/loose.mkv"), None);
+        assert_eq!(top_level_entry("Downloads/Other Client/a.mkv"), None);
         assert_eq!(top_level_entry("Downloads/In Progress/x"), None);
         assert_eq!(top_level_entry("Downloads/Completed"), None);
         assert_eq!(top_level_entry("Inbox"), None);
@@ -422,6 +420,9 @@ mod tests {
         note(&mut pending, ".popcornstash/Trash/x");
         note(&mut pending, "Movies/.DS_Store");
         note(&mut pending, "Movies/Heat (1995)/Heat (1995).mkv");
+        note(&mut pending, "Downloads/loose.mkv");
+        note(&mut pending, "Downloads/Other Client/a.mkv");
+        note(&mut pending, "Downloads");
         let mut keys: Vec<_> = pending.keys().cloned().collect();
         keys.sort();
         assert_eq!(

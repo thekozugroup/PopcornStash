@@ -38,6 +38,11 @@ pub enum Zone {
     Internal,
     /// Anything else: the owner's own folders. Indexed in place, never moved.
     Custom,
+    /// Anything else under `Downloads/` (and the `Downloads/` folder itself). It may be
+    /// another download client's folder, still seeding or waiting for an import, so it
+    /// is neither moved nor indexed: indexing would put half-finished files in front of
+    /// the family and let Trash or Organize move them out from under that client.
+    OtherDownloads,
 }
 
 impl Zone {
@@ -48,7 +53,10 @@ impl Zone {
 
     /// Files here are indexed into the library.
     pub fn indexed(self) -> bool {
-        !matches!(self, Zone::InProgress | Zone::Internal)
+        !matches!(
+            self,
+            Zone::InProgress | Zone::Internal | Zone::OtherDownloads
+        )
     }
 }
 
@@ -66,7 +74,8 @@ impl StashLayout {
         &self.root
     }
 
-    /// Create every fixed folder and the marker file. Idempotent.
+    /// Create every fixed folder and the marker file. Idempotent. A failure says which
+    /// folder and what to do about it (see [`layout_error`]).
     pub async fn ensure(&self) -> Result<()> {
         for dir in [
             MOVIES,
@@ -79,12 +88,17 @@ impl StashLayout {
             COMPLETED,
             TRASH,
         ] {
-            tokio::fs::create_dir_all(self.root.join(dir)).await?;
+            let path = self.root.join(dir);
+            tokio::fs::create_dir_all(&path)
+                .await
+                .map_err(|e| layout_error("create", &path, &e))?;
         }
         self.ensure_uploads_dir().await?;
         let marker = self.root.join(MARKER);
         if tokio::fs::metadata(&marker).await.is_err() {
-            tokio::fs::write(&marker, crate::new_id()).await?;
+            tokio::fs::write(&marker, crate::new_id())
+                .await
+                .map_err(|e| layout_error("write", &marker, &e))?;
         }
         Ok(())
     }
@@ -110,15 +124,21 @@ impl StashLayout {
     pub async fn ensure_uploads_dir(&self) -> Result<PathBuf> {
         use std::os::unix::fs::PermissionsExt;
         let dir = self.uploads_tmp();
-        tokio::fs::create_dir_all(&dir).await?;
-        let meta = tokio::fs::symlink_metadata(&dir).await?;
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| layout_error("create", &dir, &e))?;
+        let meta = tokio::fs::symlink_metadata(&dir)
+            .await
+            .map_err(|e| layout_error("open", &dir, &e))?;
         if !meta.is_dir() {
             return Err(CoreError::invalid(
                 "The partial uploads folder is not a plain folder.",
             ));
         }
         if meta.permissions().mode() & 0o777 != 0o700 {
-            tokio::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).await?;
+            tokio::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+                .await
+                .map_err(|e| layout_error("make private", &dir, &e))?;
         }
         Ok(dir)
     }
@@ -185,8 +205,7 @@ impl StashLayout {
         } else if starts(COMPLETED) {
             Zone::Completed
         } else if starts(DOWNLOADS) {
-            // Loose files directly in Downloads/ are treated like completed ones.
-            Zone::Completed
+            Zone::OtherDownloads
         } else if starts(INBOX) {
             Zone::Inbox
         } else if starts(MOVIES) {
@@ -202,6 +221,54 @@ impl StashLayout {
         } else {
             Zone::Custom
         }
+    }
+}
+
+/// A layout step that failed, as one sentence that names the path and the fix. The
+/// usual cause is a library folder made with `sudo mkdir`: the web server runs as
+/// PUID:PGID and cannot write there, and a bare "Permission denied (os error 13)"
+/// in a restart loop does not tell the owner which folder to fix.
+fn layout_error(action: &str, path: &Path, err: &std::io::Error) -> CoreError {
+    let (uid, gid) = (
+        nix::unistd::getuid().as_raw(),
+        nix::unistd::getgid().as_raw(),
+    );
+    CoreError::Other(anyhow::anyhow!(describe_layout_error(
+        action, path, err, uid, gid
+    )))
+}
+
+fn describe_layout_error(
+    action: &str,
+    path: &Path,
+    err: &std::io::Error,
+    uid: u32,
+    gid: u32,
+) -> String {
+    use std::io::ErrorKind;
+    let shown = path.display();
+    match err.kind() {
+        ErrorKind::PermissionDenied => {
+            // The deepest folder that exists is the one the web server could not write.
+            let mut owner = path;
+            while std::fs::symlink_metadata(owner).is_err() {
+                match owner.parent() {
+                    Some(parent) => owner = parent,
+                    None => break,
+                }
+            }
+            format!(
+                "Cannot {action} {shown}: permission denied. The folder {} must belong to PUID:PGID ({uid}:{gid}).",
+                owner.display()
+            )
+        }
+        ErrorKind::ReadOnlyFilesystem => format!(
+            "Cannot {action} {shown}: the library folder is mounted read-only. Mount it read-write."
+        ),
+        ErrorKind::AlreadyExists | ErrorKind::NotADirectory => format!(
+            "Cannot {action} {shown}: a file with that name is in the way. Move it aside so PopcornStash can create the folder."
+        ),
+        _ => format!("Cannot {action} {shown}: {err}."),
     }
 }
 
@@ -417,6 +484,19 @@ mod tests {
             Zone::Internal
         );
         assert_eq!(StashLayout::zone("Family 2019/beach.mp4"), Zone::Custom);
+        // Anything else in Downloads/ may be another download client's: never moved,
+        // never indexed.
+        for rel in [
+            "Downloads",
+            "Downloads/loose.mkv",
+            "Downloads/Other Client/a.mkv",
+            "Downloads/Completed.old/a.mkv",
+        ] {
+            let zone = StashLayout::zone(rel);
+            assert_eq!(zone, Zone::OtherDownloads, "{rel}");
+            assert!(!zone.auto_sorts() && !zone.indexed(), "{rel}");
+        }
+        assert!(Zone::Completed.auto_sorts() && Zone::Inbox.auto_sorts());
         assert_eq!(StashLayout::zone("Moviesque/a.mp4"), Zone::Custom);
     }
 
@@ -494,6 +574,60 @@ mod tests {
         std::fs::write(&a, b"2").unwrap();
         assert!(move_path(&a, &b).await.is_err());
         assert_eq!(std::fs::read(&b).unwrap(), b"1");
+    }
+
+    /// When a folder cannot be created, the error says which one (the log line is all
+    /// an owner sees while the container restarts).
+    #[tokio::test]
+    async fn ensure_names_the_folder_it_cannot_create() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Movies"), b"a file where a folder belongs").unwrap();
+        let err = StashLayout::new(dir.path())
+            .ensure()
+            .await
+            .unwrap_err()
+            .to_string();
+        let movies = dir.path().join("Movies");
+        assert_eq!(
+            err,
+            format!(
+                "Cannot create {}: a file with that name is in the way. Move it aside so PopcornStash can create the folder.",
+                movies.display()
+            )
+        );
+    }
+
+    /// A folder the web server's user cannot write (made with `sudo mkdir`) is named,
+    /// with the owner it needs. Root can write anywhere, so the message is checked
+    /// directly rather than by making a folder the test cannot write.
+    #[test]
+    fn permission_errors_name_the_folder_and_its_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let movies = dir.path().join("Movies");
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            describe_layout_error("create", &movies, &denied, 1000, 1000),
+            format!(
+                "Cannot create {}: permission denied. The folder {} must belong to PUID:PGID (1000:1000).",
+                movies.display(),
+                dir.path().display()
+            )
+        );
+        // An existing folder that cannot be changed is the one to fix itself.
+        std::fs::create_dir(&movies).unwrap();
+        let eperm = std::io::Error::from_raw_os_error(libc::EPERM);
+        assert_eq!(
+            describe_layout_error("make private", &movies, &eperm, 99, 100),
+            format!(
+                "Cannot make private {0}: permission denied. The folder {0} must belong to PUID:PGID (99:100).",
+                movies.display()
+            )
+        );
+        let read_only = std::io::Error::from_raw_os_error(libc::EROFS);
+        assert!(
+            describe_layout_error("create", &movies, &read_only, 1, 1)
+                .ends_with("Mount it read-write.")
+        );
     }
 
     #[test]

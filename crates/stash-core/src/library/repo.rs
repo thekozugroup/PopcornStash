@@ -135,8 +135,10 @@ pub struct TrashEntry {
 /// Default and maximum page sizes for [`list`].
 pub const DEFAULT_LIMIT: u32 = 50;
 pub const MAX_LIMIT: u32 = 200;
-/// Items per timeline page when the caller does not say (whole months are always returned).
+/// Photos per timeline page when the caller does not say, and the most a page holds
+/// (architecture section 11).
 pub const DEFAULT_TIMELINE_LIMIT: u32 = 200;
+pub const MAX_TIMELINE_LIMIT: u32 = 500;
 const SUMMARY_ROW: i64 = 12;
 /// Newest items per category in the summary's `recently_added`, so a burst of one
 /// kind (a season of episodes, a phone's worth of photos) never pushes the others off Home.
@@ -767,7 +769,7 @@ pub async fn photo_timeline(
     let limit = i64::from(if limit == 0 {
         DEFAULT_TIMELINE_LIMIT
     } else {
-        limit.min(MAX_LIMIT * 5)
+        limit.min(MAX_TIMELINE_LIMIT)
     });
     let after: Option<TimelineCursor> = cursor
         .filter(|c| !c.trim().is_empty())

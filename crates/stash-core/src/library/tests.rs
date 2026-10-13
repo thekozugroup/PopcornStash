@@ -779,6 +779,11 @@ async fn rescan_queues_stable_inbox_entries() {
         Duration::from_secs(60),
     );
     h.write_old(
+        "Downloads/Completed/tax-form.pdf",
+        b"%PDF-1.4",
+        Duration::from_secs(60),
+    );
+    h.write_old(
         "Downloads/loose.mkv",
         &bytes("loose"),
         Duration::from_secs(60),
@@ -790,7 +795,7 @@ async fn rescan_queues_stable_inbox_entries() {
     );
 
     let report = h.lib.rescan().await.unwrap();
-    assert_eq!(report.queued_for_sort, 4, "{report:?}");
+    assert_eq!(report.queued_for_sort, 5, "{report:?}");
     assert_eq!(report.added, 0, "the sorter owns Inbox and Completed");
     let mut queued: Vec<String> = h
         .jobs("sort")
@@ -799,13 +804,16 @@ async fn rescan_queues_stable_inbox_entries() {
         .map(|(_, p)| p["rel_path"].as_str().unwrap().to_string())
         .collect();
     queued.sort();
+    // Files that are not media are sorted too (to Other/, after review); loose files
+    // in Downloads/ are not PopcornStash's to move.
     assert_eq!(
         queued,
         vec![
             "Downloads/Completed/done.mkv",
-            "Downloads/loose.mkv",
+            "Downloads/Completed/tax-form.pdf",
             "Inbox/Folder",
-            "Inbox/old.mkv"
+            "Inbox/old.mkv",
+            "Inbox/readme.txt"
         ]
     );
     // Already queued: not queued twice.
@@ -1529,6 +1537,381 @@ async fn an_ignored_file_stays_put_even_when_it_changes() {
     assert_eq!(item.status, ItemStatus::Ready);
     assert_eq!(item.size, 18, "the file facts are refreshed in place");
     assert!(h.exists("Inbox/Heat.1995.mkv"));
+}
+
+// ---------------------------------------------------------------------------
+// What gets sorted (audit S2, S3, S4)
+
+/// A document, archive or anything else that is not a video, photo or song is filed
+/// under Other/ after one review, so the family can reach it. Inside a download that
+/// holds a video, the release's other files stay behind, and subtitles still travel
+/// with their video.
+#[tokio::test]
+async fn files_that_are_not_media_wait_for_review_under_other() {
+    let mut h = harness().await;
+    h.write("Inbox/bank-statement.pdf", b"%PDF-1.7 statement");
+    h.write("Inbox/Family archive.zip", b"PK\x03\x04 archive");
+    h.write("Downloads/Completed/tax-form.pdf", b"%PDF-1.4 form");
+    sqlx::query(
+        "INSERT INTO downloads (id, kind, name, source, state, created_at, updated_at, rel_path)
+         VALUES ('up1', 'upload', 'tax-form.pdf', 'tax-form.pdf', 'sorting', 1, 1, 'Downloads/Completed/tax-form.pdf')",
+    )
+    .execute(&h.lib.db)
+    .await
+    .unwrap();
+
+    let mut waiting = Vec::new();
+    for (rel, download) in [
+        ("Inbox/bank-statement.pdf", None),
+        ("Inbox/Family archive.zip", None),
+        ("Downloads/Completed/tax-form.pdf", Some("up1")),
+    ] {
+        let ids = h.lib.sort_path(rel, download).await.unwrap();
+        assert_eq!(ids.len(), 1, "{rel} becomes an item");
+        let item = h.item(&ids[0]).await;
+        assert_eq!(item.rel_path, rel, "it waits where it is");
+        assert_eq!(item.status, ItemStatus::NeedsReview);
+        assert_eq!(item.category, Category::Other);
+        let suggestion = item.suggestion().unwrap();
+        assert_eq!(suggestion.confidence, crate::models::Confidence::Low);
+        let name = rel.rsplit('/').next().unwrap();
+        assert_eq!(suggestion.destination, format!("Other/{name}"));
+        waiting.push(item);
+    }
+    assert!(
+        h.drain_events()
+            .iter()
+            .any(|e| matches!(e, Event::Inbox { count: 3 }))
+    );
+    let linked: Vec<String> =
+        sqlx::query_scalar("SELECT item_id FROM download_items WHERE download_id = 'up1'")
+            .fetch_all(&h.lib.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        linked,
+        vec![waiting[2].id.clone()],
+        "the upload shows its item"
+    );
+
+    // One tap files it under Other/.
+    let accepted = h
+        .lib
+        .review(
+            &waiting[0].id,
+            ReviewAction::Accept(OrganizeRequest::default()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (accepted.rel_path.as_str(), accepted.status),
+        ("Other/bank-statement.pdf", ItemStatus::Ready)
+    );
+    assert!(h.exists("Other/bank-statement.pdf"));
+
+    // A folder with no media at all: each document is its own item, release clutter is not.
+    h.write("Inbox/Tax 2024/return.pdf", b"%PDF return");
+    h.write("Inbox/Tax 2024/receipts.docx", b"docx");
+    h.write("Inbox/Tax 2024/checksums.sfv", b"sfv");
+    let ids = h.lib.sort_path("Inbox/Tax 2024", None).await.unwrap();
+    let mut paths = Vec::new();
+    for id in &ids {
+        paths.push(h.item(id).await.rel_path);
+    }
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec!["Inbox/Tax 2024/receipts.docx", "Inbox/Tax 2024/return.pdf"]
+    );
+
+    // A subtitle copied in next to its video is not an item: it travels with the video,
+    // whichever of the two is looked at first.
+    h.write("Inbox/Heat.1995.srt", b"subs");
+    h.write("Inbox/Heat.1995.mkv", &bytes("heat"));
+    assert!(
+        h.lib
+            .sort_path("Inbox/Heat.1995.srt", None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(h.exists("Inbox/Heat.1995.srt"));
+    h.lib.sort_path("Inbox/Heat.1995.mkv", None).await.unwrap();
+    assert!(h.exists("Movies/Heat (1995)/Heat (1995).srt"));
+
+    // Inside a download with a video, only the video is sorted.
+    let folder = "Downloads/Completed/Arrival.2016.1080p.BluRay.x264-GRP";
+    h.write(
+        &format!("{folder}/Arrival.2016.1080p.BluRay.x264-GRP.mkv"),
+        &bytes("arrival"),
+    );
+    h.write(
+        &format!("{folder}/Arrival.2016.1080p.BluRay.x264-GRP.en.srt"),
+        b"subs",
+    );
+    h.write(&format!("{folder}/RARBG.txt"), b"release group");
+    h.write(&format!("{folder}/arrival.sfv"), b"sfv");
+    h.write(&format!("{folder}/Visit the site.url"), b"url");
+    sqlx::query(
+        "INSERT INTO downloads (id, kind, name, source, state, created_at, updated_at, rel_path)
+         VALUES ('dl1', 'torrent', 'Arrival', 'magnet:?xt=urn:btih:abc', 'sorting', 1, 1, ?)",
+    )
+    .bind(folder)
+    .execute(&h.lib.db)
+    .await
+    .unwrap();
+    let ids = h.lib.sort_path(folder, Some("dl1")).await.unwrap();
+    assert_eq!(ids.len(), 1);
+    assert_eq!(
+        h.item(&ids[0]).await.rel_path,
+        "Movies/Arrival (2016)/Arrival (2016).mkv"
+    );
+    assert!(h.exists("Movies/Arrival (2016)/Arrival (2016).en.srt"));
+    // The folder changed, so it is sorted again; without its video the leftovers are
+    // still the release's, not documents of their own.
+    assert!(h.lib.sort_path(folder, None).await.unwrap().is_empty());
+    for left in ["RARBG.txt", "arrival.sfv", "Visit the site.url"] {
+        let rel = format!("{folder}/{left}");
+        assert!(h.exists(&rel), "{left} stays in the download");
+        assert!(repo::get_by_path(&h.lib.db, &rel).await.unwrap().is_none());
+    }
+}
+
+/// Only Inbox/ and Downloads/Completed/ are sorted. Anything else in Downloads/ may
+/// belong to another download client (seeding, or waiting for an import), so it is
+/// never moved and never indexed.
+#[tokio::test]
+async fn other_folders_in_downloads_are_left_alone() {
+    let h = harness().await;
+    let other = "Downloads/Other Client/Some.Movie.2019.1080p.BluRay.x264.mkv";
+    h.write_old(other, &bytes("other client"), Duration::from_secs(60));
+    std::fs::File::open(h.root.join("Downloads/Other Client"))
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(60))
+        .unwrap();
+    h.write_old(
+        "Downloads/loose.mkv",
+        &bytes("loose"),
+        Duration::from_secs(60),
+    );
+
+    let report = h.lib.rescan().await.unwrap();
+    assert_eq!((report.queued_for_sort, report.added), (0, 0), "{report:?}");
+    assert!(h.jobs("sort").await.is_empty());
+    for rel in [other, "Downloads/loose.mkv", "Downloads/Other Client"] {
+        assert!(h.lib.enqueue_sort(rel, None).await.is_err(), "{rel}");
+        assert!(h.lib.sort_path(rel, None).await.is_err(), "{rel}");
+    }
+    assert!(h.lib.index_path(other).await.unwrap().is_none());
+    assert!(h.exists(other) && h.exists("Downloads/loose.mkv"));
+    let (count,): (i64,) = sqlx::query_as("SELECT count(*) FROM items")
+        .fetch_one(&h.lib.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+
+    // Downloads/Completed is still looked after: a file waiting for review there that
+    // changes goes back to the sorter.
+    h.write(
+        "Downloads/Completed/Some.Movie.1080p.WEB-DL.mkv",
+        &bytes("nameless"),
+    );
+    let ids = h
+        .lib
+        .sort_path("Downloads/Completed/Some.Movie.1080p.WEB-DL.mkv", None)
+        .await
+        .unwrap();
+    assert_eq!(h.item(&ids[0]).await.status, ItemStatus::NeedsReview);
+    sqlx::query("UPDATE jobs SET state = 'done'")
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    h.write_old(
+        "Downloads/Completed/Some.Movie.1080p.WEB-DL.mkv",
+        b"a longer, re-downloaded file",
+        Duration::from_secs(60),
+    );
+    let report = h.lib.rescan().await.unwrap();
+    assert_eq!(report.queued_for_sort, 1, "{report:?}");
+}
+
+/// Posters, fan art and screenshots that come with a video or an album are not family
+/// photos. Other pictures in such a download wait for review instead of going straight
+/// to Photos; a download that is only pictures still goes to Photos.
+#[tokio::test]
+async fn artwork_in_downloads_is_not_filed_as_family_photos() {
+    let h = harness().await;
+    let folder = "Downloads/Completed/Some.Movie.2019.1080p.WEB.x264-GRP";
+    for (name, tag) in [
+        ("Some.Movie.2019.1080p.WEB.x264-GRP.mkv", "movie"),
+        ("poster.jpg", "poster"),
+        ("fanart.jpg", "fanart"),
+        ("Some.Movie.2019-poster.jpg", "kodi poster"),
+        ("screen01.png", "screen"),
+        ("www.YTS.MX.jpg", "ad"),
+        ("Screens/screen02.png", "screens"),
+        ("Screenshots/frame.png", "screenshots"),
+        ("Artwork/back.png", "artwork"),
+        ("behind the scenes photo.jpg", "unknown"),
+    ] {
+        h.write_old(
+            &format!("{folder}/{name}"),
+            &bytes(tag),
+            Duration::from_secs(60),
+        );
+    }
+    sqlx::query(
+        "INSERT INTO downloads (id, kind, name, source, state, created_at, updated_at, rel_path)
+         VALUES ('dl1', 'torrent', 'Some Movie', 'magnet:?xt=urn:btih:abc', 'sorting', 1, 1, ?)",
+    )
+    .bind(folder)
+    .execute(&h.lib.db)
+    .await
+    .unwrap();
+    let ids = h.lib.sort_path(folder, Some("dl1")).await.unwrap();
+    assert_eq!(ids.len(), 2, "the movie and one picture to review");
+    let mut items = Vec::new();
+    for id in &ids {
+        items.push(h.item(id).await);
+    }
+    items.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    assert_eq!(
+        items[0].rel_path,
+        format!("{folder}/behind the scenes photo.jpg")
+    );
+    assert_eq!(items[0].status, ItemStatus::NeedsReview);
+    assert_eq!(items[0].category, Category::Other);
+    let suggestion = items[0].suggestion().unwrap();
+    assert_eq!(suggestion.confidence, crate::models::Confidence::Low);
+    assert_eq!(suggestion.destination, "Other/behind the scenes photo.jpg");
+    assert_eq!(
+        items[1].rel_path,
+        "Movies/Some Movie (2019)/Some Movie (2019).mkv"
+    );
+    for left in [
+        "poster.jpg",
+        "fanart.jpg",
+        "Some.Movie.2019-poster.jpg",
+        "screen01.png",
+        "www.YTS.MX.jpg",
+        "Screens/screen02.png",
+        "Screenshots/frame.png",
+        "Artwork/back.png",
+    ] {
+        assert!(h.exists(&format!("{folder}/{left}")), "{left} stays");
+    }
+    let photos_is_empty = || {
+        std::fs::read_dir(h.root.join("Photos"))
+            .unwrap()
+            .next()
+            .is_none()
+    };
+    assert!(photos_is_empty(), "nothing was filed as a family photo");
+
+    // With the movie gone the folder changed and is sorted again: the artwork is still
+    // the movie's, not a download of pictures.
+    assert!(h.lib.sort_path(folder, None).await.unwrap().is_empty());
+    assert!(photos_is_empty());
+    assert!(h.exists(&format!("{folder}/poster.jpg")));
+
+    // The leftovers do not send the folder back to the sorter on every rescan once it
+    // has settled.
+    for entry in walkdir::WalkDir::new(h.root.join(folder)) {
+        let entry = entry.unwrap();
+        if entry.file_type().is_dir() {
+            std::fs::File::open(entry.path())
+                .unwrap()
+                .set_modified(SystemTime::now() - Duration::from_secs(60))
+                .unwrap();
+        }
+    }
+    sqlx::query("UPDATE jobs SET state = 'done'")
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    let report = h.lib.rescan().await.unwrap();
+    assert_eq!(
+        report.queued_for_sort,
+        0,
+        "{report:?} {:?}",
+        h.jobs("sort").await
+    );
+
+    // A release folder copied into Completed by hand has no download to remember it by,
+    // but its name still says it is a release: once the movie has moved, the poster
+    // and screenshots stay where they are.
+    let copied = "Downloads/Completed/Other.Movie.2020.720p.BluRay.x264-GRP";
+    h.write(&format!("{copied}/movie.mkv"), &bytes("other movie"));
+    h.write(&format!("{copied}/poster.jpg"), &bytes("other poster"));
+    h.write(
+        &format!("{copied}/Screens/screen01.png"),
+        &bytes("other screen"),
+    );
+    assert_eq!(h.lib.sort_path(copied, None).await.unwrap().len(), 1);
+    assert!(h.lib.sort_path(copied, None).await.unwrap().is_empty());
+    assert!(h.exists(&format!("{copied}/poster.jpg")));
+    assert!(photos_is_empty());
+
+    // An album: the song goes to Other/, its cover art nowhere.
+    let album = "Downloads/Completed/Artist - Album (2020) [FLAC]";
+    h.write(&format!("{album}/01 - Song.flac"), &bytes("song"));
+    h.write(&format!("{album}/cover.jpg"), &bytes("cover"));
+    h.write(&format!("{album}/Scans/booklet 1.jpg"), &bytes("scan"));
+    let ids = h.lib.sort_path(album, None).await.unwrap();
+    assert_eq!(ids.len(), 1);
+    assert_eq!(h.item(&ids[0]).await.rel_path, "Other/01 - Song.flac");
+
+    // A Kodi-style movie folder copied into the Inbox: the poster is not a photo either.
+    // Sorted again once the movie has moved, it waits for review rather than going to
+    // Photos.
+    h.write("Inbox/Up (2009)/Up (2009).mkv", &bytes("up"));
+    h.write("Inbox/Up (2009)/poster.jpg", &bytes("up poster"));
+    let ids = h.lib.sort_path("Inbox/Up (2009)", None).await.unwrap();
+    assert_eq!(ids.len(), 1);
+    assert!(h.exists("Inbox/Up (2009)/poster.jpg"));
+    let ids = h.lib.sort_path("Inbox/Up (2009)", None).await.unwrap();
+    assert_eq!(ids.len(), 1);
+    let poster = h.item(&ids[0]).await;
+    assert_eq!(
+        (poster.rel_path.as_str(), poster.status),
+        ("Inbox/Up (2009)/poster.jpg", ItemStatus::NeedsReview)
+    );
+    assert_eq!(poster.suggestion().unwrap().destination, "Other/poster.jpg");
+    assert!(photos_is_empty());
+
+    // The owner's own pictures next to a phone video are photos.
+    h.write("Inbox/Phone/VID_20240613_101500.mp4", &bytes("clip"));
+    h.write("Inbox/Phone/IMG_20240613_101700.jpg", &bytes("snap"));
+    let ids = h.lib.sort_path("Inbox/Phone", None).await.unwrap();
+    assert_eq!(ids.len(), 2);
+    assert!(h.exists("Photos/2024/06/IMG_20240613_101700.jpg"));
+
+    // Pictures on their own are photos: a sent image, or an album unpacked.
+    h.write(
+        "Downloads/Completed/IMG_20230102_030405.jpg",
+        &bytes("sent"),
+    );
+    h.write(
+        "Downloads/Completed/Grandma's album/IMG_20190704_120000.jpg",
+        &bytes("album 1"),
+    );
+    h.write(
+        "Downloads/Completed/Grandma's album/IMG_20190705_120000.jpg",
+        &bytes("album 2"),
+    );
+    h.lib
+        .sort_path("Downloads/Completed/IMG_20230102_030405.jpg", None)
+        .await
+        .unwrap();
+    let ids = h
+        .lib
+        .sort_path("Downloads/Completed/Grandma's album", None)
+        .await
+        .unwrap();
+    assert_eq!(ids.len(), 2);
+    assert!(h.exists("Photos/2023/01/IMG_20230102_030405.jpg"));
+    assert!(h.exists("Photos/2019/07/IMG_20190704_120000.jpg"));
+    assert!(h.exists("Photos/2019/07/IMG_20190705_120000.jpg"));
 }
 
 /// An item counts as gone when a link takes its place (even one to nowhere) or when

@@ -74,6 +74,20 @@ struct UploadRow {
     size: i64,
     received: i64,
     state: String,
+    /// When the browser says the file was last changed (unix seconds).
+    last_modified: Option<i64>,
+}
+
+/// 1990-01-01T00:00:00Z. Earlier "last changed" dates are placeholders (a FAT disk's
+/// 1980, a zeroed clock), not the day a photo was scanned or saved.
+const EARLIEST_FILE_DATE: i64 = 631_152_000;
+
+/// The browser's last-modified time for an upload, when it can be right: not before
+/// 1990 and not in the future. Anything else is ignored and the file keeps the time it
+/// arrived, which is what the sorter used before.
+fn believable_file_date(last_modified: Option<i64>, now: i64) -> Option<std::time::SystemTime> {
+    let secs = last_modified.filter(|t| (EARLIEST_FILE_DATE..=now).contains(t))?;
+    Some(std::time::UNIX_EPOCH + Duration::from_secs(u64::try_from(secs).ok()?))
 }
 
 impl UploadRow {
@@ -152,7 +166,7 @@ impl UploadService {
     /// Load an upload the caller may touch: their own, or any when they are the owner.
     async fn load(&self, user: &AuthUser, id: &str) -> ApiResult<UploadRow> {
         let row: Option<UploadRow> = sqlx::query_as(
-            "SELECT id, user_id, filename, size, received, state FROM uploads WHERE id = ?",
+            "SELECT id, user_id, filename, size, received, state, last_modified FROM uploads WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(&self.db)
@@ -432,6 +446,12 @@ impl UploadService {
             }
             file.set_len(row.size as u64).await?;
             file.sync_all().await?;
+            // The sorter dates a photo with no EXIF or name date by the file's modified
+            // time, so the file carries the browser's date instead of the upload's.
+            // Moving it to Completed keeps the time (a rename, or a copy that restores it).
+            if let Some(modified) = believable_file_date(row.last_modified, now()) {
+                file.into_std().await.set_modified(modified)?;
+            }
             std::io::Result::Ok(Ok(()))
         }
         .await;
@@ -634,4 +654,116 @@ fn is_length_limit(error: &axum::Error) -> bool {
         current = e.source();
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use stash_core::models::Role;
+
+    use super::*;
+    use crate::auth::Scope;
+    use crate::state::AppState;
+
+    async fn member(state: &AppState) -> AuthUser {
+        let id = new_id();
+        sqlx::query(
+            "INSERT INTO users (id, display_name, role, webauthn_id, created_at) VALUES (?, 'Member', 'member', ?, ?)",
+        )
+        .bind(&id)
+        .bind(new_id())
+        .bind(now())
+        .execute(&state.db)
+        .await
+        .unwrap();
+        AuthUser {
+            user_id: id,
+            display_name: "Member".into(),
+            role: Role::Member,
+            scopes: vec![Scope::Full],
+            session_id: None,
+            token_id: None,
+        }
+    }
+
+    /// Upload a small file the browser says was last changed at `last_modified`, and
+    /// return the modification time of what landed in Downloads/Completed, with the
+    /// download it belongs to and its path.
+    async fn upload(
+        state: &AppState,
+        user: &AuthUser,
+        name: &str,
+        last_modified: Option<i64>,
+    ) -> (i64, String, String) {
+        let data = b"a scan with no EXIF date and no date in its name".to_vec();
+        let created = state
+            .uploads
+            .create(
+                user,
+                CreateUpload {
+                    filename: name.into(),
+                    size: data.len() as i64,
+                    mime: Some("image/png".into()),
+                    last_modified,
+                },
+            )
+            .await
+            .unwrap();
+        let len = data.len() as u64;
+        state
+            .uploads
+            .write_chunk(user, &created.id, 0, Some(len), Body::from(data))
+            .await
+            .unwrap();
+        let download = state.uploads.complete(user, &created.id).await.unwrap();
+        let rel: String = sqlx::query_scalar("SELECT rel_path FROM downloads WHERE id = ?")
+            .bind(&download.id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert!(rel.starts_with("Downloads/Completed/"), "{rel}");
+        let modified = std::fs::metadata(state.layout.abs(&rel).unwrap())
+            .unwrap()
+            .modified()
+            .unwrap();
+        let mtime = modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        (mtime, download.id, rel)
+    }
+
+    /// The sorter dates a photo without EXIF by its file's modification time, so an
+    /// upload keeps the date the browser reported instead of the time it arrived, and
+    /// a scanned print lands in the month it was scanned.
+    #[tokio::test]
+    async fn uploads_keep_the_date_the_browser_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = crate::app::test_state(dir.path()).await.unwrap();
+        let user = member(&state).await;
+
+        let scanned = 1_403_222_400; // 2014-06-20
+        let (mtime, download, rel) = upload(&state, &user, "scan0001.png", Some(scanned)).await;
+        assert_eq!(mtime, scanned);
+        let ids = state
+            .library
+            .sort_path(&rel, Some(&download))
+            .await
+            .unwrap();
+        let item = stash_core::library::repo::get(&state.db, &ids[0])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(item.rel_path, "Photos/2014/06/scan0001.png");
+
+        // Dates that cannot be right are not used: the file keeps its upload time.
+        let started = now();
+        let recent = |t: i64| (started - 60..=now() + 1).contains(&t);
+        let ten_years = 10 * 365 * 86_400;
+        let (future, ..) = upload(&state, &user, "future.png", Some(started + ten_years)).await;
+        assert!(recent(future), "{future}");
+        let (fat_epoch, ..) = upload(&state, &user, "old disk.png", Some(315_532_800)).await;
+        assert!(recent(fat_epoch), "{fat_epoch}");
+        let (none, ..) = upload(&state, &user, "no date.png", None).await;
+        assert!(recent(none), "{none}");
+    }
 }

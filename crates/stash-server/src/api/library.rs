@@ -15,9 +15,6 @@ use crate::auth::{AuthUser, Scope};
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
-const DEFAULT_TIMELINE_PAGE: u32 = 120;
-const MAX_TIMELINE_PAGE: u32 = 500;
-
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/health", get(health))
@@ -95,10 +92,11 @@ async fn timeline(
 ) -> ApiResult<Json<PhotoTimeline>> {
     user.require(Scope::LibraryRead)?;
     let query: TimelineQuery = parse_query(&uri)?;
+    // Section 11: 200 photos per page unless the client asks, never more than 500.
     let limit = query
         .limit
-        .unwrap_or(DEFAULT_TIMELINE_PAGE)
-        .clamp(1, MAX_TIMELINE_PAGE);
+        .unwrap_or(repo::DEFAULT_TIMELINE_LIMIT)
+        .clamp(1, repo::MAX_TIMELINE_LIMIT);
     Ok(Json(
         repo::photo_timeline(&state.db, query.cursor.as_deref(), limit, &user.user_id).await?,
     ))
@@ -360,6 +358,45 @@ mod tests {
         let (status, json) = app.json("/api/photos/timeline?limit=10", &token).await;
         assert_eq!(status, StatusCode::OK, "{json}");
         assert!(json["months"].is_array());
+    }
+
+    /// A client that does not send `limit` gets the documented 200 photos per page, and
+    /// no page holds more than 500 whatever it asks for.
+    #[tokio::test]
+    async fn timeline_pages_hold_200_photos_by_default_and_500_at_most() {
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        let now = stash_core::now();
+        sqlx::query(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 600)
+             INSERT INTO items (id, rel_path, kind, category, status, title, sort_title, size, mtime,
+                                thumb_state, taken_at, added_at, updated_at)
+             SELECT printf('photo-%04d', i), printf('Photos/2024/06/IMG_%04d.jpg', i), 'photo', 'photo',
+                    'ready', printf('IMG_%04d', i), printf('img_%04d', i), 10, ?, 'pending',
+                    1718236800 + i, ?, ? FROM n",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let photos = |json: &serde_json::Value| -> usize {
+            json["months"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["items"].as_array().unwrap().len())
+                .sum()
+        };
+        let (status, json) = app.json("/api/photos/timeline", &token).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(photos(&json), 200);
+        assert_eq!(json["months"][0]["count"], 600);
+        assert!(json["next_cursor"].is_string());
+        let (status, json) = app.json("/api/photos/timeline?limit=1000", &token).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(photos(&json), 500);
     }
 
     /// The web links to `/api/shows/<show_name>` exactly as `/api/shows` lists it, so a
