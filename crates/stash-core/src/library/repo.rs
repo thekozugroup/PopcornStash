@@ -657,8 +657,9 @@ pub async fn shows(db: &Db) -> Result<Vec<ShowSummary>> {
 pub async fn show(db: &Db, show_name: &str, user_id: &str) -> Result<ShowDetail> {
     let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
     qb.push_bind(user_id.to_string())
-        .push(" WHERE i.category = 'episode' AND i.status = 'ready' AND i.show_name = ")
-        .push_bind(show_name.to_string())
+        // Names typed or stored with stray spaces still match.
+        .push(" WHERE i.category = 'episode' AND i.status = 'ready' AND TRIM(i.show_name) = ")
+        .push_bind(show_name.trim().to_string())
         .push(" ORDER BY COALESCE(i.season, 0), COALESCE(i.episode, 0), i.sort_title, i.id");
     let rows = qb
         .build_query_as::<ItemWithProgress>()

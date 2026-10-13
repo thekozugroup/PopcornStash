@@ -766,8 +766,10 @@ pub(crate) async fn finish_completed(manager: &DownloadManager, row: &DownloadRo
         return true;
     };
     // Files written by the engine user become PUID:PGID before they move on.
+    // Never let engine-owned files into the library: retry later instead of moving.
     if let Err(e) = crate::supervisor_client::adopt(&manager.config, &component).await {
-        tracing::warn!(error = %format!("{e:#}"), download = %row.id, "the supervisor could not adopt a torrent");
+        tracing::warn!(error = %format!("{e:#}"), download = %row.id, "the supervisor could not adopt a torrent; will retry");
+        return false;
     }
     match manager.move_to_completed(&content, &component).await {
         Ok((_, dest)) => {

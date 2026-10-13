@@ -30,4 +30,10 @@ pub fn routes() -> Router<AppState> {
         .merge(settings::routes())
         .merge(events::routes())
         .merge(system::routes())
+        .method_not_allowed_fallback(|| async {
+            crate::error::ApiError::new(
+                crate::error::ErrorCode::MethodNotAllowed,
+                "That request method is not supported here.",
+            )
+        })
 }

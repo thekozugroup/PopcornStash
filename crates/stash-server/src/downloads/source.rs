@@ -30,6 +30,12 @@ pub const REDACTED_MARK: &str = "redacted";
 /// when any query key looks like a credential. When anything private was removed the
 /// result ends in `#redacted`, so a restart knows the stored link is incomplete.
 pub fn redact_url(url: &Url) -> String {
+    redact_url_with(url, false)
+}
+
+/// [`redact_url`], also marking the link incomplete when it only works with
+/// memory-only extras such as forwarded browser cookies.
+pub fn redact_url_with(url: &Url, needs_private_extras: bool) -> String {
     let mut clean = url.clone();
     let had_user_info = !clean.username().is_empty() || clean.password().is_some();
     let _ = clean.set_username("");
@@ -39,7 +45,7 @@ pub fn redact_url(url: &Url) -> String {
     if secret_query {
         clean.set_query(None);
     }
-    if had_user_info || secret_query {
+    if had_user_info || secret_query || needs_private_extras {
         clean.set_fragment(Some(REDACTED_MARK));
     }
     clean.to_string()
@@ -248,5 +254,13 @@ mod tests {
             &Url::parse("https://example.com/x.TORRENT?a=1").unwrap()
         ));
         assert_eq!(extension_for_mime("video/mp4; charset=binary"), Some("mp4"));
+    }
+
+    #[test]
+    fn cookie_dependent_links_are_stored_as_incomplete() {
+        let url = Url::parse("https://example.com/files/a.mp4").unwrap();
+        assert_eq!(redact_url_with(&url, false), "https://example.com/files/a.mp4");
+        let stored = redact_url_with(&url, true);
+        assert!(is_redacted_source(&stored), "{stored}");
     }
 }

@@ -65,7 +65,11 @@ pub fn classify(
             .or_else(|| from_download_folder(rel_path))
             .or_else(|| movie(&parsed))
             .unwrap_or_else(|| other(&stem, "We could not tell what this video is")),
-        MediaKind::Audio => other(&stem, "Audio files go to Other"),
+        // Audio can only ever go to Other, so there is nothing to review.
+        MediaKind::Audio => Classification {
+            confidence: Confidence::High,
+            ..other(&stem, "Audio files go to Other")
+        },
         MediaKind::Other => other(&stem, "This is not a video or photo"),
     };
     c.destination = destination_for(&c, &file_name);
@@ -658,7 +662,7 @@ mod tests {
 
         let c = classify("Inbox/song.mp3", None, None, MTIME);
         assert_eq!(c.category, Category::Other);
-        assert_eq!(c.confidence, Confidence::Low);
+        assert_eq!(c.confidence, Confidence::High);
         assert_eq!(c.destination, "Other/song.mp3");
 
         let c = classify("Inbox/notes.pdf", None, None, MTIME);

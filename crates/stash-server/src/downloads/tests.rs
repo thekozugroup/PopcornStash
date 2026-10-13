@@ -2186,7 +2186,7 @@ async fn private_link_is_not_fetched_without_its_secret_after_a_restart() {
         "the link without its token is a different link"
     );
     let error = env.row(&d.id).await.error.unwrap();
-    assert!(error.contains("Add the link again"), "{error}");
+    assert!(error.contains("Send the link again"), "{error}");
 
     // Retrying in place is refused, and so is re-adding the stored (incomplete) link.
     let err = env.manager.resume(&d.id).await.unwrap_err();

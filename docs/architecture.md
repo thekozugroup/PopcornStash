@@ -135,7 +135,7 @@ Ownership: `/config` and everything `serve` writes belong to `PUID:PGID` (databa
 Kinds by extension:
 - video: mkv mp4 m4v mov avi webm ts m2ts mts wmv flv 3gp mpg mpeg vob ogv
 - photo: jpg jpeg png heic heif webp gif tif tiff avif dng cr2 cr3 nef arw orf rw2 raf
-- audio: mp3 m4a flac wav aac ogg opus (category other)
+- audio: mp3 m4a flac wav aac ogg opus (category other, sorted to `Other/` with High confidence)
 - everything else: other
 
 Rules, first match wins:

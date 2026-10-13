@@ -76,9 +76,7 @@ export async function listTrash(signal?: AbortSignal): Promise<TrashRow[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Sessions. There is no "sign out everywhere else" route (DELETE
-// /api/me/sessions), but the server has no such route; revoke the others one
-// by one instead.
+// Sessions. "Sign out everywhere else" revokes the other sessions one by one.
 // ---------------------------------------------------------------------------
 
 export interface RevokeOthersResult {

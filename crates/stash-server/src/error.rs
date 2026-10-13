@@ -1,8 +1,8 @@
 //! API error type: `{"error": {"code", "message"}}` (section 8).
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use stash_core::CoreError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +17,7 @@ pub enum ErrorCode {
     PasskeysUnavailable,
     VpnUnavailable,
     PayloadTooLarge,
+    MethodNotAllowed,
     Internal,
 }
 
@@ -33,6 +34,7 @@ impl ErrorCode {
             ErrorCode::PasskeysUnavailable => "passkeys_unavailable",
             ErrorCode::VpnUnavailable => "vpn_unavailable",
             ErrorCode::PayloadTooLarge => "payload_too_large",
+            ErrorCode::MethodNotAllowed => "method_not_allowed",
             ErrorCode::Internal => "internal",
         }
     }
@@ -49,6 +51,7 @@ impl ErrorCode {
             ErrorCode::PasskeysUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ErrorCode::VpnUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ErrorCode::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            ErrorCode::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -68,7 +71,11 @@ pub type ApiResult<T> = Result<T, ApiError>;
 
 impl ApiError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
-        Self { code, message: message.into(), extra: None }
+        Self {
+            code,
+            message: message.into(),
+            extra: None,
+        }
     }
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::BadRequest, message)
@@ -89,10 +96,16 @@ impl ApiError {
         Self::new(ErrorCode::Conflict, message)
     }
     pub fn rate_limited() -> Self {
-        Self::new(ErrorCode::RateLimited, "Too many attempts. Wait a minute and try again.")
+        Self::new(
+            ErrorCode::RateLimited,
+            "Too many attempts. Wait a minute and try again.",
+        )
     }
     pub fn internal() -> Self {
-        Self::new(ErrorCode::Internal, "Something went wrong on the server. Check the container logs.")
+        Self::new(
+            ErrorCode::Internal,
+            "Something went wrong on the server. Check the container logs.",
+        )
     }
     pub fn with_extra(mut self, extra: serde_json::Value) -> Self {
         self.extra = Some(extra);
@@ -111,10 +124,16 @@ impl std::error::Error for ApiError {}
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let mut error = serde_json::json!({ "code": self.code.as_str(), "message": self.message });
-        if let (Some(serde_json::Value::Object(extra)), serde_json::Value::Object(map)) = (self.extra, &mut error) {
+        if let (Some(serde_json::Value::Object(extra)), serde_json::Value::Object(map)) =
+            (self.extra, &mut error)
+        {
             map.extend(extra);
         }
-        (self.code.status(), Json(serde_json::json!({ "error": error }))).into_response()
+        (
+            self.code.status(),
+            Json(serde_json::json!({ "error": error })),
+        )
+            .into_response()
     }
 }
 

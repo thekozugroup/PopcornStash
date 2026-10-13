@@ -40,8 +40,7 @@ pub const MSG_VPN_REQUIRED: &str =
 pub const MSG_VPN_PORTS: &str =
     "Downloads through the VPN can only reach ports 80 and 443, and this link uses another port.";
 /// A link whose private parts were only kept in memory, after a restart.
-pub const MSG_LINK_EXPIRED: &str =
-    "This link carried a private access code that is not kept after a restart. Add the link again.";
+pub const MSG_LINK_EXPIRED: &str = "This link needed a private access code or your browser's sign-in, which are not kept after a restart. Send the link again.";
 /// Someone re-added a stored link that lost its private parts.
 pub const MSG_LINK_INCOMPLETE: &str = "This link is missing the private access code it had. Add it again from the page you got it from.";
 const MSG_BEING_SORTED: &str = "This download is being sorted. Try again in a moment.";
@@ -389,7 +388,10 @@ impl DownloadManager {
                 )
             }
         };
-        let stored_source = source::redact_url(&url);
+        // A download that depends on the browser's cookies cannot be fetched again after a
+        // restart (the cookies are memory only), so it is stored as incomplete too.
+        let needs_session = headers.as_ref().is_some_and(|h| h.cookie.is_some());
+        let stored_source = source::redact_url_with(&url, needs_session);
         // Workers leave the row alone until its `queued` event is out, so events arrive
         // in order and the answer below is the row as added.
         let id = new_id();
