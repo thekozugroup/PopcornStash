@@ -104,7 +104,7 @@ When a proxy sits in front, set `STASH_TRUST_PROXY=true` so sign-in limits and t
 
 5. Point your HTTPS address at port 8788 (see above), then continue with [First run](#first-run).
 
-To build the image yourself instead of downloading it, run `docker compose build` before `docker compose up -d`.
+To build the image yourself instead of downloading it, run `docker compose build` before `docker compose up -d` (see [Building the image yourself](#building-the-image-yourself)).
 
 ### Without Compose
 
@@ -226,16 +226,55 @@ The web app runs as `PUID:PGID`, so that user or group must be allowed to use th
 - **App data** holds your people, passkeys, settings, watch progress and VPN files. Back it up regularly. Stop the container first (`docker compose stop`), or copy the database together with its `-wal` and `-shm` files. The `cache` folder inside it can be skipped; thumbnails are rebuilt.
 - **Library** is ordinary folders and files. Back it up like any other share.
 
+## Images and versions
+
+The image is published at `ghcr.io/thekozugroup/popcornstash` for Intel/AMD (`linux/amd64`) and ARM (`linux/arm64`) machines under one name; Docker downloads the right one by itself. Each release is built, tested and published from the maintainer's computer with `scripts/release.sh` (there is no CI service), and gets these tags:
+
+| Tag | Points to | Use it to |
+|---|---|---|
+| `latest` | the newest release | always get the newest release; `compose.yaml` and the Unraid template use it |
+| `0.1` (major.minor) | the newest `0.1.x` release | get fixes, but no new minor version |
+| `0.1.0` (exact version) | that release, never moved | stay on one version, or go back to it |
+| `0.1.0-amd64`, `0.1.0-arm64` | one architecture of that release | pin a single architecture (rarely needed) |
+
+A pre-release such as `0.2.0-rc.1` gets only its own tag; `latest` and `0.2` stay on the last full release. [CHANGELOG.md](../CHANGELOG.md) and the GitHub release of each version say what changed; the release also carries the Chrome extension (`popcornstash-extension.zip`).
+
+To stay on a version, replace `latest` in `compose.yaml` (`image: ghcr.io/thekozugroup/popcornstash:0.1`) or in the Unraid template's **Repository** field.
+
+### Building the image yourself
+
+`docker compose build`, or `docker build -t popcornstash:dev .` in a clone of the repository, builds the image for your own machine. To build for the other architecture, add `--platform`, for example on an amd64 PC:
+
+```sh
+docker build --platform linux/arm64 -t popcornstash:arm64 .
+```
+
+The Rust programs are cross-compiled at full speed (about 7 minutes for the first arm64 build on a 4-core PC). The last stage installs Debian packages for arm64, though, so Docker must be able to run arm64 programs through QEMU, and that stage is slow under emulation (about 18 minutes the first time; Docker caches it afterwards). If that build stops at its first `RUN` step with `exec /bin/sh: exec format error`, turn on emulation:
+
+```sh
+sudo apt-get install qemu-user-static binfmt-support
+# Only if /proc/sys/fs/binfmt_misc/qemu-aarch64 does not exist now (machines
+# without systemd, such as containers and some VMs; repeat after each reboot):
+sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc   # if it is not mounted yet
+sudo sh -c 'cat /usr/lib/binfmt.d/qemu-aarch64.conf > /proc/sys/fs/binfmt_misc/register'
+```
+
+`docker run --privileged --rm tonistiigi/binfmt --install arm64` does the same in one command. `docker run --rm --platform linux/arm64 debian:trixie-slim uname -m` prints `aarch64` once it works. On Docker Desktop for Mac and Windows emulation is already on. An arm64 image started on an amd64 machine this way runs, but QEMU cannot emulate the netlink calls that the VPN kill switch makes, so torrents stay off there.
+
 ## Upgrading
 
-With Compose:
+Read the release notes of the new version first ([CHANGELOG.md](../CHANGELOG.md)). Then, with Compose:
 
 ```sh
 docker compose pull
 docker compose up -d
 ```
 
-On Unraid, use **Check for Updates** on the Docker page, then **Apply Update**. Your folders and settings are kept. The database is upgraded automatically on start, so take a backup of app data before a major version.
+On Unraid, use **Check for Updates** on the Docker page, then **Apply Update**. If you pinned a version, change the tag first. Your folders and settings are kept. The database is upgraded automatically on start, so back up app data before upgrading (see [Backups](#backups)).
+
+To go back to an earlier version, set its exact tag (for example `0.1.0`), restore the app data backup you took before the upgrade, and start the container again. An older version refuses to start on a database that a newer one has already upgraded.
+
+Update the Chrome extension from the same release: unzip the new `popcornstash-extension.zip` over the old folder and reload it in `chrome://extensions` (see [Chrome extension](extension.md)).
 
 ## Running without torrents
 

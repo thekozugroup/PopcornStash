@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# Everything AGENTS.md asks for before shipping, in one command, on this machine.
+#
+#   scripts/check.sh            Rust, web UI, extension, Docker image and smoke test
+#   scripts/check.sh --quick    the same without Docker
+#   scripts/check.sh --e2e      also the Playwright suite in tests/e2e
+#   scripts/check.sh --full     also tests/e2e, scripts/vpn-e2e.sh and scripts/fullstack-e2e.sh
+#
+# Steps run in this order and the script stops at the first failure:
+#   cargo fmt --all --check
+#   cargo clippy --workspace --all-targets --locked -- -D warnings
+#   cargo test --workspace --locked
+#   web/: npm ci (when node_modules is missing or package-lock.json changed),
+#         npm run check, npm run build
+#   extension/: the same, then npm run zip (popcornstash-extension.zip)
+#   scripts/docker-smoke.sh, which builds IMAGE from the tree and tests it
+# It ends with a PASS/FAIL/SKIP line for every step and exits non-zero on failure.
+#
+# Environment (passed on to the Docker scripts, which document them):
+#   IMAGE              image to build and test (default popcornstash:dev)
+#   SKIP_BUILD=1       test an existing IMAGE instead of building it
+#   REGISTRY           base image registry (default docker.io/library)
+#   DOCKER_HUB_MIRROR=1  use mirror.gcr.io/library when REGISTRY is not set
+#   BUILD_CA           CA bundle for builds behind a TLS-intercepting proxy
+#   E2E_PORT, E2E_CHROMIUM, STASH_PORT, SUBNET_PREFIX  see tests/*/README.md
+set -Eeuo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+usage() {
+  sed -n '2,/^set -Eeuo/{/^set -Eeuo/d;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"
+}
+
+docker_checks=1
+e2e=0
+full=0
+for arg in "$@"; do
+  case "$arg" in
+    --quick) docker_checks=0 ;;
+    --e2e) e2e=1 ;;
+    --full)
+      e2e=1
+      full=1
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'check.sh: unknown option %s (see --help)\n' "$arg" >&2
+      exit 2
+      ;;
+  esac
+done
+if ((full && !docker_checks)); then
+  printf 'check.sh: --full runs the Docker tests, so it cannot be combined with --quick\n' >&2
+  exit 2
+fi
+
+export IMAGE="${IMAGE:-popcornstash:dev}"
+
+# ------------------------------------------------------------- reporting ----
+declare -a STEPS=() RESULTS=() TIMES=()
+started=$SECONDS
+
+bold=""
+plain=""
+if [[ -t 1 ]]; then
+  bold=$'\033[1m'
+  plain=$'\033[0m'
+fi
+
+say() {
+  printf '\n%s==> %s%s\n' "$bold" "$1" "$plain"
+}
+
+summary() {
+  local i
+  printf '\n---------------------------------------------------------------- summary\n'
+  for i in "${!STEPS[@]}"; do
+    printf '%-5s %-64s %6s\n' "${RESULTS[i]}" "${STEPS[i]}" "${TIMES[i]}"
+  done
+}
+
+# step "description" command...: runs one step; on failure prints the summary and exits.
+step() {
+  local what="$1" t0=$SECONDS status=0
+  shift
+  say "$what"
+  "$@" || status=$?
+  STEPS+=("$what")
+  TIMES+=("$((SECONDS - t0))s")
+  if ((status == 0)); then
+    RESULTS+=("PASS")
+    return 0
+  fi
+  RESULTS+=("FAIL")
+  summary
+  printf '\nFAIL  %s (exit %s). Its output is above.\n' "$what" "$status"
+  exit 1
+}
+
+skip() {
+  STEPS+=("$1")
+  RESULTS+=("SKIP")
+  TIMES+=("-")
+}
+
+# ----------------------------------------------------------------- tools ----
+need() {
+  local missing=() tool
+  for tool in "$@"; do
+    command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+  done
+  if ((${#missing[@]})); then
+    printf 'missing on the PATH: %s\n' "${missing[*]}"
+    printf 'The Rust tests use ffmpeg, ffprobe and vips (Debian/Ubuntu: apt-get install ffmpeg libvips-tools libssl-dev pkg-config);\n'
+    printf 'the Docker tests use docker (with buildx and compose), curl and jq.\n'
+    return 1
+  fi
+}
+
+tools() {
+  local want=(cargo rustfmt node npm ffmpeg ffprobe vips)
+  if ((docker_checks)); then
+    want+=(docker curl jq)
+  fi
+  need "${want[@]}" || return 1
+  if ((docker_checks)) && ! docker info >/dev/null 2>&1; then
+    printf 'Docker is installed but not answering (is the daemon running?). Use --quick to skip the image checks.\n'
+    return 1
+  fi
+}
+
+# ------------------------------------------------------------------- npm ----
+# npm ci in DIR when node_modules is missing or package-lock.json changed after the
+# last install (npm writes node_modules/.package-lock.json on every install).
+npm_install() {
+  local dir="$1"
+  if [[ -f "$dir/node_modules/.package-lock.json" && ! "$dir/package-lock.json" -nt "$dir/node_modules/.package-lock.json" ]]; then
+    printf 'node_modules is up to date with package-lock.json\n'
+    return 0
+  fi
+  npm --prefix "$dir" ci --ignore-scripts --no-audit --no-fund
+}
+
+# ------------------------------------------------------------------ e2e ----
+# CI=1 makes Playwright refuse a stray test.only (forbidOnly in playwright.config.ts).
+e2e_suite() {
+  cargo build -p popcornstash --locked || return 1
+  npm --prefix tests/e2e run check || return 1
+  CI=1 npm --prefix tests/e2e test
+}
+
+# ----------------------------------------------------------------- steps ----
+mode="Rust, web UI, extension"
+((docker_checks)) && mode+=", Docker image ($IMAGE)"
+((e2e)) && mode+=", tests/e2e"
+((full)) && mode+=", VPN and full-stack Docker tests"
+printf 'PopcornStash checks: %s\n' "$mode"
+
+step "tools are installed" tools
+step "cargo fmt --all --check" cargo fmt --all --check
+step "cargo clippy --workspace --all-targets --locked -- -D warnings" \
+  cargo clippy --workspace --all-targets --locked -- -D warnings
+step "cargo test --workspace --locked" cargo test --workspace --locked
+
+step "web: npm ci (if needed)" npm_install web
+step "web: npm run check" npm --prefix web run check
+step "web: npm run build" npm --prefix web run build
+
+step "extension: npm ci (if needed)" npm_install extension
+step "extension: npm run check" npm --prefix extension run check
+step "extension: npm run build" npm --prefix extension run build
+step "extension: npm run zip" npm --prefix extension run zip
+
+if ((e2e)); then
+  step "tests/e2e: npm ci (if needed)" npm_install tests/e2e
+  step "tests/e2e: Playwright suite" e2e_suite
+else
+  skip "tests/e2e (--e2e or --full)"
+fi
+
+if ((docker_checks)); then
+  step "Docker image and smoke test (scripts/docker-smoke.sh)" scripts/docker-smoke.sh
+else
+  skip "Docker image and smoke test (--quick)"
+fi
+
+if ((full)); then
+  step "VPN kill switch in Docker (scripts/vpn-e2e.sh)" env SKIP_BUILD=1 scripts/vpn-e2e.sh
+  step "full stack in Docker (scripts/fullstack-e2e.sh)" env SKIP_BUILD=1 CI=1 scripts/fullstack-e2e.sh
+else
+  skip "VPN and full-stack Docker tests (--full)"
+fi
+
+summary
+printf '\nPASS  all checks (%ss). Extension zip: extension/popcornstash-extension.zip' "$((SECONDS - started))"
+if ((docker_checks)); then
+  printf '; image: %s' "$IMAGE"
+fi
+printf '\n'

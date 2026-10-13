@@ -54,7 +54,28 @@ STASH_ROOT=/tmp/stash STASH_CONFIG=/tmp/stash-config \
   STASH_PUBLIC_URL=http://localhost:8788 cargo run -p popcornstash -- serve
 ```
 
-`popcornstash serve` alone runs everything except torrents. End-to-end tests live in [tests/e2e](tests/e2e), [tests/vpn](tests/vpn) and [tests/fullstack](tests/fullstack); `scripts/docker-smoke.sh` checks a built image.
+`popcornstash serve` alone runs everything except torrents.
+
+Before you commit, run the checks on your own machine; there is no CI service:
+
+```sh
+scripts/check.sh            # fmt, clippy, tests, web and extension, Docker image and smoke test
+scripts/check.sh --quick    # the same without Docker
+scripts/check.sh --e2e      # also the Playwright suite (tests/e2e)
+scripts/check.sh --full     # also the VPN and full-stack tests in Docker
+```
+
+It stops at the first failure and ends with a PASS/FAIL line per step. Behind a TLS-intercepting proxy, add `BUILD_CA=/path/to/ca.pem` (and `DOCKER_HUB_MIRROR=1` if Docker Hub is out of reach). End-to-end tests live in [tests/e2e](tests/e2e), [tests/vpn](tests/vpn) and [tests/fullstack](tests/fullstack).
+
+## Releasing
+
+Releases are made from a developer machine with [scripts/release.sh](scripts/release.sh):
+
+1. `scripts/release.sh --bump 0.2.0` sets the version in Cargo, the web app and the extension. Write the `## [0.2.0]` section of [CHANGELOG.md](CHANGELOG.md), commit and push main.
+2. `scripts/release.sh --dry-run 0.2.0` checks everything and builds both images without pushing or tagging.
+3. `scripts/release.sh 0.2.0` runs `scripts/check.sh`, builds the amd64 and arm64 images (the Rust code is cross-compiled; the arm64 runtime stage needs QEMU emulation, which the script checks for), pushes them to `ghcr.io/thekozugroup/popcornstash` as `0.2.0`, `0.2` and `latest`, tags `v0.2.0`, and prints the release notes and the extension zip to attach to the GitHub release.
+
+Pushing needs `docker login ghcr.io` (or `GHCR_USER` and `GHCR_TOKEN`) with a token that has the `write:packages` scope. [docs/deployment.md](docs/deployment.md#images-and-versions) explains the image tags.
 
 ## License
 

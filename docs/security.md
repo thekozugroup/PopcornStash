@@ -96,9 +96,9 @@ It validates VPN files again before using them:
 ### Container and supply chain
 
 - The container drops all capabilities except the seven the supervisor needs, uses a read-only root filesystem and sets `no-new-privileges`.
-- `Cargo.lock` and the npm lockfiles pin every dependency, and CI installs with `npm ci --ignore-scripts`.
+- `Cargo.lock` and the npm lockfiles pin every dependency. `scripts/check.sh` and the image build install with `npm ci --ignore-scripts` and build Rust with `--locked`.
 - The boringtun crates are checked against their crates.io checksums.
-- Third-party GitHub Actions are pinned to commit SHAs.
+- There is no CI service and no third-party build actions. Images are built, tested and pushed from the maintainer's machine by `scripts/release.sh`, which refuses to release a working tree with uncommitted or untracked files, a commit that is not `origin/main`, or a version that is already tagged or published.
 - `cargo audit` and `npm audit --omit=dev` should be clean before each release. `.cargo/audit.toml` lists the advisories that were reviewed and why they do not apply.
 
 ## Reporting a vulnerability

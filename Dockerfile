@@ -4,6 +4,12 @@
 #
 #   docker build -t popcornstash:dev .
 #   docker build --build-arg REGISTRY=mirror.gcr.io/library -t popcornstash:dev .
+#   docker build --platform linux/arm64 -t popcornstash:arm64 .
+#
+# The Rust code is always compiled on the build machine's own platform, and
+# cross-compiled when the target differs, so an arm64 image builds on an amd64
+# machine without emulating the compiler. Only the runtime stage's RUN steps
+# (apt-get) run under emulation (QEMU through binfmt_misc; docs/deployment.md).
 #
 # Behind a TLS-intercepting proxy, pass its CA as a build secret (never stored in
 # a layer): docker build --secret id=build_ca,src=/path/to/ca.pem ...
@@ -28,10 +34,60 @@ COPY web/ ./
 RUN npm run build
 
 # ------------------------------------------------------------ rust tools ----
-FROM ${REGISTRY}/rust:1-trixie AS rust-base
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends libssl-dev pkg-config clang \
-    && rm -rf /var/lib/apt/lists/*
+# Runs on the build machine's platform (BUILDARCH) and compiles for the image's
+# platform (TARGETARCH). When the two are the same, nothing is cross-compiled.
+FROM --platform=$BUILDPLATFORM ${REGISTRY}/rust:1-trixie AS rust-base
+ARG BUILDARCH
+ARG TARGETARCH
+# Sourced by every Rust build step. For a cross build it selects the Rust target
+# and the target's C toolchain: the C parts of openssl-sys, ring, aws-lc-sys and
+# the bundled SQLite are compiled with it, OpenSSL comes from the target's
+# multiarch libssl-dev, and the binaries are linked by the target's gcc.
+# check_arch stops the build if a binary is not for TARGETARCH.
+COPY <<'SH' /usr/local/share/rust-target.sh
+case "$TARGETARCH" in
+    amd64) rust_target=x86_64-unknown-linux-gnu gnu=x86_64-linux-gnu elf_machine='Advanced Micro Devices X86-64' ;;
+    arm64) rust_target=aarch64-unknown-linux-gnu gnu=aarch64-linux-gnu elf_machine=AArch64 ;;
+    *) echo "no Rust target for TARGETARCH=$TARGETARCH" >&2; exit 1 ;;
+esac
+cross=""
+release_dir=release
+if [ "$TARGETARCH" != "$BUILDARCH" ]; then
+    cross="$rust_target"
+    t="$(echo "$rust_target" | tr - _)"
+    T="$(echo "$t" | tr '[:lower:]' '[:upper:]')"
+    export CARGO_BUILD_TARGET="$rust_target"
+    export "CARGO_TARGET_${T}_LINKER=$gnu-gcc" "CC_$t=$gnu-gcc" "CXX_$t=$gnu-g++" "AR_$t=$gnu-ar"
+    export PKG_CONFIG_ALLOW_CROSS=1 "PKG_CONFIG_LIBDIR_$t=/usr/lib/$gnu/pkgconfig:/usr/share/pkgconfig"
+    release_dir="$rust_target/release"
+fi
+check_arch() {
+    machine="$(readelf -h "$1" | sed -n 's/^ *Machine: *//p')"
+    if [ "$machine" != "$elf_machine" ]; then
+        echo "$1 is built for '$machine', not $TARGETARCH" >&2
+        return 1
+    fi
+}
+SH
+# hadolint ignore=SC2086
+RUN --mount=type=secret,id=build_ca,required=false \
+    set -eu; \
+    . /usr/local/share/rust-target.sh; \
+    pkgs="libssl-dev pkg-config clang"; \
+    if [ -n "$cross" ]; then \
+        dpkg --add-architecture "$TARGETARCH"; \
+        pkg="$(echo "$gnu" | tr _ -)"; \
+        pkgs="$pkgs gcc-$pkg g++-$pkg libc6-dev-$TARGETARCH-cross libssl-dev:$TARGETARCH"; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends $pkgs; \
+    rm -rf /var/lib/apt/lists/*; \
+    if [ -n "$cross" ]; then \
+        if [ -s /run/secrets/build_ca ]; then \
+            export SSL_CERT_FILE=/run/secrets/build_ca CURL_CA_BUNDLE=/run/secrets/build_ca; \
+        fi; \
+        rustup target add "$cross"; \
+    fi
 ENV CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0
 
 # Userspace WireGuard for kernels without the wireguard module. boringtun always
@@ -43,6 +99,7 @@ FROM rust-base AS boringtun
 ARG BORINGTUN_VERSION
 ARG BORINGTUN_SHA256
 ARG BORINGTUN_CLI_SHA256
+ARG BUILDARCH
 ARG TARGETARCH
 WORKDIR /build
 COPY <<'PATCH' /build/boringtun-ipv4-only.patch
@@ -76,6 +133,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/cache/boringtun-target,id=boringtun-target-${TARGETARCH},sharing=locked \
     --mount=type=secret,id=build_ca,required=false \
     set -eu; \
+    . /usr/local/share/rust-target.sh; \
     if [ -s /run/secrets/build_ca ]; then \
         export CARGO_HTTP_CAINFO=/run/secrets/build_ca CURL_CA_BUNDLE=/run/secrets/build_ca; \
     fi; \
@@ -92,11 +150,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
         >> "boringtun-cli-${v}/Cargo.toml"; \
     cargo build --release --manifest-path "boringtun-cli-${v}/Cargo.toml" \
         --target-dir /cache/boringtun-target; \
-    install -D -m 0755 /cache/boringtun-target/release/boringtun-cli /out/bin/boringtun-cli; \
-    /out/bin/boringtun-cli --version
+    install -D -m 0755 "/cache/boringtun-target/$release_dir/boringtun-cli" /out/bin/boringtun-cli; \
+    check_arch /out/bin/boringtun-cli; \
+    if [ -z "$cross" ]; then /out/bin/boringtun-cli --version; fi
 
 # The popcornstash binary, with web/dist embedded.
 FROM rust-base AS rust
+ARG BUILDARCH
 ARG TARGETARCH
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
@@ -107,10 +167,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/src/target,id=popcornstash-target-${TARGETARCH},sharing=locked \
     --mount=type=secret,id=build_ca,required=false \
-    test -f web/dist/index.html \
-    && if [ -s /run/secrets/build_ca ]; then export CARGO_HTTP_CAINFO=/run/secrets/build_ca; fi \
-    && cargo build --release -p popcornstash --locked \
-    && install -D -m 0755 target/release/popcornstash /out/popcornstash
+    set -eu; \
+    . /usr/local/share/rust-target.sh; \
+    test -f web/dist/index.html; \
+    if [ -s /run/secrets/build_ca ]; then export CARGO_HTTP_CAINFO=/run/secrets/build_ca; fi; \
+    cargo build --release -p popcornstash --locked; \
+    install -D -m 0755 "target/$release_dir/popcornstash" /out/popcornstash; \
+    check_arch /out/popcornstash
 
 # --------------------------------------------------------------- runtime ----
 FROM ${REGISTRY}/debian:trixie-slim AS runtime

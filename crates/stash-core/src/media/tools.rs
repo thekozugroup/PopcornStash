@@ -301,7 +301,8 @@ mod tests {
 
     #[tokio::test]
     async fn no_hardware_here() {
-        // The CI host has no GPU; detection must come back empty without errors.
+        // Test machines usually have no GPU: detection must then come back empty, not fail,
+        // and on any machine it may only name encoders PopcornStash knows.
         let hw = available_hwaccels().await;
         assert!(
             hw.iter()
