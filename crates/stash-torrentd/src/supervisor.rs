@@ -774,7 +774,8 @@ impl TunnelManager {
             }
             self.dns.send_replace(tunnel.dns_servers(&source));
 
-            let brought_up = Instant::now();
+            // When the tunnel last started waiting for a handshake / reconnect.
+            let mut pending_since = Some(Instant::now());
             let mut since: Option<i64> = None;
             let mut last_up: Option<Instant> = None;
             let mut first = true;
@@ -793,6 +794,7 @@ impl TunnelManager {
                 match tunnel.health(now_unix()).await {
                     Health::Up => {
                         last_up = Some(Instant::now());
+                        pending_since = None;
                         if since.is_none() {
                             since = Some(now_unix());
                             backoff = BACKOFF_MIN;
@@ -821,7 +823,8 @@ impl TunnelManager {
                         if rekeying {
                             continue;
                         }
-                        if since.is_none() && brought_up.elapsed() > CONNECT_GRACE {
+                        let waiting = *pending_since.get_or_insert_with(Instant::now);
+                        if waiting.elapsed() > CONNECT_GRACE {
                             break Wake::Timer;
                         }
                         // Traffic makes a WireGuard peer handshake; send a little through the tunnel.
@@ -879,7 +882,7 @@ impl TunnelManager {
                             Some(&source),
                             TunnelState::Error,
                             Some(
-                                "No handshake with the VPN server. Check the server and keys."
+                                "The VPN server did not answer in time. Check the server address and keys."
                                     .into(),
                             ),
                             None,

@@ -7,7 +7,7 @@ use std::process::Stdio;
 
 use nix::sys::stat::Mode;
 use nix::unistd::{Gid, Uid};
-use stash_core::internal_api::{DNS_FORWARDER_ADDR, ENGINE_API_ADDR, ENGINE_PROXY_ADDR, TUNNEL_IF};
+use stash_core::internal_api::{ENGINE_API_ADDR, ENGINE_PROXY_ADDR, TUNNEL_IF};
 use tokio::process::{Child, Command};
 
 /// Variables only the supervisor sets; never passed through from the container environment.
@@ -136,8 +136,6 @@ pub fn engine_env(inputs: &EnvInputs) -> Vec<(String, String)> {
     }
     env.push(("STASH_ALLOW_NO_VPN".into(), inputs.allow_no_vpn.to_string()));
     env.push(("STASH_INTERNAL_TOKEN".into(), inputs.token.clone()));
-    // Documented for operators; the engine's DNS is DNAT'ed here by the kill switch.
-    env.push(("STASH_DNS_FORWARDER".into(), DNS_FORWARDER_ADDR.into()));
     env
 }
 

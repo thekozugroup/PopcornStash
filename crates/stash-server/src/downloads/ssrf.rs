@@ -50,8 +50,9 @@ impl GuardError {
 }
 
 /// True for addresses a web download must never connect to: loopback, private,
-/// link-local, unique-local, shared (CGNAT), unspecified, broadcast and multicast,
-/// including IPv4 addresses embedded in IPv6.
+/// link-local, unique-local, shared (CGNAT), benchmarking, reserved, unspecified,
+/// broadcast and multicast, including IPv4 addresses embedded in IPv6. Matches the
+/// engine proxy's rules for the VPN path.
 pub fn is_forbidden_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_forbidden_v4(v4),
@@ -68,8 +69,14 @@ fn is_forbidden_v4(ip: Ipv4Addr) -> bool {
         || ip.is_broadcast()
         || ip.is_multicast()
         || a == 0
+        // 240.0.0.0/4 reserved.
+        || a >= 240
         // 100.64.0.0/10 shared address space (carrier-grade NAT, tailnets).
         || (a == 100 && (b & 0xc0) == 64)
+        // 192.0.0.0/24 protocol assignments.
+        || (a == 192 && b == 0 && ip.octets()[2] == 0)
+        // 198.18.0.0/15 benchmarking (also used for internal networks).
+        || (a == 198 && (b & 0xfe) == 18)
 }
 
 fn is_forbidden_v6(ip: Ipv6Addr) -> bool {
@@ -263,6 +270,11 @@ mod tests {
             "224.0.0.1",
             "100.64.0.1",
             "100.127.255.254",
+            "198.18.0.1",
+            "198.19.255.254",
+            "192.0.0.8",
+            "240.0.0.1",
+            "::ffff:198.18.0.1",
             "::1",
             "::",
             "fc00::1",
@@ -281,6 +293,8 @@ mod tests {
             "8.8.8.8",
             "172.32.0.1",
             "100.128.0.1",
+            "198.20.0.1",
+            "192.0.1.1",
             "2606:4700::1111",
             "::ffff:1.1.1.1",
         ] {
