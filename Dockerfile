@@ -180,6 +180,7 @@ FROM ${REGISTRY}/debian:trixie-slim AS runtime
 LABEL org.opencontainers.image.title="PopcornStash" \
       org.opencontainers.image.description="A private, organized home for your family's videos and photos" \
       org.opencontainers.image.source="https://github.com/thekozugroup/PopcornStash" \
+      org.opencontainers.image.url="https://github.com/thekozugroup/PopcornStash" \
       org.opencontainers.image.licenses="AGPL-3.0-or-later"
 # VA-API drivers make STASH_HWACCEL=vaapi/qsv usable (AMD everywhere; Intel on amd64).
 # hadolint ignore=SC2086

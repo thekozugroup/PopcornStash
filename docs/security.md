@@ -98,8 +98,10 @@ It validates VPN files again before using them:
 - The container drops all capabilities except the seven the supervisor needs, uses a read-only root filesystem and sets `no-new-privileges`.
 - `Cargo.lock` and the npm lockfiles pin every dependency. `scripts/check.sh` and the image build install with `npm ci --ignore-scripts` and build Rust with `--locked`.
 - The boringtun crates are checked against their crates.io checksums.
-- There is no CI service and no third-party build actions. Images are built, tested and pushed from the maintainer's machine by `scripts/release.sh`, which refuses to release a working tree with uncommitted or untracked files, a commit that is not `origin/main`, or a version that is already tagged or published.
-- `cargo audit` and `npm audit --omit=dev` should be clean before each release. `.cargo/audit.toml` lists the advisories that were reviewed and why they do not apply.
+- There is no CI service and no third-party build actions; GitHub Actions is turned off for the repository. Images are built, tested and pushed from the maintainer's machine by `scripts/release.sh`. It refuses a working tree with uncommitted or untracked files, a commit that is not `origin/main`, a version that is already tagged, released or published, and a package that is not public. It builds the images and the extension from `git archive` of the commit, so later edits to the working tree cannot reach them.
+- Published images are only as trustworthy as that machine and the release token. The token is a classic personal access token with `write:packages`, which covers every package the account owns, so it should be used for releases only. `scripts/release.sh` takes it from `GHCR_TOKEN`, checks its scopes, logs in with it in a temporary Docker configuration that is deleted at the end, and removes it (and `GH_TOKEN`) from the environment of the checks and builds, where dependency build scripts and tests run.
+- Building the arm64 image needs QEMU emulation. Use the distribution's `qemu-user-static` package rather than a privileged third-party container.
+- `cargo audit` and `npm audit --omit=dev` must be clean before each release; `scripts/release.sh` runs both (`scripts/check.sh --audit`). `.cargo/audit.toml` lists the advisories that were reviewed and why they do not apply.
 
 ## Reporting a vulnerability
 

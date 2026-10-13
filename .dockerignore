@@ -17,6 +17,10 @@ unraid
 scripts
 *.md
 !web/**/*.md
+# The exception above must not bring back files from installed packages or build
+# output, or the build would depend on what happens to be in node_modules.
+**/node_modules
+web/dist
 
 # Never send secrets or personal files to the builder, from any folder. Vite would
 # also bake a web/.env* file into the UI.

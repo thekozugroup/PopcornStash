@@ -8,7 +8,7 @@ It is a Manifest V3 extension for Chrome 116 or newer. Other Chromium browsers (
 
 The extension is not in the Chrome Web Store. Each PopcornStash release ships `popcornstash-extension.zip`.
 
-1. Download `popcornstash-extension.zip` from the release and unzip it into a folder you will keep (Chrome loads the extension from that folder every time it starts).
+1. Download `popcornstash-extension.zip` from the [latest release](https://github.com/thekozugroup/PopcornStash/releases/latest) and unzip it into a folder you will keep (Chrome loads the extension from that folder every time it starts).
 2. Open `chrome://extensions` and turn on **Developer mode** (top right).
 3. Click **Load unpacked** and choose the unzipped folder (the one that contains `manifest.json`).
 4. The options page opens by itself. Pin the extension from the puzzle menu if you want the toolbar button visible.

@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 # Everything AGENTS.md asks for before shipping, in one command, on this machine.
+# There is no CI service; .githooks/pre-push can run this before every push to main.
 #
 #   scripts/check.sh            Rust, web UI, extension, Docker image and smoke test
 #   scripts/check.sh --quick    the same without Docker
 #   scripts/check.sh --e2e      also the Playwright suite in tests/e2e
 #   scripts/check.sh --full     also tests/e2e, scripts/vpn-e2e.sh and scripts/fullstack-e2e.sh
+#   scripts/check.sh --audit    also cargo audit and npm audit --omit=dev (web, extension)
 #
-# Steps run in this order and the script stops at the first failure:
+# Options combine (scripts/release.sh runs --quick --e2e --audit). Steps run in this
+# order and the script stops at the first failure:
 #   cargo fmt --all --check
 #   cargo clippy --workspace --all-targets --locked -- -D warnings
 #   cargo test --workspace --locked
-#   web/: npm ci (when node_modules is missing or package-lock.json changed),
-#         npm run check, npm run build
+#   web/: npm ci (when node_modules is missing, or package.json or package-lock.json
+#         changed since the last install), npm run check, npm run build
 #   extension/: the same, then npm run zip (popcornstash-extension.zip)
 #   scripts/docker-smoke.sh, which builds IMAGE from the tree and tests it
 # It ends with a PASS/FAIL/SKIP line for every step and exits non-zero on failure.
@@ -34,9 +37,11 @@ usage() {
 docker_checks=1
 e2e=0
 full=0
+audit=0
 for arg in "$@"; do
   case "$arg" in
     --quick) docker_checks=0 ;;
+    --audit) audit=1 ;;
     --e2e) e2e=1 ;;
     --full)
       e2e=1
@@ -115,7 +120,7 @@ need() {
   if ((${#missing[@]})); then
     printf 'missing on the PATH: %s\n' "${missing[*]}"
     printf 'The Rust tests use ffmpeg, ffprobe and vips (Debian/Ubuntu: apt-get install ffmpeg libvips-tools libssl-dev pkg-config);\n'
-    printf 'the Docker tests use docker (with buildx and compose), curl and jq.\n'
+    printf 'the Docker tests use docker (with buildx and compose), curl and jq; --audit uses cargo-audit (cargo install cargo-audit --locked).\n'
     return 1
   fi
 }
@@ -125,6 +130,9 @@ tools() {
   if ((docker_checks)); then
     want+=(docker curl jq)
   fi
+  if ((audit)); then
+    want+=(cargo-audit)
+  fi
   need "${want[@]}" || return 1
   if ((docker_checks)) && ! docker info >/dev/null 2>&1; then
     printf 'Docker is installed but not answering (is the daemon running?). Use --quick to skip the image checks.\n'
@@ -133,12 +141,14 @@ tools() {
 }
 
 # ------------------------------------------------------------------- npm ----
-# npm ci in DIR when node_modules is missing or package-lock.json changed after the
-# last install (npm writes node_modules/.package-lock.json on every install).
+# npm ci in DIR when node_modules is missing, or package.json or package-lock.json
+# changed after the last install (npm writes node_modules/.package-lock.json on every
+# install). npm ci fails when package.json and package-lock.json disagree, so an edit
+# to package.json without npm install is caught here.
 npm_install() {
-  local dir="$1"
-  if [[ -f "$dir/node_modules/.package-lock.json" && ! "$dir/package-lock.json" -nt "$dir/node_modules/.package-lock.json" ]]; then
-    printf 'node_modules is up to date with package-lock.json\n'
+  local dir="$1" installed="$1/node_modules/.package-lock.json"
+  if [[ -f "$installed" && ! "$dir/package-lock.json" -nt "$installed" && ! "$dir/package.json" -nt "$installed" ]]; then
+    printf 'node_modules is up to date with package.json and package-lock.json\n'
     return 0
   fi
   npm --prefix "$dir" ci --ignore-scripts --no-audit --no-fund
@@ -154,12 +164,21 @@ e2e_suite() {
 
 # ----------------------------------------------------------------- steps ----
 mode="Rust, web UI, extension"
+((audit)) && mode+=", cargo audit and npm audit"
 ((docker_checks)) && mode+=", Docker image ($IMAGE)"
 ((e2e)) && mode+=", tests/e2e"
 ((full)) && mode+=", VPN and full-stack Docker tests"
 printf 'PopcornStash checks: %s\n' "$mode"
 
 step "tools are installed" tools
+# .cargo/audit.toml lists the reviewed advisories cargo audit may skip, and why.
+if ((audit)); then
+  step "cargo audit" cargo audit
+  step "web: npm audit --omit=dev" npm --prefix web audit --omit=dev
+  step "extension: npm audit --omit=dev" npm --prefix extension audit --omit=dev
+else
+  skip "cargo audit and npm audit (--audit)"
+fi
 step "cargo fmt --all --check" cargo fmt --all --check
 step "cargo clippy --workspace --all-targets --locked -- -D warnings" \
   cargo clippy --workspace --all-targets --locked -- -D warnings

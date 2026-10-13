@@ -4,7 +4,7 @@ PopcornStash is one Docker container. It needs two folders, one HTTPS address, a
 
 ## What you need
 
-- A computer that runs Docker: a NAS, an Unraid server or a Linux PC. Both Intel/AMD (amd64) and ARM (arm64) machines are supported.
+- A computer that runs Docker: a NAS, an Unraid server or a Linux PC, with an Intel/AMD (amd64) or ARM (arm64) processor. On ARM, torrents and the VPN have not been tested on real hardware yet; the rest of the app has.
 - A folder for your library, for example `/mnt/user/PopcornStash` on Unraid. PopcornStash creates its folders inside it.
 - A folder for app data (database, thumbnails, settings, VPN files), for example `/mnt/user/appdata/popcornstash`. Fast storage such as an SSD or the Unraid cache pool works best.
 - An HTTPS address with a domain name, such as `https://stash.example.com`. Passkeys do not work without it. The next section explains why and shows four ways to get one.
@@ -228,22 +228,22 @@ The web app runs as `PUID:PGID`, so that user or group must be allowed to use th
 
 ## Images and versions
 
-The image is published at `ghcr.io/thekozugroup/popcornstash` for Intel/AMD (`linux/amd64`) and ARM (`linux/arm64`) machines under one name; Docker downloads the right one by itself. Each release is built, tested and published from the maintainer's computer with `scripts/release.sh` (there is no CI service), and gets these tags:
+The image is published at `ghcr.io/thekozugroup/popcornstash` for Intel/AMD (`linux/amd64`) and ARM (`linux/arm64`) machines under one name; Docker downloads the right one by itself. It is public, so pulling it needs no login. Each release is built, tested and published from the maintainer's computer with `scripts/release.sh` (there is no CI service), and gets these tags:
 
 | Tag | Points to | Use it to |
 |---|---|---|
-| `latest` | the newest release | always get the newest release; `compose.yaml` and the Unraid template use it |
-| `0.1` (major.minor) | the newest `0.1.x` release | get fixes, but no new minor version |
+| `latest` | the release with the highest version number | always get the newest release; `compose.yaml` and the Unraid template use it |
+| `0.1` (major.minor) | the highest `0.1.x` release | get fixes, but no new minor version |
 | `0.1.0` (exact version) | that release, never moved | stay on one version, or go back to it |
 | `0.1.0-amd64`, `0.1.0-arm64` | one architecture of that release | pin a single architecture (rarely needed) |
 
-A pre-release such as `0.2.0-rc.1` gets only its own tag; `latest` and `0.2` stay on the last full release. [CHANGELOG.md](../CHANGELOG.md) and the GitHub release of each version say what changed; the release also carries the Chrome extension (`popcornstash-extension.zip`).
+A pre-release such as `0.2.0-rc.1` gets only its own tag; `latest` and `0.2` stay on the last full release. A fix for an older line, such as `0.1.5` after `0.2.0`, moves `0.1` but not `latest`. [CHANGELOG.md](../CHANGELOG.md) and the GitHub release of each version say what changed; the release also carries the Chrome extension (`popcornstash-extension.zip`).
 
 To stay on a version, replace `latest` in `compose.yaml` (`image: ghcr.io/thekozugroup/popcornstash:0.1`) or in the Unraid template's **Repository** field.
 
 ### Building the image yourself
 
-`docker compose build`, or `docker build -t popcornstash:dev .` in a clone of the repository, builds the image for your own machine. To build for the other architecture, add `--platform`, for example on an amd64 PC:
+`docker compose build`, or `docker build -t popcornstash:dev .` in a clone of the repository, builds the image for your own machine. To build for the other architecture, add `--platform`, for example on an amd64 PC (building amd64 on an ARM machine works the same way, but has not been tested yet):
 
 ```sh
 docker build --platform linux/arm64 -t popcornstash:arm64 .
@@ -259,7 +259,7 @@ sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc   # if it is not 
 sudo sh -c 'cat /usr/lib/binfmt.d/qemu-aarch64.conf > /proc/sys/fs/binfmt_misc/register'
 ```
 
-`docker run --privileged --rm tonistiigi/binfmt --install arm64` does the same in one command. `docker run --rm --platform linux/arm64 debian:trixie-slim uname -m` prints `aarch64` once it works. On Docker Desktop for Mac and Windows emulation is already on. An arm64 image started on an amd64 machine this way runs, but QEMU cannot emulate the netlink calls that the VPN kill switch makes, so torrents stay off there.
+On other Linux distributions, install their `qemu-user-static` package (on Arch, `qemu-user-static-binfmt`). `docker run --rm --platform linux/arm64 debian:trixie-slim uname -m` prints `aarch64` once it works. On Docker Desktop for Mac and Windows emulation is already on. An arm64 image started on an amd64 machine this way runs, but QEMU cannot emulate the netlink calls that the VPN kill switch makes, so torrents stay off there.
 
 ## Upgrading
 

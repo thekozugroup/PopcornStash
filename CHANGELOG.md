@@ -4,7 +4,7 @@ Changes to PopcornStash, newest first. Version numbers follow [Semantic Versioni
 
 ## [0.1.0] - 2026-10-13
 
-The first release: the PopcornStash server as one Docker image for amd64 and arm64 (`ghcr.io/thekozugroup/popcornstash`), and the Chrome extension as `popcornstash-extension.zip`.
+The first release: the PopcornStash server as one Docker image for amd64 and arm64 (`ghcr.io/thekozugroup/popcornstash`), and the Chrome extension as `popcornstash-extension.zip`. Torrents and the VPN have been tested on amd64 only so far (see "Not yet").
 
 ### Sign-in and people
 
@@ -55,8 +55,14 @@ The first release: the PopcornStash server as one Docker image for amd64 and arm
 
 ### How this release was checked
 
-- Rust unit and integration tests, the web and extension type checks and unit tests, a Playwright suite against the real server with a virtual passkey authenticator, a Docker smoke test of the image with the compose settings, a VPN kill-switch test against local WireGuard and OpenVPN servers, and a full-stack test that downloads a torrent through the VPN in Docker and plays it in the browser. `scripts/check.sh --full` runs them all.
+`scripts/release.sh` publishes only after all of these pass on the release commit:
+
+- Rust formatting, clippy and the unit and integration tests; the web app's type checks and lint; the extension's type checks and unit tests; `cargo audit` and `npm audit`.
+- A Playwright suite against the real server with a virtual passkey authenticator.
+- On the amd64 image that is published: a Docker smoke test with the compose settings, a VPN kill-switch test against local WireGuard and OpenVPN servers, and a full-stack test that downloads a torrent through the VPN in Docker and plays it in the browser.
+- The arm64 image is built, and its `popcornstash` and `boringtun-cli` run under emulation and report the right versions.
 
 ### Not yet
 
 - The Android app. The API and device pairing are ready for it.
+- Torrents and the VPN on arm64 have not been tested on ARM hardware yet. Emulation cannot run the kill switch, so the arm64 image has only been started under emulation, with torrents off.

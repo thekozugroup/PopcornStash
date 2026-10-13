@@ -63,19 +63,31 @@ scripts/check.sh            # fmt, clippy, tests, web and extension, Docker imag
 scripts/check.sh --quick    # the same without Docker
 scripts/check.sh --e2e      # also the Playwright suite (tests/e2e)
 scripts/check.sh --full     # also the VPN and full-stack tests in Docker
+scripts/check.sh --audit    # also cargo audit and npm audit
 ```
 
 It stops at the first failure and ends with a PASS/FAIL line per step. Behind a TLS-intercepting proxy, add `BUILD_CA=/path/to/ca.pem` (and `DOCKER_HUB_MIRROR=1` if Docker Hub is out of reach). End-to-end tests live in [tests/e2e](tests/e2e), [tests/vpn](tests/vpn) and [tests/fullstack](tests/fullstack).
 
+To have `scripts/check.sh` run before every push to main, turn on the hook in [.githooks](.githooks/pre-push) once per clone with `git config core.hooksPath .githooks`. `git push --no-verify` skips it.
+
 ## Releasing
 
-Releases are made from a developer machine with [scripts/release.sh](scripts/release.sh):
+Releases are made from the maintainer's machine with [scripts/release.sh](scripts/release.sh). GitHub Actions is not used.
 
-1. `scripts/release.sh --bump 0.2.0` sets the version in Cargo, the web app and the extension. Write the `## [0.2.0]` section of [CHANGELOG.md](CHANGELOG.md), commit and push main.
-2. `scripts/release.sh --dry-run 0.2.0` checks everything and builds both images without pushing or tagging.
-3. `scripts/release.sh 0.2.0` runs `scripts/check.sh`, builds the amd64 and arm64 images (the Rust code is cross-compiled; the arm64 runtime stage needs QEMU emulation, which the script checks for), pushes them to `ghcr.io/thekozugroup/popcornstash` as `0.2.0`, `0.2` and `latest`, tags `v0.2.0`, and prints the release notes and the extension zip to attach to the GitHub release.
+Set up once:
 
-Pushing needs `docker login ghcr.io` (or `GHCR_USER` and `GHCR_TOKEN`) with a token that has the `write:packages` scope. [docs/deployment.md](docs/deployment.md#images-and-versions) explains the image tags.
+- Docker with buildx, and QEMU emulation so that it can build the arm64 image ([docs/deployment.md](docs/deployment.md#building-the-image-yourself)).
+- The GitHub CLI, logged in with `gh auth login`. It creates the GitHub release and uploads the extension zip.
+- A GitHub personal access token (classic) with the `write:packages` scope, for pushing images to ghcr.io. Fine-grained tokens do not work with ghcr.io. Keep it for releases only. The script reads it from `GHCR_TOKEN`, checks it before building, uses it for a temporary Docker login that it deletes at the end, and keeps it away from the checks and builds.
+- GitHub Actions turned off for the repository (Settings, Actions, General, Disable actions), so the workflow files in old commits can never run again.
+
+Each release:
+
+1. `scripts/release.sh --bump 0.2.0` sets the version in Cargo, the web app, the extension and the test packages. Write the `## [0.2.0] - YYYY-MM-DD` section of [CHANGELOG.md](CHANGELOG.md), dated the day you release, then commit and push main.
+2. `scripts/release.sh --dry-run 0.2.0` does everything except push, tag and create the release, and lists every problem it finds.
+3. `read -rs GHCR_TOKEN && GHCR_TOKEN=$GHCR_TOKEN scripts/release.sh 0.2.0` releases. It runs `scripts/check.sh --quick --e2e --audit`, builds the amd64 and arm64 images from the commit, runs the Docker smoke, VPN and full-stack tests on the image it will push, and builds the extension zip from a clean install. Then it pushes the images to `ghcr.io/thekozugroup/popcornstash` as `0.2.0`, `0.2` and `latest`, pushes the tag `v0.2.0`, and creates the GitHub release with the CHANGELOG section and the zip. A pre-release, or a fix for an older line, leaves `latest` where it is. If a step after the first push fails, the script prints the commands that finish the release.
+
+After the first release only: ghcr.io creates the package as private, and the script reports that nobody else can pull it. Open the package from the Packages tab of the GitHub profile, then go to Package settings, Change visibility, Public. A public package cannot be made private again. [docs/deployment.md](docs/deployment.md#images-and-versions) explains the image tags.
 
 ## License
 
