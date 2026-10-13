@@ -35,7 +35,7 @@ impl std::str::FromStr for HwAccel {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     /// The PopcornStash folder.
     pub stash_root: PathBuf,
@@ -61,6 +61,28 @@ pub struct Config {
     pub hwaccel: HwAccel,
     /// Optional assetlinks.json body for future Android passkeys.
     pub android_assetlinks: Option<String>,
+}
+
+impl std::fmt::Debug for Config {
+    // Never print the internal token, even when the whole config is logged.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("stash_root", &self.stash_root)
+            .field("config_dir", &self.config_dir)
+            .field("public_url", &self.public_url.as_ref().map(Url::as_str))
+            .field("extra_origins", &self.extra_origins.iter().map(Url::as_str).collect::<Vec<_>>())
+            .field("bind", &self.bind)
+            .field("tls_cert", &self.tls_cert)
+            .field("tls_key", &self.tls_key)
+            .field("trust_proxy", &self.trust_proxy)
+            .field("torrentd_url", &self.torrentd_url.as_ref().map(Url::as_str))
+            .field("torrentd_proxy", &self.torrentd_proxy.as_ref().map(Url::as_str))
+            .field("internal_token", &self.internal_token.as_ref().map(|_| "<redacted>"))
+            .field("supervisor_socket", &self.supervisor_socket)
+            .field("hwaccel", &self.hwaccel)
+            .field("android_assetlinks", &self.android_assetlinks.as_ref().map(|_| "<set>"))
+            .finish()
+    }
 }
 
 fn env(name: &str) -> Option<String> {
@@ -231,6 +253,15 @@ mod tests {
         assert!(!ok("http://stash.example.com"));
         assert!(!ok("https://192.168.1.20:8788"));
         assert!(!ok("http://192.168.1.20:8788"));
+    }
+
+    #[test]
+    fn debug_hides_the_internal_token() {
+        let mut config = Config::for_tests(Path::new("/s"), Path::new("/c"));
+        config.internal_token = Some("supersecret".into());
+        let shown = format!("{config:?}");
+        assert!(!shown.contains("supersecret"));
+        assert!(shown.contains("<redacted>"));
     }
 
     #[test]

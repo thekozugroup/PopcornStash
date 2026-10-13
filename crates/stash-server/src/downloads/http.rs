@@ -102,8 +102,9 @@ async fn claim_and_spawn(
         if started >= free {
             break;
         }
-        // A paused-then-resumed download whose old worker is still winding down waits.
-        if manager.running.contains_key(&id) {
+        // A paused-then-resumed download whose old worker is still winding down waits,
+        // and so does one whose `queued` event is not out yet.
+        if manager.running.contains_key(&id) || manager.adding.contains(&id) {
             continue;
         }
         // Register the stop token before claiming, so a pause that lands in between

@@ -25,6 +25,7 @@ use url::Url;
 
 use super::source::{self, Magnet};
 use super::ssrf::AddressGuard;
+use super::torrents::InFlight;
 use crate::error::{ApiError, ApiResult, ErrorCode};
 use crate::torrentd_client::{MSG_DISABLED, TorrentdClient, TorrentdError};
 
@@ -182,7 +183,8 @@ pub struct DownloadManager {
     pub(crate) secrets: DashMap<String, RequestSecrets>,
     /// Running web downloads and how to stop them.
     pub(crate) running: DashMap<String, CancellationToken>,
-    /// Torrent rows whose first engine add is in flight; the poller leaves them alone.
+    /// Rows still being added: the torrent poller does not add them and the web workers
+    /// do not start them yet.
     pub(crate) adding: DashSet<String>,
     /// Names claimed in `In Progress` by downloads that have not written their file yet.
     reserved: Mutex<HashSet<String>>,
@@ -388,8 +390,13 @@ impl DownloadManager {
             }
         };
         let stored_source = source::redact_url(&url);
-        let id = self
-            .insert_row(NewDownload {
+        // Workers leave the row alone until its `queued` event is out, so events arrive
+        // in order and the answer below is the row as added.
+        let id = new_id();
+        let hold = InFlight::new(&self.adding, &id);
+        self.insert_row_as(
+            &id,
+            NewDownload {
                 kind: DownloadKind::Http,
                 name: &name,
                 source: &stored_source,
@@ -399,13 +406,14 @@ impl DownloadManager {
                 total_bytes: None,
                 done_bytes: 0,
                 error: None,
-            })
-            .await
-            .inspect_err(|_| {
-                if rel_path.is_some() {
-                    self.release_name(&name);
-                }
-            })?;
+            },
+        )
+        .await
+        .inspect_err(|_| {
+            if rel_path.is_some() {
+                self.release_name(&name);
+            }
+        })?;
         self.secrets.insert(
             id.clone(),
             RequestSecrets {
@@ -414,9 +422,10 @@ impl DownloadManager {
             },
         );
         tracing::info!(download = %id, source = %stored_source, "web download queued");
-        let download = self.publish_id(&id).await?;
+        let download = self.publish_id(&id).await;
+        drop(hold);
         self.http_wake.notify_one();
-        Ok(download)
+        download
     }
 
     /// Add a .torrent file.
@@ -812,6 +821,12 @@ impl DownloadManager {
 
     pub(crate) async fn insert_row(&self, new: NewDownload<'_>) -> ApiResult<String> {
         let id = new_id();
+        self.insert_row_as(&id, new).await?;
+        Ok(id)
+    }
+
+    /// Insert a row with a chosen id.
+    pub(crate) async fn insert_row_as(&self, id: &str, new: NewDownload<'_>) -> ApiResult<()> {
         let t = now();
         let progress = match new.total_bytes {
             Some(total) if total > 0 => (new.done_bytes as f64 / total as f64).clamp(0.0, 1.0),
@@ -824,7 +839,7 @@ impl DownloadManager {
                                     error, rel_path, created_by, created_at, updated_at, completed_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(&id)
+        .bind(id)
         .bind(new.kind.as_str())
         .bind(new.name)
         .bind(new.source)
@@ -840,7 +855,7 @@ impl DownloadManager {
         .bind(completed_at)
         .execute(&self.db)
         .await?;
-        Ok(id)
+        Ok(())
     }
 
     /// Set `state` when the current state is one of `from`. Returns whether it changed.

@@ -122,14 +122,15 @@ pub fn torrent_name(data: &[u8]) -> Result<Option<String>, InvalidTorrent> {
 
 // --- adding ---------------------------------------------------------------------------
 
-/// Marks a torrent row as being added right now so the poller does not add it too.
-struct InFlight<'a> {
+/// Marks a row as being added right now, so the torrent poller does not add it too and
+/// the web workers do not start it before its first event is out. Removed on drop.
+pub(crate) struct InFlight<'a> {
     set: &'a dashmap::DashSet<String>,
     id: String,
 }
 
 impl<'a> InFlight<'a> {
-    fn new(set: &'a dashmap::DashSet<String>, id: &str) -> Self {
+    pub(crate) fn new(set: &'a dashmap::DashSet<String>, id: &str) -> Self {
         set.insert(id.to_string());
         Self {
             set,
@@ -403,13 +404,8 @@ async fn finish_pending(manager: &DownloadManager, poller: &mut Poller) {
 
 async fn poll_once(manager: &Arc<DownloadManager>, poller: &mut Poller) -> Duration {
     let tuning = manager.tuning();
-    let rows = match active_torrent_rows(manager).await {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::warn!(error = %e, "could not read torrents");
-            return tuning.torrent_slow;
-        }
-    };
+    // The engine first, then the rows: a pause or resume that lands in between is seen
+    // in the rows, and one that lands later is protected by `apply`'s state check.
     let list = match manager.torrentd.list().await {
         Ok(list) => list,
         Err(TorrentdError::Disabled) => return tuning.torrent_slow * 6,
@@ -431,6 +427,13 @@ async fn poll_once(manager: &Arc<DownloadManager>, poller: &mut Poller) -> Durat
     }
     poller.reachable = Some(true);
     poller.backoff = Duration::ZERO;
+    let rows = match active_torrent_rows(manager).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read torrents");
+            return tuning.torrent_slow;
+        }
+    };
     push_limits(manager, poller).await;
     finish_pending(manager, poller).await;
     // Forget rows that are no longer active (removed, finished or failed).
@@ -634,11 +637,11 @@ async fn apply(
     if unchanged {
         return Ok(());
     }
-    sqlx::query(
+    let written = sqlx::query(
         "UPDATE downloads SET name = ?, state = ?, progress = ?, total_bytes = ?, done_bytes = ?, down_bps = ?,
                 up_bps = ?, peers = ?, eta_s = ?, error = NULL, rel_path = ?, info_hash = ?, completed_at = ?,
                 updated_at = ?
-         WHERE id = ? AND state IN ('queued', 'downloading', 'paused', 'seeding')",
+         WHERE id = ? AND state = ?",
     )
     .bind(&updated.name)
     .bind(updated.state.as_str())
@@ -654,8 +657,13 @@ async fn apply(
     .bind(updated.completed_at)
     .bind(t)
     .bind(&row.id)
+    // Only over the state this poll read: a pause, resume or removal since then wins.
+    .bind(row.state.as_str())
     .execute(&manager.db)
     .await?;
+    if written.rows_affected() == 0 {
+        return Ok(());
+    }
     if updated.state != row.state {
         tracing::info!(download = %row.id, state = %updated.state, "torrent state changed");
     }

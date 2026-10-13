@@ -1262,12 +1262,13 @@ async fn every_state_change_is_published() {
     .await;
     let mut events = env.manager.events.subscribe();
     let d = env.add(&files.url("/file.bin")).await;
-    wait_until!(
-        "sorting",
-        env.row(&d.id).await.state == DownloadState::Sorting
-    );
     let mut states = Vec::new();
-    while let Ok(event) = events.try_recv() {
+    // Until the last event arrives (the row changes just before its event goes out).
+    while states.last() != Some(&DownloadState::Sorting) {
+        let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("the sorting event")
+            .unwrap();
         if let stash_core::events::Event::Download(download) = event {
             assert_eq!(download.id, d.id);
             if states.last() != Some(&download.state) {
