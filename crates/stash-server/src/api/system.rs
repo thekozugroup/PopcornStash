@@ -19,6 +19,25 @@ use crate::state::AppState;
 /// How long the torrent engine gets to answer a health check.
 const TORRENTD_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// The public repository of PopcornStash's source code.
+pub const REPOSITORY: &str = "https://github.com/thekozugroup/PopcornStash";
+
+/// Where the source code of this build is (AGPL section 13): the release tag for a
+/// release build, the repository otherwise. scripts/release.sh builds releases with
+/// POPCORNSTASH_RELEASE set to the version.
+pub fn source_url() -> String {
+    source_url_for(option_env!("POPCORNSTASH_RELEASE"), stash_core::VERSION)
+}
+
+fn source_url_for(release: Option<&str>, version: &str) -> String {
+    match release {
+        Some(release) if !release.is_empty() && release == version => {
+            format!("{REPOSITORY}/tree/v{version}")
+        }
+        _ => REPOSITORY.to_string(),
+    }
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new().route("/api/system", get(system))
 }
@@ -31,8 +50,11 @@ pub struct Disk {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HwAccelInfo {
+    /// The hardware acceleration in effect.
     pub configured: HwAccel,
     pub available: Vec<String>,
+    /// True when STASH_HWACCEL sets it, so Settings > System cannot change it.
+    pub set_by_env: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -43,6 +65,8 @@ pub struct TorrentdInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SystemInfo {
     pub version: String,
+    /// Where the source code of this version is (see `source_url`).
+    pub source: String,
     pub stash_root: String,
     pub config_dir: String,
     pub disk: Disk,
@@ -105,6 +129,7 @@ async fn system(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json
     );
     Ok(Json(SystemInfo {
         version: stash_core::VERSION.to_string(),
+        source: source_url(),
         stash_root: config.stash_root.display().to_string(),
         config_dir: config.config_dir.display().to_string(),
         disk,
@@ -112,6 +137,7 @@ async fn system(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json
         hwaccel: HwAccelInfo {
             configured: settings.transcode.hwaccel,
             available,
+            set_by_env: state.settings.hwaccel_from_env().is_some(),
         },
         torrentd: TorrentdInfo { reachable },
         jobs: jobs?,
@@ -151,6 +177,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{json}");
         for key in [
             "version",
+            "source",
             "stash_root",
             "config_dir",
             "disk",
@@ -165,8 +192,44 @@ mod tests {
         }
         assert_eq!(json["torrentd"]["reachable"], false);
         assert_eq!(json["hwaccel"]["configured"], "none");
+        assert_eq!(json["hwaccel"]["set_by_env"], false);
         assert_eq!(json["public_url"], "http://localhost:8788");
         assert_eq!(json["passkeys_ready"], true);
         assert!(json["disk"]["total"].as_u64().unwrap() > 0);
+        assert_eq!(json["source"], REPOSITORY, "a build that is not a release");
+    }
+
+    /// Settings > System greys out hardware acceleration when STASH_HWACCEL decides it.
+    #[tokio::test]
+    async fn system_says_when_stash_hwaccel_sets_hardware_acceleration() {
+        let mut app = TestApp::new().await;
+        app.state.settings =
+            stash_core::settings::SettingsStore::load(app.state.db.clone(), Some(HwAccel::Vaapi))
+                .await
+                .unwrap();
+        app.router = crate::app::router(app.state.clone());
+        let (_, owner) = app.user("owner").await;
+        let (status, json) = app.json("/api/system", &owner).await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["hwaccel"]["configured"], "vaapi");
+        assert_eq!(json["hwaccel"]["set_by_env"], true);
+    }
+
+    /// A release build links to its own tag; any other build to the repository.
+    #[test]
+    fn source_points_at_the_release_tag_only_for_a_release_build() {
+        assert_eq!(
+            source_url_for(Some("0.1.0"), "0.1.0"),
+            "https://github.com/thekozugroup/PopcornStash/tree/v0.1.0"
+        );
+        assert_eq!(
+            source_url_for(Some("0.2.0-rc.1"), "0.2.0-rc.1"),
+            "https://github.com/thekozugroup/PopcornStash/tree/v0.2.0-rc.1"
+        );
+        assert_eq!(source_url_for(None, "0.1.0"), REPOSITORY);
+        assert_eq!(source_url_for(Some(""), "0.1.0"), REPOSITORY);
+        // A stray value from another version never names a tag this code is not.
+        assert_eq!(source_url_for(Some("0.0.9"), "0.1.0"), REPOSITORY);
+        assert_eq!(source_url(), REPOSITORY);
     }
 }

@@ -4,15 +4,22 @@
 # Builds the image, runs it with the security settings read from compose.yaml
 # and checks the web app, the folder layout, the process users and their
 # capabilities, /run, the torrent kill switch with no VPN configured, the
-# internal engine API, the admin commands, a clean shutdown, and the degraded
-# modes without NET_ADMIN and as a non-root user. It also checks that
-# compose.yaml, the Unraid template and the `docker run` example in
-# docs/deployment.md ask for the same settings. Prints PASS/FAIL lines and
-# exits non-zero on any failure.
+# internal engine API, the license notices, a real HEIC photo from Inbox to
+# Photos, the admin commands, a clean shutdown, and the degraded modes without
+# NET_ADMIN and as a non-root user. It also checks that compose.yaml, the Unraid
+# template and the `docker run` example in docs/deployment.md ask for the same
+# settings. Prints PASS/FAIL/SKIP lines and exits non-zero on any failure.
 #
 # Environment:
 #   IMAGE              image tag to build and test (default popcornstash:smoke)
 #   SKIP_BUILD=1       test an existing IMAGE instead of building it
+#   PLATFORM           the image's platform, for example linux/arm64 (default: Docker's
+#                      own). One that Docker runs under QEMU emulation skips what QEMU
+#                      cannot do: it does not pass the VPN's netlink and nftables calls,
+#                      so the supervisor keeps torrents off there (which is checked) and
+#                      the checks of the kill switch and the engine are skipped.
+#   EXPECT_SOURCE      the source code address /api/health must report (release.sh
+#                      passes the release tag's); not checked when unset
 #   REGISTRY           base image registry (default docker.io/library)
 #   DOCKER_HUB_MIRROR=1  use mirror.gcr.io/library when REGISTRY is not set
 #   BUILD_CA           optional CA bundle for builds behind a TLS-intercepting proxy
@@ -44,10 +51,17 @@ WORK=""
 
 failures=0
 passes=0
+skips=0
 
 pass() {
   passes=$((passes + 1))
   printf 'PASS  %s\n' "$1"
+}
+
+# skip "description" "reason"
+skip() {
+  skips=$((skips + 1))
+  printf 'SKIP  %s (%s)\n' "$1" "$2"
 }
 
 fail() {
@@ -94,6 +108,25 @@ check_not() {
   fi
 }
 
+# vpn_check and vpn_check_not: check and check_not for what needs the VPN routes,
+# the kill switch or the engine. Skipped under QEMU, where the supervisor cannot
+# set them up and keeps torrents off instead.
+vpn_check() {
+  if ((EMULATED)); then
+    skip "$1" "$EMULATED_NOTE"
+  else
+    check "$@"
+  fi
+}
+
+vpn_check_not() {
+  if ((EMULATED)); then
+    skip "$1" "$EMULATED_NOTE"
+  else
+    check_not "$@"
+  fi
+}
+
 save_logs() {
   local name
   mkdir -p "$EVIDENCE_DIR"
@@ -115,7 +148,7 @@ cleanup() {
   docker network rm "$NET" >/dev/null 2>&1 || true
   if [[ -n "$WORK" && -d "$WORK" ]]; then
     # Files belong to PUID and the engine user; remove them from inside a container.
-    docker run --rm --user 0:0 --entrypoint /bin/rm -v "$WORK:/work" "$IMAGE" \
+    docker run --rm --platform "$PLATFORM" --user 0:0 --entrypoint /bin/rm -v "$WORK:/work" "$IMAGE" \
       -rf /work/main /work/nocap /work/user >/dev/null 2>&1 || true
     rm -rf "$WORK" 2>/dev/null || true
   fi
@@ -127,6 +160,16 @@ trap 'exit 130' INT TERM
 need docker
 need curl
 need jq
+
+NATIVE_PLATFORM="linux/$(docker version -f '{{.Server.Arch}}')" || die "Docker is not answering"
+PLATFORM="${PLATFORM:-$NATIVE_PLATFORM}"
+EMULATED=0
+EMULATED_NOTE=""
+if [[ "$PLATFORM" != "$NATIVE_PLATFORM" ]]; then
+  EMULATED=1
+  EMULATED_NOTE="$PLATFORM under QEMU"
+  note "testing $PLATFORM on a $NATIVE_PLATFORM host: QEMU cannot pass netlink or nftables, so the VPN and engine checks are skipped"
+fi
 
 # ------------------------------------------------------ packaging files ----
 # The container settings come from compose.yaml, so this test runs what users run.
@@ -191,6 +234,35 @@ same_flags() {
 check "compose.yaml and the Unraid template ask for the same container settings" same_flags unraid_flags unraid/popcornstash.xml
 check "compose.yaml and the docker run example in docs/deployment.md agree" same_flags docs_flags docs/deployment.md
 
+# The docs and the Setup and Recover pages say `docker exec popcornstash ...`, and
+# Docker container names are case-sensitive.
+container_named_popcornstash() {
+  local unraid compose
+  unraid="$(sed -n 's:.*<Name>\(.*\)</Name>.*:\1:p' unraid/popcornstash.xml)"
+  compose="$(jq -r '.services.popcornstash.container_name // empty' <<<"$COMPOSE_JSON")"
+  [[ "$unraid" == popcornstash && "$compose" == popcornstash ]] || {
+    echo "the Unraid template names the container '$unraid', compose.yaml '$compose'"
+    return 1
+  }
+}
+check "compose.yaml and the Unraid template name the container popcornstash" container_named_popcornstash
+
+# STASH_HWACCEL overrides Settings > System when it is set, so every install file
+# leaves it empty by default.
+hwaccel_unset_by_default() {
+  local compose unraid example
+  compose="$(STASH_PUBLIC_URL=http://localhost:8788 APPDATA_PATH=/ STASH_PATH=/ env -u STASH_HWACCEL \
+    docker compose --env-file /dev/null -f compose.yaml config --format json |
+    jq -r '.services.popcornstash.environment.STASH_HWACCEL // "(missing)"')"
+  unraid="$(sed -n 's:.*Target="STASH_HWACCEL".*Default="\([^"]*\)".*>\([^<]*\)</Config>.*:default "\1", value "\2":p' unraid/popcornstash.xml)"
+  example="$(sed -n 's/^STASH_HWACCEL=//p' .env.example)"
+  [[ "$compose" == "" && "$unraid" == 'default "", value ""' && "$example" == "" ]] || {
+    echo "compose.yaml: '$compose'; Unraid template: $unraid; .env.example: '$example'"
+    return 1
+  }
+}
+check "STASH_HWACCEL is empty by default in compose.yaml, the Unraid template and .env.example" hwaccel_unset_by_default
+
 mapfile -t FULL_FLAGS < <(compose_flags)
 mapfile -t NOCAP_FLAGS < <(compose_flags | grep -vx -e '--cap-add=NET_ADMIN')
 ((${#FULL_FLAGS[@]} > 0)) || die "no container settings found in compose.yaml"
@@ -198,7 +270,7 @@ mapfile -t NOCAP_FLAGS < <(compose_flags | grep -vx -e '--cap-add=NET_ADMIN')
 # ------------------------------------------------------------------ build ----
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   note "building $IMAGE (base images from $REGISTRY)"
-  build_args=(--build-arg "REGISTRY=$REGISTRY" -t "$IMAGE")
+  build_args=(--platform "$PLATFORM" --build-arg "REGISTRY=$REGISTRY" -t "$IMAGE")
   if [[ -n "${BUILD_CA:-}" ]]; then
     build_args+=(--secret "id=build_ca,src=$BUILD_CA")
   fi
@@ -209,6 +281,8 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   fi
 fi
 docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE is not available"
+image_platform="$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$IMAGE")"
+[[ "$image_platform" == "$PLATFORM" ]] || die "image $IMAGE is $image_platform, not $PLATFORM (set PLATFORM=$image_platform to test it)"
 
 # ---------------------------------------------------------- environment ----
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/popcornstash-smoke.XXXXXX")"
@@ -219,7 +293,7 @@ mkdir -p "$WORK/main/config" "$WORK/main/stash" "$WORK/nocap/config" "$WORK/noca
 # left as Docker would create it, so the supervisor has to take ownership of it.
 # Started with --user, PopcornStash cannot change owners, so both folders are given
 # to that user up front.
-docker run --rm --user 0:0 --entrypoint /bin/chown -v "$WORK:/work" "$IMAGE" \
+docker run --rm --platform "$PLATFORM" --user 0:0 --entrypoint /bin/chown -v "$WORK:/work" "$IMAGE" \
   "$PUID:$PGID" /work/main/stash /work/nocap/stash /work/user/config /work/user/stash >/dev/null
 
 docker network create "$NET" >/dev/null
@@ -239,7 +313,7 @@ ECHO_URL="http://$ECHO_IP/cgi-bin/ip"
 run_stash() {
   local name="$1" dir="$2"
   shift 2
-  docker run -d --name "$name" --network "$NET" \
+  docker run -d --platform "$PLATFORM" --name "$name" --network "$NET" \
     -p 127.0.0.1::8788 \
     -e PUID="$PUID" -e PGID="$PGID" \
     -e STASH_PUBLIC_URL=http://localhost:8788 \
@@ -273,7 +347,7 @@ base_url() {
 # stat(1) on the host folders, through a throwaway container so that folders
 # owned by PUID or the engine user can be inspected whoever runs this script.
 host_stat() {
-  docker run --rm --user 0:0 --network none --entrypoint /usr/bin/stat \
+  docker run --rm --platform "$PLATFORM" --user 0:0 --network none --entrypoint /usr/bin/stat \
     -v "$WORK:/work:ro" "$IMAGE" -c "$1" "/work/$2"
 }
 
@@ -351,6 +425,52 @@ serves_ui() {
 }
 check "GET / serves the web UI" serves_ui
 
+if [[ -n "${EXPECT_SOURCE:-}" ]]; then
+  check "/api/health links to the source code at $EXPECT_SOURCE" \
+    json_field_is "$URL/api/health" ".source == \"$EXPECT_SOURCE\""
+fi
+
+# Licenses (NOTICE): PopcornStash's own and the third-party notices from
+# scripts/notices.sh, as committed, plus the Debian packages with their versions
+# (their sources are kept at snapshot.debian.org).
+license_files_shipped() {
+  local file
+  for file in LICENSE NOTICE THIRD_PARTY_LICENSES THIRD_PARTY_LICENSES-web; do
+    docker exec "$MAIN" cat "/usr/share/doc/popcornstash/$file" 2>/dev/null | cmp -s - "$file" || {
+      echo "/usr/share/doc/popcornstash/$file is missing or differs from $file"
+      return 1
+    }
+  done
+}
+check "/usr/share/doc/popcornstash has LICENSE, NOTICE and the third-party notices" license_files_shipped
+debian_packages_listed() {
+  docker exec "$MAIN" awk -F '\t' '$1 == "ffmpeg" && $2 != "" && $3 != "" && $4 != "" { found = 1 } END { exit !found }' \
+    /usr/share/doc/popcornstash/debian-packages.txt
+}
+check "debian-packages.txt lists ffmpeg with its version and source package" debian_packages_listed
+web_notices_served() {
+  curl -fsS -m 10 "$URL/third-party-licenses.txt" | cmp -s - THIRD_PARTY_LICENSES-web
+}
+check "GET /third-party-licenses.txt serves the web app's notices" web_notices_served
+
+# A real HEIC: tests/fixtures/portrait.heic is a generated test pattern stored as
+# 1200x800 with a 270 degree rotation (irot), EXIF orientation 6, an Apple camera
+# and a 2023-07-04 date, like a photo from an iPhone held upright.
+heic_decodes() {
+  local out
+  out="$(docker exec -i -u "$PUID:$PGID" -e VIPS_BLOCK_UNTRUSTED=1 "$MAIN" \
+    sh -c 'cat > /tmp/smoke.heic && vipsheader /tmp/smoke.heic; status=$?; rm -f /tmp/smoke.heic; exit $status' \
+    <tests/fixtures/portrait.heic 2>&1)" || {
+    echo "$out"
+    return 1
+  }
+  [[ "$out" == *": 800x1200 "*"heifload"* ]] || {
+    echo "vipsheader says: $out"
+    return 1
+  }
+}
+check "libvips decodes a HEIC upright with untrusted loaders blocked (800x1200, heifload)" heic_decodes
+
 layout_ok() {
   local dir
   for dir in Movies Shows "Home Videos" Photos Other Inbox Downloads "Downloads/In Progress" "Downloads/Completed"; do
@@ -371,11 +491,14 @@ check "Downloads/In Progress is group $PGID, mode 2775" in_progress_mode
 
 config_owned() {
   owner_is "main/config" "$PUID" &&
-    owner_is "main/config/popcornstash.db" "$PUID" "regular file" &&
-    owner_is "main/config/torrent/engine" "$ENGINE_UID" &&
+    owner_is "main/config/popcornstash.db" "$PUID" "regular file"
+}
+check "app data belongs to PUID" config_owned
+engine_state_owned() {
+  owner_is "main/config/torrent/engine" "$ENGINE_UID" &&
     [[ "$(host_stat '%a' "main/config/torrent/engine")" == "700" ]]
 }
-check "app data belongs to PUID; engine state to the engine user (0700)" config_owned
+vpn_check "engine state belongs to the engine user (0700)" engine_state_owned
 
 private_modes() {
   local path want got
@@ -420,8 +543,14 @@ check "ImageMagick reads only camera RAW coders (policy installed)" imagemagick_
 SERVE_PID="$(pid_of "$MAIN" "popcornstash serve" "$PUID")"
 ENGINE_PID="$(pid_of "$MAIN" "popcornstash torrent-engine" "$ENGINE_UID")"
 check "serve runs as uid $PUID" test -n "$SERVE_PID"
-check "torrent-engine runs as uid $ENGINE_UID" test -n "$ENGINE_PID"
+vpn_check "torrent-engine runs as uid $ENGINE_UID" test -n "$ENGINE_PID"
 check "the supervisor runs as root" test -n "$(pid_of "$MAIN" "popcornstash run" 0)"
+if ((EMULATED)); then
+  # Without working netlink there is no kill switch, so torrents must stay off.
+  torrents_off_logged() { grep -Eiq 'torrent.*NET_ADMIN' <<<"$(logs_of "$MAIN")"; }
+  check "under QEMU: the supervisor keeps torrents off and says so" torrents_off_logged
+  check_not "under QEMU: no torrent engine runs" test -n "$ENGINE_PID"
+fi
 
 # no_privileges <pid>: no capabilities at all, and no way to gain any.
 no_privileges() {
@@ -438,7 +567,7 @@ no_privileges() {
   return 1
 }
 check "serve has no capabilities and no_new_privs" no_privileges "$SERVE_PID"
-check "torrent-engine has no capabilities and no_new_privs" no_privileges "$ENGINE_PID"
+vpn_check "torrent-engine has no capabilities and no_new_privs" no_privileges "$ENGINE_PID"
 
 # /run holds the supervisor's socket and status file and boringtun's control
 # socket (/var/run/wireguard). Only root may create anything there: an entry made
@@ -468,14 +597,14 @@ run_hooks_execute() {
 }
 check "the supervisor can run hooks from /run/popcornstash (OpenVPN --up/--down)" run_hooks_execute
 
-check "nftables table inet popcornstash exists" docker exec "$MAIN" nft list table inet popcornstash
+vpn_check "nftables table inet popcornstash exists" docker exec "$MAIN" nft list table inet popcornstash
 uid_rules() {
   local rules
   rules="$(docker exec "$MAIN" ip -4 rule show)"
   grep -q "uidrange $ENGINE_UID-$ENGINE_UID lookup 51820" <<<"$rules" &&
     grep -q "uidrange $ENGINE_UID-$ENGINE_UID prohibit" <<<"$rules"
 }
-check "uidrange ip rules route the engine user to table 51820" uid_rules
+vpn_check "uidrange ip rules route the engine user to table 51820" uid_rules
 
 STASH_IP="$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$MAIN")"
 echo_sees_stash() {
@@ -489,12 +618,12 @@ echo_sees_stash() {
 check "uid $PUID reaches a local echo server (it sees $STASH_IP)" echo_sees_stash
 check "uid $PUID resolves the echo server's name" \
   docker exec --user "$PUID:$PGID" "$MAIN" getent hosts "$ECHO"
-check_not "uid $ENGINE_UID has no network without a VPN" \
+vpn_check_not "uid $ENGINE_UID has no network without a VPN" \
   docker exec --user "$ENGINE_UID:$PGID" "$MAIN" curl -fsS -m 5 "$ECHO_URL"
-check_not "uid $ENGINE_UID cannot resolve names without a VPN" \
+vpn_check_not "uid $ENGINE_UID cannot resolve names without a VPN" \
   docker exec --user "$ENGINE_UID:$PGID" "$MAIN" getent hosts "$ECHO"
 
-check "engine /livez answers without a token" \
+vpn_check "engine /livez answers without a token" \
   docker exec "$MAIN" curl -fsS -m 5 http://127.0.0.1:9091/livez
 
 # The token lives only in the environment of serve and the engine. It is read and
@@ -526,9 +655,9 @@ expect_status() {
     return 1
   }
 }
-check "internal API: no token is refused (401)" expect_status none 401
-check "internal API: a wrong token is refused (401)" expect_status wrong 401
-check "internal API: the internal token is accepted (200)" expect_status right 200
+vpn_check "internal API: no token is refused (401)" expect_status none 401
+vpn_check "internal API: a wrong token is refused (401)" expect_status wrong 401
+vpn_check "internal API: the internal token is accepted (200)" expect_status right 200
 engine_blocked() {
   local health
   health="$(engine_request right body)" || return 1
@@ -538,7 +667,7 @@ engine_blocked() {
     return 1
   }
 }
-check "engine /health: blocked, VPN not configured, kill switch on" engine_blocked
+vpn_check "engine /health: blocked, VPN not configured, kill switch on" engine_blocked
 no_token_file() {
   if host_stat '%n' "main/config/torrent/internal.token" >/dev/null 2>&1; then
     echo "config/torrent/internal.token exists"
@@ -562,6 +691,36 @@ check_not "internal CONNECT proxy is not reachable from the network" \
   docker exec "$ECHO" nc -w 5 "$STASH_IP" 9092 </dev/null
 check "web app is reachable from the network" \
   docker exec "$ECHO" wget -q -T 5 -O - "http://$STASH_IP:8788/api/health"
+
+# The same HEIC dropped into Inbox/ is sorted into Photos/ by its EXIF date, and its
+# thumbnail stands upright.
+heic_sorted_from_inbox() {
+  local thumb="" size
+  docker exec -i -u "$PUID:$PGID" "$MAIN" sh -c 'cat > /stash/Inbox/portrait.heic' \
+    <tests/fixtures/portrait.heic || return 1
+  for _ in $(seq 1 90); do
+    if docker exec "$MAIN" test -f /stash/Photos/2023/07/portrait.heic; then
+      thumb="$(docker exec "$MAIN" find /config/cache/thumbs -type f -name '*.webp' ! -name '.*' -print -quit)"
+      [[ -n "$thumb" ]] && break
+    fi
+    sleep 2
+  done
+  docker exec "$MAIN" test -f /stash/Photos/2023/07/portrait.heic || {
+    echo "Inbox/portrait.heic is not in Photos/2023/07 after 180s"
+    return 1
+  }
+  [[ -n "$thumb" ]] || {
+    echo "Photos/2023/07/portrait.heic has no thumbnail after 180s"
+    return 1
+  }
+  size="$(docker exec "$MAIN" vipsheader "$thumb")" || return 1
+  if [[ "$size" =~ :\ ([0-9]+)x([0-9]+)\  ]] && ((BASH_REMATCH[2] > BASH_REMATCH[1])); then
+    return 0
+  fi
+  echo "the thumbnail is not upright: $size"
+  return 1
+}
+check "a HEIC dropped into Inbox/ goes to Photos/2023/07 with an upright thumbnail" heic_sorted_from_inbox
 
 no_readonly_errors() {
   local logs
@@ -588,7 +747,7 @@ admin_setup_code() {
 check "docker exec ... popcornstash admin setup-code prints a setup code" admin_setup_code
 config_still_owned() {
   local stray
-  stray="$(docker run --rm --user 0:0 --network none --entrypoint /usr/bin/find \
+  stray="$(docker run --rm --platform "$PLATFORM" --user 0:0 --network none --entrypoint /usr/bin/find \
     -v "$WORK:/work:ro" "$IMAGE" /work/main/config \
     -path /work/main/config/torrent/engine -prune -o ! -user "$PUID" -print)" || return 1
   [[ -z "$stray" ]] || {
@@ -608,7 +767,11 @@ stops_cleanly() {
     echo "exit code $code after $((SECONDS - started))s"
     return 1
   }
-  grep -q 'stopped cleanly' <<<"$(logs_of "$MAIN")" || {
+  # Under QEMU the supervisor runs only the web server (torrents off), and that mode
+  # ends with the web server's stop rather than the full shutdown's last line.
+  local clean='stopped cleanly'
+  ((EMULATED)) && clean='stopped.*child.*"serve"'
+  grep -Eq "$clean" <<<"$(logs_of "$MAIN")" || {
     echo "the supervisor did not log a clean shutdown"
     return 1
   }
@@ -657,8 +820,10 @@ fi
 
 # ---------------------------------------------------------------- result ----
 echo
+mode="$PLATFORM"
+((EMULATED)) && mode="$EMULATED_NOTE, $skips checks skipped"
 if ((failures > 0)); then
-  printf 'FAIL  docker smoke: %d passed, %d failed (logs in %s)\n' "$passes" "$failures" "$EVIDENCE_DIR"
+  printf 'FAIL  docker smoke (%s): %d passed, %d failed (logs in %s)\n' "$mode" "$passes" "$failures" "$EVIDENCE_DIR"
   exit 1
 fi
-printf 'PASS  docker smoke: %d checks passed\n' "$passes"
+printf 'PASS  docker smoke (%s): %d checks passed\n' "$mode" "$passes"

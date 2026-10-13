@@ -6,6 +6,7 @@ import * as stylex from '@stylexjs/stylex';
 import {typographyVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {Button} from '@astryxdesign/core/Button';
 import {Code} from '@astryxdesign/core/Code';
+import {Link} from '@astryxdesign/core/Link';
 import {MetadataList, MetadataListItem} from '@astryxdesign/core/MetadataList';
 import {NumberInput} from '@astryxdesign/core/NumberInput';
 import {ProgressBar} from '@astryxdesign/core/ProgressBar';
@@ -66,6 +67,11 @@ const styles = stylex.create({
     gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
     gap: 20,
     maxWidth: 560,
+  },
+  // Set by STASH_HWACCEL: the field and its sentence take the whole row, so the
+  // fields beside it keep their controls level.
+  wholeRow: {
+    gridColumn: '1 / -1',
   },
   footer: {
     display: 'flex',
@@ -142,7 +148,12 @@ function ServerGroup({info}: {info: SystemInfo}) {
       <RowsPanel>
         <div {...stylex.props(styles.facts)}>
           <MetadataList label={labels}>
-            <MetadataListItem label="Version">{info.version}</MetadataListItem>
+            <MetadataListItem label="Version">
+              {info.version} ·{' '}
+              <Link href={info.source} isExternalLink>
+                Source code
+              </Link>
+            </MetadataListItem>
             <MetadataListItem label="Address">
               {info.public_url ?? (
                 <Text color="secondary">
@@ -265,6 +276,7 @@ function PlaybackGroup({info}: {info: SystemInfo | undefined}) {
   const [isSaving, setIsSaving] = useState(false);
   const draft = form.draft;
   const available = new Set(info?.hwaccel.available ?? []);
+  const isSetByEnv = info?.hwaccel.set_by_env ?? false;
 
   const found = info
     ? ` Hardware acceleration found on this server: ${
@@ -318,7 +330,9 @@ function PlaybackGroup({info}: {info: SystemInfo | undefined}) {
     setSessionsError(null);
     setIsSaving(true);
     try {
-      await form.save({transcode: {...draft, max_sessions: sessions}});
+      // While STASH_HWACCEL decides, the server refuses any other value: leave it out.
+      const {hwaccel, ...rest} = draft;
+      await form.save({transcode: {...rest, ...(isSetByEnv ? {} : {hwaccel}), max_sessions: sessions}});
       showToast({body: 'Streaming settings saved. New streams use them.'});
     } catch (cause) {
       showToast({type: 'error', body: errorMessage(cause, 'The settings were not saved. Try again.')});
@@ -330,13 +344,19 @@ function PlaybackGroup({info}: {info: SystemInfo | undefined}) {
   return (
     <SettingsGroup title="Streaming" description={description}>
       <div {...stylex.props(styles.form)}>
-        <Selector
-          label="Hardware acceleration"
-          options={hwOptions}
-          value={draft.hwaccel}
-          onChange={value => form.edit(current => ({...current, hwaccel: (value ?? 'none') as HwAccel}))}
-          width="100%"
-        />
+        <div {...stylex.props(isSetByEnv && styles.wholeRow)}>
+          <Selector
+            label="Hardware acceleration"
+            options={hwOptions}
+            value={draft.hwaccel}
+            onChange={value => form.edit(current => ({...current, hwaccel: (value ?? 'none') as HwAccel}))}
+            isDisabled={isSetByEnv}
+            description={
+              isSetByEnv ? 'To change this, edit or remove STASH_HWACCEL on the container, then restart it.' : undefined
+            }
+            width="100%"
+          />
+        </div>
         <Selector
           label="Highest resolution"
           options={heightOptions}

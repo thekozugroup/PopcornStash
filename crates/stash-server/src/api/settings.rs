@@ -227,6 +227,66 @@ mod tests {
         assert!(state.settings.get().await.auto_sort);
     }
 
+    /// With STASH_HWACCEL set, the settings show its value, and the page's usual
+    /// save (which sends back what it read) still works; choosing another value is
+    /// refused with a sentence that names the variable.
+    #[tokio::test]
+    async fn stash_hwaccel_decides_while_it_is_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = crate::app::test_state(dir.path()).await.unwrap();
+        state
+            .settings
+            .update(serde_json::json!({"transcode": {"hwaccel": "qsv"}}))
+            .await
+            .unwrap();
+        state.settings = stash_core::settings::SettingsStore::load(
+            state.db.clone(),
+            Some(stash_core::config::HwAccel::Vaapi),
+        )
+        .await
+        .unwrap();
+        let app = crate::app::router(state.clone());
+
+        let (code, body) = call(&app, request(Method::GET, "", Role::Owner)).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(body["transcode"]["hwaccel"], "vaapi");
+
+        let (code, body) = call(
+            &app,
+            request(
+                Method::PUT,
+                r#"{"transcode": {"hwaccel": "vaapi", "crf": 28}}"#,
+                Role::Owner,
+            ),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        assert_eq!(body["transcode"]["hwaccel"], "vaapi");
+        assert_eq!(body["transcode"]["crf"], 28);
+
+        let (code, body) = call(
+            &app,
+            request(
+                Method::PUT,
+                r#"{"transcode": {"hwaccel": "none"}}"#,
+                Role::Owner,
+            ),
+        )
+        .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("STASH_HWACCEL"),
+            "{body}"
+        );
+        assert_eq!(
+            state.settings.get().await.transcode.hwaccel,
+            stash_core::config::HwAccel::Vaapi
+        );
+    }
+
     #[tokio::test]
     async fn limit_changes_reach_the_engine() {
         use axum::routing::put;

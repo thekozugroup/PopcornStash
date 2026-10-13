@@ -1,0 +1,39 @@
+# cargo-about settings for scripts/notices.sh: the crates linked into popcornstash
+# and boringtun-cli on the two image platforms. Where a crate offers a choice of
+# licenses, the first accepted one in this list is the one credited.
+accepted = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "MIT-0",
+  "Unicode-3.0",
+  "BSL-1.0",
+  "CC0-1.0",
+  "Unlicense",
+  "MPL-2.0",
+  "OpenSSL",
+  # PopcornStash's own crates; scripts/notices.sh leaves them out of the listing.
+  "AGPL-3.0-or-later",
+]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+ignore-dev-dependencies = true
+ignore-build-dependencies = false
+
+# boringtun's crates.io packages carry no license file. Its LICENSE.md comes from
+# the upstream commit the 0.7.1 crate was published from, checked against this
+# SHA-256 (cargo-about fetches it from the crate's repository).
+[boringtun.clarify]
+license = "BSD-3-Clause"
+[[boringtun.clarify.git]]
+path = "LICENSE.md"
+checksum = "6dbef24708bad8c727bd80cca58ba8aa1637cdcb2cc6e9a31ea49235717e9391"
+
+[boringtun-cli.clarify]
+license = "BSD-3-Clause"
+[[boringtun-cli.clarify.git]]
+path = "LICENSE.md"
+checksum = "6dbef24708bad8c727bd80cca58ba8aa1637cdcb2cc6e9a31ea49235717e9391"

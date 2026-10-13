@@ -25,6 +25,8 @@ export type ErrorCode =
   | 'setup_required'
   | 'passkeys_unavailable'
   | 'vpn_unavailable'
+  | 'payload_too_large'
+  | 'method_not_allowed'
   | 'internal';
 
 /** `{"error": {"code": "not_found", "message": "Human readable sentence."}}` */
@@ -138,7 +140,8 @@ export interface Item {
 
 /** `items.media_json` summary (architecture section 6). */
 export interface MediaSummary {
-  container: string;
+  /** ffprobe's format name, for example "mov,mp4,m4a,3gp,3g2,mj2"; null when it gave none. */
+  container: string | null;
   duration_s: number | null;
   bitrate: number | null;
   video: MediaVideoStream | null;
@@ -193,7 +196,8 @@ export interface Classification {
 
 export type ItemDetail = Item & {
   media: MediaSummary | null;
-  mime: string;
+  /** Guessed from the file name; null when the extension is unknown. */
+  mime: string | null;
   suggestion: Classification | null;
   source_download_id: Id | null;
   next_episode_id: Id | null;
@@ -329,6 +333,8 @@ export interface RequestFlow {
 export interface HealthResponse {
   status: 'ok';
   version: string;
+  /** Where this version's source code is: its release tag, or the repository. */
+  source: string;
 }
 
 export interface AuthState {
@@ -654,11 +660,17 @@ export type SettingsPatch = Partial<
 
 export interface SystemInfo {
   version: string;
+  /** Where this version's source code is: its release tag, or the repository. */
+  source: string;
   stash_root: string;
   config_dir: string;
   disk: {total: number; free: number};
   ffmpeg_version: string | null;
-  hwaccel: {configured: HwAccel; available: string[]};
+  /**
+   * `configured` is the acceleration in effect. `set_by_env` is true when
+   * STASH_HWACCEL sets it; settings then refuse any other `transcode.hwaccel`.
+   */
+  hwaccel: {configured: HwAccel; available: string[]; set_by_env: boolean};
   torrentd: {reachable: boolean};
   jobs: {queued: number; running: number; failed: number};
   public_url: string | null;

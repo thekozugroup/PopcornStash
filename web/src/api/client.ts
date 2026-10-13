@@ -107,7 +107,9 @@ export const STATUS_CODES: Record<number, ErrorCode> = {
   401: 'unauthorized',
   403: 'forbidden',
   404: 'not_found',
+  405: 'method_not_allowed',
   409: 'conflict',
+  413: 'payload_too_large',
   429: 'rate_limited',
 };
 
@@ -117,6 +119,7 @@ export const FALLBACK_MESSAGES: Partial<Record<ClientErrorCode, string>> = {
   forbidden: 'Only the owner can do that.',
   not_found: 'That could not be found.',
   conflict: 'That changed in the meantime. Try again.',
+  payload_too_large: 'That is too large to send.',
   rate_limited: 'Too many attempts. Wait a minute and try again.',
   network: 'PopcornStash could not be reached. Check the connection and try again.',
   aborted: 'The request was cancelled.',
@@ -409,10 +412,12 @@ export const inbox = {
 };
 
 export const trash = {
-  /** Owner only. The list shape is not pinned by section 8; see TrashEntry. */
+  /** Owner only: every trashed item with where it was (architecture section 11). */
   list: (signal?: AbortSignal) => get<TrashEntry[]>('/api/trash', undefined, signal),
-  restore: (id: string) => post<void>(`/api/trash/${enc(id)}/restore`, {}),
-  empty: () => del('/api/trash'),
+  /** Moves the file back to where it was and answers the restored item. */
+  restore: (id: string) => post<ItemDetail>(`/api/trash/${enc(id)}/restore`, {}),
+  /** Deletes everything in the trash for good and answers how many items went. */
+  empty: () => del<{deleted: number}>('/api/trash'),
 };
 
 export const downloads = {

@@ -110,39 +110,77 @@ impl Settings {
     }
 }
 
+/// STASH_HWACCEL as the settings store sees it. Set (not empty), it overrides the
+/// owner's saved choice; unset or empty, the saved choice is in charge
+/// (docs/architecture.md section 2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HwAccelEnv(pub Option<HwAccel>);
+
+impl From<Option<HwAccel>> for HwAccelEnv {
+    fn from(value: Option<HwAccel>) -> Self {
+        Self(value)
+    }
+}
+
+/// A plain value, as tests pass it: `none` leaves the saved choice in charge.
+impl From<HwAccel> for HwAccelEnv {
+    fn from(value: HwAccel) -> Self {
+        Self((value != HwAccel::None).then_some(value))
+    }
+}
+
 /// Cached settings with write-through to the database.
 #[derive(Clone)]
 pub struct SettingsStore {
     db: Db,
+    /// What the owner saved. `get` puts STASH_HWACCEL on top.
     cache: Arc<RwLock<Settings>>,
+    hwaccel_env: Option<HwAccel>,
 }
 
 impl SettingsStore {
-    pub async fn load(db: Db, hwaccel_default: HwAccel) -> Result<Self> {
+    pub async fn load(db: Db, hwaccel_env: impl Into<HwAccelEnv>) -> Result<Self> {
         let row: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = ?")
             .bind(KEY)
             .fetch_optional(&db)
             .await?;
         let settings = match row {
             Some((json,)) => serde_json::from_str::<Settings>(&json).unwrap_or_default(),
-            None => {
-                let mut s = Settings::default();
-                s.transcode.hwaccel = hwaccel_default;
-                s
-            }
+            None => Settings::default(),
         };
         Ok(Self {
             db,
             cache: Arc::new(RwLock::new(settings.normalized())),
+            hwaccel_env: hwaccel_env.into().0,
         })
     }
 
+    /// The settings in effect: the saved ones, with STASH_HWACCEL when it is set.
     pub async fn get(&self) -> Settings {
-        self.cache.read().await.clone()
+        let saved = self.cache.read().await.clone();
+        self.in_effect(saved)
     }
 
-    /// Merge a partial JSON object into the current settings and persist.
-    pub async fn update(&self, patch: serde_json::Value) -> Result<Settings> {
+    /// The hardware acceleration STASH_HWACCEL sets, when it is set. The owner's
+    /// saved choice is then kept but not used.
+    pub fn hwaccel_from_env(&self) -> Option<HwAccel> {
+        self.hwaccel_env
+    }
+
+    fn in_effect(&self, mut settings: Settings) -> Settings {
+        if let Some(hwaccel) = self.hwaccel_env {
+            settings.transcode.hwaccel = hwaccel;
+        }
+        settings
+    }
+
+    /// Merge a partial JSON object into the current settings and persist. While
+    /// STASH_HWACCEL is set, `transcode.hwaccel` may only repeat its value (a client
+    /// sending back what it read), and the owner's saved choice stays as it was.
+    pub async fn update(&self, mut patch: serde_json::Value) -> Result<Settings> {
+        if let Some(env) = self.hwaccel_env {
+            drop_env_hwaccel(&mut patch, env)?;
+        }
         let mut guard = self.cache.write().await;
         let mut current = serde_json::to_value(&*guard)?;
         merge(&mut current, patch);
@@ -155,8 +193,29 @@ impl SettingsStore {
             .execute(&self.db)
             .await?;
         *guard = next.clone();
-        Ok(next)
+        Ok(self.in_effect(next))
     }
+}
+
+/// Takes `transcode.hwaccel` out of a patch when it repeats STASH_HWACCEL, and
+/// refuses any other value: the environment decides while the variable is set.
+fn drop_env_hwaccel(patch: &mut serde_json::Value, env: HwAccel) -> Result<()> {
+    let Some(transcode) = patch
+        .get_mut("transcode")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return Ok(());
+    };
+    let Some(sent) = transcode.get("hwaccel") else {
+        return Ok(());
+    };
+    if serde_json::from_value::<HwAccel>(sent.clone()).ok() != Some(env) {
+        return Err(crate::CoreError::invalid(
+            "Hardware acceleration is set by STASH_HWACCEL on the container. To change it, edit or remove that variable, then restart the container.",
+        ));
+    }
+    transcode.remove("hwaccel");
+    Ok(())
 }
 
 fn merge(base: &mut serde_json::Value, patch: serde_json::Value) {
@@ -217,5 +276,56 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    /// An owner who saved any setting and later sets STASH_HWACCEL=vaapi gets VAAPI,
+    /// not the hardware acceleration saved before.
+    #[tokio::test]
+    async fn stash_hwaccel_overrides_the_saved_setting() {
+        let db = crate::db::open_memory().await.unwrap();
+        let store = SettingsStore::load(db.clone(), HwAccel::None)
+            .await
+            .unwrap();
+        store
+            .update(
+                serde_json::json!({"transcode": {"hwaccel": "qsv"}, "trash_retention_days": 10}),
+            )
+            .await
+            .unwrap();
+
+        let store = SettingsStore::load(db.clone(), HwAccel::Vaapi)
+            .await
+            .unwrap();
+        assert_eq!(store.get().await.transcode.hwaccel, HwAccel::Vaapi);
+        assert_eq!(store.get().await.trash_retention_days, 10);
+        assert_eq!(store.hwaccel_from_env(), Some(HwAccel::Vaapi));
+
+        // A client that sends back what it read saves its other changes; the owner's
+        // own choice is kept for when the variable goes away.
+        let s = store
+            .update(serde_json::json!({"transcode": {"hwaccel": "vaapi", "crf": 20}}))
+            .await
+            .unwrap();
+        assert_eq!((s.transcode.hwaccel, s.transcode.crf), (HwAccel::Vaapi, 20));
+        // Choosing something else is refused while the variable is set.
+        let err = store
+            .update(serde_json::json!({"transcode": {"hwaccel": "nvenc"}}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("STASH_HWACCEL"), "{err}");
+        assert_eq!(store.get().await.transcode.hwaccel, HwAccel::Vaapi);
+
+        // STASH_HWACCEL=none set on purpose also wins.
+        let store = SettingsStore::load(db.clone(), Some(HwAccel::None))
+            .await
+            .unwrap();
+        assert_eq!(store.get().await.transcode.hwaccel, HwAccel::None);
+        assert_eq!(store.hwaccel_from_env(), Some(HwAccel::None));
+
+        // Unset or empty: the saved choice is in charge again.
+        let store = SettingsStore::load(db, None).await.unwrap();
+        let s = store.get().await;
+        assert_eq!((s.transcode.hwaccel, s.transcode.crf), (HwAccel::Qsv, 20));
+        assert_eq!(store.hwaccel_from_env(), None);
     }
 }

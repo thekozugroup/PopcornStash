@@ -10,6 +10,8 @@
 #
 # Options combine (scripts/release.sh runs --quick --e2e --audit). Steps run in this
 # order and the script stops at the first failure:
+#   git ignores the usual secret file names (VPN credentials, keys, tokens, .env)
+#   and tracks none of them; every manifest says AGPL-3.0-or-later
 #   cargo fmt --all --check
 #   cargo clippy --workspace --all-targets --locked -- -D warnings
 #   cargo test --workspace --locked
@@ -162,6 +164,54 @@ e2e_suite() {
   CI=1 npm --prefix tests/e2e test
 }
 
+# --------------------------------------------------------------- secrets ----
+# The names PopcornStash and VPN providers give to secrets (.dockerignore keeps the
+# same ones out of image builds) must be ignored by git, and none may be tracked.
+SECRET_NAMES=(
+  .env config/.env.local openvpn.auth config/torrent/vpn/openvpn.auth nord.ovpn.auth
+  internal.token config/torrent/internal.token server.key tls/cert.pem
+  wireguard.conf us1234.ovpn popcornstash.db
+)
+secrets_ignored() {
+  local listing status=0 not_ignored tracked
+  # Exit 1 only means that none of the names is ignored; -n -v lists each either way.
+  listing="$(git check-ignore --no-index -v -n "${SECRET_NAMES[@]}")" || status=$?
+  ((status <= 1)) || return 1
+  not_ignored="$(awk -F'\t' '$1 == "::" { print $2 }' <<<"$listing")"
+  if [[ -n "$not_ignored" ]]; then
+    printf 'not ignored by .gitignore: %s\n' "$(tr '\n' ' ' <<<"$not_ignored")"
+    return 1
+  fi
+  tracked="$(git ls-files -ci --exclude-standard)"
+  if [[ -n "$tracked" ]]; then
+    printf 'tracked although .gitignore lists them: %s\n' "$(tr '\n' ' ' <<<"$tracked")"
+    return 1
+  fi
+  printf 'git ignores %s secret file names, and none is tracked\n' "${#SECRET_NAMES[@]}"
+}
+
+# --------------------------------------------------------------- license ----
+# Every manifest declares the project's license, AGPL-3.0-or-later (LICENSE).
+PROJECT_LICENSE="AGPL-3.0-or-later"
+licenses_agree() {
+  local wrong=() dir got
+  got="$(awk '/^\[/ { s = $0 } s == "[workspace.package]" && /^license *= *"/ { sub(/^license *= *"/, ""); sub(/".*$/, ""); print; exit }' Cargo.toml)"
+  [[ "$got" == "$PROJECT_LICENSE" ]] || wrong+=("Cargo.toml [workspace.package]: $got")
+  for dir in web extension tests/e2e tests/fullstack; do
+    got="$(jq -r '.license // "none"' "$dir/package.json")"
+    [[ "$got" == "$PROJECT_LICENSE" ]] || wrong+=("$dir/package.json: $got")
+    got="$(jq -r '.packages[""].license // "none"' "$dir/package-lock.json")"
+    [[ "$got" == "$PROJECT_LICENSE" ]] || wrong+=("$dir/package-lock.json (root package): $got")
+  done
+  got="$(sed -n 's/.*org\.opencontainers\.image\.licenses="\([^"]*\)".*/\1/p' Dockerfile)"
+  [[ "$got" == "$PROJECT_LICENSE" ]] || wrong+=("Dockerfile image label: $got")
+  if ((${#wrong[@]})); then
+    printf 'not %s: %s\n' "$PROJECT_LICENSE" "${wrong[*]}"
+    return 1
+  fi
+  printf 'every manifest says %s\n' "$PROJECT_LICENSE"
+}
+
 # ----------------------------------------------------------------- steps ----
 mode="Rust, web UI, extension"
 ((audit)) && mode+=", cargo audit and npm audit"
@@ -171,6 +221,8 @@ mode="Rust, web UI, extension"
 printf 'PopcornStash checks: %s\n' "$mode"
 
 step "tools are installed" tools
+step "git ignores secret file names" secrets_ignored
+step "license fields say $PROJECT_LICENSE" licenses_agree
 # .cargo/audit.toml lists the reviewed advisories cargo audit may skip, and why.
 if ((audit)); then
   step "cargo audit" cargo audit
