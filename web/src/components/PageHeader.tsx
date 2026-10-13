@@ -1,7 +1,8 @@
 /**
  * Page heading block: the page's h1, a one-line subtitle, and at most one
- * primary action plus quiet secondary actions on the trailing edge.
- * Also sets the document title.
+ * primary action plus quiet secondary actions on the trailing edge (or
+ * under the subtitle when the action is the page's only way forward, as on
+ * "not found" pages). Also sets the document title.
  */
 import * as stylex from '@stylexjs/stylex';
 import {Heading} from '@astryxdesign/core/Heading';
@@ -25,9 +26,15 @@ const styles = stylex.create({
     minWidth: 0,
     flex: '1 1 320px',
   },
+  // "pretty" keeps a lone word off the last line without narrowing the block
+  // (balance would, and would break paths like /family-photos early).
   subtitle: {
     maxWidth: '58ch',
     lineHeight: 1.6,
+    textWrap: 'pretty',
+  },
+  actionsBelow: {
+    marginTop: 14,
   },
   actions: {
     display: 'flex',
@@ -46,6 +53,8 @@ export interface PageHeaderProps {
   documentTitle?: string;
   /** Content between the subtitle and the actions column, such as a status tag. */
   children?: ReactNode;
+  /** Put the actions under the subtitle instead of on the trailing edge. */
+  isActionBelow?: boolean;
 }
 
 export function useDocumentTitle(title: string | null | undefined) {
@@ -54,8 +63,11 @@ export function useDocumentTitle(title: string | null | undefined) {
   }, [title]);
 }
 
-export function PageHeader({title, subtitle, actions, documentTitle, children}: PageHeaderProps) {
+export function PageHeader({title, subtitle, actions, documentTitle, children, isActionBelow = false}: PageHeaderProps) {
   useDocumentTitle(documentTitle ?? title);
+  const actionBlock = actions ? (
+    <div {...stylex.props(styles.actions, isActionBelow && styles.actionsBelow)}>{actions}</div>
+  ) : null;
   return (
     <div {...stylex.props(styles.header)}>
       <div {...stylex.props(styles.copy)}>
@@ -68,8 +80,9 @@ export function PageHeader({title, subtitle, actions, documentTitle, children}: 
           </Text>
         ) : null}
         {children}
+        {isActionBelow ? actionBlock : null}
       </div>
-      {actions ? <div {...stylex.props(styles.actions)}>{actions}</div> : null}
+      {isActionBelow ? null : actionBlock}
     </div>
   );
 }

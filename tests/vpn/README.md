@@ -59,7 +59,7 @@ containers running for inspection).
 
 | Area | Check |
 |---|---|
-| Tunnel | The supervisor brings up `psw0` and the engine's `/health` reports `vpn.state = connected`; the engine starts its librqbit session (see Limitations) |
+| Tunnel | The supervisor brings up `psw0` and the engine's `/health` reports `vpn.state = connected`; the engine starts its librqbit session (on IPv4 sockets when the kernel has no IPv6) |
 | Routing | As the engine user (`docker exec --user 6881`), `curl` to the echo server reports **wgserver's** address; as `PUID` it reports **the container's own** address |
 | Bypass | The engine user cannot leave through `eth0` even when binding to it (`curl --interface eth0`) |
 | DNS | As the engine user `echo.test` resolves (DNAT to the forwarder on 127.0.0.54:5354, then through the tunnel to the echo DNS); as `PUID` it does not (Docker's resolver, normal network) |
@@ -82,10 +82,11 @@ container and never printed.
 
 - **Kernel WireGuard** is only exercised where the host has the module; on
   hosts without it both sides use boringtun.
-- **Kernels without IPv6** (booted with `ipv6.disable=1`): librqbit 9 always
-  opens an IPv6 UDP socket for trackers, so the engine cannot start its torrent
-  session there. The tunnel, routing, DNS and kill switch checks still run; the
-  session check is reported as `SKIP` and the engine's `/health` explains the
-  reason. boringtun has the same problem and is patched in the `Dockerfile`.
+- **Kernels without IPv6** (booted with `ipv6.disable=1`): librqbit 9 opens its
+  sockets on `[::]`; the vendored `librqbit-dualstack-sockets` patch falls back to
+  `0.0.0.0` there, so the engine's session starts on IPv4 and the session check
+  runs on such hosts too. boringtun has the same problem and is patched in the
+  `Dockerfile`. `scripts/fullstack-e2e.sh` downloads a real torrent through the
+  tunnel (see `tests/fullstack/README.md`).
 - The public-IP proof (`api.ipify.org` / NordVPN insights) needs the internet
   and is not checked here; its failure is only logged.

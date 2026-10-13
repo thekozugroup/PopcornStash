@@ -31,25 +31,40 @@ export function scopesInWords(scopes: readonly (TokenScope | string)[]): string 
   return `Can ${sentence}`;
 }
 
-/** What a device of this kind will be able to do once paired. */
+/**
+ * What a device of this kind will be able to do once paired. Each `can`
+ * entry completes "it can …", so it reads both as a list item and inside a
+ * sentence (see `accessSentence`).
+ */
 export function pairingAccess(kind: ClientKind | string): {can: string[]; cannot: string | null} {
   switch (kind) {
     case 'chrome-extension':
       return {
-        can: ['Send links, magnets and files to Downloads', 'See how your downloads are doing'],
+        can: ['send links, magnets and files to Downloads', 'see how your downloads are doing'],
         cannot: 'It cannot browse or play your library, or change any settings.',
       };
     case 'android':
       return {
-        can: ['Everything you can do when you sign in: browse, play, upload and add downloads'],
+        can: ['do everything you can do when you sign in: browse, play, upload and add downloads'],
         cannot: null,
       };
     default:
       return {
-        can: ['Send links and magnets to Downloads'],
+        can: ['send links and magnets to Downloads'],
         cannot: 'It cannot see your library or downloads, or change any settings.',
       };
   }
+}
+
+/** "It can send links … and see how your downloads are doing." */
+export function accessSentence(can: string[], lead = 'It can'): string {
+  const list = can.length > 1 ? `${can.slice(0, -1).join(', ')} and ${can[can.length - 1]}` : (can[0] ?? '');
+  return `${lead} ${list}.`;
+}
+
+/** First letter in capitals, for an access entry shown as a list item. */
+export function upperFirst(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function browserName(ua: string): string | null {

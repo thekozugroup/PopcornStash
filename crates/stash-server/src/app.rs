@@ -35,8 +35,22 @@ pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
         config.renditions_dir(),
         config.transcode_dir(),
         config.vpn_dir(),
+        config.pending_torrents_dir(),
     ] {
         tokio::fs::create_dir_all(dir).await?;
+    }
+    // Thumbnails, photo renditions and live transcodes are pictures of the family's
+    // media, and pending torrents can carry private tracker keys: only the web
+    // server's user may open these folders (the torrent engine shares its group).
+    for dir in [
+        config.secrets_dir(),
+        config.cache_dir(),
+        config.vpn_dir(),
+        config.pending_torrents_dir(),
+    ] {
+        if let Err(e) = make_private_dir(&dir).await {
+            tracing::warn!(error = %format!("{e:#}"), "could not make a private folder private");
+        }
     }
     let db = stash_core::db::open(&config.db_path()).await?;
     let layout = Arc::new(StashLayout::new(&config.stash_root));
@@ -101,6 +115,21 @@ pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
         rate_limiter: Arc::new(RateLimiter::new()),
         http,
     })
+}
+
+/// Narrow a folder of `/config` to its owner (0700). A link in its place is left alone.
+async fn make_private_dir(dir: &std::path::Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = tokio::fs::symlink_metadata(dir).await?;
+    if !meta.is_dir() {
+        anyhow::bail!("{} is not a plain folder", dir.display());
+    }
+    if meta.permissions().mode() & 0o077 != 0 {
+        tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .await
+            .map_err(|e| anyhow::anyhow!("{}: {e}", dir.display()))?;
+    }
+    Ok(())
 }
 
 /// A fully built state rooted in `dir` (`dir/stash`, `dir/config`) for integration tests.
@@ -237,7 +266,16 @@ pub fn router(state: AppState) -> Router {
             security::security_headers,
         ))
         .layer(CatchPanicLayer::new())
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            // Paths only, with invite and recovery codes hidden; never query strings.
+            TraceLayer::new_for_http().make_span_with(|request: &axum::extract::Request| {
+                tracing::debug_span!(
+                    "request",
+                    method = %request.method(),
+                    path = %security::loggable_path(request.uri().path()),
+                )
+            }),
+        )
         .with_state(state)
 }
 
@@ -317,5 +355,36 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    fn mode(path: &std::path::Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    /// Without Landlock the torrent engine can read whatever its group (PGID) or
+    /// everyone may read. The family's pictures in the caches and the database are
+    /// not among them.
+    #[tokio::test]
+    async fn private_config_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("config/cache");
+        std::fs::create_dir_all(cache.join("thumbs")).unwrap();
+        std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let state = super::test_state(dir.path()).await.unwrap();
+        let config = &state.config;
+        for private in [
+            config.cache_dir(),
+            config.secrets_dir(),
+            config.vpn_dir(),
+            config.pending_torrents_dir(),
+        ] {
+            assert_eq!(mode(&private), 0o700, "{}", private.display());
+        }
+        assert_eq!(mode(&config.db_path()), 0o600);
     }
 }

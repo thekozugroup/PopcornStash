@@ -39,10 +39,15 @@ const styles = stylex.create({
       '@media (max-width: 719px)': 'minmax(0, 1fr)',
     },
     alignItems: 'start',
-    columnGap: 16,
+    columnGap: 24,
     rowGap: 12,
     margin: 0,
     padding: 0,
+    // One flat path under a thin divider, not boxes inside the panel.
+    paddingTop: 24,
+    borderTopWidth: 1,
+    borderTopStyle: 'solid',
+    borderTopColor: colorVars['--color-border'],
     listStyle: 'none',
   },
   step: {
@@ -50,20 +55,18 @@ const styles = stylex.create({
     flexDirection: 'column',
     gap: 4,
     minWidth: 0,
-    paddingBlock: 14,
-    paddingInline: 16,
-    borderRadius: 10,
-    backgroundColor: colorVars['--color-background-muted'],
   },
   folder: {
     overflowWrap: 'anywhere',
     color: colorVars['--color-text-primary'],
     fontWeight: 500,
   },
+  // Beside the step titles on wide screens; between the steps when they stack.
   arrow: {
     display: 'grid',
-    placeItems: 'center',
-    alignSelf: 'center',
+    placeItems: {default: 'center', '@media (max-width: 719px)': 'start'},
+    alignSelf: 'start',
+    paddingTop: {default: 1, '@media (max-width: 719px)': 0},
     color: colorVars['--color-icon-secondary'],
   },
   arrowWide: {

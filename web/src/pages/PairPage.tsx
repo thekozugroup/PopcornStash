@@ -15,7 +15,7 @@ import {pairing} from '../api/client';
 import type {PendingPairing} from '../api/types';
 import {EmptyPanel} from '../components/EmptyPanel';
 import {PageHeader} from '../components/PageHeader';
-import {clientKindName, pairingAccess} from '../components/settings/describe';
+import {accessSentence, clientKindName, pairingAccess, upperFirst} from '../components/settings/describe';
 import {LoadError, LoadingRows} from '../components/settings/SectionStates';
 import {useResource} from '../components/settings/useResource';
 import {formatRelative} from '../lib/format';
@@ -179,12 +179,19 @@ function Request({request, onOutcome}: {request: PendingPairing; onOutcome: (out
         <span {...stylex.props(styles.code)}>{request.user_code}</span>
       </div>
       <div {...stylex.props(styles.access)}>
-        <Text type="label">If you approve, it can</Text>
-        <ul {...stylex.props(styles.bullets)}>
-          {access.can.map(item => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
+        {access.can.length === 1 ? (
+          // One permission reads as a sentence, not a one-item list.
+          <Text as="p">{accessSentence(access.can, 'If you approve, it can')}</Text>
+        ) : (
+          <>
+            <Text type="label">If you approve, it can</Text>
+            <ul {...stylex.props(styles.bullets)}>
+              {access.can.map(item => (
+                <li key={item}>{upperFirst(item)}</li>
+              ))}
+            </ul>
+          </>
+        )}
         {access.cannot ? (
           <Text as="p" type="supporting" color="secondary">
             {access.cannot}

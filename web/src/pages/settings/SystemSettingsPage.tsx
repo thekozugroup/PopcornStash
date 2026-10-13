@@ -38,6 +38,14 @@ const styles = stylex.create({
     paddingBlock: 8,
     paddingInline: 20,
   },
+  // Counts read as columns (16px between items plus this trailing room), with
+  // the same breathing room above and below as a list row.
+  jobFacts: {
+    paddingBlock: 8,
+  },
+  jobFact: {
+    paddingInlineEnd: 16,
+  },
   disk: {
     display: 'flex',
     flexDirection: 'column',
@@ -147,7 +155,7 @@ function ServerGroup({info}: {info: SystemInfo}) {
                 <StatusTag tone="connected">Running</StatusTag>
               ) : (
                 <StatusTag tone="error" wrap>
-                  {isTurnedOff ? 'Turned off on this server. Torrents are unavailable.' : 'Not reachable. Torrents are stopped.'}
+                  {isTurnedOff ? 'Off on this server' : 'Not reachable. Torrents are stopped.'}
                 </StatusTag>
               )}
             </MetadataListItem>
@@ -212,10 +220,10 @@ function JobsGroup({info}: {info: SystemInfo}) {
       description="Scanning, sorting, reading video details and making thumbnails. A job that fails is tried up to three times.">
       <RowsPanel>
         <div {...stylex.props(styles.facts)}>
-          <MetadataList orientation="horizontal">
-            <MetadataListItem label="Waiting">{formatCount(queued, 'job')}</MetadataListItem>
-            <MetadataListItem label="Running">{formatCount(running, 'job')}</MetadataListItem>
-            <MetadataListItem label="Failed">
+          <MetadataList orientation="horizontal" xstyle={styles.jobFacts}>
+            <MetadataListItem label="Waiting" xstyle={styles.jobFact}>{formatCount(queued, 'job')}</MetadataListItem>
+            <MetadataListItem label="Running" xstyle={styles.jobFact}>{formatCount(running, 'job')}</MetadataListItem>
+            <MetadataListItem label="Failed" xstyle={styles.jobFact}>
               {failed > 0 ? <StatusTag tone="warning">{formatCount(failed, 'job')}</StatusTag> : 'None'}
             </MetadataListItem>
           </MetadataList>
@@ -344,7 +352,6 @@ function PlaybackGroup({info}: {info: SystemInfo | undefined}) {
           min={1}
           max={8}
           isIntegerOnly
-          hasNumberSteppers
           status={sessionsError ? {type: 'error', message: sessionsError} : undefined}
           statusVariant="detached"
           width="100%"

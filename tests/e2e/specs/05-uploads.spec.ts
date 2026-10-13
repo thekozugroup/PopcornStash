@@ -43,7 +43,7 @@ test('a video uploaded from the Downloads page is sorted into Movies', async ({p
   await expectFile('Movies/Sunset Drive (2020)/Sunset Drive (2020).mp4');
   expect(sortedFromCompleted(name), 'the sorter took the upload from Downloads/Completed').toBe(true);
   expect(exists(`Downloads/Completed/${name}`)).toBe(false);
-  expect(fs.readdirSync(path.join(env.stash, 'Downloads', 'In Progress', '.uploads'))).toEqual([]);
+  expect(fs.readdirSync(path.join(env.stash, '.popcornstash', 'uploads'))).toEqual([]);
 
   const downloads = await (await page.request.get('/api/downloads?state=all')).json();
   const download = downloads.items.find((d: {name: string}) => d.name === name);
@@ -129,6 +129,6 @@ test('a paused upload keeps showing what the server already has', async ({page})
   await page.getByRole('menuitem', {name: 'Cancel upload…'}).click();
   await page.getByRole('alertdialog').getByRole('button', {name: 'Cancel upload'}).click();
   await expect(row).toBeHidden();
-  await expect.poll(() => fs.readdirSync(path.join(env.stash, 'Downloads', 'In Progress', '.uploads'))).toEqual([]);
+  await expect.poll(() => fs.readdirSync(path.join(env.stash, '.popcornstash', 'uploads'))).toEqual([]);
   fs.rmSync(file);
 });

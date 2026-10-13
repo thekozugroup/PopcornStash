@@ -27,7 +27,8 @@ use librqbit::{
 use serde::{Deserialize, Serialize};
 use stash_core::internal_api::{
     AddTorrentResponse, EXIT_RELOAD, EngineHealth, EngineRunState, EngineState, EngineTorrent,
-    EngineTorrentState, LimitsRequest, TunnelState, TunnelStatus, VpnProvider,
+    EngineTorrentState, LimitsRequest, MIN_SPEED_LIMIT_KBPS, TunnelState, TunnelStatus,
+    VpnProvider,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, RwLock, watch};
@@ -350,7 +351,13 @@ fn parse_id(id: &str) -> Result<Id20, BackendError> {
     id.parse::<Id20>().map_err(|_| BackendError::NotFound)
 }
 
+/// A speed limit for librqbit: none for 0, and never below the 16 KiB/s it needs to
+/// move a block at all (a lower limit would stall every transfer instead of slowing it).
 fn kbps_to_bps(kbps: u64) -> Option<NonZeroU32> {
+    if kbps == 0 {
+        return None;
+    }
+    let kbps = kbps.max(MIN_SPEED_LIMIT_KBPS);
     NonZeroU32::new(u32::try_from(kbps.saturating_mul(1024)).unwrap_or(u32::MAX))
 }
 
@@ -1410,8 +1417,33 @@ mod tests {
             }
         );
         assert_eq!(kbps_to_bps(0), None);
-        assert_eq!(kbps_to_bps(1).map(NonZeroU32::get), Some(1024));
+        assert_eq!(kbps_to_bps(100).map(NonZeroU32::get), Some(100 * 1024));
         assert_eq!(kbps_to_bps(u64::MAX).map(NonZeroU32::get), Some(u32::MAX));
+    }
+
+    /// librqbit waits for one second's allowance to cover a whole 16 KiB block; with a
+    /// smaller limit the wait fails and the transfer stops (a 5 KiB/s upload limit used
+    /// to stop all uploads). Limits below the block size count as 16 KiB/s.
+    #[tokio::test]
+    async fn limits_below_one_block_still_move_blocks() {
+        let block = NonZeroU32::new(16 * 1024).unwrap();
+        for kbps in [1, 5, 15, 16, 100] {
+            let limits = librqbit::limits::Limits::new(LimitsConfig {
+                download_bps: kbps_to_bps(kbps),
+                upload_bps: kbps_to_bps(kbps),
+            });
+            let both = async {
+                limits.prepare_for_upload(block).await?;
+                limits.prepare_for_download(block).await
+            };
+            tokio::time::timeout(Duration::from_secs(5), both)
+                .await
+                .unwrap_or_else(|_| panic!("{kbps} KiB/s: a block did not get through in time"))
+                .unwrap_or_else(|e| panic!("{kbps} KiB/s: a block was refused: {e:#}"));
+        }
+        assert_eq!(kbps_to_bps(1).map(NonZeroU32::get), Some(16 * 1024));
+        assert_eq!(kbps_to_bps(15).map(NonZeroU32::get), Some(16 * 1024));
+        assert_eq!(kbps_to_bps(16).map(NonZeroU32::get), Some(16 * 1024));
     }
 
     #[test]

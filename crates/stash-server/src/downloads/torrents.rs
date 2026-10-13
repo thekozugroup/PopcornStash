@@ -800,18 +800,52 @@ pub(crate) async fn finish_completed(manager: &DownloadManager, row: &DownloadRo
     }
 }
 
-/// A torrent's file or folder strictly inside `In Progress` (not the folder itself and
-/// not the partial uploads).
+/// A torrent's file or folder: one entry directly inside `In Progress`, where the
+/// engine creates them. Never the folder itself, anything deeper, the old partial
+/// uploads folder or a web download's `.part` file, whatever an engine reports.
 fn is_torrent_content_rel(rel: &str) -> bool {
-    StashLayout::zone(rel) == Zone::InProgress
-        && rel != paths::IN_PROGRESS
-        && rel != paths::UPLOADS_TMP
-        && !rel.starts_with(&format!("{}/", paths::UPLOADS_TMP))
+    let Some(name) = rel
+        .strip_prefix(paths::IN_PROGRESS)
+        .and_then(|rest| rest.strip_prefix('/'))
+    else {
+        return false;
+    };
+    !name.is_empty()
+        && !name.contains('/')
+        && name != "."
+        && name != ".."
+        && rel != paths::LEGACY_UPLOADS_TMP
+        && !name.ends_with(".part")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The engine names where a torrent's files are; only one entry directly in In
+    /// Progress is ever taken out, so an engine cannot hand over anything else there.
+    #[test]
+    fn torrent_content_is_one_entry_in_in_progress() {
+        for ok in [
+            "Downloads/In Progress/Big Movie (2019)",
+            "Downloads/In Progress/movie.mkv",
+        ] {
+            assert!(is_torrent_content_rel(ok), "{ok}");
+        }
+        for bad in [
+            "Downloads/In Progress",
+            "Downloads/In Progress/",
+            "Downloads/In Progress/a/b",
+            "Downloads/In Progress/.uploads",
+            "Downloads/In Progress/clip.mp4.part",
+            "Downloads/In Progressive/x",
+            "Downloads/Completed/x",
+            "Movies/x",
+            ".popcornstash/uploads/x.part",
+        ] {
+            assert!(!is_torrent_content_rel(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn bencode_validation() {

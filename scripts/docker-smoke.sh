@@ -373,6 +373,46 @@ config_owned() {
 }
 check "app data belongs to PUID; engine state to the engine user (0700)" config_owned
 
+private_modes() {
+  local path want got
+  for path in "config/popcornstash.db 600" "config/cache 700" "config/secrets 700" \
+    "config/torrent/vpn 700" "config/pending-torrents 700" "stash/.popcornstash/uploads 700" \
+    "stash/Downloads 755"; do
+    want="${path##* }"
+    got="$(host_stat '%a' "main/${path% *}")"
+    [[ "$got" == "$want" ]] || {
+      echo "${path% *} is mode $got, not $want"
+      return 1
+    }
+  done
+}
+check "the database, caches, VPN files and partial uploads are private to PUID" private_modes
+
+# Even without Landlock (docker exec does not apply it), the engine's user and group
+# cannot open the web server's private data.
+engine_user_shut_out() {
+  local path
+  for path in /config/popcornstash.db /config/torrent/vpn /config/cache /config/secrets \
+    /config/pending-torrents /stash/.popcornstash/uploads; do
+    if docker exec -u "$ENGINE_UID:$PGID" "$MAIN" sh -c "if [ -d '$path' ]; then ls '$path'; else head -c 1 '$path'; fi" >/dev/null 2>&1; then
+      echo "the engine's user can read $path"
+      return 1
+    fi
+  done
+}
+check "the engine's user cannot read the database, caches, VPN files or uploads" engine_user_shut_out
+
+# libvips may hand camera RAW files to ImageMagick; the image's policy keeps every
+# other ImageMagick coder off, so a disguised PCX under a RAW name is refused.
+imagemagick_locked_down() {
+  docker exec -u "$PUID:$PGID" "$MAIN" sh -c '
+    ffmpeg -nostdin -loglevel error -f lavfi -i color=red:s=16x16 -frames:v 1 -c:v pcx -y /tmp/smoke.pcx &&
+    cp /tmp/smoke.pcx /tmp/smoke.raf &&
+    if vipsheader /tmp/smoke.raf >/dev/null 2>&1; then rm -f /tmp/smoke.pcx /tmp/smoke.raf; exit 1; fi
+    rm -f /tmp/smoke.pcx /tmp/smoke.raf'
+}
+check "ImageMagick reads only camera RAW coders (policy installed)" imagemagick_locked_down
+
 SERVE_PID="$(pid_of "$MAIN" "popcornstash serve" "$PUID")"
 ENGINE_PID="$(pid_of "$MAIN" "popcornstash torrent-engine" "$ENGINE_UID")"
 check "serve runs as uid $PUID" test -n "$SERVE_PID"

@@ -88,6 +88,8 @@ struct Opts {
     start: bool,
     /// Configure a VPN download proxy address (nothing listens there).
     proxy: bool,
+    /// Use this VPN download proxy instead (a fake proxy started by the test).
+    proxy_url: Option<Url>,
 }
 
 struct Env {
@@ -149,6 +151,9 @@ async fn env(opts: Opts) -> Env {
         config.torrentd_url = Some(engine.url.clone());
         if opts.proxy {
             config.torrentd_proxy = Some(Url::parse("http://127.0.0.1:9").unwrap());
+        }
+        if let Some(proxy) = &opts.proxy_url {
+            config.torrentd_proxy = Some(proxy.clone());
         }
         Some(engine)
     } else {
@@ -264,6 +269,25 @@ impl Env {
     fn completed(&self) -> PathBuf {
         self.root.join("Downloads/Completed")
     }
+
+    /// Partial browser uploads: outside the folder the torrent engine may write.
+    fn uploads_dir(&self) -> PathBuf {
+        self.root.join(".popcornstash/uploads")
+    }
+}
+
+fn mode(path: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::symlink_metadata(path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o7777
+}
+
+/// Root can hand a file to another user (the torrent engine's uid in production).
+fn running_as_root() -> bool {
+    nix::unistd::geteuid().is_root()
 }
 
 // --- fake file server ----------------------------------------------------------------
@@ -1612,9 +1636,7 @@ async fn upload_in_chunks_resumes_and_completes() {
         .unwrap();
     assert_eq!(created.chunk_size, CHUNK_SIZE);
     assert_eq!(created.received, 0);
-    let part = env
-        .in_progress()
-        .join(format!(".uploads/{}.part", created.id));
+    let part = env.uploads_dir().join(format!("{}.part", created.id));
     assert!(part.exists());
 
     let put = |offset: usize, bytes: &[u8]| {
@@ -1734,11 +1756,7 @@ async fn uploads_belong_to_their_uploader() {
         env.uploads.status(&env.member, id).await.unwrap().state,
         "cancelled"
     );
-    assert!(
-        !env.in_progress()
-            .join(format!(".uploads/{id}.part"))
-            .exists()
-    );
+    assert!(!env.uploads_dir().join(format!("{id}.part")).exists());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1787,14 +1805,10 @@ async fn stale_uploads_are_cleaned_up() {
             .unwrap(),
         1
     );
+    assert!(!env.uploads_dir().join(format!("{}.part", old.id)).exists());
     assert!(
-        !env.in_progress()
-            .join(format!(".uploads/{}.part", old.id))
-            .exists()
-    );
-    assert!(
-        env.in_progress()
-            .join(format!(".uploads/{}.part", fresh.id))
+        env.uploads_dir()
+            .join(format!("{}.part", fresh.id))
             .exists()
     );
     assert_eq!(
@@ -2269,12 +2283,16 @@ async fn a_symlinked_part_file_is_never_written_through() {
     )
     .await;
     env.manager.start(env.cancel.clone());
+    // The link is replaced by a file of the server's own, never written through.
     wait_until!(
-        "the download to fail",
-        env.row(&id).await.state == DownloadState::Failed
+        "the download",
+        env.row(&id).await.state == DownloadState::Sorting
     );
     assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
-    assert!(!env.completed().join("file.bin").exists());
+    assert_eq!(
+        std::fs::read(env.completed().join("file.bin")).unwrap(),
+        *files.files.big
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2285,9 +2303,7 @@ async fn a_symlinked_upload_part_is_never_written_through() {
         .create(&env.member, create("clip.mp4", 10))
         .await
         .unwrap();
-    let part = env
-        .in_progress()
-        .join(format!(".uploads/{}.part", created.id));
+    let part = env.uploads_dir().join(format!("{}.part", created.id));
     let victim = env.config_dir.join("victim.db");
     std::fs::write(&victim, b"precious").unwrap();
     std::fs::remove_file(&part).unwrap();
@@ -2319,9 +2335,7 @@ async fn upload_bytes_lost_on_disk_are_asked_for_again() {
         .create(user, create("lost.mp4", 100))
         .await
         .unwrap();
-    let part = env
-        .in_progress()
-        .join(format!(".uploads/{}.part", created.id));
+    let part = env.uploads_dir().join(format!("{}.part", created.id));
     let put = |offset: usize, bytes: &[u8]| {
         env.uploads.write_chunk(
             user,
@@ -2495,6 +2509,7 @@ async fn vpn_proxy_is_skipped_for_ports_it_cannot_reach() {
         allow_local: true,
         start: true,
         proxy: true,
+        ..Default::default()
     })
     .await;
     let d = env.add(&files.url("/file.bin")).await;
@@ -2581,5 +2596,252 @@ async fn api_errors_keep_the_json_shape() {
             message.ends_with('.') && !message.contains("serde"),
             "{method} {uri}: {message}"
         );
+    }
+}
+
+// --- fake VPN download proxy ---------------------------------------------------------
+
+/// What the fake VPN proxy was asked for: the absolute URL and the Cookie header.
+#[derive(Clone, Default)]
+struct ProxyLog(Arc<Mutex<Vec<ProxiedRequest>>>);
+
+/// The absolute URL asked for and its Cookie header.
+type ProxiedRequest = (String, Option<String>);
+
+impl ProxyLog {
+    fn cookie_for(&self, url: &str) -> Vec<Option<String>> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(u, _)| u == url)
+            .map(|(_, c)| c.clone())
+            .collect()
+    }
+}
+
+/// A plain HTTP proxy standing in for the engine's VPN proxy. It never connects
+/// anywhere: it answers absolute-form requests itself, so the hosts in the links
+/// (127.0.0.1 and 127.0.0.2 on port 80) are only names.
+async fn fake_proxy(log: ProxyLog) -> Url {
+    async fn answer(State(log): State<ProxyLog>, uri: Uri, headers: HeaderMap) -> Response {
+        let cookie = headers
+            .get(header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        log.0.lock().unwrap().push((uri.to_string(), cookie));
+        let host = uri.host().unwrap_or_default().to_string();
+        match (host.as_str(), uri.path()) {
+            // Same origin first, then off to another host.
+            ("127.0.0.1", "/start.bin") => {
+                (StatusCode::FOUND, [(header::LOCATION, "/same.bin")]).into_response()
+            }
+            ("127.0.0.1", "/same.bin") => (
+                StatusCode::FOUND,
+                [(header::LOCATION, "http://127.0.0.2/other.bin")],
+            )
+                .into_response(),
+            ("127.0.0.1", "/start.torrent") => (
+                StatusCode::FOUND,
+                [(header::LOCATION, "http://127.0.0.2/other.torrent")],
+            )
+                .into_response(),
+            ("127.0.0.2", "/other.bin") => Body::from(payload(4096)).into_response(),
+            ("127.0.0.2", "/other.torrent") => Body::from(TORRENT_FILE).into_response(),
+            _ => StatusCode::NOT_FOUND.into_response(),
+        }
+    }
+    let router = Router::new().fallback(any(answer)).with_state(log);
+    let addr = serve(router).await;
+    Url::parse(&format!("http://{addr}")).unwrap()
+}
+
+/// Through the VPN proxy redirects are followed by hand. The browser's cookies belong
+/// to the site they came from: they follow a redirect on that site, never one to
+/// another host (reqwest does the same for direct downloads).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn forwarded_cookies_never_follow_a_redirect_to_another_host() {
+    let log = ProxyLog::default();
+    let proxy = fake_proxy(log.clone()).await;
+    let env = env(Opts {
+        engine: true,
+        allow_local: true,
+        start: true,
+        proxy_url: Some(proxy),
+        ..Default::default()
+    })
+    .await;
+    env.manager.allow_destination("127.0.0.2".parse().unwrap());
+    let headers = || {
+        Some(ForwardedHeaders {
+            cookie: Some("session=SECRETCOOKIE".into()),
+            referer: None,
+            user_agent: None,
+        })
+    };
+    let d = env
+        .manager
+        .add_url(
+            &env.owner.user_id,
+            AddDownloadRequest {
+                url: "http://127.0.0.1/start.bin".into(),
+                filename: None,
+                headers: headers(),
+            },
+        )
+        .await
+        .unwrap();
+    wait_until!(
+        "the download through the proxy",
+        env.row(&d.id).await.state == DownloadState::Sorting
+    );
+    let secret = Some("session=SECRETCOOKIE".to_string());
+    assert_eq!(
+        log.cookie_for("http://127.0.0.1/start.bin"),
+        vec![secret.clone()]
+    );
+    assert_eq!(
+        log.cookie_for("http://127.0.0.1/same.bin"),
+        vec![secret.clone()]
+    );
+    assert_eq!(log.cookie_for("http://127.0.0.2/other.bin"), vec![None]);
+
+    // A .torrent link takes the same path.
+    env.manager
+        .add_url(
+            &env.owner.user_id,
+            AddDownloadRequest {
+                url: "http://127.0.0.1/start.torrent".into(),
+                filename: None,
+                headers: headers(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        log.cookie_for("http://127.0.0.1/start.torrent"),
+        vec![secret]
+    );
+    assert_eq!(log.cookie_for("http://127.0.0.2/other.torrent"), vec![None]);
+}
+
+// --- partial files the torrent engine must not read ----------------------------------
+
+/// The engine may write `Downloads/In Progress` (and with Landlock nothing else), so a
+/// family member's upload never passes through it, and the files are private.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn uploads_stay_out_of_the_engines_folder() {
+    let env = env(Opts::default()).await;
+    let data = payload(1000);
+    let created = env
+        .uploads
+        .create(&env.member, create("Kids.mp4", data.len() as i64))
+        .await
+        .unwrap();
+    let part = env.uploads_dir().join(format!("{}.part", created.id));
+    assert!(part.is_file(), "{}", part.display());
+    assert_eq!(mode(&env.uploads_dir()), 0o700);
+    assert_eq!(mode(&part), 0o600);
+    assert!(
+        std::fs::read_dir(env.in_progress())
+            .unwrap()
+            .all(|e| e.unwrap().file_name() != ".uploads"),
+        "nothing is created in In Progress"
+    );
+    env.uploads
+        .write_chunk(
+            &env.member,
+            &created.id,
+            0,
+            Some(data.len() as u64),
+            Body::from(data.clone()),
+        )
+        .await
+        .unwrap();
+    let download = env
+        .uploads
+        .complete(&env.member, &created.id)
+        .await
+        .unwrap();
+    assert_eq!(download.state, DownloadState::Sorting);
+    assert_eq!(
+        std::fs::read(env.completed().join("Kids.mp4")).unwrap(),
+        data
+    );
+}
+
+/// Uploads in progress when the server is updated move to the new folder; anything
+/// else in the old one (a link or a file the engine planted) stays where it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn uploads_in_the_old_folder_move_over() {
+    let env = env(Opts::default()).await;
+    let created = env
+        .uploads
+        .create(&env.member, create("old.mp4", 4))
+        .await
+        .unwrap();
+    let legacy = env.in_progress().join(".uploads");
+    std::fs::create_dir_all(&legacy).unwrap();
+    let new_part = env.uploads_dir().join(format!("{}.part", created.id));
+    std::fs::rename(&new_part, legacy.join(format!("{}.part", created.id))).unwrap();
+    std::fs::write(legacy.join(format!("{}.part", created.id)), b"ab").unwrap();
+    let outside = env.root.join("Other/secret.txt");
+    std::fs::write(&outside, b"secret").unwrap();
+    std::os::unix::fs::symlink(&outside, legacy.join("0193aaaa-link.part")).unwrap();
+
+    env.uploads.migrate_legacy().await;
+    assert_eq!(std::fs::read(&new_part).unwrap(), b"ab");
+    assert_eq!(mode(&new_part), 0o600);
+    assert!(!env.uploads_dir().join("0193aaaa-link.part").exists());
+    assert!(
+        std::fs::symlink_metadata(legacy.join("0193aaaa-link.part"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    let status = env.uploads.status(&env.member, &created.id).await.unwrap();
+    assert_eq!(status.state, "receiving");
+}
+
+/// A web download's `.part` lives in In Progress (the engine's folder): it is private,
+/// and a file someone else put at its name is never written to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn web_download_parts_are_private() {
+    let files = FileServer::start().await;
+    let env = env(Opts {
+        allow_local: true,
+        start: true,
+        ..Default::default()
+    })
+    .await;
+    let d = env.add(&files.url("/slow.bin")).await;
+    let part = env.in_progress().join("slow.bin.part");
+    wait_until!("the part file", part.exists());
+    assert_eq!(mode(&part), 0o600);
+    env.manager.pause(&d.id).await.unwrap();
+    wait_until!(
+        "the worker to stop",
+        !env.manager.running.contains_key(&d.id)
+    );
+
+    if running_as_root() {
+        // The engine swaps the partial file for one it owns (and could read).
+        let kept = std::fs::metadata(&part).unwrap().len();
+        std::fs::remove_file(&part).unwrap();
+        std::fs::write(&part, vec![0u8; kept as usize]).unwrap();
+        std::os::unix::fs::chown(&part, Some(6881), None).unwrap();
+        env.manager.resume(&d.id).await.unwrap();
+        wait_until!(
+            "the resumed download",
+            env.row(&d.id).await.state == DownloadState::Sorting
+        );
+        // It started over instead of continuing into the planted file.
+        assert_eq!(files.seen("/slow.bin").last().unwrap().range, None);
+        let done = env.completed().join("slow.bin");
+        assert_eq!(std::fs::read(&done).unwrap(), *files.files.big);
+        use std::os::unix::fs::MetadataExt;
+        assert_ne!(std::fs::metadata(&done).unwrap().uid(), 6881);
+    } else {
+        eprintln!("skipping the planted-file half: needs root");
     }
 }

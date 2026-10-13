@@ -50,6 +50,8 @@ export interface VpnStatus {
   error: string | null;
   kill_switch: boolean;
   allow_no_vpn: boolean;
+  /** Torrents are off on this server by design; `error` says why (older servers omit it). */
+  torrents_off?: boolean;
 }
 
 export interface PairingStarted {

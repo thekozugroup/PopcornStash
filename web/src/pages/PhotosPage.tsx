@@ -8,6 +8,7 @@ import {Button} from '@astryxdesign/core/Button';
 import {Heading} from '@astryxdesign/core/Heading';
 import {Skeleton} from '@astryxdesign/core/Skeleton';
 import {Text} from '@astryxdesign/core/Text';
+import {ImageIcon} from 'lucide-react';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {items as itemsApi, photos as photosApi} from '../api/client';
 import type {PhotoMonth} from '../api/types';
@@ -240,6 +241,7 @@ export default function PhotosPage() {
         {header}
         <EmptyPanel
           title="No photos yet"
+          icon={<ImageIcon size={28} strokeWidth={1.5} />}
           description="Photos are sorted by the month they were taken, using the date your camera saved. Drop them anywhere in this window, or copy a folder of photos into the Inbox folder on the server."
           actions={<Button label="Add photos" variant="primary" href="/downloads" />}
         />

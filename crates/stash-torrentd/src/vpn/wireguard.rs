@@ -276,6 +276,12 @@ pub fn handshake_fresh(age: Option<i64>) -> bool {
     age.is_some_and(|a| a < HANDSHAKE_MAX_AGE)
 }
 
+/// How long keys from a handshake `age` seconds old stay valid: WireGuard rejects
+/// them 180 s after the handshake.
+pub fn session_left(age: i64) -> Duration {
+    Duration::from_secs(u64::try_from(HANDSHAKE_MAX_AGE.saturating_sub(age)).unwrap_or(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +307,9 @@ mod tests {
         )));
         // Never.
         assert_eq!(handshake_age(&parse_latest_handshakes("k\t0\n"), 5), None);
+        assert_eq!(session_left(0), Duration::from_secs(180));
+        assert_eq!(session_left(100), Duration::from_secs(80));
+        assert_eq!(session_left(200), Duration::ZERO);
         assert!(!handshake_fresh(None));
     }
 

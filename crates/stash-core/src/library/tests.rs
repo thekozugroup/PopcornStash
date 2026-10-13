@@ -1530,3 +1530,27 @@ async fn an_ignored_file_stays_put_even_when_it_changes() {
     assert_eq!(item.size, 18, "the file facts are refreshed in place");
     assert!(h.exists("Inbox/Heat.1995.mkv"));
 }
+
+/// An item counts as gone when a link takes its place (even one to nowhere) or when
+/// its folder becomes a link out of the stash, but not when it merely cannot be read.
+#[cfg(unix)]
+#[tokio::test]
+async fn links_in_place_of_items_count_as_gone() {
+    let h = harness().await;
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(h.root.join("Movies/A (2020)")).unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("missing.mkv"),
+        h.root.join("Movies/A (2020)/A (2020).mkv"),
+    )
+    .unwrap();
+    assert!(super::scanner::is_gone(&h.lib, "Movies/A (2020)/A (2020).mkv").await);
+
+    std::fs::write(outside.path().join("b.mkv"), b"x").unwrap();
+    std::os::unix::fs::symlink(outside.path(), h.root.join("Movies/B")).unwrap();
+    assert!(super::scanner::is_gone(&h.lib, "Movies/B/b.mkv").await);
+
+    std::fs::create_dir_all(h.root.join("Movies/C")).unwrap();
+    std::fs::write(h.root.join("Movies/C/c.mkv"), b"x").unwrap();
+    assert!(!super::scanner::is_gone(&h.lib, "Movies/C/c.mkv").await);
+}

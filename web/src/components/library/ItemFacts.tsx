@@ -33,8 +33,10 @@ const styles = stylex.create({
     gap: 16,
     minWidth: 0,
   },
-  summary: {
-    rowGap: 12,
+  // Facts read as columns: MetadataList spaces items 16px apart, and this
+  // trailing room doubles that between columns without widening wrapped rows.
+  fact: {
+    paddingInlineEnd: 16,
   },
   toggle: {
     alignSelf: 'flex-start',
@@ -99,9 +101,9 @@ export function ItemFacts({item}: {item: ItemDetail}) {
   return (
     <div {...stylex.props(styles.wrap)}>
       {hasSummary ? (
-        <MetadataList orientation="horizontal" columns="multi" xstyle={styles.summary}>
+        <MetadataList orientation="horizontal" columns="multi">
           {summary.map(entry => (
-            <MetadataListItem key={entry.label} label={entry.label}>
+            <MetadataListItem key={entry.label} label={entry.label} xstyle={styles.fact}>
               {entry.value}
             </MetadataListItem>
           ))}

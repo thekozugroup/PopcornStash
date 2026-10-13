@@ -33,6 +33,7 @@ const styles = stylex.create({
   description: {
     lineHeight: 1.55,
     maxWidth: '62ch',
+    textWrap: 'pretty',
   },
   actions: {
     display: 'flex',

@@ -180,7 +180,13 @@ pub struct AddTorrentResponse {
     pub name: Option<String>,
 }
 
-/// `PUT /limits`. Zero means unlimited.
+/// The lowest speed limit the engine can keep, in KiB/s. librqbit moves data in 16 KiB
+/// blocks and waits for one second's allowance to cover a whole block, so a lower limit
+/// would not slow transfers down: it would stop every one of them.
+pub const MIN_SPEED_LIMIT_KBPS: u64 = 16;
+
+/// `PUT /limits`. Zero means unlimited; other values below [`MIN_SPEED_LIMIT_KBPS`] count
+/// as that minimum.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
 pub struct LimitsRequest {
     pub down_kbps: u64,

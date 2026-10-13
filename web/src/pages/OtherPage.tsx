@@ -4,13 +4,14 @@
  * the library.
  */
 import {Button} from '@astryxdesign/core/Button';
+import {FileText} from 'lucide-react';
 import {CategoryLibraryPage, type CategoryLibraryConfig} from '../components/library/CategoryLibraryPage';
 import {placeholderIcon} from '../components/library/placeholderIcon';
 
 const config: CategoryLibraryConfig = {
   category: 'other',
   title: 'Other',
-  subtitle: 'Music, documents and anything else that is not a film, show, home video or photo.',
+  subtitle: 'Music, documents and anything else.',
   shape: 'frame',
   noun: 'files',
   sortOptions: [
@@ -22,6 +23,7 @@ const config: CategoryLibraryConfig = {
   defaultSort: 'added',
   empty: {
     title: 'Nothing in Other yet',
+    icon: FileText,
     description:
       'Files that are not videos or photos, like music and documents, are kept here. Drop them anywhere in this window to add them.',
   },

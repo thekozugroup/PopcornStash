@@ -18,7 +18,7 @@ import {ApiError, shows as showsApi} from '../api/client';
 import type {Item, ShowDetail} from '../api/types';
 import {EpisodeList} from '../components/library/EpisodeList';
 import {LoadError} from '../components/library/LoadError';
-import {itemHref, largeThumb, resumePosition, showMeta, timeLeft} from '../components/library/libraryFormat';
+import {episodeName, itemHref, largeThumb, resumePosition, showMeta, timeLeft} from '../components/library/libraryFormat';
 import {useLibraryEvents} from '../components/library/useLibraryEvents';
 import {PageHeader, useDocumentTitle} from '../components/PageHeader';
 import {formatEpisodeCode} from '../lib/format';
@@ -190,6 +190,7 @@ export default function ShowPage() {
           title="Show not found"
           subtitle={`There is no show called “${name}” in your library. It may have been renamed or removed.`}
           actions={<Button label="See all shows" variant="primary" href="/shows" />}
+          isActionBelow
         />
       );
     }
@@ -233,7 +234,7 @@ export default function ShowPage() {
         ? `Resume ${code}`
         : `Play ${code}`;
   const upLine = upEpisode
-    ? [upEpisode.episode_title ?? upEpisode.title, resumes && !up?.isRewatch ? timeLeft(upEpisode) : null]
+    ? [episodeName(upEpisode), resumes && !up?.isRewatch ? timeLeft(upEpisode) : null]
         .filter(Boolean)
         .join(' · ')
     : '';

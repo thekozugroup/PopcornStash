@@ -17,7 +17,7 @@ import type {VpnStatus} from '../../../api/types';
 import {LoadError} from '../../../components/settings/SectionStates';
 import {useConfirm} from '../../../components/settings/useConfirm';
 import {errorMessage} from '../../../lib/errors';
-import {providerName} from '../../../lib/vpn';
+import {providerBrand} from '../../../lib/vpn';
 import {protocolName, vpnView} from './vpnView';
 
 const styles = stylex.create({
@@ -82,6 +82,11 @@ const styles = stylex.create({
     borderTopStyle: 'solid',
     borderTopColor: colorVars['--color-border'],
   },
+  // Facts read as columns: MetadataList spaces items 16px apart, and this
+  // trailing room doubles that between columns without widening wrapped rows.
+  fact: {
+    paddingInlineEnd: 16,
+  },
   skeleton: {
     display: 'flex',
     flexDirection: 'column',
@@ -120,7 +125,10 @@ export function VpnStatusPanel({status, error, isLoading, onReload, onChange, pa
   }
 
   const view = vpnView(status, false);
-  const provider = providerName(status);
+  // NordVPN's brand (the country is in the status line, the server below), or an
+  // uploaded file's label ("WireGuard · home-router"), which already names the protocol.
+  const provider = status.provider === 'nordvpn' ? providerBrand(status) : (status.label ?? providerBrand(status));
+  const protocol = status.provider === 'nordvpn' ? protocolName(status.protocol) : null;
   const canReconnect = status.configured && !view.isDegraded;
 
   const reconnect = async () => {
@@ -187,19 +195,17 @@ export function VpnStatusPanel({status, error, isLoading, onReload, onChange, pa
         <div {...stylex.props(styles.facts)}>
           <MetadataList orientation="horizontal">
             {status.public_ip ? (
-              <MetadataListItem label="Public address">{status.public_ip}</MetadataListItem>
+              <MetadataListItem label="Public address" xstyle={styles.fact}>{status.public_ip}</MetadataListItem>
             ) : null}
-            {provider ? <MetadataListItem label="Provider">{provider}</MetadataListItem> : null}
-            {status.server ? <MetadataListItem label="Server">{status.server}</MetadataListItem> : null}
-            {protocolName(status.protocol) ? (
-              <MetadataListItem label="Protocol">{protocolName(status.protocol)}</MetadataListItem>
-            ) : null}
+            {provider ? <MetadataListItem label="Provider" xstyle={styles.fact}>{provider}</MetadataListItem> : null}
+            {status.server ? <MetadataListItem label="Server" xstyle={styles.fact}>{status.server}</MetadataListItem> : null}
+            {protocol ? <MetadataListItem label="Protocol" xstyle={styles.fact}>{protocol}</MetadataListItem> : null}
             {status.state === 'connected' && status.since ? (
-              <MetadataListItem label="Connected">
+              <MetadataListItem label="Connected" xstyle={styles.fact}>
                 <Timestamp value={status.since} format="relative" type="inherit" color="inherit" />
               </MetadataListItem>
             ) : null}
-            <MetadataListItem label="Kill switch">{status.kill_switch ? 'On' : 'Off'}</MetadataListItem>
+            <MetadataListItem label="Kill switch" xstyle={styles.fact}>{status.kill_switch ? 'On' : 'Off'}</MetadataListItem>
           </MetadataList>
         </div>
       ) : null}

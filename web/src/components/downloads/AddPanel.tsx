@@ -154,8 +154,11 @@ export function AddPanel({
     if (isTorrent && vpnBlocked && !torrentsOff(vpnStatus)) parts.push('It waits until the VPN is ready.');
     feedback = {text: parts.filter(Boolean).join(' '), icon: KIND_ICON[check.link.kind], isError: false};
   } else {
+    // Never promise magnets on a server where torrents are off.
     feedback = {
-      text: 'Web links and magnet links both work. Torrents only ever run through the VPN.',
+      text: torrentsOff(vpnStatus)
+        ? 'Web links download right away. Magnet links cannot start while torrents are off.'
+        : 'Web links and magnet links both work. Torrents only ever run through the VPN.',
       icon: Link2,
       isError: false,
     };

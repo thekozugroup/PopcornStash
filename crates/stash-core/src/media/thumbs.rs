@@ -486,12 +486,30 @@ async fn ffmpeg_still(
     finish_temp(&tmp, dest).await
 }
 
+/// Camera RAW photos. libvips reads them through ImageMagick (libraw), which it counts
+/// among its untrusted loaders; the image's ImageMagick policy allows only the RAW
+/// coders there.
+const RAW_EXTENSIONS: [&str; 8] = ["dng", "cr2", "cr3", "nef", "arw", "orf", "rw2", "raf"];
+
+/// A libvips command that reads `src`. libvips picks a loader by content, not by name,
+/// and library files can come from strangers (torrents), so only the loaders libvips
+/// trusts (JPEG, PNG, WebP, GIF, TIFF, HEIF) may read them. Its untrusted ones (PDF,
+/// SVG, ImageMagick, OpenSlide, MATLAB, FITS, ...) stay off, except ImageMagick for
+/// camera RAW files, which need it.
+fn vips_command(program: &str, src: &Path) -> tokio::process::Command {
+    let mut cmd = tools::command(program);
+    if !RAW_EXTENSIONS.contains(&extension(src).as_str()) {
+        cmd.env("VIPS_BLOCK_UNTRUSTED", "1");
+    }
+    cmd
+}
+
 /// `vipsthumbnail` with EXIF auto-rotation, shrinking (never enlarging) into a `edge`×`edge` box.
 async fn vips_resize(src: &Path, dest: &Path, edge: u32, quality: u32) -> Result<()> {
     let tmp = temp_sibling(dest);
     let mut out = tmp.as_os_str().to_owned();
     out.push(format!("[Q={quality},strip]"));
-    let mut cmd = tools::command(tools::VIPSTHUMBNAIL);
+    let mut cmd = vips_command(tools::VIPSTHUMBNAIL, src);
     cmd.arg(src)
         .arg("--size")
         .arg(format!("{edge}x{edge}>"))
@@ -508,7 +526,7 @@ async fn vips_resize(src: &Path, dest: &Path, edge: u32, quality: u32) -> Result
 /// Stored pixel size of an image, via vipsheader, then ffprobe.
 async fn image_size(abs: &Path) -> Option<(i64, i64)> {
     if tools::has_vips().await {
-        let mut cmd = tools::command(tools::VIPSHEADER);
+        let mut cmd = vips_command(tools::VIPSHEADER, abs);
         cmd.arg(abs);
         if let Ok(output) = tools::run_ok(cmd, tools::VIPSHEADER, Duration::from_secs(30)).await
             && let Some(size) = parse_vipsheader(&String::from_utf8_lossy(&output.stdout))
@@ -1421,6 +1439,43 @@ mod tests {
             guess_mime(Path::new("a.unknownext")),
             "application/octet-stream"
         );
+    }
+
+    /// libvips chooses a loader by content, not by name. A library file can come from a
+    /// stranger (a torrent), so a "photo" may only be read by the loaders libvips
+    /// trusts (JPEG, PNG, WebP, GIF, TIFF, HEIF), not by its untrusted ones (PDF, SVG,
+    /// ImageMagick, OpenSlide, MATLAB, FITS, PPM, ...).
+    #[tokio::test]
+    async fn photos_are_read_only_by_trusted_vips_loaders() {
+        if !tools::has_vips().await {
+            eprintln!("skipping: libvips is not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        // A PPM image (an untrusted loader) under a .jpg name.
+        let disguised = dir.path().join("holiday.jpg");
+        std::fs::write(
+            &disguised,
+            "P3\n2 2\n255\n255 0 0  0 255 0\n0 0 255  255 255 255\n",
+        )
+        .unwrap();
+        let out = dir.path().join("out.webp");
+        assert!(vips_resize(&disguised, &out, 64, 80).await.is_err());
+        assert!(!out.exists());
+        assert_eq!(
+            image_size(&disguised).await,
+            Some((2, 2)),
+            "ffmpeg still reads it"
+        );
+
+        // A real JPEG goes through as before.
+        let real = dir.path().join("real.jpg");
+        ffmpeg(
+            &["-f", "lavfi", "-i", "color=red:s=40x30", "-frames:v", "1"],
+            &real,
+        );
+        vips_resize(&real, &out, 64, 80).await.unwrap();
+        assert_eq!(webp_size(&out), (40, 30));
     }
 
     #[test]

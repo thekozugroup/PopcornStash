@@ -72,7 +72,8 @@ const styles = stylex.create({
     gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
     maxWidth: 560,
     marginBottom: 24,
-    marginInline: -8,
+    // The current link's pill lines up with the page gutter, like the content below it.
+    marginInline: 0,
   },
   quickLink: {
     display: 'grid',

@@ -248,6 +248,7 @@ export default function ItemPage() {
           title="This file is not in your library"
           subtitle="It may have been moved to Trash, or the link is out of date."
           actions={<Button label="Go to Home" variant="primary" href="/" />}
+          isActionBelow
         />
       );
     }

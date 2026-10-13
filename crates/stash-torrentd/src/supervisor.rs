@@ -31,9 +31,6 @@ use crate::vpn::{self, Health, Tunnel, VpnSource};
 
 const MSG_NEED_CAPS: &str = "Torrents need the container to have NET_ADMIN and /dev/net/tun.";
 const MONITOR_EVERY: Duration = Duration::from_secs(5);
-/// How long a WireGuard session stays usable after its last handshake.
-const WIREGUARD_SESSION: Duration =
-    Duration::from_secs(crate::vpn::wireguard::HANDSHAKE_MAX_AGE as u64);
 /// A new tunnel gets this long to complete its first handshake.
 const CONNECT_GRACE: Duration = Duration::from_secs(45);
 const BACKOFF_MIN: Duration = Duration::from_secs(5);
@@ -186,11 +183,14 @@ fn prepare_in_progress(options: &SupervisorOptions) -> std::io::Result<()> {
     )
     .map_err(errno)?;
     let (puid, pgid) = (Uid::from_raw(options.puid), Gid::from_raw(options.pgid));
-    let (downloads, created) = open_or_create_dir(&root, "Downloads", 0o775)?;
+    // Searchable but not writable by the group: the engine shares PGID and only ever
+    // needs to reach In Progress (without Landlock it could otherwise replace
+    // Downloads/Completed with a folder of its own).
+    let (downloads, created) = open_or_create_dir(&root, "Downloads", 0o755)?;
     let st = fstat(&downloads).map_err(errno)?;
     if created {
         fchown(&downloads, Some(puid), Some(pgid)).map_err(errno)?;
-        fchmod(&downloads, Mode::from_bits_truncate(0o775)).map_err(errno)?;
+        fchmod(&downloads, Mode::from_bits_truncate(0o755)).map_err(errno)?;
     } else if st.st_mode & 0o011 == 0 {
         // The engine (group PGID) must be able to reach In Progress.
         fchmod(
@@ -730,6 +730,13 @@ fn status_for(
     }
 }
 
+/// A WireGuard tunnel that was up and now reports no handshake is between keys while
+/// the keys it last had are still valid (up to 180 s after their handshake); after that
+/// it is waiting for a peer that may be gone.
+fn in_rekey_grace(session_until: Option<Instant>, now: Instant) -> bool {
+    session_until.is_some_and(|until| now < until)
+}
+
 /// A tiny DNS query sent through the tunnel so a fresh WireGuard peer handshakes.
 fn nudge_query() -> Vec<u8> {
     let id = rand::random::<[u8; 2]>();
@@ -873,7 +880,8 @@ impl TunnelManager {
             // When the tunnel last started waiting for a handshake / reconnect.
             let mut pending_since = Some(Instant::now());
             let mut since: Option<i64> = None;
-            let mut last_up: Option<Instant> = None;
+            // Until when the WireGuard keys seen last stay valid without a new handshake.
+            let mut session_until: Option<Instant> = None;
             let mut first = true;
             let outcome = loop {
                 let wait = if first {
@@ -888,8 +896,8 @@ impl TunnelManager {
                     Wake::Timer => {}
                 }
                 match tunnel.health(now_unix()).await {
-                    Health::Up => {
-                        last_up = Some(Instant::now());
+                    Health::Up { session_left } => {
+                        session_until = session_left.map(|left| Instant::now() + left);
                         pending_since = None;
                         if since.is_none() {
                             since = Some(now_unix());
@@ -912,13 +920,13 @@ impl TunnelManager {
                         ));
                     }
                     Health::Pending => {
-                        // boringtun reports no handshake while it rekeys; a WireGuard
-                        // session stays valid until the last handshake is 180 s old.
-                        let rekeying = matches!(tunnel, Tunnel::WireGuard(_))
-                            && last_up.is_some_and(|t| t.elapsed() < WIREGUARD_SESSION);
-                        if rekeying {
+                        // boringtun reports no handshake between keys; the old keys
+                        // stay valid until 180 s after the last handshake, and not a
+                        // moment longer, so a dead peer is noticed then.
+                        if in_rekey_grace(session_until, Instant::now()) {
                             continue;
                         }
+                        session_until = None;
                         let waiting = *pending_since.get_or_insert_with(Instant::now);
                         if waiting.elapsed() > CONNECT_GRACE {
                             break Wake::Timer;
@@ -1024,6 +1032,23 @@ impl TunnelManager {
 mod tests {
     use super::*;
 
+    /// boringtun stops reporting a handshake once the keys of the last one expire, and a
+    /// stopped VPN peer looks exactly like that. The grace for "between keys" ends 180 s
+    /// after the last handshake: it used to restart from the last check that saw the
+    /// tunnel up, so a dead peer showed as connected for up to six minutes.
+    #[test]
+    fn rekey_grace_ends_when_the_last_keys_expire() {
+        let now = Instant::now();
+        let left = |age| Some(now + crate::vpn::wireguard::session_left(age));
+        // Seen up 5 s ago with a 30 s old handshake: still between keys.
+        assert!(in_rekey_grace(left(30), now + Duration::from_secs(5)));
+        // The last check saw a 175 s old handshake: 10 s later the keys are gone.
+        assert!(!in_rekey_grace(left(175), now + Duration::from_secs(10)));
+        assert!(!in_rekey_grace(left(180), now));
+        // Never up, or OpenVPN: no grace.
+        assert!(!in_rekey_grace(None, now));
+    }
+
     fn options(dir: &Path) -> SupervisorOptions {
         SupervisorOptions {
             config_dir: dir.join("config"),
@@ -1086,6 +1111,13 @@ mod tests {
         assert_eq!(
             (ip.uid(), ip.gid(), ip.mode() & 0o7777),
             (4242, 4343, 0o2775)
+        );
+        // The engine (group PGID) may enter Downloads to reach In Progress, but not
+        // write there: without Landlock it could otherwise swap Downloads/Completed.
+        let downloads = meta(&opts.stash_root.join("Downloads"));
+        assert_eq!(
+            (downloads.uid(), downloads.gid(), downloads.mode() & 0o7777),
+            (4242, 4343, 0o755)
         );
         assert_eq!(meta(&opts.run_dir).mode() & 0o777, 0o755);
         // Idempotent.

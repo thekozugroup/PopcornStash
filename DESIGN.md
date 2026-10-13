@@ -3,6 +3,8 @@ name: PopcornStash
 description: A quiet, private family library where the media itself provides the colour.
 colors:
   accent: "oklch(62.3% 0.214 259.815)"
+  accent-text: "oklch(54.6% 0.245 262.881)"
+  accent-text-dark: "oklch(70.7% 0.165 254.624)"
   white-surface: "#ffffff"
   zinc-paper: "oklch(98.5% 0 none)"
   zinc-subtle: "oklch(96.7% 0.001 286.375)"
@@ -13,6 +15,7 @@ colors:
   zinc-dark-divider: "oklch(27.4% 0.006 286.033)"
   zinc-ink: "oklch(21% 0.006 285.885)"
   zinc-black: "oklch(14.1% 0.005 285.823)"
+  stage-black: "oklch(0% 0 0)"
   status-connected: "oklch(69.6% 0.17 162.48)"
   status-warning: "oklch(76.9% 0.188 70.08)"
   status-error: "oklch(63.7% 0.237 25.331)"
@@ -77,7 +80,49 @@ spacing:
   section-gap: "24px"
   panel-padding: "28px"
   page-gap: "32px"
+  fact-gap: "32px"
   major-gap: "40px"
+  settings-columns: "48px"
+components:
+  button-primary:
+    backgroundColor: "{colors.accent}"
+    textColor: "{colors.zinc-black}"
+    typography: "{typography.action}"
+    rounded: "{rounded.control}"
+    padding: "8px 12px"
+    height: "44px"
+  button-secondary:
+    backgroundColor: "{colors.white-surface}"
+    textColor: "{colors.zinc-ink}"
+    typography: "{typography.action}"
+    rounded: "{rounded.control}"
+    padding: "8px 12px"
+    height: "44px"
+  button-ghost:
+    textColor: "{colors.zinc-muted}"
+    typography: "{typography.action}"
+    rounded: "{rounded.control}"
+    padding: "8px 12px"
+    height: "44px"
+  input:
+    backgroundColor: "{colors.white-surface}"
+    textColor: "{colors.zinc-ink}"
+    typography: "{typography.body}"
+    rounded: "{rounded.control}"
+    height: "44px"
+  status-tag:
+    backgroundColor: "{colors.zinc-subtle}"
+    textColor: "{colors.zinc-muted}"
+    typography: "{typography.tag}"
+    rounded: "{rounded.tag}"
+    padding: "5px 9px"
+  panel:
+    backgroundColor: "{colors.white-surface}"
+    rounded: "{rounded.panel}"
+    padding: "28px"
+  media-tile:
+    backgroundColor: "{colors.zinc-subtle}"
+    rounded: "{rounded.media}"
 ---
 
 # Design System: PopcornStash
@@ -86,13 +131,38 @@ spacing:
 
 **Creative North Star: "The family shelf"**
 
-A private shelf for a family's videos and photos. Neutral surfaces step back so posters, frames and photos carry the colour. Every incoming file has a visible, honest path: in progress, completed, sorted. The interface earns trust by saying exactly where things are and whether torrent traffic is protected.
+A private shelf for a family's videos and photos. Neutral surfaces step back so posters, frames and photos carry the colour. Every incoming file has a visible, honest path: in progress, completed, sorted. The interface earns trust by saying exactly where things are and whether torrent traffic is protected, once and in plain words.
 
-PopcornStash shares Popcorn SR's world: Tailwind zinc neutrals, Tailwind blue-500 as the single action/focus accent with zinc-950 text on blue, the platform system sans, flat panels, thin dividers, 44px controls, system light/dark and reduced motion. Components come from Astryx (`@astryxdesign/core`) with a custom `popcorn` theme that maps these tokens onto Astryx's token surface. Astryx components are used as-is wherever one exists; local components are limited to media-specific pieces (poster grid, photo timeline, player chrome).
+PopcornStash shares Popcorn SR's world: Tailwind zinc neutrals, Tailwind blue-500 as the single action and focus accent with zinc-950 text on blue, the platform system sans, flat panels, thin dividers, 44px controls, system light and dark, and reduced motion. Components come from Astryx (`@astryxdesign/core`) with a custom `popcorn` theme (`web/src/themes/popcorn`, rebuilt with `npm run theme:build`) that maps these tokens onto Astryx's token surface. Astryx components are used as they are wherever one exists; local components are limited to media pieces (poster grid, shelf, episode rows, photo timeline, player chrome) and small layout wrappers (page header, settings group, status tag).
+
+It is an operating surface, not a showcase: familiar patterns, steady density, and no decoration that the library's own pictures do not provide.
+
+**Key Characteristics:**
+- Zinc chrome, blue only where the next action is, colour from the media.
+- One h1 per page with at most one sentence under it.
+- Flat white panels with a 1px divider border; no shadows on the workspace.
+- Status in words with a small dot, never a dot alone.
+- 44px targets everywhere, including on touch for "small" controls.
 
 ## Colors
 
-Same assignment table as Popcorn SR:
+A cool neutral zinc ramp with one saturated blue, plus three status hues that only ever appear next to words.
+
+### Primary
+- **Action Blue** (`accent`): fill of the one primary button per view, focus rings (2px, 3px offset), the progress fill of downloads and the watched hairline on tiles, text selection tint, and the caret. Text on Action Blue is Zinc Black in both themes.
+- **Link Blue** (`accent-text` in light, `accent-text-dark` in dark): inline text links only ("Nord Account", "Sunset Drive (2020)"). It steps one shade away from the surface so links keep AA contrast. A standalone link that is the way forward in a row is a ghost button instead, so it keeps a 44px target.
+
+### Neutral
+- **White Surface** / **Zinc Ink** (dark): panels, cards, inputs, menus, the sidebar.
+- **Zinc Paper** / **Zinc Black** (dark): the page canvas behind everything.
+- **Zinc Ink** / **Zinc Paper** (dark): main text and icons.
+- **Zinc Muted** / **Zinc Dark Muted** (dark): supporting text, labels, ghost buttons, inactive navigation.
+- **Zinc Divider** / **Zinc Dark Divider** (dark): panel borders, row dividers, the settings group rules.
+- **Zinc Subtle** / **Zinc Dark Divider** (dark): status tag fill, media placeholders, the code box in pairing, the selected navigation fill (at low alpha).
+- **Stage Black** (`stage-black`): the player and lightbox stage in both themes, so media is judged against neutral black.
+
+### Status
+- **Connected** (emerald), **Warning** (amber), **Error** (red): VPN protected, connecting or paused, blocked or off; download failures; low disk space. As text they step to the 700 shade in light and the 400 shade in dark for contrast.
 
 | Semantic | Light | Dark |
 | --- | --- | --- |
@@ -104,49 +174,112 @@ Same assignment table as Popcorn SR:
 | Subtle fill | Zinc Subtle | Zinc Dark Divider |
 | Action fill/focus | Action Blue | Action Blue |
 | Action text | Zinc Black | Zinc Black |
+| Link text | Link Blue (blue-600) | Link Blue (blue-400) |
 
-Emerald/amber/red are status only (VPN protected/connecting/blocked, download failed) and always paired with words. The video player and photo lightbox use a true-black stage in both themes so media is judged against neutral black.
+**The One Accent Rule.** Blue marks the next action, focus and real progress. Navigation, tabs, filters and secondary actions stay neutral; the selected tab marker is ink, not blue.
 
-**The One Accent Rule.** Blue marks the next action, focus and real progress. Navigation, filters and secondary actions stay neutral.
+**The Words First Rule.** Emerald, amber and red never stand alone: every dot sits beside the words that carry the meaning.
 
 ## Typography
 
-System sans only, sentence case, no uppercase eyebrows. Hierarchy from size and weight. Titles of media wrap to two lines then truncate; file paths and sizes use the metadata style and wrap.
+**Body and display font:** the platform system sans (`-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`).
+**Code font:** `ui-monospace` for paths, codes and commands only.
+
+**Character:** One quiet family for everything; hierarchy comes from size and weight steps, never from a second typeface.
+
+### Hierarchy
+- **Headline** (600, 30px, 1.2, -0.025em): the page h1 ("Movies", "Settings", a film's title).
+- **Title** (600, 20px, 1.4, -0.025em): section headings on Home and Downloads ("Continue watching", "In progress"), photo months, status headlines in panels.
+- **Section** (600, 16px, 1.5): h3 headings of settings groups and shelves ("Who has access", "Movies 3 new").
+- **Body** (400, 16px, 1.5): page subtitles, panel text, values in fact rows. Subtitles cap at 58ch and wrap with `text-wrap: pretty`.
+- **Label** (550, 14px): form labels and short headings inside panels.
+- **Action** (600, 14px): every button label.
+- **Navigation** (500, 14px): sidebar and tabs.
+- **Metadata** (400, 13px): one line under tiles, download and inbox facts, settings group descriptions, helper text. Numbers use tabular figures.
+- **Tag** (400, 12px): status tags and badges.
+
+**The Sentence Case Rule.** Every label, heading and button is sentence case. No uppercase eyebrows, no letter-spaced labels, no em dashes.
+
+**The Say It Once Rule.** A state is named once per place. A status line has a short name and, only when it adds something, a reason and what still works ("Torrents off" and "Web links and uploads still work.", not "Torrents unavailable" and "Torrents are turned off on this server."). One word per state across the app: "off" when torrents are off on purpose, "unavailable" when the engine is not answering, "paused" while the VPN connects, "blocked" when the VPN fails. A VPN reads "Protected · NordVPN · Netherlands", each part once.
 
 ## Layout
 
-Desktop: sticky 228px sidebar (Home, Movies, Shows, Home Videos, Photos, Other · Inbox, Downloads · Settings) and a bounded main column (max 1320px, padding `clamp(24px, 5vw, 64px)`). Under 800px the sidebar becomes a compact top bar with a menu; the five most used destinations stay one tap away.
+**Shell.** Desktop: a sticky 228px sidebar (brand; Home, Movies, Shows, Home Videos, Photos, Other; Inbox with its count, Downloads; Settings; a foot with the VPN tag, the person's name and Sign out) and a bounded main column (max 1320px, padding `clamp(24px, 5vw, 64px)`, more at the bottom). Under 800px the sidebar becomes a compact top bar with a menu drawer, and a row of five quick links (Home, Movies, Shows, Photos, Downloads) sits on the 20px page gutter, its current pill aligned with the content edge.
 
-Media grids: posters 2:3 for Movies and Shows, 16:9 frames for Home Videos and Other, square-cropped tiles for Photos grouped by month. Grid columns from `repeat(auto-fill, minmax(…))`, never fixed counts.
+**Page header.** One h1, at most one sentence under it, then 32px to the content. Trailing actions are rare (Inbox's "Accept all suggestions"); when the action is the page's only way forward ("Go to Home" on a not-found page) it sits under the sentence.
+
+**Settings.** The Settings h1, then a tab strip (one tab per section), then the section's one-sentence lead. Each section keeps its h2 for the document outline but hides it, because the selected tab already shows the name. Sections are groups: on screens 1100px and wider, a 200-260px intro column (h3, one or two sentences, and the group's action, such as "Invite someone", "Add a passkey" or "Create a token") beside the controls, with 48px between the columns. Groups are separated by a thin top rule and 32px of padding; wide tables (the audit log) stack the intro above.
+
+**Media grids.** Columns come from `repeat(auto-fill, minmax(…))`, never fixed counts: posters 2:3 at least 148px with 20px columns and 28px rows (Movies, Shows), 16:9 frames at least 208px (Home Videos, Other), square photos at least 112px with 4px gaps grouped by month. Home shelves scroll sideways with snap points: posters 168px, frames 288px, photos 148px (132, 232 and 112px on phones, edge to edge with the gutter kept as scroll padding). Shelves with one or two tiles sit side by side instead of taking a row each.
+
+**Facts.** Short facts (a file's video, audio and size; the VPN's provider, server and kill switch; background jobs) read as columns: label above value, 32px between columns, wrapping on narrow screens. Longer fact lists use label-beside-value rows.
+
+**Rhythm.** 8px inside a field, 16px between related items, 20px between form fields, 24px between a section heading and its content, 32px between page blocks, 48px between Home's sections.
 
 ## Elevation & Depth
 
-No shadows on workspace surfaces. Dialogs and menus use Astryx's own elevation. Media tiles use a 1px inner hairline in place of a shadow so light photos do not bleed into a light page.
+Flat by default. Workspace surfaces have no shadows: a white panel on the zinc page is separated by its 1px divider border alone. Dialogs, menus, popovers and toasts keep Astryx's own elevation because they float above the page. Media tiles use a 1px inner hairline (zinc-950 at 8% in light, white at 8% in dark) instead of a shadow so light photos keep an edge on a light page; the same hairline carries the hover tint.
+
+**The No Nesting Rule.** A panel never holds boxed cards. Inside a panel, groups are separated by a thin divider or by space (the Downloads path is three flat steps under one rule, not three filled boxes).
 
 ## Shapes
 
-Controls 8px, panels 16px, media tiles 10px, tags 6px, progress 4px.
+Gently rounded and consistent: controls 8px, panels and dialogs 16px, media tiles and episode frames 10px, tags and badges 6px, progress tracks 4px. The player stage is 16px on desktop and square edge to edge on phones. Pills are reserved for small selected states (the current quick link).
 
 ## Components
 
-- **Buttons, inputs, selects, switches, dialogs, toasts, menus, tabs, progress, badges, empty states:** Astryx.
-- **Poster/frame tile:** thumbnail, title, one metadata line (year, duration or date). Progress hairline when partially watched. Keyboard focus ring on the whole tile.
-- **Player:** native `<video>` with hls.js when HLS is needed; black stage; title, back, and quality/audio menus in Astryx menus.
-- **Lightbox:** Astryx `Lightbox` for photos, arrow-key navigation, original download.
-- **Download row:** name, source kind, state words, real progress bar (accent), speed/ETA in metadata style, actions in a quiet menu.
-- **VPN status:** a tag with a status dot and words ("Protected · NordVPN · Netherlands", "Torrents paused: VPN connecting", "Torrents blocked: no VPN").
-- **Drop zone:** the whole app accepts dropped files; a full-window overlay explains where they will go.
+### Buttons
+- **Shape:** 8px corners, 44px tall (36px "small" on fine pointers only; 44px on touch), 8px by 12px padding, 14px semibold labels.
+- **Primary:** Action Blue fill, Zinc Black label. One per view: the action that moves the task forward ("Add", "Approve", "Connect NordVPN", "Resume S01E02").
+- **Secondary:** White Surface fill, 1px Zinc Divider border, Zinc Ink label.
+- **Ghost:** no fill, Zinc Muted label, a quiet fill on hover. Used for "See all", back links (chevron plus parent name), "Show file details", "Open VPN settings". When a ghost button ends or starts a text row it shifts by its 12px padding so its label lines up with the text.
+- **Focus:** a 2px Action Blue ring with a 3px offset on every control.
+
+### Inputs / Fields
+- **Style:** White Surface, 1px border, 8px corners, 44px tall, 16px text. Label above, optional description under the label, error under the field.
+- **Numbers:** typed or stepped with the arrow keys; no stepper buttons (they cannot hold a 44px target). Units sit inside the field ("KB/s", "days").
+- **Focus:** the border turns Action Blue.
+
+### Status tag
+- **Style:** Zinc Subtle fill, 6px corners, 12px Zinc Muted text, a 7px status dot. It may wrap in the narrow sidebar.
+- **Use:** the VPN in the sidebar foot and on Downloads, engine and passkey health in System, failed job counts.
+
+### VPN status panel
+The VPN page opens with a panel: a status dot and a title in words ("Protected · NordVPN · Netherlands", "Torrents are off on this server"), one detail sentence only when it adds a reason or says what still works, an explanation of what the tunnel covers, Reconnect and Remove, and the connection facts (public address, provider, server, protocol for NordVPN, connected since, kill switch).
+
+### Media tile
+- **Character:** the picture is the tile. Thumbnail at its shape's ratio with a 10px radius and the inner hairline, then the title (two lines, then truncated) and one metadata line ("2014 · 1 min", "Jun 13, 2024 · 12 s", "PDF · 592 B").
+- **States:** a 4px Action Blue hairline on the image shows partial watch progress; hover tints the image; keyboard focus rings the whole tile. Files without a picture show a 22px icon (film, clapperboard, photo, music, document) on Zinc Subtle.
+
+### Episode rows
+A 176px 16:9 frame, then the episode's name, then its state ("Watched", "Up next · 5 min left", or its runtime). Inside its show an untitled episode is "Episode 3"; the code ("S01E03") appears only above a real episode title. The show's Resume or Play button names the code, and the line under it names the episode.
+
+### Rows in panels
+Downloads, Inbox decisions, people, devices, passkeys and browsers are rows inside one white panel, separated by thin dividers: name, a metadata line, and actions at the trailing edge (a quiet "More" menu for rarer actions).
+
+### Empty states
+Astryx EmptyState in a flat panel: a 28px line icon (stroke 1.5, the same icon as the category's tile placeholder), a short title ("No movies yet"), one or two sentences that say how the space fills, and at most one action. Inside an existing panel the frame is dropped.
+
+### Player and lightbox
+Native `<video>` (hls.js only when HLS is needed) on the Stage Black stage; Play or "Resume from 0:31" as the primary button over the poster with "Start from the beginning" as a ghost below it; quality, audio and "Next episode" in a bar under the stage. Photos open in Astryx's Lightbox with arrow keys, a count, the date and camera, and "Download original".
+
+### Drop overlay
+The whole app accepts dropped files; a full-window overlay says where they will go.
 
 ## Do's and Don'ts
 
 ### Do:
-- Let media imagery provide colour; keep chrome neutral.
-- Show the real state of downloads and the VPN in words.
-- Keep 44px targets, visible focus and system light/dark.
-- Say where a file will be moved before moving it.
+- **Do** let posters, frames and photos provide the colour; keep the chrome zinc.
+- **Do** show the real state of downloads and the VPN in words, with the dot as a second signal.
+- **Do** keep one primary action per view, 44px targets and a visible 2px focus ring.
+- **Do** say where a file will move before moving it ("Will move to Other").
+- **Do** give each page one h1 and at most one sentence under it, wrapped so no word sits alone on the last line.
+- **Do** put a settings group's action under its description, and a lone way forward under the page's sentence.
 
 ### Don't:
-- Don't add gradients, glass, decorative charts or fake activity.
-- Don't use status colours as action colours.
-- Don't hide the VPN state when torrents exist.
-- Don't show file paths to family members unless they open details.
+- **Don't** add gradients, glass, decorative charts, shadows on workspace panels or fake activity.
+- **Don't** use status colours as action colours, or blue for navigation.
+- **Don't** repeat a state, a name or a code twice in one place (a title and detail that say the same thing, "NordVPN · Netherlands · nl812 · Netherlands", "S01E01" above "The Lantern Keepers S01E01").
+- **Don't** nest boxed cards inside a panel.
+- **Don't** hide the VPN state when torrents exist.
+- **Don't** show file paths to family members unless they open details.

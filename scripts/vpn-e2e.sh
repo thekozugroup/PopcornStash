@@ -320,8 +320,8 @@ engine_running() {
   engine_api GET /health | jq -e '.engine.state == "running"' >/dev/null
 }
 
-# librqbit 9 always opens an IPv6 UDP socket, so its session cannot start on a
-# kernel booted with ipv6.disable=1; the engine then stays blocked and says why.
+# On a kernel booted with ipv6.disable=1 the engine's sockets fall back to IPv4
+# (vendor/librqbit-dualstack-sockets), so the session starts there too.
 kernel_has_ipv6() {
   docker exec "$MAIN" test -e /proc/net/if_inet6
 }
@@ -357,19 +357,9 @@ else
   docker logs --tail 60 "$MAIN" 2>&1 | sed 's/^/      /'
   exit 1
 fi
-if kernel_has_ipv6; then
-  check "the torrent engine starts its session (engine.state running)" eventually 60 engine_running
-else
-  engine_explains_ipv6() {
-    engine_api GET /health | jq -e '.engine.state == "blocked" and (.engine.reason | test("IPv6"))' >/dev/null
-  }
-  sleep 15
-  if engine_explains_ipv6; then
-    skip "the torrent engine starts its session" "this kernel has no IPv6 (ipv6.disable=1), which librqbit 9 needs; the engine says so in /health"
-  else
-    fail "the torrent engine starts its session or explains why not" "$(engine_api GET /health 2>&1 | jq -c .engine 2>/dev/null)"
-  fi
-fi
+session_note="(engine.state running)"
+kernel_has_ipv6 || session_note="on IPv4 sockets (this kernel has no IPv6; engine.state running)"
+check "the torrent engine starts its session $session_note" eventually 60 engine_running
 engine_api GET /health >"$EVIDENCE_DIR/health-connected.json" 2>&1 || true
 
 check "the web app answers /api/health" eventually 60 web_health

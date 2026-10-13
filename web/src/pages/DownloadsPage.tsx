@@ -259,7 +259,7 @@ export default function DownloadsPage() {
     <>
       <PageHeader
         title="Downloads"
-        subtitle="Torrents, web links and uploads arrive here first, then move into Movies, Shows, Home Videos or Photos. Anything unclear waits in Inbox."
+        subtitle="New files land here first, then move into your library. Anything unclear waits in Inbox."
       />
 
       <AddPanel

@@ -14,7 +14,7 @@ import {useState} from 'react';
 import {pairing, tokens} from '../../api/client';
 import type {PendingPairing, Token} from '../../api/types';
 import {useAuth} from '../../auth/AuthProvider';
-import {clientKindName, pairingAccess, scopesInWords} from '../../components/settings/describe';
+import {accessSentence, clientKindName, pairingAccess, scopesInWords} from '../../components/settings/describe';
 import {EmptyRows, LoadError, LoadingRows, RowsPanel, PanelList} from '../../components/settings/SectionStates';
 import {SettingsGroup} from '../../components/settings/SettingsGroup';
 import {Steps} from '../../components/settings/Steps';
@@ -119,7 +119,7 @@ function PendingRequest({
           {request.ip ? ` from ${request.ip}` : ''}
         </Text>
         <Text as="p" type="supporting" color="secondary" xstyle={styles.meta}>
-          {access.can.join('. ')}. {access.cannot ?? ''}
+          {[accessSentence(access.can), access.cannot].filter(Boolean).join(' ')}
         </Text>
       </div>
       <div {...stylex.props(styles.code)}>

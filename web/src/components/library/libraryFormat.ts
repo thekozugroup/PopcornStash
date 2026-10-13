@@ -89,6 +89,17 @@ export function displayTitle(
   return item.title;
 }
 
+/**
+ * An episode's name inside its show, where the show name and season are
+ * already on screen: its own title, or "Episode 3" ("Special 1" for season 0)
+ * rather than "The Lantern Keepers S01E03" again.
+ */
+export function episodeName(item: Pick<Item, 'title' | 'episode_title' | 'season' | 'episode'>): string {
+  if (item.episode_title) return item.episode_title;
+  if (item.episode === null) return item.title;
+  return item.season === 0 ? `Special ${item.episode}` : `Episode ${item.episode}`;
+}
+
 /** "3:28 PM" in the viewer's own clock style. */
 export function formatTime(unixSeconds: number): string {
   return new Intl.DateTimeFormat(undefined, {timeStyle: 'short'}).format(new Date(unixSeconds * 1000));

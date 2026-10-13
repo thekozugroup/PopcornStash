@@ -108,6 +108,21 @@ fn parse_forwarded_ip(entry: &str) -> Option<IpAddr> {
         })
 }
 
+/// A request path as it may appear in logs: invite and recovery codes (which work as
+/// passwords until used) are replaced, and the query string (pairing codes, offsets)
+/// is never included.
+pub fn loggable_path(path: &str) -> String {
+    const SECRET_AFTER: [&str; 3] = ["/invite/", "/recover/", "/api/invites/"];
+    for prefix in SECRET_AFTER {
+        if let Some(rest) = path.strip_prefix(prefix)
+            && !rest.is_empty()
+        {
+            return format!("{prefix}<redacted>");
+        }
+    }
+    path.to_string()
+}
+
 /// Requests per minute allowed per key.
 const PER_MINUTE: NonZeroU32 = NonZeroU32::new(10).expect("non-zero");
 /// Short bursts allowed per key.
@@ -316,6 +331,23 @@ mod tests {
             );
         }
         map
+    }
+
+    #[test]
+    fn logged_paths_hide_codes() {
+        let code = "Zx9_secretInviteCode123";
+        for path in [
+            format!("/invite/{code}"),
+            format!("/recover/{code}"),
+            format!("/api/invites/{code}"),
+        ] {
+            let logged = loggable_path(&path);
+            assert!(!logged.contains(code), "{logged}");
+            assert!(logged.ends_with("<redacted>"), "{logged}");
+        }
+        assert_eq!(loggable_path("/api/items/abc/file"), "/api/items/abc/file");
+        assert_eq!(loggable_path("/api/invites"), "/api/invites");
+        assert_eq!(loggable_path("/invite/"), "/invite/");
     }
 
     #[test]

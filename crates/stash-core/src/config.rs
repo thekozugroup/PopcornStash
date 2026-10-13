@@ -220,6 +220,10 @@ impl Config {
     pub fn vpn_dir(&self) -> PathBuf {
         self.torrent_dir().join("vpn")
     }
+    /// Torrents waiting for the VPN, kept across restarts (`<id>.json`, 0600).
+    pub fn pending_torrents_dir(&self) -> PathBuf {
+        self.config_dir.join("pending-torrents")
+    }
     pub fn internal_token_path(&self) -> PathBuf {
         self.torrent_dir()
             .join(crate::internal_api::INTERNAL_TOKEN_FILE)

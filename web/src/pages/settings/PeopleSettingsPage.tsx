@@ -198,15 +198,12 @@ function People() {
 
   return (
     <>
-      <SettingsSectionHeader
-        title="People"
-        subtitle="Invite family members and choose who can manage the server."
-        actions={<Button label="Invite someone" variant="primary" onClick={() => setIsInviting(true)} />}
-      />
+      <SettingsSectionHeader title="People" subtitle="Invite family members and choose who can manage the server." />
       <div {...stylex.props(styles.groups)}>
         <SettingsGroup
           title="Who has access"
-          description="Owners manage the VPN, settings and who has access. Members watch, browse, upload and add downloads.">
+          description="Owners manage the VPN, settings and who has access. Members watch, browse, upload and add downloads."
+          actions={<Button label="Invite someone" variant="primary" onClick={() => setIsInviting(true)} />}>
           {people.isLoading ? (
             <LoadingRows rows={3} label="Loading people" />
           ) : people.error !== undefined && !people.data ? (

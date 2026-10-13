@@ -190,9 +190,9 @@ PopcornStash creates these folders inside the library folder on its first start:
 | `Photos/` | `Photos/2024/06/original-name.heic` |
 | `Other/` | Anything that is not a video or photo |
 | `Inbox/` | Drop zone: anything you copy here is sorted |
-| `Downloads/In Progress/` | Torrents, web downloads and uploads while they arrive |
+| `Downloads/In Progress/` | Torrents and web downloads while they arrive |
 | `Downloads/Completed/` | Finished downloads waiting to be sorted |
-| `.popcornstash/` | The trash (kept 30 days) and a marker file |
+| `.popcornstash/` | The trash (kept 30 days), uploads while they arrive (private to `PUID`) and a marker file |
 
 How files move:
 
@@ -208,7 +208,7 @@ How files move:
 
 Every file PopcornStash creates in the library and app data belongs to `PUID:PGID`. On Unraid that is 99:100 (nobody:users), the same as your other shares. Pick the numbers of the user that owns your library folder.
 
-Torrents are downloaded by a separate user, the engine user (`STASH_TORRENT_UID`, 6881 by default), so torrent traffic can be kept inside the VPN. That user only ever writes into `Downloads/In Progress/` and shares your `PGID` group there. When a torrent finishes, PopcornStash hands its files to `PUID:PGID` before moving them, so your library never contains files owned by the engine user. If 6881 is already used by another account on your server, set `STASH_TORRENT_UID` to an unused number other than 0 and `PUID`.
+Torrents are downloaded by a separate user, the engine user (`STASH_TORRENT_UID`, 6881 by default), so torrent traffic can be kept inside the VPN. That user only ever writes into `Downloads/In Progress/` and shares your `PGID` group there. When a torrent finishes, PopcornStash hands its files to `PUID:PGID` before moving them, so your library never contains files owned by the engine user. Because the engine shares the group, the database, the thumbnail and transcode caches, the VPN files and uploads in progress are kept private to `PUID` (files 0600, folders 0700). Where the kernel supports Landlock the engine cannot read the rest of the library either; check the log for "Landlock sandbox enforced" (see [Security](security.md)). If 6881 is already used by another account on your server, set `STASH_TORRENT_UID` to an unused number other than 0 and `PUID`.
 
 The container starts as root only so it can set up the VPN and the kill switch. The web app and the torrent engine run as their own users without any special permissions.
 

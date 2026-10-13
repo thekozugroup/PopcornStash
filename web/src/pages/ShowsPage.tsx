@@ -3,6 +3,7 @@
  * updated first. The list is small enough to search and sort in the browser.
  */
 import {Button} from '@astryxdesign/core/Button';
+import {Tv} from 'lucide-react';
 import {useCallback, useEffect, useMemo, useState, type ReactNode} from 'react';
 import {useSearchParams} from 'react-router';
 import {items as itemsApi, shows as showsApi} from '../api/client';
@@ -99,6 +100,7 @@ export default function ShowsPage() {
     body = (
       <EmptyPanel
         title="No shows yet"
+        icon={<Tv size={28} strokeWidth={1.5} />}
         description="Episodes named like “Show Name S01E02” are grouped into shows and seasons automatically. Add a link or magnet in Downloads, or drop episode files anywhere in this window."
         actions={<Button label="Add a link" variant="primary" href="/downloads" />}
       />

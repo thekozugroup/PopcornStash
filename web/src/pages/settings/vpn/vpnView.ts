@@ -5,7 +5,7 @@
  */
 import type {VpnStatus} from '../../../api/types';
 import type {StatusTone} from '../../../components/StatusTag';
-import {describeVpn, providerName} from '../../../lib/vpn';
+import {describeVpn, protectedLabel, torrentsOffReason, vpnName} from '../../../lib/vpn';
 
 export interface VpnView {
   tone: StatusTone;
@@ -35,18 +35,19 @@ export function vpnView(status: VpnStatus | null, isUnavailable: boolean): VpnVi
   }
 
   if (isTorrentsTurnedOff(status)) {
-    // The server's reason: no NET_ADMIN or /dev/net/tun, the kill switch failed, or
-    // the web server runs without the supervisor.
+    // The server's reason (no NET_ADMIN or /dev/net/tun, the kill switch failed),
+    // unless it is the bare fallback that would only repeat the title.
+    const reason = torrentsOffReason(status);
     return {
       tone: 'error',
       title: 'Torrents are off on this server',
-      detail: `${status.error ?? 'Torrents are turned off on this server.'} Web links and uploads still work.`,
+      detail: [reason, 'Web links and uploads still work.'].filter(Boolean).join(' '),
       isDegraded: true,
     };
   }
 
   const summary = describeVpn(status);
-  const provider = providerName(status);
+  const name = vpnName(status);
 
   switch (status.state) {
     case 'connected':
@@ -56,7 +57,7 @@ export function vpnView(status: VpnStatus | null, isUnavailable: boolean): VpnVi
       // the proof of protection, is listed with the connection facts.
       return {
         tone: 'connected',
-        title: ['Protected', provider, status.country].filter(Boolean).join(' · '),
+        title: protectedLabel(status),
         detail: null,
         isDegraded: false,
       };
@@ -73,8 +74,8 @@ export function vpnView(status: VpnStatus | null, isUnavailable: boolean): VpnVi
       return {
         tone: 'warning',
         title: 'Torrents paused: VPN connecting',
-        detail: provider
-          ? `Connecting to ${provider}${status.country ? ` in ${status.country}` : ''}. Torrents wait until the tunnel is up, and nothing uses your home connection.`
+        detail: name
+          ? `Connecting to ${name}. Torrents wait until the tunnel is up, and nothing uses your home connection.`
           : summary.detail,
         isDegraded: false,
       };

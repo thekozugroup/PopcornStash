@@ -60,6 +60,8 @@ function pick(settings: Settings): TorrentDraft {
 }
 
 const LIMIT_MAX = 1_000_000;
+/** The torrent engine moves 16 KB blocks; a lower limit would stop transfers instead of slowing them. */
+const LIMIT_MIN = 16;
 
 function validate(draft: TorrentDraft): Errors {
   const errors: Errors = {};
@@ -80,6 +82,7 @@ function validate(draft: TorrentDraft): Errors {
     const value = draft[key];
     if (value === null || value < 0 || value > LIMIT_MAX || !Number.isInteger(value))
       errors[key] = 'Enter a whole number. 0 means no limit.';
+    else if (value > 0 && value < LIMIT_MIN) errors[key] = `Enter 0 for no limit, or ${LIMIT_MIN} KB/s or more.`;
   }
   return errors;
 }
@@ -162,7 +165,6 @@ export function TorrentSettings({isPrimary}: {isPrimary: boolean}) {
                 min={0}
                 max={100}
                 step={0.1}
-                hasNumberSteppers
                 status={errorStatus(errors.seed_ratio)}
                 statusVariant="detached"
                 width="100%"
@@ -175,7 +177,6 @@ export function TorrentSettings({isPrimary}: {isPrimary: boolean}) {
                 min={1}
                 max={720}
                 isIntegerOnly
-                hasNumberSteppers
                 units="hours"
                 status={errorStatus(errors.seed_hours)}
                 statusVariant="detached"
@@ -193,7 +194,6 @@ export function TorrentSettings({isPrimary}: {isPrimary: boolean}) {
             min={1}
             max={50}
             isIntegerOnly
-            hasNumberSteppers
             status={errorStatus(errors.max_active)}
             statusVariant="detached"
             width="100%"
@@ -202,7 +202,7 @@ export function TorrentSettings({isPrimary}: {isPrimary: boolean}) {
         <div {...stylex.props(styles.pair)}>
           <NumberInput
             label="Download limit"
-            description="0 means no limit."
+            description={`0 means no limit. The lowest limit is ${LIMIT_MIN} KB/s.`}
             value={draft.down_limit_kbps}
             onChange={value => set('down_limit_kbps', value)}
             min={0}
@@ -216,7 +216,7 @@ export function TorrentSettings({isPrimary}: {isPrimary: boolean}) {
           />
           <NumberInput
             label="Upload limit"
-            description="0 means no limit."
+            description={`0 means no limit. The lowest limit is ${LIMIT_MIN} KB/s.`}
             value={draft.up_limit_kbps}
             onChange={value => set('up_limit_kbps', value)}
             min={0}

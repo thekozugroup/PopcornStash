@@ -322,7 +322,7 @@ function TrashGroup() {
       ) : items.error !== undefined && !items.data ? (
         <LoadError title="The trash did not load" error={items.error} onRetry={items.reload} />
       ) : rows.length === 0 ? (
-        <EmptyRows>The trash is empty. Items you delete from the library wait here first.</EmptyRows>
+        <EmptyRows>The trash is empty.</EmptyRows>
       ) : (
         <PanelList density="spacious">
           {rows.map(row => (

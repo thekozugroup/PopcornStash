@@ -54,7 +54,8 @@ export interface CategoryLibraryConfig {
   noun: string;
   sortOptions: SortOption<ItemSort>[];
   defaultSort: ItemSort;
-  empty: {title: string; description: string};
+  /** Empty library: the same quiet icon as the category's tile placeholder. */
+  empty: {title: string; description: string; icon: LucideIcon};
   /** Placeholder icon for an item without a thumbnail. */
   placeholderFor?: (item: Item) => LucideIcon | undefined;
   /** Primary action when the category is empty. */
@@ -114,7 +115,12 @@ export function CategoryLibraryPage({config}: {config: CategoryLibraryConfig}) {
         actions={<Button label={`Show all ${config.noun}`} variant="secondary" onClick={() => update({fav: null})} />}
       />
     ) : (
-      <EmptyPanel title={config.empty.title} description={config.empty.description} actions={config.emptyAction} />
+      <EmptyPanel
+        title={config.empty.title}
+        description={config.empty.description}
+        icon={<config.empty.icon size={28} strokeWidth={1.5} />}
+        actions={config.emptyAction}
+      />
     );
   } else {
     body = (

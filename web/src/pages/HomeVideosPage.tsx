@@ -3,6 +3,7 @@
  * search, sort, the favourites filter and infinite scroll.
  */
 import {Button} from '@astryxdesign/core/Button';
+import {Clapperboard} from 'lucide-react';
 import {CategoryLibraryPage, type CategoryLibraryConfig} from '../components/library/CategoryLibraryPage';
 
 const config: CategoryLibraryConfig = {
@@ -22,6 +23,7 @@ const config: CategoryLibraryConfig = {
   defaultSort: 'taken',
   empty: {
     title: 'No home videos yet',
+    icon: Clapperboard,
     description:
       'Clips from phones and cameras are sorted here by the month they were filmed. Drop them anywhere in this window, or copy them into the Inbox folder on the server.',
   },

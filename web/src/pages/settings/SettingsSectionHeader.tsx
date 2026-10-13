@@ -1,7 +1,10 @@
 /**
- * Heading for one settings section (an h2 under the Settings h1). A plain
- * block, not a <header>: inside the app's main region a <header> would be
- * read as a second page banner.
+ * Opening of one settings section: its h2 under the Settings h1, and one
+ * sentence on what the section covers. The selected tab already shows the
+ * section's name right above, so the heading is for the document outline
+ * (screen readers, heading navigation) and the sentence is what people see.
+ * A plain block, not a <header>: inside the app's main region a <header>
+ * would be read as a second page banner.
  */
 import * as stylex from '@stylexjs/stylex';
 import {Heading} from '@astryxdesign/core/Heading';
@@ -11,51 +14,43 @@ import {useDocumentTitle} from '../../components/PageHeader';
 
 const styles = stylex.create({
   header: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    columnGap: 24,
-    rowGap: 12,
     marginBottom: 24,
   },
-  copy: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 8,
-    minWidth: 0,
-    flex: '1 1 320px',
+  heading: {
+    position: 'absolute',
+    width: 1,
+    height: 1,
+    margin: -1,
+    padding: 0,
+    overflow: 'hidden',
+    clipPath: 'inset(50%)',
+    whiteSpace: 'nowrap',
+    borderWidth: 0,
   },
   subtitle: {
     maxWidth: '68ch',
     lineHeight: 1.6,
-  },
-  actions: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 8,
+    textWrap: 'pretty',
   },
 });
 
 export interface SettingsSectionHeaderProps {
   title: string;
   subtitle?: ReactNode;
-  actions?: ReactNode;
 }
 
-export function SettingsSectionHeader({title, subtitle, actions}: SettingsSectionHeaderProps) {
+export function SettingsSectionHeader({title, subtitle}: SettingsSectionHeaderProps) {
   useDocumentTitle(`${title} settings`);
   return (
     <div {...stylex.props(styles.header)}>
-      <div {...stylex.props(styles.copy)}>
+      <div {...stylex.props(styles.heading)}>
         <Heading level={2}>{title}</Heading>
-        {subtitle ? (
-          <Text as="p" color="secondary" xstyle={styles.subtitle}>
-            {subtitle}
-          </Text>
-        ) : null}
       </div>
-      {actions ? <div {...stylex.props(styles.actions)}>{actions}</div> : null}
+      {subtitle ? (
+        <Text as="p" color="secondary" xstyle={styles.subtitle}>
+          {subtitle}
+        </Text>
+      ) : null}
     </div>
   );
 }

@@ -467,10 +467,11 @@ impl DownloadManager {
         self.add_torrent(user_id, add, name, source).await
     }
 
-    /// A finished browser upload that now sits at `rel_path` (under In Progress): moves it
-    /// straight to Completed under `filename` (sanitized, never overwriting), records the
-    /// download and queues the sort. If the download cannot be recorded, the file goes
-    /// back to `rel_path` so completing can be tried again.
+    /// A finished browser upload that now sits at `rel_path` (in the private partial
+    /// uploads folder): moves it straight to Completed under `filename` (sanitized,
+    /// never overwriting), records the download and queues the sort. If the download
+    /// cannot be recorded, the file goes back to `rel_path` so completing can be tried
+    /// again.
     pub async fn upload_finished(
         &self,
         user_id: &str,
@@ -478,9 +479,15 @@ impl DownloadManager {
         rel_path: &str,
         size: i64,
     ) -> ApiResult<Download> {
-        if StashLayout::zone(rel_path) != Zone::InProgress {
+        let single_part = rel_path
+            .strip_prefix(paths::UPLOADS_TMP)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .is_some_and(|name| {
+                !name.is_empty() && !name.contains('/') && name != "." && name != ".."
+            });
+        if !single_part {
             return Err(ApiError::bad_request(
-                "That upload is not in Downloads/In Progress.",
+                "That upload is not in the partial uploads folder.",
             ));
         }
         let src = self.layout.abs(rel_path)?;
@@ -1001,8 +1008,7 @@ impl DownloadManager {
     /// Where a torrent waiting for the engine keeps its add request across restarts.
     pub(crate) fn pending_path(&self, id: &str) -> PathBuf {
         self.config
-            .config_dir
-            .join("pending-torrents")
+            .pending_torrents_dir()
             .join(format!("{id}.json"))
     }
 
@@ -1056,7 +1062,9 @@ pub(crate) fn is_deletable_download_path(rel: &str) -> bool {
     }
     let inside =
         |prefix: &str| rel.len() > prefix.len() + 1 && rel.starts_with(&format!("{prefix}/"));
-    let uploads = rel == paths::UPLOADS_TMP || rel.starts_with(&format!("{}/", paths::UPLOADS_TMP));
+    let uploads = [paths::UPLOADS_TMP, paths::LEGACY_UPLOADS_TMP]
+        .iter()
+        .any(|dir| rel == *dir || rel.starts_with(&format!("{dir}/")));
     (inside(paths::IN_PROGRESS) || inside(paths::COMPLETED)) && !uploads
 }
 

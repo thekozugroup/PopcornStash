@@ -1,0 +1,14 @@
+# `cargo audit` settings. Each ignored advisory was reviewed; see docs/security.md
+# ("Dependencies"). Remove an entry as soon as a fixed version can be used.
+[advisories]
+ignore = [
+    # ringbuf 0.4.8, through librqbit-utp 0.7 (uTP in the torrent engine). The double
+    # free needs an element whose Drop panics; librqbit-utp only stores bytes (u8),
+    # whose Drop does nothing. The fix is in ringbuf 0.5.2, which librqbit-utp 0.7
+    # cannot use.
+    "RUSTSEC-2026-0293",
+    # rsa 0.9 (Marvin timing attack), through sqlx-mysql. It is listed in Cargo.lock
+    # but never compiled: PopcornStash only builds sqlx's SQLite driver
+    # (`cargo tree -i rsa` prints nothing).
+    "RUSTSEC-2023-0071",
+]

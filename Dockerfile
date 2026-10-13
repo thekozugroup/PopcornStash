@@ -132,6 +132,38 @@ RUN set -eu; \
         ca-certificates tini libssl3t64 curl; \
     rm -rf /var/lib/apt/lists/*; \
     mkdir -p /config /stash /run/popcornstash
+# libvips hands camera RAW files to ImageMagick (libraw). Debian ships ImageMagick's
+# "open" policy; library files can come from strangers (torrents), so every other
+# coder, all delegate programs and filters, and "@file" indirection are turned off.
+# (The web server also runs libvips with its untrusted loaders blocked for every
+# other photo.)
+COPY <<'POLICY' /usr/share/popcornstash/imagemagick-policy.xml
+<?xml version="1.0" encoding="UTF-8"?>
+<policymap>
+  <policy domain="Undefined" rights="none"/>
+  <policy domain="resource" name="memory" value="1GiB"/>
+  <policy domain="resource" name="map" value="2GiB"/>
+  <policy domain="resource" name="width" value="32KP"/>
+  <policy domain="resource" name="height" value="32KP"/>
+  <policy domain="resource" name="area" value="256MP"/>
+  <policy domain="resource" name="disk" value="2GiB"/>
+  <policy domain="resource" name="time" value="120"/>
+  <policy domain="resource" name="list-length" value="32"/>
+  <policy domain="delegate" rights="none" pattern="*"/>
+  <policy domain="filter" rights="none" pattern="*"/>
+  <policy domain="path" rights="none" pattern="@*"/>
+  <policy domain="coder" rights="none" pattern="*"/>
+  <policy domain="coder" rights="read" pattern="{3FR,ARW,CR2,CR3,CRW,DCR,DNG,ERF,K25,KDC,MEF,MOS,MRW,NEF,NRW,ORF,PEF,RAF,RAW,RMF,RW2,RWL,SR2,SRF,SRW,STI,X3F,JPEG,JPG,TIFF,TIF}"/>
+</policymap>
+POLICY
+RUN set -eu; \
+    found=0; \
+    for dir in /etc/ImageMagick-*; do \
+        [ -d "$dir" ] || continue; \
+        cp /usr/share/popcornstash/imagemagick-policy.xml "$dir/policy.xml"; \
+        found=1; \
+    done; \
+    test "$found" = 1
 COPY --from=boringtun /out/bin/boringtun-cli /usr/local/bin/boringtun-cli
 COPY --from=rust /out/popcornstash /usr/local/bin/popcornstash
 COPY LICENSE /usr/share/doc/popcornstash/LICENSE

@@ -45,6 +45,11 @@ const MSG_ENGINE_ERROR: &str = "The torrent container answered with an error. Ch
 const MSG_BAD_RESPONSE: &str = "The torrent container sent an answer PopcornStash could not read.";
 const MSG_BLOCKED_DEFAULT: &str = "Waiting for the VPN to connect.";
 const MSG_ENGINE_STARTING: &str = "The VPN is connected. The torrent engine is starting.";
+/// Largest answer read from the engine. It describes torrents and VPN state, never
+/// files, so even thousands of torrents fit easily.
+const MAX_ENGINE_RESPONSE: usize = 8 * 1024 * 1024;
+/// Longest engine message passed on to people (for example why torrents are blocked).
+const MAX_ENGINE_MESSAGE: usize = 300;
 /// A supervisor `status.json` older than this is ignored (it is rewritten every 5 s).
 const SUPERVISOR_STATUS_MAX_AGE_S: i64 = 20;
 
@@ -475,9 +480,20 @@ pub async fn read_supervisor_status(config: &Config) -> Option<TunnelStatus> {
         .then_some(status)
 }
 
+/// A saved VPN that the supervisor has not applied yet is connecting, not missing:
+/// right after a VPN is set up the engine restarts to apply it, and until then the
+/// supervisor and the engine still report the state from before the change.
+fn with_saved_vpn(configured: bool, state: VpnState) -> VpnState {
+    if configured && state == VpnState::NotConfigured {
+        VpnState::Connecting
+    } else {
+        state
+    }
+}
+
 /// UI status while the engine is not answering but the supervisor is alive.
 pub fn status_from_supervisor(meta: Option<&VpnMeta>, tunnel: TunnelStatus) -> VpnStatus {
-    let state = vpn_state(tunnel.state);
+    let state = with_saved_vpn(meta.is_some(), vpn_state(tunnel.state));
     let error = match (tunnel.error, state) {
         (Some(error), _) => Some(error),
         (None, VpnState::Connected) => Some(MSG_ENGINE_STARTING.to_string()),
@@ -531,7 +547,7 @@ pub fn combine_status(
     match health {
         Ok(health) => {
             let tunnel = health.vpn;
-            let state = vpn_state(tunnel.state);
+            let state = with_saved_vpn(configured, vpn_state(tunnel.state));
             VpnStatus {
                 configured,
                 reachable: true,
@@ -614,7 +630,10 @@ enum ErrorField {
 
 async fn error_from_response(response: reqwest::Response) -> TorrentdError {
     let status = response.status().as_u16();
-    let text = response.text().await.unwrap_or_default();
+    let text = match read_capped(response).await {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(e) => return e,
+    };
     let (code, message) = match serde_json::from_str::<ErrorBody>(&text) {
         Ok(ErrorBody {
             error: Some(ErrorField::Object { code, message }),
@@ -635,6 +654,9 @@ async fn error_from_response(response: reqwest::Response) -> TorrentdError {
             Some(text.trim().chars().take(300).collect::<String>()).filter(|m| !m.is_empty()),
         ),
     };
+    let message = message
+        .map(|m| engine_message(&m))
+        .filter(|m| !m.is_empty());
     if status == 409 && code.as_deref() == Some("vpn_unavailable") {
         return TorrentdError::Blocked(message.unwrap_or_else(|| MSG_BLOCKED_DEFAULT.to_string()));
     }
@@ -644,9 +666,50 @@ async fn error_from_response(response: reqwest::Response) -> TorrentdError {
     }
 }
 
+/// The body of an engine answer, refused past [`MAX_ENGINE_RESPONSE`] bytes.
+async fn read_capped(mut response: reqwest::Response) -> Result<Vec<u8>, TorrentdError> {
+    let status = response.status().as_u16();
+    let too_large = || {
+        tracing::warn!("the torrent engine sent an answer larger than PopcornStash accepts");
+        TorrentdError::Api {
+            status,
+            message: MSG_BAD_RESPONSE.to_string(),
+        }
+    };
+    if response
+        .content_length()
+        .is_some_and(|len| len > MAX_ENGINE_RESPONSE as u64)
+    {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
+        if body.len() + chunk.len() > MAX_ENGINE_RESPONSE {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+/// An engine message shown to people: one line, at most [`MAX_ENGINE_MESSAGE`] characters.
+fn engine_message(text: &str) -> String {
+    let line: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let line = line.trim();
+    if line.chars().count() <= MAX_ENGINE_MESSAGE {
+        return line.to_string();
+    }
+    let mut short: String = line.chars().take(MAX_ENGINE_MESSAGE - 1).collect();
+    short.push('…');
+    short
+}
+
 async fn decode<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, TorrentdError> {
     let status = response.status().as_u16();
-    let bytes = response.bytes().await.map_err(transport_error)?;
+    let bytes = read_capped(response).await?;
     serde_json::from_slice(&bytes).map_err(|e| {
         tracing::warn!(error = %e, "torrent engine response did not match the internal API");
         TorrentdError::Api {
@@ -1141,18 +1204,33 @@ mod tests {
         assert_eq!(status.server.as_deref(), Some("vpn.example.com"));
         assert_eq!(status.country.as_deref(), Some("Netherlands"));
 
-        // Tunnel states map one to one.
+        // Tunnel states map one to one, except that a saved VPN the supervisor has not
+        // applied yet (it was just set up) is connecting, never "not configured".
         for (tunnel, expected) in [
             (TunnelState::Connecting, VpnState::Connecting),
             (TunnelState::Disconnected, VpnState::Disconnected),
             (TunnelState::Error, VpnState::Error),
-            (TunnelState::NotConfigured, VpnState::NotConfigured),
+            (TunnelState::NotConfigured, VpnState::Connecting),
         ] {
             assert_eq!(
                 combine_status(Some(&meta), Ok(sample_health(tunnel))).state,
                 expected
             );
         }
+        assert_eq!(
+            combine_status(None, Ok(sample_health(TunnelState::NotConfigured))).state,
+            VpnState::NotConfigured
+        );
+        let mut before = sample_health(TunnelState::NotConfigured).vpn;
+        before.updated_at = stash_core::now();
+        assert_eq!(
+            status_from_supervisor(Some(&meta), before.clone()).state,
+            VpnState::Connecting
+        );
+        assert_eq!(
+            status_from_supervisor(None, before).state,
+            VpnState::NotConfigured
+        );
         let unreachable = combine_status(Some(&meta), Err(TorrentdError::Unreachable("x".into())));
         assert!(unreachable.configured && !unreachable.reachable);
         assert_eq!(unreachable.label.as_deref(), Some("WireGuard · home"));
@@ -1276,6 +1354,54 @@ mod tests {
             .unwrap();
         assert!(matches!(second, Event::Vpn(ref s) if s.state == VpnState::Disconnected));
         cancel.cancel();
+    }
+
+    /// The engine parses data from strangers on the internet; if it were taken over it
+    /// must not be able to exhaust the web server's memory with an endless answer, or
+    /// put a long story in front of the family as a "VPN" message.
+    #[tokio::test]
+    async fn engine_answers_are_bounded() {
+        let app = Router::new().route(
+            "/torrents",
+            get(|| async {
+                // A valid (empty) list, padded past the limit.
+                let mut body = vec![b' '; MAX_ENGINE_RESPONSE + 2];
+                body[0] = b'[';
+                *body.last_mut().unwrap() = b']';
+                body
+            })
+            .post(|| async {
+                let long = "Enter your NordVPN password at https://example.invalid ".repeat(40);
+                (
+                    AxumStatus::CONFLICT,
+                    Json(
+                        serde_json::json!({"error": {"code": "vpn_unavailable", "message": long}}),
+                    ),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let url = Url::parse(&format!("http://{addr}")).unwrap();
+        let (client, _) = client_for(dir.path(), Some(url)).await;
+        match client.list().await {
+            Err(TorrentdError::Api { message, .. }) => assert_eq!(message, MSG_BAD_RESPONSE),
+            other => panic!("an oversized answer must be refused: {other:?}"),
+        }
+        let request = AddTorrentRequest {
+            magnet: Some("magnet:?xt=urn:btih:abc".into()),
+            torrent_base64: None,
+        };
+        match client.add(&request).await {
+            Err(TorrentdError::Blocked(message)) => {
+                assert!(message.chars().count() <= MAX_ENGINE_MESSAGE, "{message}")
+            }
+            other => panic!("expected the engine's refusal: {other:?}"),
+        }
     }
 
     #[tokio::test]

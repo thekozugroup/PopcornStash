@@ -91,7 +91,8 @@ test('Shows lists each show and the show page lists its seasons', async ({page})
   await episodes.getByRole('tab', {name: 'Season 2'}).click();
   const season2 = episodes.getByRole('list', {name: 'Season 2'});
   await expect(season2.getByRole('listitem')).toHaveCount(1);
-  await expect(season2.getByRole('link', {name: /S02E01/})).toBeVisible();
+  // Inside the show an untitled episode is "Episode 1", not the show name and code again.
+  await expect(season2.getByRole('link', {name: /^Episode 1\b/})).toBeVisible();
 });
 
 test('Home Videos shows the phone clip with the date it was filmed', async ({page}) => {

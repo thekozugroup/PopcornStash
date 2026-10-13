@@ -3,6 +3,7 @@
  * sort, the favourites filter and infinite scroll.
  */
 import {Button} from '@astryxdesign/core/Button';
+import {Film} from 'lucide-react';
 import {CategoryLibraryPage, type CategoryLibraryConfig} from '../components/library/CategoryLibraryPage';
 
 const config: CategoryLibraryConfig = {
@@ -20,6 +21,7 @@ const config: CategoryLibraryConfig = {
   defaultSort: 'added',
   empty: {
     title: 'No movies yet',
+    icon: Film,
     description:
       'Films you add are sorted into Movies automatically. Add a link or magnet in Downloads, or drop video files anywhere in this window.',
   },

@@ -193,8 +193,8 @@ test('a show offers Resume only when the player will pick up part-way', async ({
   await expect(page.getByRole('button', {name: 'Play S01E01'})).toBeVisible();
   await expect(page.getByRole('button', {name: /^Resume/})).toHaveCount(0);
   // The line under the button names the episode without promising time left.
-  await expect(page.getByText('The Lantern Keepers S01E01', {exact: true}).first()).toBeVisible();
-  await expect(page.getByText(/S01E01(,| ·) .*left$/)).toHaveCount(0);
+  await expect(page.getByText('Episode 1', {exact: true}).first()).toBeVisible();
+  await expect(page.getByText(/Episode 1(,| ·) .*left$/)).toHaveCount(0);
   // The episode's own page agrees: it plays from the start.
   await page.goto(`/item/${first.id}`);
   await expect(page.getByRole('button', {name: 'Play', exact: true})).toBeVisible();

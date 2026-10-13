@@ -1,6 +1,7 @@
 /**
- * Episodes of one season as rows: frame, episode code, title, runtime and
- * where you are in it. Each row is one link with one focus ring.
+ * Episodes of one season as rows: frame, title (its code above a real episode
+ * title), runtime and where you are in it. Each row is one link with one
+ * focus ring.
  */
 import * as stylex from '@stylexjs/stylex';
 import {colorVars, fontWeightVars} from '@astryxdesign/core/theme/tokens.stylex';
@@ -9,7 +10,7 @@ import {useState} from 'react';
 import {Link} from 'react-router';
 import type {Item} from '../../api/types';
 import {formatDuration, formatEpisodeCode, watchedFraction} from '../../lib/format';
-import {itemHref, thumbSources, timeLeft} from './libraryFormat';
+import {episodeName, itemHref, thumbSources, timeLeft} from './libraryFormat';
 
 const styles = stylex.create({
   list: {
@@ -186,15 +187,16 @@ export function EpisodeList({episodes, nextId, label}: {episodes: Item[]; nextId
   return (
     <ol aria-label={label} {...stylex.props(styles.list)}>
       {episodes.map(episode => {
-        const code = formatEpisodeCode(episode.season, episode.episode);
-        const title = episode.episode_title ?? episode.title;
+        // The code earns its line only above a real episode title; otherwise the
+        // title is "Episode 3" and the season is the tab it sits under.
+        const code = episode.episode_title ? formatEpisodeCode(episode.season, episode.episode) : '';
         return (
           <li key={episode.id} {...stylex.props(styles.item)}>
             <Link to={itemHref(episode)} {...stylex.props(styles.row)}>
               <EpisodeFrame episode={episode} />
               <span {...stylex.props(styles.text)}>
-                <span {...stylex.props(styles.code)}>{code}</span>
-                <span {...stylex.props(styles.title)}>{title}</span>
+                {code ? <span {...stylex.props(styles.code)}>{code}</span> : null}
+                <span {...stylex.props(styles.title)}>{episodeName(episode)}</span>
                 {episodeStatus(episode, episode.id === nextId)}
               </span>
             </Link>

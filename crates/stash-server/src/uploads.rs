@@ -176,8 +176,7 @@ impl UploadService {
         if request.size < 0 {
             return Err(ApiError::bad_request("The file size is not valid."));
         }
-        let dir = self.layout.uploads_tmp();
-        tokio::fs::create_dir_all(&dir).await?;
+        let dir = self.layout.ensure_uploads_dir().await?;
         let free = {
             let dir = dir.clone();
             tokio::task::spawn_blocking(move || free_space(&dir))
@@ -198,6 +197,8 @@ impl UploadService {
         tokio::fs::OpenOptions::new()
             .create_new(true)
             .write(true)
+            .mode(0o600)
+            .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
             .open(self.part_path(&id))
             .await?;
         let t = now();
@@ -240,8 +241,7 @@ impl UploadService {
         loaded
     }
 
-    /// Open the part file for writing without following a link planted in its place
-    /// (`In Progress` is group-writable for the torrent engine).
+    /// Open the part file for writing without following a link planted in its place.
     async fn open_part(&self, id: &str) -> std::io::Result<tokio::fs::File> {
         let file = tokio::fs::OpenOptions::new()
             .write(true)
@@ -537,10 +537,70 @@ impl UploadService {
         Ok(removed)
     }
 
+    /// Move partial uploads from the folder older versions used (inside `Downloads/In
+    /// Progress`, which the torrent engine may write) into the private one. Only regular
+    /// files this user owns are moved; a link or a file someone else put there is left
+    /// alone. The old folder is removed once empty.
+    pub async fn migrate_legacy(&self) {
+        use std::os::unix::fs::MetadataExt;
+        let legacy = self.layout.root().join(paths::LEGACY_UPLOADS_TMP);
+        let Ok(meta) = tokio::fs::symlink_metadata(&legacy).await else {
+            return;
+        };
+        if !meta.is_dir() {
+            return;
+        }
+        let dir = match self.layout.ensure_uploads_dir().await {
+            Ok(dir) => dir,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not prepare the partial uploads folder");
+                return;
+            }
+        };
+        let me = nix::unistd::geteuid().as_raw();
+        let mut moved = 0u32;
+        if let Ok(mut entries) = tokio::fs::read_dir(&legacy).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let name = entry.file_name();
+                let Some(text) = name.to_str() else { continue };
+                if !text.ends_with(".part") || text.starts_with('.') {
+                    continue;
+                }
+                let ours = tokio::fs::symlink_metadata(entry.path())
+                    .await
+                    .is_ok_and(|m| m.is_file() && m.uid() == me && m.nlink() == 1);
+                let target = dir.join(text);
+                if !ours || tokio::fs::symlink_metadata(&target).await.is_ok() {
+                    continue;
+                }
+                if tokio::fs::rename(entry.path(), &target).await.is_err() {
+                    continue;
+                }
+                // Checked again in the private folder: a file swapped in meanwhile goes.
+                let still_ours = tokio::fs::symlink_metadata(&target)
+                    .await
+                    .is_ok_and(|m| m.is_file() && m.uid() == me && m.nlink() == 1);
+                if !still_ours {
+                    let _ = tokio::fs::remove_file(&target).await;
+                    continue;
+                }
+                use std::os::unix::fs::PermissionsExt;
+                let _ = tokio::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))
+                    .await;
+                moved += 1;
+            }
+        }
+        if moved > 0 {
+            tracing::info!(moved, "moved partial uploads to their private folder");
+        }
+        let _ = tokio::fs::remove_dir(&legacy).await;
+    }
+
     /// Remove partial uploads untouched for 7 days.
     pub fn spawn_cleanup(self: &Arc<Self>, cancel: CancellationToken) {
         let service = self.clone();
         tokio::spawn(async move {
+            service.migrate_legacy().await;
             loop {
                 if let Err(e) = service.cleanup(STALE_AFTER_S).await {
                     tracing::warn!(error = %e, "upload cleanup failed");

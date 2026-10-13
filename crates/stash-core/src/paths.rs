@@ -14,7 +14,11 @@ pub const INBOX: &str = "Inbox";
 pub const DOWNLOADS: &str = "Downloads";
 pub const IN_PROGRESS: &str = "Downloads/In Progress";
 pub const COMPLETED: &str = "Downloads/Completed";
-pub const UPLOADS_TMP: &str = "Downloads/In Progress/.uploads";
+/// Partial browser uploads (`<id>.part`). Kept out of `Downloads/In Progress`, which
+/// the torrent engine may write, and private to the web server's user (0700).
+pub const UPLOADS_TMP: &str = ".popcornstash/uploads";
+/// Where partial uploads lived before; moved to [`UPLOADS_TMP`] on start.
+pub const LEGACY_UPLOADS_TMP: &str = "Downloads/In Progress/.uploads";
 pub const INTERNAL: &str = ".popcornstash";
 pub const TRASH: &str = ".popcornstash/Trash";
 pub const MARKER: &str = ".popcornstash/stash.id";
@@ -73,11 +77,11 @@ impl StashLayout {
             INBOX,
             IN_PROGRESS,
             COMPLETED,
-            UPLOADS_TMP,
             TRASH,
         ] {
             tokio::fs::create_dir_all(self.root.join(dir)).await?;
         }
+        self.ensure_uploads_dir().await?;
         let marker = self.root.join(MARKER);
         if tokio::fs::metadata(&marker).await.is_err() {
             tokio::fs::write(&marker, crate::new_id()).await?;
@@ -100,6 +104,24 @@ impl StashLayout {
     pub fn uploads_tmp(&self) -> PathBuf {
         self.root.join(UPLOADS_TMP)
     }
+
+    /// Create the partial-uploads folder if needed and keep it private (0700): uploads
+    /// in progress are family photos and videos nobody else on the system should read.
+    pub async fn ensure_uploads_dir(&self) -> Result<PathBuf> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = self.uploads_tmp();
+        tokio::fs::create_dir_all(&dir).await?;
+        let meta = tokio::fs::symlink_metadata(&dir).await?;
+        if !meta.is_dir() {
+            return Err(CoreError::invalid(
+                "The partial uploads folder is not a plain folder.",
+            ));
+        }
+        if meta.permissions().mode() & 0o777 != 0o700 {
+            tokio::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).await?;
+        }
+        Ok(dir)
+    }
     pub fn trash(&self) -> PathBuf {
         self.root.join(TRASH)
     }
@@ -107,6 +129,32 @@ impl StashLayout {
     /// Absolute path for a stored relative path, rejecting anything that escapes the root.
     pub fn abs(&self, rel: impl AsRef<Path>) -> Result<PathBuf> {
         safe_join(&self.root, rel.as_ref())
+    }
+
+    /// The absolute path for `rel` without looking at the filesystem (no `..`, no
+    /// absolute paths). Only for checking whether something is there; never open or
+    /// write through it.
+    pub fn lexical(&self, rel: impl AsRef<Path>) -> Result<PathBuf> {
+        lexical_join(&self.root, rel.as_ref())
+    }
+
+    /// True only when an existing link provably leads `rel` out of the stash. A path
+    /// that cannot be resolved (unreadable, a link loop) does not count.
+    pub fn leads_outside(&self, rel: impl AsRef<Path>) -> bool {
+        let Ok(out) = lexical_join(&self.root, rel.as_ref()) else {
+            return false;
+        };
+        let mut existing = out.as_path();
+        while !existing.exists() {
+            match existing.parent() {
+                Some(parent) => existing = parent,
+                None => return false,
+            }
+        }
+        match (self.root.canonicalize(), existing.canonicalize()) {
+            (Ok(root), Ok(real)) => !real.starts_with(root),
+            _ => false,
+        }
     }
 
     /// Relative path (with `/` separators) for an absolute path under the root.
@@ -168,7 +216,37 @@ pub fn category_folder(category: Category) -> &'static str {
 }
 
 /// Join `rel` onto `root`, refusing absolute paths, `..`, and symlinks that leave the root.
+///
+/// Fails closed: the deepest part of the path that exists (a link counts, even one
+/// whose target is missing) must resolve to somewhere inside the root, and a path
+/// whose real location cannot be resolved is refused.
 pub fn safe_join(root: &Path, rel: &Path) -> Result<PathBuf> {
+    let escape = || CoreError::PathEscape(rel.to_path_buf());
+    let out = lexical_join(root, rel)?;
+    let real_root = root.canonicalize().map_err(|_| escape())?;
+    let mut existing = out.as_path();
+    loop {
+        match std::fs::symlink_metadata(existing) {
+            Ok(_) => break,
+            // Missing, or below something that is not a folder: look at the parent.
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound
+                    || e.raw_os_error() == Some(libc::ENOTDIR) =>
+            {
+                existing = existing.parent().ok_or_else(escape)?;
+            }
+            Err(_) => return Err(escape()),
+        }
+    }
+    let real = existing.canonicalize().map_err(|_| escape())?;
+    if !real.starts_with(&real_root) {
+        return Err(escape());
+    }
+    Ok(out)
+}
+
+/// `root` joined with the normal components of `rel`; absolute paths and `..` refused.
+fn lexical_join(root: &Path, rel: &Path) -> Result<PathBuf> {
     let mut out = root.to_path_buf();
     for component in rel.components() {
         match component {
@@ -176,19 +254,6 @@ pub fn safe_join(root: &Path, rel: &Path) -> Result<PathBuf> {
             Component::CurDir => {}
             _ => return Err(CoreError::PathEscape(rel.to_path_buf())),
         }
-    }
-    // Resolve symlinks on the existing prefix and make sure we stay inside the root.
-    let mut existing = out.as_path();
-    while !existing.exists() {
-        match existing.parent() {
-            Some(parent) => existing = parent,
-            None => break,
-        }
-    }
-    if let (Ok(real_root), Ok(real)) = (root.canonicalize(), existing.canonicalize())
-        && !real.starts_with(&real_root)
-    {
-        return Err(CoreError::PathEscape(rel.to_path_buf()));
     }
     Ok(out)
 }
@@ -382,6 +447,31 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).unwrap();
         assert!(safe_join(dir.path(), Path::new("link/file")).is_err());
+    }
+
+    /// A link whose target does not exist (yet) can still be written through, so it
+    /// is refused like any other link that cannot be shown to stay inside. So is a
+    /// path whose real location cannot be worked out at all.
+    #[cfg(unix)]
+    #[test]
+    fn safe_join_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("Inbox")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("not-yet"),
+            dir.path().join("Inbox/dangling.jpg"),
+        )
+        .unwrap();
+        assert!(safe_join(dir.path(), Path::new("Inbox/dangling.jpg")).is_err());
+        assert!(safe_join(dir.path(), Path::new("Inbox/dangling.jpg/x")).is_err());
+        // Missing names under real folders are fine (files about to be created).
+        assert!(safe_join(dir.path(), Path::new("Inbox/new/deeper/file.jpg")).is_ok());
+        // Below a file: nothing can be there, but the path stays inside.
+        std::fs::write(dir.path().join("Inbox/file.jpg"), b"x").unwrap();
+        assert!(safe_join(dir.path(), Path::new("Inbox/file.jpg/x")).is_ok());
+        // A stash root that does not exist proves nothing.
+        assert!(safe_join(&dir.path().join("gone"), Path::new("Movies/a.mkv")).is_err());
     }
 
     #[test]

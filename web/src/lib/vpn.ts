@@ -20,9 +20,41 @@ export interface VpnSummary {
   detail: string;
 }
 
-export function providerName(status: VpnStatus): string | null {
-  if (status.label) return status.label;
+/** The provider as a brand: "NordVPN", "WireGuard", "OpenVPN". */
+export function providerBrand(status: VpnStatus): string | null {
   return status.provider ? PROVIDER_NAMES[status.provider] : null;
+}
+
+/**
+ * What the VPN is called in status lines. NordVPN reads as the brand and the
+ * country ("NordVPN · Netherlands"; the server name is listed with the
+ * connection facts). An uploaded file keeps the server's label, which already
+ * names the file type ("WireGuard · home-router"). The country is added only
+ * when the label does not already carry it ("NordVPN · Netherlands · nl812").
+ */
+export function vpnName(status: VpnStatus): string | null {
+  const base = status.provider === 'nordvpn' ? 'NordVPN' : (status.label ?? providerBrand(status));
+  if (!base) return status.country;
+  if (!status.country || base.split(' · ').includes(status.country)) return base;
+  return `${base} · ${status.country}`;
+}
+
+/** "Protected · NordVPN · Netherlands" (DESIGN.md), never a part twice. */
+export function protectedLabel(status: VpnStatus): string {
+  return ['Protected', vpnName(status)].filter(Boolean).join(' · ');
+}
+
+/**
+ * The documented fallback for `error` when torrents are off and the
+ * supervisor gave no reason (architecture section 11). It only repeats the
+ * state, so pages that already say "Torrents off" leave it out.
+ */
+const TORRENTS_OFF_FALLBACK = 'Torrents are turned off on this server.';
+
+/** Why torrents are off, when the server says more than "turned off". */
+export function torrentsOffReason(status: VpnStatus): string | null {
+  const reason = status.error?.trim();
+  return reason && reason !== TORRENTS_OFF_FALLBACK ? reason : null;
 }
 
 export function describeVpn(status: VpnStatus | null, options: {isUnavailable?: boolean} = {}): VpnSummary {
@@ -31,8 +63,6 @@ export function describeVpn(status: VpnStatus | null, options: {isUnavailable?: 
       ? {tone: 'neutral', label: 'VPN status unavailable', detail: 'PopcornStash could not read the VPN status.'}
       : {tone: 'neutral', label: 'Checking VPN', detail: 'Checking the VPN connection.'};
   }
-
-  const provider = providerName(status);
 
   if (status.allow_no_vpn && status.state === 'not_configured') {
     return {
@@ -54,7 +84,7 @@ export function describeVpn(status: VpnStatus | null, options: {isUnavailable?: 
       }
       return {
         tone: 'connected',
-        label: ['Protected', provider, status.country].filter(Boolean).join(' · '),
+        label: protectedLabel(status),
         detail: status.public_ip
           ? `Torrents run only through the VPN. Public address ${status.public_ip}.`
           : 'Torrents run only through the VPN.',
@@ -78,8 +108,13 @@ export function describeVpn(status: VpnStatus | null, options: {isUnavailable?: 
         detail: status.error ?? 'The VPN could not connect. Torrents stay stopped until it does.',
       };
     case 'unreachable':
-      // The server explains why: torrents turned off (for example no NET_ADMIN), or the
-      // engine restarting. Either way nothing torrent-related uses the home connection.
+      // Off on purpose (for example no NET_ADMIN): "off", the word every page uses for
+      // this state, with the server's reason as the detail.
+      if (status.torrents_off) {
+        return {tone: 'error', label: 'Torrents off', detail: status.error ?? TORRENTS_OFF_FALLBACK};
+      }
+      // The engine is restarting or stopped answering. Nothing torrent-related uses the
+      // home connection meanwhile.
       return {
         tone: 'error',
         label: 'Torrents unavailable',

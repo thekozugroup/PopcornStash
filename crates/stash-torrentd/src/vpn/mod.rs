@@ -12,6 +12,7 @@ pub mod wireguard;
 
 use std::net::IpAddr;
 use std::path::Path;
+use std::time::Duration;
 
 use stash_core::internal_api::{
     OPENVPN_AUTH_FILE, OPENVPN_FILE, VPN_META_FILE, VpnMeta, VpnProtocol, VpnProvider,
@@ -209,7 +210,11 @@ pub fn load(vpn_dir: &Path) -> Result<Option<VpnSource>, ConfigError> {
 /// Tunnel health at one point in time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Health {
-    Up,
+    /// Usable. For WireGuard, `session_left` is how long the current keys stay valid
+    /// without a new handshake (180 s after the last one).
+    Up {
+        session_left: Option<Duration>,
+    },
     /// Still waiting for the first handshake / initialisation.
     Pending,
     Down(String),
@@ -248,7 +253,9 @@ impl Tunnel {
                     return Health::Down("boringtun stopped.".into());
                 }
                 match wg.handshake_age(now).await {
-                    Ok(age) if wireguard::handshake_fresh(age) => Health::Up,
+                    Ok(age) if wireguard::handshake_fresh(age) => Health::Up {
+                        session_left: age.map(wireguard::session_left),
+                    },
                     Ok(None) => Health::Pending,
                     Ok(Some(_)) => Health::Down("No recent handshake with the VPN server.".into()),
                     Err(e) => Health::Down(format!(
@@ -258,7 +265,7 @@ impl Tunnel {
                 }
             }
             Tunnel::OpenVpn(ovpn) => match ovpn.state() {
-                OpenVpnState::Ready => Health::Up,
+                OpenVpnState::Ready => Health::Up { session_left: None },
                 OpenVpnState::Starting | OpenVpnState::Reconnecting => Health::Pending,
                 OpenVpnState::Failed(reason) => Health::Down(reason),
             },

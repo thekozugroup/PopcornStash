@@ -94,6 +94,14 @@ impl Settings {
         self.max_concurrent_downloads = self.max_concurrent_downloads.clamp(1, 10);
         self.torrent.seed_ratio = self.torrent.seed_ratio.clamp(0.0, 100.0);
         self.torrent.max_active = self.torrent.max_active.clamp(1, 50);
+        for limit in [
+            &mut self.torrent.down_limit_kbps,
+            &mut self.torrent.up_limit_kbps,
+        ] {
+            if *limit != 0 {
+                *limit = (*limit).max(crate::internal_api::MIN_SPEED_LIMIT_KBPS);
+            }
+        }
         self.transcode.max_height = self.transcode.max_height.clamp(240, 4320);
         self.transcode.crf = self.transcode.crf.clamp(15, 35);
         self.transcode.max_sessions = self.transcode.max_sessions.clamp(1, 8);
@@ -185,6 +193,24 @@ mod tests {
             .get()
             .await;
         assert_eq!(reloaded.torrent.seed_ratio, 2.0);
+        // Speed limits: 0 is "no limit"; anything else is at least 16 KiB/s, the
+        // smallest limit the torrent engine can keep.
+        let s = store
+            .update(serde_json::json!({"torrent": {"down_limit_kbps": 5, "up_limit_kbps": 0}}))
+            .await
+            .unwrap();
+        assert_eq!(
+            (s.torrent.down_limit_kbps, s.torrent.up_limit_kbps),
+            (16, 0)
+        );
+        let s = store
+            .update(serde_json::json!({"torrent": {"down_limit_kbps": 800, "up_limit_kbps": 16}}))
+            .await
+            .unwrap();
+        assert_eq!(
+            (s.torrent.down_limit_kbps, s.torrent.up_limit_kbps),
+            (800, 16)
+        );
         assert!(
             store
                 .update(serde_json::json!({"http_via_vpn": "sometimes"}))

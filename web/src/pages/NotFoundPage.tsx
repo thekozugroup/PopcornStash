@@ -25,6 +25,7 @@ export default function NotFoundPage() {
         </Text>
       }
       actions={<Button label="Go to Home" variant="primary" href="/" />}
+      isActionBelow
     />
   );
 }

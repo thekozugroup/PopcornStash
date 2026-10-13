@@ -225,6 +225,22 @@ pub(crate) fn build_client(
     builder.build()
 }
 
+/// Same scheme, host and port: the browser's cookies for one may go to the other.
+fn same_origin(a: &Url, b: &Url) -> bool {
+    a.scheme() == b.scheme()
+        && a.host_str() == b.host_str()
+        && a.port_or_known_default() == b.port_or_known_default()
+}
+
+/// Redirects through the VPN proxy are followed by hand, so drop the forwarded
+/// browser cookies once a hop leaves the origin they came from, as reqwest does for
+/// direct downloads. They are not sent again for the rest of that chain.
+fn strip_cross_origin(headers: &mut HeaderMap, from: &Url, to: &Url) {
+    if !same_origin(from, to) {
+        headers.remove(header::COOKIE);
+    }
+}
+
 fn request_headers(headers: &ForwardedHeaders) -> HeaderMap {
     let mut map = HeaderMap::new();
     let mut put = |name: header::HeaderName, value: &Option<String>| {
@@ -413,8 +429,15 @@ fn choose_name(headers: &HeaderMap, final_url: &Url, original: &Url) -> String {
     name
 }
 
-/// Bytes already in the `.part` file. Only a regular file counts: a link planted in
-/// its place is never followed.
+/// A `.part` file this server wrote: a regular file owned by this user. `In Progress`
+/// is writable by the torrent engine, which could put a link or its own file (one it
+/// can read) at the name; neither is ever resumed, written to or moved on.
+fn own_part(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    meta.is_file() && meta.uid() == nix::unistd::geteuid().as_raw()
+}
+
+/// Bytes already in the `.part` file (0 unless it is [`own_part`]).
 async fn part_len(manager: &DownloadManager, row: &DownloadRow) -> u64 {
     let Some(rel) = row.rel_path.as_deref() else {
         return 0;
@@ -423,8 +446,69 @@ async fn part_len(manager: &DownloadManager, row: &DownloadRow) -> u64 {
         return 0;
     };
     match tokio::fs::symlink_metadata(abs).await {
-        Ok(meta) if meta.is_file() => meta.len(),
+        Ok(meta) if own_part(&meta) => meta.len(),
         _ => 0,
+    }
+}
+
+/// Open the `.part` file for writing: this server's own file (made private, 0600), or a
+/// new one. Anything else at the name (a link, or a file the torrent engine put there)
+/// is removed first and never opened; `O_NOFOLLOW` and `O_EXCL` keep a link planted in
+/// between from redirecting the write.
+async fn open_part(path: &std::path::Path) -> std::io::Result<tokio::fs::File> {
+    use std::os::unix::fs::PermissionsExt;
+    let flags = nix::fcntl::OFlag::O_NOFOLLOW.bits();
+    match tokio::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(flags | nix::fcntl::OFlag::O_NONBLOCK.bits())
+        .open(path)
+        .await
+    {
+        Ok(file) => {
+            let meta = file.metadata().await?;
+            if own_part(&meta) {
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                    .await?;
+                return Ok(file);
+            }
+            drop(file);
+            tracing::warn!(path = %path.display(), "replacing a partial download this server did not write");
+            remove_entry(path).await?;
+        }
+        // ELOOP: a symbolic link sits at the name.
+        Err(e) if e.raw_os_error() == Some(nix::libc::ELOOP) => {
+            tracing::warn!(path = %path.display(), "replacing a link at a partial download's name");
+            remove_entry(path).await?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        // A directory (EISDIR) or a FIFO without a reader (ENXIO) at the name.
+        Err(e)
+            if matches!(
+                e.raw_os_error(),
+                Some(nix::libc::EISDIR) | Some(nix::libc::ENXIO)
+            ) =>
+        {
+            tracing::warn!(path = %path.display(), "replacing something that is not a file at a partial download's name");
+            remove_entry(path).await?;
+        }
+        Err(e) => return Err(e),
+    }
+    tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(flags)
+        .open(path)
+        .await
+}
+
+/// Remove whatever is at `path` (a file, link or folder), without following links.
+async fn remove_entry(path: &std::path::Path) -> std::io::Result<()> {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(meta) if meta.is_dir() => tokio::fs::remove_dir_all(path).await,
+        Ok(_) => tokio::fs::remove_file(path).await,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
     }
 }
 
@@ -497,6 +581,8 @@ async fn download(manager: &Arc<DownloadManager>, id: &str, token: &Cancellation
     let mut failures = 0u32;
     let mut current = original.clone();
     let mut hops = 0usize;
+    // What this hop sends; redirects to another origin lose the cookies.
+    let mut hop_headers = headers.clone();
     loop {
         if token.is_cancelled() {
             return Outcome::Stopped(Some(row));
@@ -505,7 +591,14 @@ async fn download(manager: &Arc<DownloadManager>, id: &str, token: &Cancellation
         let step = match manager.guard.check_url(&current).await {
             Ok(()) => {
                 attempt(
-                    manager, &client, &mut row, &current, &original, &headers, offset, token,
+                    manager,
+                    &client,
+                    &mut row,
+                    &current,
+                    &original,
+                    &hop_headers,
+                    offset,
+                    token,
                     proxied,
                 )
                 .await
@@ -526,6 +619,7 @@ async fn download(manager: &Arc<DownloadManager>, id: &str, token: &Cancellation
                 if hops > MAX_REDIRECTS {
                     return Outcome::Failed(MSG_REDIRECTS.into());
                 }
+                strip_cross_origin(&mut hop_headers, &current, &next);
                 current = next;
                 continue;
             }
@@ -554,6 +648,7 @@ async fn download(manager: &Arc<DownloadManager>, id: &str, token: &Cancellation
         }
         // Retries start again from the original link (signed redirects expire).
         current = original.clone();
+        hop_headers = headers.clone();
         hops = 0;
         let delay = manager.tuning().retry_delay * 2u32.pow(failures.saturating_sub(1));
         tokio::select! {
@@ -696,27 +791,24 @@ async fn stream_to_part(
         return Step::Fatal(MSG_WRITE.into());
     };
     let opened = async {
-        // O_NOFOLLOW: In Progress is group-writable for the torrent engine, so a link
-        // planted at this name must not redirect the write anywhere else.
-        let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-            .open(&path)
-            .await?;
-        if !file.metadata().await?.is_file() {
-            return Err(std::io::Error::other(
-                "the partial download is not a regular file",
-            ));
+        let mut file = open_part(&path).await?;
+        if file.metadata().await?.len() < start {
+            // The bytes this resume continues from are gone (the file was replaced or
+            // removed meanwhile): start over rather than leave a hole.
+            return Ok(None);
         }
         file.set_len(start).await?;
         file.seek(SeekFrom::Start(start)).await?;
-        std::io::Result::Ok(file)
+        std::io::Result::Ok(Some(file))
     }
     .await;
     let file = match opened {
-        Ok(file) => file,
+        Ok(Some(file)) => file,
+        Ok(None) => {
+            tracing::warn!(path = %path.display(), "the partial download lost its bytes; starting over");
+            truncate_part(manager, row).await;
+            return Step::Restart;
+        }
         Err(e) => {
             tracing::warn!(error = %e, path = %path.display(), "could not open the partial download");
             return Step::Fatal(MSG_WRITE.into());
@@ -817,14 +909,31 @@ async fn finalize(manager: &DownloadManager, row: &DownloadRow) -> Result<(), St
         .layout
         .abs(part_rel)
         .map_err(|_| MSG_MOVE.to_string())?;
+    match tokio::fs::symlink_metadata(&part).await {
+        Ok(meta) if own_part(&meta) => {}
+        _ => {
+            tracing::warn!(download = %row.id, "the finished partial download was replaced; not moving it");
+            return Err(MSG_MOVE.to_string());
+        }
+    }
     let moved = manager.move_to_completed(&part, &row.name).await;
     if moved.is_ok() {
         manager.release_name(&row.name);
     }
-    let (_, rel) = moved.map_err(|e| {
+    let (dest, rel) = moved.map_err(|e| {
         tracing::warn!(error = %e, download = %row.id, "could not move the finished download");
         MSG_MOVE.to_string()
     })?;
+    // Checked again where nobody else can write: something swapped in between the
+    // check above and the move is removed instead of being sorted into the library.
+    match tokio::fs::symlink_metadata(&dest).await {
+        Ok(meta) if own_part(&meta) => {}
+        _ => {
+            tracing::warn!(download = %row.id, "the finished partial download was replaced; removing it");
+            let _ = remove_entry(&dest).await;
+            return Err(MSG_MOVE.to_string());
+        }
+    }
     manager.secrets.remove(&row.id);
     tracing::info!(download = %row.id, rel = %rel, "web download finished");
     manager
@@ -864,7 +973,7 @@ impl DownloadManager {
             tracing::error!(error = %e.without_url(), "could not build the download client");
             ApiError::internal()
         })?;
-        let headers = request_headers(&headers);
+        let mut headers = request_headers(&headers);
         let mut current = url.clone();
         for _ in 0..=MAX_REDIRECTS {
             self.guard
@@ -882,12 +991,14 @@ impl DownloadManager {
                 })?;
             let status = response.status();
             if status.is_redirection() && proxied {
-                current = response
+                let next = response
                     .headers()
                     .get(header::LOCATION)
                     .and_then(|v| v.to_str().ok())
                     .and_then(|loc| current.join(loc).ok())
                     .ok_or_else(|| ApiError::bad_request(MSG_FETCH))?;
+                strip_cross_origin(&mut headers, &current, &next);
+                current = next;
                 if !proxy_reaches(&current) {
                     return Err(ApiError::bad_request(MSG_VPN_PORTS));
                 }
@@ -960,6 +1071,34 @@ mod tests {
         );
         assert_eq!(cd("inline"), None);
         assert_eq!(cd("attachment; filename=\"\""), None);
+    }
+
+    #[test]
+    fn cookies_stay_with_their_origin() {
+        let url = |s: &str| Url::parse(s).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, HeaderValue::from_static("a=1"));
+        headers.insert(
+            header::REFERER,
+            HeaderValue::from_static("https://a.example/"),
+        );
+        let a = url("https://a.example/x");
+        strip_cross_origin(&mut headers, &a, &url("https://a.example:443/y?z"));
+        assert!(
+            headers.contains_key(header::COOKIE),
+            "same origin keeps cookies"
+        );
+        for other in [
+            "https://b.example/x",
+            "http://a.example/x",
+            "https://a.example:8443/x",
+            "https://sub.a.example/x",
+        ] {
+            let mut h = headers.clone();
+            strip_cross_origin(&mut h, &a, &url(other));
+            assert!(!h.contains_key(header::COOKIE), "{other}");
+            assert!(h.contains_key(header::REFERER), "{other}");
+        }
     }
 
     #[test]

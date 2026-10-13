@@ -72,6 +72,29 @@ describe('describeVpn', () => {
     expect(describeVpn(vpn({protected: false})).tone).toBe('error');
     expect(describeVpn(null, true).label).toBe('VPN status unavailable');
   });
+
+  it('names the VPN once, even when the server label already carries the country', () => {
+    // The server labels a NordVPN setup "NordVPN · <country> · <server>" and also sends the country.
+    expect(describeVpn(vpn({label: 'NordVPN · Netherlands · nl812'})).label).toBe('Protected · NordVPN · Netherlands');
+    expect(describeVpn(vpn({label: 'NordVPN · nl812', country: null})).label).toBe('Protected · NordVPN');
+    expect(
+      describeVpn(vpn({provider: 'wireguard', label: 'WireGuard · home-router', country: null})).label,
+    ).toBe('Protected · WireGuard · home-router');
+    expect(describeVpn(vpn({provider: 'openvpn', label: null, country: 'Sweden'})).label).toBe('Protected · OpenVPN · Sweden');
+  });
+
+  it('says torrents are off when the server has them turned off on purpose', () => {
+    const off = describeVpn(
+      vpn({state: 'unreachable', reachable: false, configured: false, torrents_off: true, error: 'Torrents are turned off on this server.'}),
+    );
+    expect(off.label).toBe('Torrents off');
+    expect(off.detail).toBe('Web links still download.');
+    const reasoned = describeVpn(
+      vpn({state: 'unreachable', reachable: false, torrents_off: true, error: 'Torrents need NET_ADMIN and /dev/net/tun.'}),
+    );
+    expect(reasoned.detail).toBe('Torrents need NET_ADMIN and /dev/net/tun. Web links still download.');
+    expect(describeVpn(vpn({state: 'unreachable', reachable: false})).label).toBe('Torrents blocked: VPN service offline');
+  });
 });
 
 describe('shouldIntercept', () => {

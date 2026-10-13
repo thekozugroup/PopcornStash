@@ -421,12 +421,14 @@ pub async fn mark_missing(lib: &Library, rel: &str) -> Result<u64> {
 /// Whether a stored path is gone right now: not found, or no longer a regular file.
 /// Unreadable paths (permissions, I/O errors on a share) count as present.
 pub(crate) async fn is_gone(lib: &Library, rel: &str) -> bool {
-    let Ok(abs) = lib.layout.abs(rel) else {
-        // A symbolic link now leads out of the stash: the file is no longer reachable.
+    let Ok(path) = lib.layout.lexical(rel) else {
         return true;
     };
-    match tokio::fs::symlink_metadata(&abs).await {
-        Ok(meta) => !meta.is_file(),
+    match tokio::fs::symlink_metadata(&path).await {
+        // A link or a folder in its place: the file is gone.
+        Ok(meta) if !meta.is_file() => true,
+        // A file whose folder is now a link out of the stash is no longer reachable.
+        Ok(_) => lib.layout.abs(rel).is_err() && lib.layout.leads_outside(rel),
         Err(e) => is_not_found(&e),
     }
 }

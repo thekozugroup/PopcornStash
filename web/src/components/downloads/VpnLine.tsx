@@ -5,10 +5,10 @@
  * torrents are protected.
  */
 import * as stylex from '@stylexjs/stylex';
-import {Link} from '@astryxdesign/core/Link';
+import {Button} from '@astryxdesign/core/Button';
 import {Text} from '@astryxdesign/core/Text';
 import type {VpnStatus} from '../../api/types';
-import {describeVpn} from '../../lib/vpn';
+import {describeVpn, torrentsOffReason} from '../../lib/vpn';
 import {StatusTag} from '../StatusTag';
 
 const styles = stylex.create({
@@ -26,8 +26,10 @@ const styles = stylex.create({
     minWidth: 0,
     lineHeight: 1.5,
   },
+  // A ghost button keeps the 44px target; its label lines up with the panel's text.
   settings: {
     flexShrink: 0,
+    marginInline: -12,
   },
 });
 
@@ -44,8 +46,14 @@ export function torrentsAffected(status: VpnStatus | null, isUnavailable: boolea
   return !(status.state === 'connected' && status.protected !== false);
 }
 
+/** Off on purpose: the tag already says "Torrents off", so only a real reason is added. */
+function offDetail(status: VpnStatus): string {
+  return [torrentsOffReason(status), 'Web links and uploads still work.'].filter(Boolean).join(' ');
+}
+
 function memberDetail(status: VpnStatus | null, isUnavailable: boolean): string {
   if (isUnavailable || !status) return 'The VPN status could not be read. Web links and uploads still work.';
+  if (torrentsOff(status)) return offDetail(status);
   if (status.allow_no_vpn && status.state === 'not_configured') {
     return 'Torrents use this home connection because the server is set up that way.';
   }
@@ -62,6 +70,7 @@ function memberDetail(status: VpnStatus | null, isUnavailable: boolean): string 
 
 function ownerDetail(status: VpnStatus | null, isUnavailable: boolean): string {
   if (isUnavailable || !status) return 'The VPN status could not be read. Web links and uploads still work.';
+  if (torrentsOff(status)) return offDetail(status);
   if (status.allow_no_vpn && status.state === 'not_configured') {
     return 'Torrents use this home connection because STASH_ALLOW_NO_VPN is on.';
   }
@@ -97,11 +106,12 @@ export function VpnLine({status, isUnavailable, isOwner}: VpnLineProps) {
         {isOwner ? ownerDetail(status, isUnavailable) : memberDetail(status, isUnavailable)}
       </Text>
       {needsSettings ? (
-        <span {...stylex.props(styles.settings)}>
-          <Link href="/settings/vpn" size="base">
-            {status?.state === 'not_configured' ? 'Set up the VPN' : 'Open VPN settings'}
-          </Link>
-        </span>
+        <Button
+          label={status?.state === 'not_configured' ? 'Set up the VPN' : 'Open VPN settings'}
+          variant="ghost"
+          href="/settings/vpn"
+          xstyle={styles.settings}
+        />
       ) : null}
     </div>
   );

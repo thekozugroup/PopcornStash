@@ -16,15 +16,27 @@ export interface VpnSummary {
   detail: string;
 }
 
+/** The server's documented `error` when torrents are off and no reason was given. */
+const TORRENTS_OFF_FALLBACK = 'Torrents are turned off on this server.';
+
 const PROVIDER_NAMES: Record<VpnProvider, string> = {
   nordvpn: 'NordVPN',
   wireguard: 'WireGuard',
   openvpn: 'OpenVPN',
 };
 
-function providerName(status: VpnStatus): string | null {
-  if (status.label) return status.label;
-  return status.provider ? (PROVIDER_NAMES[status.provider] ?? null) : null;
+/**
+ * What the VPN is called in the tag, as in the web app (web/src/lib/vpn.ts):
+ * NordVPN reads as the brand and the country, an uploaded file keeps the
+ * server's label ("WireGuard · home-router"), and the country is added only
+ * when the label does not already carry it ("NordVPN · Netherlands · nl812").
+ */
+export function vpnName(status: VpnStatus): string | null {
+  const brand = status.provider ? (PROVIDER_NAMES[status.provider] ?? null) : null;
+  const base = status.provider === 'nordvpn' ? 'NordVPN' : (status.label ?? brand);
+  if (!base) return status.country;
+  if (!status.country || base.split(' · ').includes(status.country)) return base;
+  return `${base} · ${status.country}`;
 }
 
 export function describeVpn(status: VpnStatus | null, unavailable = false): VpnSummary {
@@ -53,7 +65,7 @@ export function describeVpn(status: VpnStatus | null, unavailable = false): VpnS
       }
       return {
         tone: 'connected',
-        label: ['Protected', providerName(status), status.country].filter(Boolean).join(' · '),
+        label: ['Protected', vpnName(status)].filter(Boolean).join(' · '),
         detail: 'Torrents run only through the VPN.',
       };
     case 'connecting':
@@ -75,6 +87,15 @@ export function describeVpn(status: VpnStatus | null, unavailable = false): VpnS
         detail: status.error ?? 'The VPN could not connect. Torrents stay stopped until it does.',
       };
     case 'unreachable':
+      if (status.torrents_off) {
+        // The tag already says "off"; add the server's reason only when it says more.
+        const reason = status.error && status.error !== TORRENTS_OFF_FALLBACK ? status.error : null;
+        return {
+          tone: 'error',
+          label: 'Torrents off',
+          detail: [reason, 'Web links still download.'].filter(Boolean).join(' '),
+        };
+      }
       return {
         tone: 'error',
         label: 'Torrents blocked: VPN service offline',
