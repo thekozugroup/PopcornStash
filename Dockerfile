@@ -31,6 +31,9 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     if [ -s /run/secrets/build_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build_ca; fi; \
     npm ci --ignore-scripts --no-audit --no-fund
 COPY web/ ./
+# The bundle's npm packages and their licenses (scripts/notices.sh), served with
+# the app at /third-party-licenses.txt.
+COPY THIRD_PARTY_LICENSES-web public/third-party-licenses.txt
 RUN npm run build
 
 # ------------------------------------------------------------ rust tools ----
@@ -154,10 +157,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     check_arch /out/bin/boringtun-cli; \
     if [ -z "$cross" ]; then /out/bin/boringtun-cli --version; fi
 
-# The popcornstash binary, with web/dist embedded.
+# The popcornstash binary, with web/dist embedded. scripts/release.sh sets
+# POPCORNSTASH_RELEASE to the version, so the app links to that release's source.
 FROM rust-base AS rust
 ARG BUILDARCH
 ARG TARGETARCH
+ARG POPCORNSTASH_RELEASE=""
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
@@ -171,6 +176,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     . /usr/local/share/rust-target.sh; \
     test -f web/dist/index.html; \
     if [ -s /run/secrets/build_ca ]; then export CARGO_HTTP_CAINFO=/run/secrets/build_ca; fi; \
+    export POPCORNSTASH_RELEASE; \
     cargo build --release -p popcornstash --locked; \
     install -D -m 0755 "target/$release_dir/popcornstash" /out/popcornstash; \
     check_arch /out/popcornstash
@@ -228,9 +234,23 @@ RUN set -eu; \
         found=1; \
     done; \
     test "$found" = 1
+# Licenses: PopcornStash's own (LICENSE, NOTICE), the Rust crates in popcornstash
+# and boringtun-cli and the npm packages in the web app (scripts/notices.sh), and
+# the Debian packages with their versions, whose sources (ffmpeg, x264 and x265
+# are GPL) are kept at snapshot.debian.org. Each package's own license is in
+# /usr/share/doc/<package>/copyright.
+COPY LICENSE NOTICE THIRD_PARTY_LICENSES THIRD_PARTY_LICENSES-web /usr/share/doc/popcornstash/
+RUN set -eu; \
+    list=/usr/share/doc/popcornstash/debian-packages.txt; \
+    { \
+        echo '# Debian packages in this image: package, version, source package, source version.'; \
+        echo '# Source code: https://snapshot.debian.org/package/<source package>/<source version>/'; \
+        echo '# Licenses: /usr/share/doc/<package>/copyright'; \
+        dpkg-query -W -f '${binary:Package}\t${Version}\t${source:Package}\t${source:Version}\n' | LC_ALL=C sort; \
+    } > "$list"; \
+    awk -F '\t' '$1 == "ffmpeg" { found = 1 } END { exit !found }' "$list"
 COPY --from=boringtun /out/bin/boringtun-cli /usr/local/bin/boringtun-cli
 COPY --from=rust /out/popcornstash /usr/local/bin/popcornstash
-COPY LICENSE /usr/share/doc/popcornstash/LICENSE
 ENV STASH_ROOT=/stash \
     STASH_CONFIG=/config
 EXPOSE 8788

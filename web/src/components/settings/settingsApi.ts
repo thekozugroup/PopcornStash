@@ -1,42 +1,23 @@
 /**
- * Small typed wrappers over `request()` for the places where the shared
- * client's types do not match what the server sends. Each one says which gap
- * it covers so it can be removed once `src/api` is corrected.
+ * Settings-page views over the shared API client: the rows the People and
+ * Library pages list, and "sign out everywhere else".
  */
-import {me, request} from '../../api/client';
-import type {Item, ItemCategory, ItemKind, Role, Session, TrashEntry, UnixSeconds} from '../../api/types';
+import {invites, me, trash} from '../../api/client';
+import type {InviteListEntry, ItemCategory, ItemKind, Session, UnixSeconds} from '../../api/types';
+
+export type {InviteListEntry};
 
 // ---------------------------------------------------------------------------
-// Invites. `GET /api/invites` lists invites without their code or link (the
-// server only keeps a hash), so the shared `Invite` type (with `url`, `code`)
-// does not describe the list. This is the list row as the server sends it.
+// Invites: the ones that can still be used.
 // ---------------------------------------------------------------------------
-
-export interface InviteListEntry {
-  id: string;
-  role: Role;
-  created_by?: string | null;
-  created_by_name?: string | null;
-  created_at?: UnixSeconds;
-  expires_at: UnixSeconds;
-  used_at?: UnixSeconds | null;
-  used_by_name?: string | null;
-  /** `active`, `used` or `expired`. Older servers may leave it out. */
-  status?: 'active' | 'used' | 'expired';
-}
 
 export async function listOpenInvites(signal?: AbortSignal): Promise<InviteListEntry[]> {
-  const rows = await request<InviteListEntry[]>('/api/invites', {signal});
-  const nowSeconds = Date.now() / 1000;
-  return rows.filter(invite =>
-    invite.status ? invite.status === 'active' : !invite.used_at && invite.expires_at > nowSeconds,
-  );
+  const rows = await invites.list(signal);
+  return rows.filter(invite => invite.status === 'active');
 }
 
 // ---------------------------------------------------------------------------
-// Trash. The server sends `{item, original_rel_path, trashed_at, trashed_by}`
-// while the shared `TrashEntry` type has `item_id` and `trashed_rel_path`.
-// Accept both and give the page one shape.
+// Trash: one row per item, newest first.
 // ---------------------------------------------------------------------------
 
 export interface TrashRow {
@@ -49,29 +30,23 @@ export interface TrashRow {
   trashedAt: UnixSeconds;
 }
 
-type ServerTrashEntry = Omit<TrashEntry, 'item'> & {item?: Partial<Item> & {id: string}};
-
 function fileName(path: string): string {
   const parts = path.split('/').filter(Boolean);
   return parts[parts.length - 1] ?? path;
 }
 
 export async function listTrash(signal?: AbortSignal): Promise<TrashRow[]> {
-  const rows = await request<ServerTrashEntry[]>('/api/trash', {signal});
+  const rows = await trash.list(signal);
   return rows
-    .map(row => {
-      const id = row.item?.id ?? '';
-      return {
-        id,
-        title: row.item?.title || fileName(row.original_rel_path),
-        kind: row.item?.kind ?? null,
-        category: row.item?.category ?? null,
-        thumb: row.item?.thumb ?? null,
-        originalPath: row.original_rel_path,
-        trashedAt: row.trashed_at,
-      };
-    })
-    .filter(row => row.id !== '')
+    .map(row => ({
+      id: row.item.id,
+      title: row.item.title || fileName(row.original_rel_path),
+      kind: row.item.kind,
+      category: row.item.category,
+      thumb: row.item.thumb,
+      originalPath: row.original_rel_path,
+      trashedAt: row.trashed_at,
+    }))
     .sort((a, b) => b.trashedAt - a.trashedAt);
 }
 

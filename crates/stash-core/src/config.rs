@@ -60,7 +60,9 @@ pub struct Config {
     pub supervisor_socket: Option<PathBuf>,
     /// Why the supervisor turned torrents off (for example no NET_ADMIN), as a sentence for the UI.
     pub torrents_off_reason: Option<String>,
-    pub hwaccel: HwAccel,
+    /// STASH_HWACCEL when it is set (not empty). It overrides the hardware
+    /// acceleration saved in Settings > System; unset, the saved choice applies.
+    pub hwaccel: Option<HwAccel>,
     /// Optional assetlinks.json body for future Android passkeys.
     pub android_assetlinks: Option<String>,
 }
@@ -120,6 +122,12 @@ fn env_url(name: &str) -> Result<Option<Url>> {
         .transpose()
 }
 
+/// STASH_HWACCEL: `None` when unset or empty (the saved setting applies), the
+/// parsed value otherwise (`none` included, which turns acceleration off).
+fn parse_hwaccel(value: Option<String>) -> Result<Option<HwAccel>> {
+    value.map(|v| v.parse()).transpose()
+}
+
 fn env_bool(name: &str) -> bool {
     matches!(
         env(name).as_deref().map(str::to_ascii_lowercase).as_deref(),
@@ -169,7 +177,7 @@ impl Config {
             internal_token: env("STASH_INTERNAL_TOKEN"),
             supervisor_socket: env("STASH_SUPERVISOR_SOCKET").map(PathBuf::from),
             torrents_off_reason: env("STASH_TORRENTS_OFF_REASON"),
-            hwaccel: env("STASH_HWACCEL").unwrap_or_default().parse()?,
+            hwaccel: parse_hwaccel(env("STASH_HWACCEL"))?,
             android_assetlinks: env("STASH_ANDROID_ASSETLINKS"),
         })
     }
@@ -190,7 +198,7 @@ impl Config {
             internal_token: None,
             supervisor_socket: None,
             torrents_off_reason: None,
-            hwaccel: HwAccel::None,
+            hwaccel: None,
             android_assetlinks: None,
         }
     }
@@ -311,5 +319,16 @@ mod tests {
         assert_eq!("".parse::<HwAccel>().unwrap(), HwAccel::None);
         assert_eq!("VAAPI".parse::<HwAccel>().unwrap(), HwAccel::Vaapi);
         assert!("cuda-magic".parse::<HwAccel>().is_err());
+        // Unset (or empty, which env() turns into unset) leaves the saved setting in charge.
+        assert_eq!(parse_hwaccel(None).unwrap(), None);
+        assert_eq!(
+            parse_hwaccel(Some("none".into())).unwrap(),
+            Some(HwAccel::None)
+        );
+        assert_eq!(
+            parse_hwaccel(Some("qsv".into())).unwrap(),
+            Some(HwAccel::Qsv)
+        );
+        assert!(parse_hwaccel(Some("cuda-magic".into())).is_err());
     }
 }

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "PopcornStash Chrome extension: send links, media and downloads to your PopcornStash server",
-  "license": "AGPL-3.0-only",
+  "license": "AGPL-3.0-or-later",
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "tsc --noEmit && vitest run",

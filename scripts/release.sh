@@ -16,11 +16,17 @@
 #    to the repository, and it has no vVERSION release.
 # 2. scripts/check.sh --quick --e2e --audit on the working tree: fmt, clippy, the Rust
 #    tests, the web and extension checks, the Playwright suite, cargo audit, npm audit.
+#    Then scripts/notices.sh --check: the committed third-party notices match
+#    Cargo.lock, boringtun-cli and web/package-lock.json.
 # 3. linux/amd64 and linux/arm64 images, built from a copy of the commit, not the
-#    working tree. The Rust code is cross-compiled; only the runtime stage's apt-get
-#    runs under emulation. Both must report popcornstash VERSION.
+#    working tree, with POPCORNSTASH_RELEASE=VERSION so the app links to the vVERSION
+#    source. The Rust code is cross-compiled; only the runtime stage's apt-get runs
+#    under emulation. Both must report popcornstash VERSION and carry the license
+#    files in /usr/share/doc/popcornstash.
 # 4. scripts/docker-smoke.sh, scripts/vpn-e2e.sh and scripts/fullstack-e2e.sh on the
-#    image for this machine's architecture: the image that is pushed.
+#    image for this machine's architecture: the image that is pushed. Then
+#    scripts/docker-smoke.sh on the other architecture's image under QEMU, which skips
+#    only the VPN and engine checks that emulation cannot run.
 # 5. The Chrome extension zip, from a clean npm ci in the copy of the commit.
 # 6. Publish, in this order: push VERSION-amd64 and VERSION-arm64; join them into one
 #    multi-arch tag VERSION, plus MAJOR.MINOR and latest when VERSION is the newest
@@ -35,6 +41,8 @@
 # the release.
 #
 # Environment:
+#   cargo-about        scripts/notices.sh needs it (cargo install --locked cargo-about
+#                      --version 0.9.2 --features cli)
 #   GHCR_TOKEN         GitHub personal access token (classic) with write:packages. It
 #                      logs in to a temporary Docker configuration that is deleted at
 #                      the end, and is not passed on to the checks and builds.
@@ -296,7 +304,7 @@ if ((bump)); then
 fi
 
 # ------------------------------------------------------- state and cleanup ----
-need git docker jq awk sed cargo npm node curl tar
+need git docker jq awk sed cargo npm node curl tar cmp cargo-about
 docker buildx version >/dev/null 2>&1 || die "this script needs docker buildx (for docker buildx imagetools)"
 docker info >/dev/null 2>&1 || die "Docker is not answering (is the daemon running?)"
 native="$(docker version -f '{{.Server.Arch}}')"
@@ -636,6 +644,11 @@ say "scripts/check.sh --quick --e2e --audit"
 scripts/check.sh --quick --e2e --audit || die "scripts/check.sh failed; nothing was pushed"
 same_tree
 
+# The image ships these notices as committed; they must describe what it is built from.
+say "scripts/notices.sh --check"
+scripts/notices.sh --check || die "the third-party notices are out of date: run scripts/notices.sh and commit the result; nothing was pushed"
+same_tree
+
 # ---------------------------------------------------------------- images ----
 # The images and the zip are built from a copy of the commit, so nothing that changes
 # in the working tree from here on can reach them. A dry run of a tree with
@@ -659,6 +672,7 @@ fi
 created="$(TZ=UTC0 git show -s --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd "$revision")"
 build_args=(
   --build-arg "REGISTRY=$REGISTRY"
+  --build-arg "POPCORNSTASH_RELEASE=$version"
   --label "org.opencontainers.image.version=$version"
   --label "org.opencontainers.image.revision=$revision"
   --label "org.opencontainers.image.created=$created"
@@ -684,19 +698,37 @@ for arch in "${ARCHES[@]}"; do
   [[ "$reported" == "popcornstash $version" ]] || die "the linux/$arch image reports '$reported', not popcornstash $version"
   wg="$(docker run --rm --platform "linux/$arch" --entrypoint boringtun-cli "$image" --version)" ||
     die "boringtun-cli does not run in the linux/$arch image"
-  ok "linux/$arch: $reported, $wg"
+  # The licenses go with every copy of the image (NOTICE).
+  for doc in LICENSE NOTICE THIRD_PARTY_LICENSES THIRD_PARTY_LICENSES-web; do
+    docker run --rm --platform "linux/$arch" --entrypoint cat "$image" "/usr/share/doc/popcornstash/$doc" |
+      cmp -s - "$src/$doc" || die "the linux/$arch image does not carry $doc as committed in /usr/share/doc/popcornstash"
+  done
+  docker run --rm --platform "linux/$arch" --entrypoint awk "$image" -F '\t' \
+    '$1 == "ffmpeg" && $4 != "" { found = 1 } END { exit !found }' /usr/share/doc/popcornstash/debian-packages.txt ||
+    die "the linux/$arch image has no list of its Debian packages and versions (/usr/share/doc/popcornstash/debian-packages.txt)"
+  ok "linux/$arch: $reported, $wg, license notices and Debian package list in /usr/share/doc/popcornstash"
 done
 
 # ---------------------------------------------------------- Docker tests ----
-# On the very image that is pushed. QEMU cannot run the VPN tests (nftables needs
-# netlink), so they run on this machine's own architecture.
+# On the very images that are pushed. QEMU cannot run the VPN tests (nftables needs
+# netlink), so they run on this machine's own architecture; the other architecture
+# gets the smoke test's QEMU mode, which skips only what needs the VPN.
+source_url="https://github.com/thekozugroup/PopcornStash/tree/$TAG"
 tested="$(local_tag "$native")"
 say "scripts/docker-smoke.sh on $tested"
-IMAGE="$tested" SKIP_BUILD=1 scripts/docker-smoke.sh || die "scripts/docker-smoke.sh failed on $tested; nothing was pushed"
+IMAGE="$tested" SKIP_BUILD=1 EXPECT_SOURCE="$source_url" scripts/docker-smoke.sh ||
+  die "scripts/docker-smoke.sh failed on $tested; nothing was pushed"
 say "scripts/vpn-e2e.sh on $tested"
 IMAGE="$tested" SKIP_BUILD=1 scripts/vpn-e2e.sh || die "scripts/vpn-e2e.sh failed on $tested; nothing was pushed"
 say "scripts/fullstack-e2e.sh on $tested"
 IMAGE="$tested" SKIP_BUILD=1 CI=1 scripts/fullstack-e2e.sh || die "scripts/fullstack-e2e.sh failed on $tested; nothing was pushed"
+for arch in "${ARCHES[@]}"; do
+  [[ "$arch" == "$native" ]] && continue
+  emulated="$(local_tag "$arch")"
+  say "scripts/docker-smoke.sh on $emulated (linux/$arch under QEMU)"
+  IMAGE="$emulated" PLATFORM="linux/$arch" SKIP_BUILD=1 EXPECT_SOURCE="$source_url" scripts/docker-smoke.sh ||
+    die "scripts/docker-smoke.sh failed on $emulated; nothing was pushed"
+done
 
 # ------------------------------------------------------------- extension ----
 say "Chrome extension (clean npm ci in the copy of $source_note)"

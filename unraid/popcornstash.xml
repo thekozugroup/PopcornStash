@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <Container version="2">
-  <Name>PopcornStash</Name>
+  <Name>popcornstash</Name>
   <Repository>ghcr.io/thekozugroup/popcornstash:latest</Repository>
   <Registry>https://github.com/thekozugroup/PopcornStash/pkgs/container/popcornstash</Registry>
   <Network>bridge</Network>
@@ -20,6 +20,6 @@
   <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User that owns every file PopcornStash writes. 99 is Unraid's nobody." Type="Variable" Display="always" Required="true" Mask="false">99</Config>
   <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group that owns every file PopcornStash writes. 100 is Unraid's users." Type="Variable" Display="always" Required="true" Mask="false">100</Config>
   <Config Name="Behind a reverse proxy" Target="STASH_TRUST_PROXY" Default="false" Mode="" Description="true when SWAG, Nginx Proxy Manager, Caddy or a Cloudflare Tunnel sits in front, so sign-in limits see real visitor addresses." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
-  <Config Name="Hardware encoding" Target="STASH_HWACCEL" Default="none" Mode="" Description="none, vaapi, qsv or nvenc. vaapi and qsv also need the device /dev/dri added to this template." Type="Variable" Display="advanced" Required="false" Mask="false">none</Config>
+  <Config Name="Hardware encoding" Target="STASH_HWACCEL" Default="" Mode="" Description="Leave empty to choose it in Settings, System, Streaming. Set to none, vaapi, qsv or nvenc to fix it here instead; the setting then follows this value. vaapi and qsv also need the device /dev/dri added to this template." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
   <Config Name="Torrent engine user" Target="STASH_TORRENT_UID" Default="6881" Mode="" Description="User number the torrent engine runs as. Must not be 0 or PUID. Change it only if 6881 is already in use." Type="Variable" Display="advanced" Required="false" Mask="false">6881</Config>
 </Container>

@@ -1,0 +1,29 @@
+PopcornStash
+Copyright (C) 2026 The PopcornStash authors
+
+PopcornStash is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later version.
+It comes with no warranty. The full license is in LICENSE.
+
+Source code: https://github.com/thekozugroup/PopcornStash
+(each release is tagged v<version>; Settings > System links to the running version)
+
+Third-party software
+--------------------
+
+THIRD_PARTY_LICENSES        the Rust crates built into popcornstash and boringtun-cli,
+                            with their license texts
+THIRD_PARTY_LICENSES-web    the npm packages bundled into the web app, with their
+                            license texts (also served at /third-party-licenses.txt)
+
+The Docker image is based on Debian. /usr/share/doc/popcornstash/debian-packages.txt
+lists every Debian package in it with its version; the license of each is in
+/usr/share/doc/<package>/copyright, and its source code, including that of the GPL
+builds of ffmpeg, x264 and x265, is at
+https://snapshot.debian.org/package/<source package>/<source version>/.
+
+boringtun-cli is built from the boringtun and boringtun-cli crates published by
+Cloudflare, with a small patch (see the Dockerfile) that lets it run on hosts
+without IPv6. The vendored librqbit crates carry patches described in
+vendor/*/PATCHED.md.

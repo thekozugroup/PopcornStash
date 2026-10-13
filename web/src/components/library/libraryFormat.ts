@@ -359,7 +359,7 @@ export function bitrateName(bitsPerSecond: number | null | undefined): string | 
 export function containerName(media: MediaSummary | null, relPath: string): string | null {
   const type = fileType(relPath);
   if (type) return type;
-  return media?.container.split(',')[0]?.toUpperCase() ?? null;
+  return media?.container?.split(',')[0]?.toUpperCase() || null;
 }
 
 // ---------------------------------------------------------------------------

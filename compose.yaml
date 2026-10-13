@@ -18,7 +18,7 @@ services:
       PGID: "${PGID:-1000}"
       STASH_PUBLIC_URL: "${STASH_PUBLIC_URL:?Set STASH_PUBLIC_URL in .env to the HTTPS address you will open, for example https://stash.example.com (passkeys need it; http://localhost:8788 works for a test on this computer)}"
       STASH_TRUST_PROXY: "${STASH_TRUST_PROXY:-false}"
-      STASH_HWACCEL: "${STASH_HWACCEL:-none}"
+      STASH_HWACCEL: "${STASH_HWACCEL:-}"
       STASH_TORRENT_UID: "${STASH_TORRENT_UID:-6881}"
       STASH_EXTRA_ORIGINS: "${STASH_EXTRA_ORIGINS:-}"
       STASH_LOG: "${STASH_LOG:-info}"
@@ -44,8 +44,9 @@ services:
     cap_add: [NET_ADMIN, CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
     devices:
       - /dev/net/tun
-      # Hardware video encoding (Intel/AMD VAAPI or Intel QSV): uncomment and set
-      # STASH_HWACCEL=vaapi or qsv. See "Hardware acceleration" in docs/deployment.md.
+      # Hardware video encoding (Intel/AMD VAAPI or Intel QSV): uncomment, then choose it
+      # in Settings > System > Streaming, or set STASH_HWACCEL=vaapi or qsv in .env (the
+      # variable, when set, decides). See "Hardware acceleration" in docs/deployment.md.
       # - /dev/dri:/dev/dri
     # Loose reverse-path filtering, so replies that arrive through the VPN tunnel are
     # accepted on hosts whose default is strict (rp_filter=1). Only this container's
