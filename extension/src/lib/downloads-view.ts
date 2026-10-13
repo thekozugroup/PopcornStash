@@ -63,11 +63,23 @@ export interface DownloadRow {
   description: string;
 }
 
+/**
+ * Why a queued torrent waits, in a few words. The server's `error` says it in
+ * full (architecture section 11): "Waiting for the VPN to connect." or
+ * "Waiting for a free slot (N at once)."
+ */
+function waitingState(download: Download): string {
+  const reason = download.kind === 'torrent' ? (download.error ?? '') : '';
+  if (reason.startsWith('Waiting for a free slot')) return 'Waiting for a slot';
+  if (reason.startsWith('Waiting for the VPN')) return 'Waiting for VPN';
+  return 'Waiting';
+}
+
 function shortState(download: Download): string {
   const value = percent(download);
   switch (download.state) {
     case 'queued':
-      return download.kind === 'torrent' && download.error ? 'Waiting for VPN' : 'Waiting';
+      return waitingState(download);
     case 'downloading':
       return download.kind === 'torrent' && download.peers === 0 ? 'Finding peers' : `${value}%`;
     case 'paused':

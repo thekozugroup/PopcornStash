@@ -174,6 +174,14 @@ describe('downloadRow', () => {
     expect(
       downloadRow(download({kind: 'torrent', state: 'queued', progress: 0, error: 'Waiting for the VPN to connect.'})),
     ).toMatchObject({meta: 'Waiting for VPN', bar: null, description: 'Waiting for the VPN to connect.'});
+    // Beyond "Torrents at once" a torrent waits in line, also while the VPN is connected.
+    expect(
+      downloadRow(download({kind: 'torrent', state: 'queued', progress: 0, error: 'Waiting for a free slot (5 at once).'})),
+    ).toMatchObject({meta: 'Waiting for a slot', bar: null, description: 'Waiting for a free slot (5 at once).'});
+    expect(downloadRow(download({kind: 'torrent', state: 'queued', progress: 0, error: null}))).toMatchObject({
+      meta: 'Waiting',
+    });
+    expect(downloadRow(download({kind: 'http', state: 'queued', progress: 0}))).toMatchObject({meta: 'Waiting'});
     expect(downloadRow(download({state: 'sorted'}))).toMatchObject({meta: 'In library', bar: null, detail: null});
     expect(downloadRow(download({state: 'failed', error: 'Gone.'}))).toMatchObject({meta: 'Failed', detail: 'Gone.', error: true});
     expect(downloadRow(download({name: '', source: 'https://example.com/x'})).name).toBe('https://example.com/x');
