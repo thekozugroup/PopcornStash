@@ -34,7 +34,17 @@ test('Home shows the library counts and what was recently added', async ({page})
   }
   // The ambiguous Inbox file is waiting, and the sidebar says so.
   await expect(page.getByRole('link', {name: /^1 file needs a quick look before it is sorted\./})).toBeVisible();
-  await expect(page.getByRole('navigation', {name: 'Main navigation'}).getByRole('link', {name: 'Inbox 1'})).toBeVisible();
+  const nav = page.getByRole('navigation', {name: 'Main navigation'});
+  await expect(nav.getByRole('link', {name: 'Inbox 1'})).toBeVisible();
+  // Every destination has its line icon, the same one as its category's tiles and empty state.
+  const icons: [RegExp, string][] = [
+    [/^Home$/, 'house'], [/^Movies$/, 'film'], [/^Shows$/, 'tv'], [/^Home Videos$/, 'clapperboard'],
+    [/^Photos$/, 'image'], [/^Other$/, 'file-text'], [/^Inbox/, 'inbox'], [/^Downloads$/, 'arrow-down-to-line'],
+    [/^Settings$/, 'settings'],
+  ];
+  for (const [name, icon] of icons) {
+    await expect(nav.getByRole('link', {name}).locator(`svg.lucide-${icon}`)).toBeVisible();
+  }
 
   const recent = page.getByRole('region', {name: 'Recently added'});
   await expect(recent.getByRole('link', {name: /^Harbor Lights 2019/})).toBeVisible();
@@ -209,8 +219,9 @@ test.describe('on a phone', () => {
     await page.goto('/');
     // The five most used destinations stay one tap away.
     const quick = page.getByRole('navigation', {name: 'Quick links'});
-    for (const label of ['Home', 'Movies', 'Shows', 'Photos', 'Downloads']) {
-      await expect(quick.getByRole('link', {name: label, exact: true})).toBeVisible();
+    for (const [label, icon] of [['Home', 'house'], ['Movies', 'film'], ['Shows', 'tv'], ['Photos', 'image'], ['Downloads', 'arrow-down-to-line']]) {
+      // The same icon as in the sidebar, above the label.
+      await expect(quick.getByRole('link', {name: label, exact: true}).locator(`svg.lucide-${icon}`)).toBeVisible();
     }
     for (const path of ['/', '/movies', '/shows', '/shows/The%20Lantern%20Keepers', '/home-videos', '/photos', '/other', '/inbox', '/downloads', '/settings/vpn', '/settings/security', '/pair']) {
       await page.goto(path);

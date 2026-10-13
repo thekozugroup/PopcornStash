@@ -12,6 +12,7 @@ import {Badge} from '@astryxdesign/core/Badge';
 import {Button} from '@astryxdesign/core/Button';
 import {SideNav, SideNavItem, SideNavSection} from '@astryxdesign/core/SideNav';
 import {Text} from '@astryxdesign/core/Text';
+import type {LucideIcon} from 'lucide-react';
 import {useCallback, useEffect, useRef} from 'react';
 import {Link, Outlet, useLocation, useNavigate} from 'react-router';
 import {useAuth} from '../auth/AuthProvider';
@@ -20,7 +21,7 @@ import {FileDropOverlay} from '../components/FileDropOverlay';
 import {VpnStatusTag} from '../components/VpnStatusTag';
 import {useFileDrop} from '../hooks/useFileDrop';
 import {useInboxCount} from '../hooks/useInboxCount';
-import {NAV_GROUPS, QUICK_DESTINATIONS, isActive} from './navigation';
+import {NAV_GROUPS, NAV_ICON_SIZE, NAV_ICON_STROKE, QUICK_DESTINATIONS, isActive} from './navigation';
 
 const MAIN_ID = 'astryx-app-shell-main';
 
@@ -77,20 +78,26 @@ const styles = stylex.create({
     // The current link's pill lines up with the page gutter, like the content below it.
     marginInline: 0,
   },
+  // Icon above its label, like the sidebar's icon before its label; the
+  // current link's fill covers both.
   quickLink: {
-    display: 'grid',
-    placeItems: 'center',
-    minHeight: 44,
-    paddingInline: 2,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    minWidth: 0,
+    minHeight: 52,
+    // No side padding: "Downloads" needs the whole cell on a 390px phone.
+    paddingInline: 0,
+    paddingBlock: 6,
     borderRadius: 8,
     color: colorVars['--color-text-secondary'],
     fontSize: 12,
     fontWeight: 500,
+    lineHeight: '16px',
     textDecoration: 'none',
     textAlign: 'center',
-    whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
     backgroundColor: {
       default: 'transparent',
       ':hover': colorVars['--color-neutral'],
@@ -104,7 +111,28 @@ const styles = stylex.create({
     color: colorVars['--color-text-primary'],
     backgroundColor: colorVars['--color-neutral'],
   },
+  quickLabel: {
+    maxWidth: '100%',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  navIcon: {
+    flexShrink: 0,
+  },
 });
+
+/** A destination's line icon; it takes the colour of the label beside it. */
+function NavIcon({icon: Icon}: {icon: LucideIcon}) {
+  return (
+    <Icon
+      size={NAV_ICON_SIZE}
+      strokeWidth={NAV_ICON_STROKE}
+      aria-hidden="true"
+      {...stylex.props(styles.navIcon)}
+    />
+  );
+}
 
 function QuickNav() {
   const {isMobile} = useAppShellMobile();
@@ -120,7 +148,8 @@ function QuickNav() {
             to={destination.path}
             aria-current={active ? 'page' : undefined}
             {...stylex.props(styles.quickLink, active && styles.quickLinkActive)}>
-            {destination.label}
+            <NavIcon icon={destination.icon} />
+            <span {...stylex.props(styles.quickLabel)}>{destination.label}</span>
           </Link>
         );
       })}
@@ -160,6 +189,7 @@ function PopcornSideNav() {
             <SideNavItem
               key={item.path}
               label={item.label}
+              icon={<NavIcon icon={item.icon} />}
               href={item.path}
               isSelected={isActive(item, pathname)}
               endContent={
