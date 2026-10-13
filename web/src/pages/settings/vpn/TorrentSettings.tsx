@@ -241,11 +241,13 @@ export function TorrentSettings({isPrimary, isNoVpn = false}: TorrentSettingsPro
         title="Web downloads"
         description={
           isNoVpn
-            ? 'Links you add from a browser or the Chrome extension. With STASH_ALLOW_NO_VPN on there is no VPN, so this choice has no effect.'
+            ? 'Links you add from a browser or the Chrome extension. There is no VPN on this server, so they use this network.'
             : 'Links you add from a browser or the Chrome extension. Torrents always use the VPN.'
         }>
         <RadioList
           label="Web downloads use the VPN"
+          isDisabled={isNoVpn}
+          disabledMessage={isNoVpn ? 'Applies once the server uses a VPN.' : undefined}
           value={draft.http_via_vpn}
           onChange={value => set('http_via_vpn', value as HttpViaVpn)}>
           <RadioListItem

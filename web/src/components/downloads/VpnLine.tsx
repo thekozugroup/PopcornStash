@@ -67,7 +67,7 @@ function memberDetail(status: VpnStatus | null, isUnavailable: boolean): string 
   if (isUnavailable || !status) return 'The VPN status could not be read. Web links and uploads still work.';
   if (torrentsOff(status)) return offDetail(status);
   if (isNoVpnMode(status)) {
-    return 'Torrents use this home connection because the server is set up that way.';
+    return 'The server is set up this way.';
   }
   switch (status.state) {
     case 'connecting':
@@ -84,7 +84,7 @@ function ownerDetail(status: VpnStatus | null, isUnavailable: boolean): string {
   if (isUnavailable || !status) return 'The VPN status could not be read. Web links and uploads still work.';
   if (torrentsOff(status)) return offDetail(status);
   if (isNoVpnMode(status)) {
-    return 'Torrents use this home connection because STASH_ALLOW_NO_VPN is on.';
+    return 'STASH_ALLOW_NO_VPN is on. Your router must protect the traffic.';
   }
   switch (status.state) {
     case 'connecting':

@@ -211,7 +211,7 @@ fn drop_env_hwaccel(patch: &mut serde_json::Value, env: HwAccel) -> Result<()> {
     };
     if serde_json::from_value::<HwAccel>(sent.clone()).ok() != Some(env) {
         return Err(crate::CoreError::invalid(
-            "Hardware acceleration is set by STASH_HWACCEL on the container. To change it, edit or remove that variable, then restart the container.",
+            "Hardware acceleration is set by STASH_HWACCEL on the container. To change it, edit or remove that variable, then recreate the container (docker compose up -d, or Apply on Unraid).",
         ));
     }
     transcode.remove("hwaccel");

@@ -68,8 +68,8 @@ const styles = stylex.create({
     gap: 20,
     maxWidth: 560,
   },
-  // Set by STASH_HWACCEL: the field and its sentence take the whole row, so the
-  // fields beside it keep their controls level.
+  // Set by STASH_HWACCEL, or warning that the chosen encoder is missing: the field and
+  // its sentences take the whole row, so the fields beside it keep their controls level.
   wholeRow: {
     gridColumn: '1 / -1',
   },
@@ -90,6 +90,11 @@ const HWACCEL_NAMES: Record<string, string> = {
 
 function hwaccelName(value: string): string {
   return HWACCEL_NAMES[value] ?? value.toUpperCase();
+}
+
+/** What gives the container the device a hardware encoder needs (docs/deployment.md). */
+function hwaccelFix(value: string): string {
+  return value === 'nvenc' ? 'Give the container the NVIDIA graphics card.' : 'Add /dev/dri to the container.';
 }
 
 const HEIGHTS = [
@@ -277,6 +282,9 @@ function PlaybackGroup({info}: {info: SystemInfo | undefined}) {
   const draft = form.draft;
   const available = new Set(info?.hwaccel.available ?? []);
   const isSetByEnv = info?.hwaccel.set_by_env ?? false;
+  // The chosen encoder is not on this server: the server converts on the processor instead.
+  const configured = info?.hwaccel.configured ?? 'none';
+  const isMissing = info !== undefined && configured !== 'none' && !available.has(configured);
 
   const found = info
     ? ` Hardware acceleration found on this server: ${
@@ -344,7 +352,7 @@ function PlaybackGroup({info}: {info: SystemInfo | undefined}) {
   return (
     <SettingsGroup title="Streaming" description={description}>
       <div {...stylex.props(styles.form)}>
-        <div {...stylex.props(isSetByEnv && styles.wholeRow)}>
+        <div {...stylex.props((isSetByEnv || isMissing) && styles.wholeRow)}>
           <Selector
             label="Hardware acceleration"
             options={hwOptions}
@@ -352,7 +360,17 @@ function PlaybackGroup({info}: {info: SystemInfo | undefined}) {
             onChange={value => form.edit(current => ({...current, hwaccel: (value ?? 'none') as HwAccel}))}
             isDisabled={isSetByEnv}
             description={
-              isSetByEnv ? 'To change this, edit or remove STASH_HWACCEL on the container, then restart it.' : undefined
+              isSetByEnv
+                ? 'To change this, edit or remove STASH_HWACCEL on the container, then recreate it (docker compose up -d, or Apply on Unraid).'
+                : undefined
+            }
+            status={
+              isMissing && draft.hwaccel === configured
+                ? {
+                    type: 'warning',
+                    message: `Not found on this server, so videos are converted on the processor. ${hwaccelFix(configured)}`,
+                  }
+                : undefined
             }
             width="100%"
           />

@@ -90,6 +90,8 @@ struct Opts {
     proxy: bool,
     /// Use this VPN download proxy instead (a fake proxy started by the test).
     proxy_url: Option<Url>,
+    /// The engine runs without a VPN (STASH_ALLOW_NO_VPN).
+    allow_no_vpn: bool,
 }
 
 struct Env {
@@ -148,6 +150,7 @@ async fn env(opts: Opts) -> Env {
             .unwrap();
         config.internal_token = Some(token.clone());
         let engine = FakeEngine::start(token, root.clone()).await;
+        engine.with(|e| e.allow_no_vpn = opts.allow_no_vpn);
         config.torrentd_url = Some(engine.url.clone());
         if opts.proxy {
             config.torrentd_proxy = Some(Url::parse("http://127.0.0.1:9").unwrap());
@@ -477,6 +480,7 @@ async fn serve_file(State(files): State<Files>, uri: Uri, headers: HeaderMap) ->
 #[derive(Default)]
 struct EngineInner {
     blocked: bool,
+    allow_no_vpn: bool,
     /// How long an add or a resume takes to answer, and how many arrived.
     add_delay_ms: u64,
     add_calls: u32,
@@ -567,7 +571,10 @@ async fn engine_health(State(s): State<EngineShared>, headers: HeaderMap) -> Res
     if !authorized(&s, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let blocked = s.inner.lock().unwrap().blocked;
+    let (blocked, allow_no_vpn) = {
+        let inner = s.inner.lock().unwrap();
+        (inner.blocked, inner.allow_no_vpn)
+    };
     Json(EngineHealth {
         vpn: TunnelStatus {
             state: if blocked {
@@ -583,7 +590,7 @@ async fn engine_health(State(s): State<EngineShared>, headers: HeaderMap) -> Res
             interface: None,
             since: None,
             error: None,
-            kill_switch: true,
+            kill_switch: !allow_no_vpn,
             updated_at: 0,
         },
         engine: EngineState {
@@ -593,7 +600,7 @@ async fn engine_health(State(s): State<EngineShared>, headers: HeaderMap) -> Res
                 EngineRunState::Running
             },
             reason: None,
-            allow_no_vpn: false,
+            allow_no_vpn,
         },
         public_ip: None,
         country: None,
@@ -2782,6 +2789,37 @@ async fn vpn_proxy_is_skipped_for_ports_it_cannot_reach() {
     let error = env.row(&d.id).await.error.unwrap();
     assert!(error.contains("80 and 443"), "{error}");
     assert_eq!(files.seen("/echo.bin").len(), before);
+}
+
+/// With STASH_ALLOW_NO_VPN there is no VPN, so "Web downloads use the VPN" has no effect:
+/// web downloads go straight out whatever it says, also on ports the engine's proxy
+/// cannot reach.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_a_vpn_web_downloads_ignore_the_vpn_choice() {
+    let files = FileServer::start().await;
+    let env = env(Opts {
+        engine: true,
+        allow_local: true,
+        start: true,
+        proxy: true,
+        allow_no_vpn: true,
+        ..Default::default()
+    })
+    .await;
+    for choice in ["always", "when_available", "never"] {
+        env.settings
+            .update(serde_json::json!({"http_via_vpn": choice}))
+            .await
+            .unwrap();
+        let before = files.seen("/file.bin").len();
+        let d = env.add(&files.url("/file.bin")).await;
+        wait_until!(
+            "the direct download",
+            env.row(&d.id).await.state == DownloadState::Sorting
+        );
+        assert_eq!(files.seen("/file.bin").len(), before + 1, "{choice}");
+        assert_eq!(env.row(&d.id).await.error, None, "{choice}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

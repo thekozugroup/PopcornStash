@@ -81,11 +81,13 @@ pub struct PasskeyState {
 pub fn unavailable_reason(config: &Config) -> String {
     match &config.public_url {
         None => "Passkeys need HTTPS on a domain name (or localhost). Set STASH_PUBLIC_URL to your address, \
-                 for example https://stash.example.com, and restart the container."
+                 for example https://stash.example.com, then recreate the container (docker compose up -d, \
+                 or Apply on Unraid)."
             .to_string(),
         Some(url) => format!(
             "Passkeys cannot use {}. They need HTTPS on a domain name (or localhost): set STASH_PUBLIC_URL to an \
-             address like https://stash.example.com and restart the container.",
+             address like https://stash.example.com, then recreate the container (docker compose up -d, or Apply \
+             on Unraid).",
             url.as_str().trim_end_matches('/')
         ),
     }

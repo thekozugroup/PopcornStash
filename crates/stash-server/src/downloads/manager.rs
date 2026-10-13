@@ -842,6 +842,11 @@ impl DownloadManager {
     /// `always` refuses them. Err is a user-facing message.
     pub(crate) async fn choose_proxy(&self, url: &Url) -> Result<Option<reqwest::Proxy>, String> {
         let setting = self.settings.get().await.http_via_vpn;
+        // STASH_ALLOW_NO_VPN: there is no VPN, and the engine's proxy would only send the
+        // download out over this same network, so the choice has no effect.
+        if self.torrentd.enabled() && self.torrentd.vpn_status().await.allow_no_vpn {
+            return Ok(None);
+        }
         let proxy_reaches = proxy_reaches(url);
         match setting {
             HttpViaVpn::Never => Ok(None),

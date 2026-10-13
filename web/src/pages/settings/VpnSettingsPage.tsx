@@ -5,6 +5,7 @@
  */
 import * as stylex from '@stylexjs/stylex';
 import {Collapsible} from '@astryxdesign/core/Collapsible';
+import {Code} from '@astryxdesign/core/Code';
 import {Text} from '@astryxdesign/core/Text';
 import {useRef} from 'react';
 import type {VpnStatus} from '../../api/types';
@@ -86,10 +87,11 @@ function VpnSettings() {
             <LoadingRows rows={2} label="Checking the VPN" />
           </SettingsGroup>
         ) : isNoVpn ? (
-          <SettingsGroup title="Set up the VPN" description="Not used while STASH_ALLOW_NO_VPN is on.">
+          <SettingsGroup title="Set up the VPN" description="Not used while torrents skip the VPN.">
             <Text as="p" color="secondary" xstyle={styles.note}>
-              To send torrents through a VPN, remove STASH_ALLOW_NO_VPN from the container settings and restart the
-              container. The NordVPN and file setup then appear here.
+              To send torrents through a VPN, remove <Code>STASH_ALLOW_NO_VPN</Code> from the container settings and
+              recreate the container: run <Code>docker compose up -d</Code>, or choose Apply on Unraid. The NordVPN and
+              file setup appear here after that.
             </Text>
           </SettingsGroup>
         ) : (

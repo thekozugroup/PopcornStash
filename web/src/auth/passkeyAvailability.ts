@@ -83,7 +83,7 @@ export function passkeyAvailability(state: AuthState | null): PasskeyAvailabilit
       title: 'Passkeys are not set up on the server yet',
       description:
         state.reason ??
-        'Set STASH_PUBLIC_URL to the HTTPS address you use to open PopcornStash, then restart the container.',
+        'Set STASH_PUBLIC_URL to the HTTPS address you use to open PopcornStash, then recreate the container (docker compose up -d, or Apply on Unraid).',
       publicUrl,
     };
   }

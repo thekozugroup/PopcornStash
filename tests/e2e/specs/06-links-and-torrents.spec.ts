@@ -130,7 +130,9 @@ test('with STASH_ALLOW_NO_VPN every VPN surface warns that torrents use this net
   await expect(page.getByRole('status', {name: WARNING})).toHaveText(WARNING);
   const panel = page.getByRole('region', {name: 'Add to downloads'});
   await expect(panel.getByText(WARNING, {exact: true})).toBeVisible();
-  await expect(panel.getByText('Torrents use this home connection because STASH_ALLOW_NO_VPN is on.')).toBeVisible();
+  // The tag names the state; the line under it only gives the reason (said once).
+  await expect(panel.getByText('STASH_ALLOW_NO_VPN is on. Your router must protect the traffic.')).toBeVisible();
+  await expect(panel.getByText(/home connection/)).toHaveCount(0);
   const magnet = 'magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&dn=Holiday';
   await page.getByRole('textbox', {name: 'Paste a link or magnet'}).fill(magnet);
   await expect(panel.getByText('Magnet link. Downloads as a torrent.', {exact: true})).toBeVisible();
@@ -150,8 +152,21 @@ test('with STASH_ALLOW_NO_VPN every VPN surface warns that torrents use this net
   // The setup forms are not offered while they would have no effect.
   await expect(page.getByRole('button', {name: 'Connect NordVPN'})).toHaveCount(0);
   await expect(page.getByText('Use a WireGuard or OpenVPN file instead')).toHaveCount(0);
-  await expect(page.getByText('Not used while STASH_ALLOW_NO_VPN is on', {exact: false})).toBeVisible();
+  await expect(page.getByText('Not used while torrents skip the VPN.', {exact: true})).toBeVisible();
+  // The way back says to recreate the container: a restart keeps the old environment.
+  await expect(page.getByText(/recreate the container: run docker compose up -d, or choose Apply on Unraid/)).toBeVisible();
+  await expect(page.getByText(/restart/i)).toHaveCount(0);
   await expect(vpn.getByText(/paused|connecting/i)).toHaveCount(0);
+  // Web downloads cannot use a VPN that is not there: the choice is greyed out and the
+  // page says what happens instead.
+  await expect(page.getByText('There is no VPN on this server, so they use this network.', {exact: false})).toBeVisible();
+  await expect(page.getByText(/has no effect/)).toHaveCount(0);
+  const webDownloads = page.getByRole('radiogroup', {name: 'Web downloads use the VPN'});
+  for (const choice of ['When it is connected', 'Always', 'Never']) {
+    await expect(webDownloads.getByRole('radio', {name: choice})).toBeDisabled();
+  }
+  // Named once on the page as the reason and once as the way back, no more.
+  await expect(page.getByRole('main').getByText(/STASH_ALLOW_NO_VPN/)).toHaveCount(2);
   await expect(page.getByRole('status', {name: WARNING})).toHaveText(WARNING);
 
   // A magnet shared from another app says the same.
