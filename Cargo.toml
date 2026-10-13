@@ -5,6 +5,8 @@ members = ["crates/stash-core", "crates/stash-server", "crates/stash-torrentd", 
 [patch.crates-io]
 # IPv4 fallback on hosts without IPv6; see vendor/librqbit-dualstack-sockets/PATCHED.md.
 librqbit-dualstack-sockets = { path = "vendor/librqbit-dualstack-sockets" }
+# Reconnect to a peer that went away and came back; see vendor/librqbit/PATCHED.md.
+librqbit = { path = "vendor/librqbit" }
 
 [workspace.package]
 version = "0.1.0"

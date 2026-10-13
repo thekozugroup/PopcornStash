@@ -11,8 +11,8 @@ use stash_core::internal_api::{
     LimitsRequest,
 };
 use stash_core::models::{Download, DownloadKind, DownloadRow, DownloadState};
-use stash_core::now;
 use stash_core::paths::{self, StashLayout, Zone};
+use stash_core::{new_id, now};
 use tokio_util::sync::CancellationToken;
 
 use super::manager::{DownloadManager, MSG_WAITING_FOR_VPN, NewDownload};
@@ -23,7 +23,7 @@ pub const MSG_LOST: &str = "The torrent engine lost track of this download.";
 const MSG_ENGINE_REFUSED: &str = "The torrent engine could not add this torrent.";
 const MSG_RESTORE: &str = "This torrent could not be restored after a restart. Add it again.";
 const MSG_FILES_MISSING: &str = "The finished torrent's files are not in Downloads/In Progress.";
-const MSG_MOVE_RETRY: &str = "The finished torrent could not be moved to Downloads/Completed yet. PopcornStash keeps trying.";
+pub const MSG_MOVE_RETRY: &str = "The finished torrent could not be moved to Downloads/Completed yet. PopcornStash keeps trying.";
 const MSG_ENGINE_ERROR: &str = "The torrent engine reported a problem with this torrent.";
 
 // --- .torrent validation ------------------------------------------------------------
@@ -155,8 +155,14 @@ impl DownloadManager {
         name: String,
         source: String,
     ) -> ApiResult<Download> {
-        let id = self
-            .insert_row(NewDownload {
+        // Held from before the row exists until the add is over (removed on drop, even
+        // when the request is abandoned mid-way), so the poller never takes a row that
+        // is being added for one waiting for the VPN.
+        let id = new_id();
+        let _in_flight = InFlight::new(&self.adding, &id);
+        self.insert_row_as(
+            &id,
+            NewDownload {
                 kind: DownloadKind::Torrent,
                 name: &name,
                 source: &source,
@@ -166,10 +172,9 @@ impl DownloadManager {
                 total_bytes: None,
                 done_bytes: 0,
                 error: None,
-            })
-            .await?;
-        // Removed on drop, even when the request is abandoned mid-way.
-        let _in_flight = InFlight::new(&self.adding, &id);
+            },
+        )
+        .await?;
         self.add_new_torrent(&id, &request).await
     }
 
@@ -209,6 +214,30 @@ impl DownloadManager {
                     }
                     other => Err(other.api_error()),
                 }
+            }
+        }
+    }
+
+    /// Fail a torrent that is still waiting to reach the engine (`queued`, no engine id).
+    /// The poller works from rows it read a moment earlier, and an add that finished in
+    /// between (attached to the engine, its pending request gone) must not be failed.
+    async fn fail_waiting(&self, id: &str, message: &str) {
+        let failed = sqlx::query(
+            "UPDATE downloads SET state = 'failed', error = ?, down_bps = 0, up_bps = 0, eta_s = NULL, updated_at = ?
+             WHERE id = ? AND state = 'queued' AND engine_id IS NULL",
+        )
+        .bind(message)
+        .bind(now())
+        .bind(id)
+        .execute(&self.db)
+        .await;
+        match failed {
+            Ok(done) if done.rows_affected() > 0 => {
+                let _ = self.publish_id(id).await;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, download = %id, "could not record a failed download")
             }
         }
     }
@@ -507,7 +536,7 @@ async fn push_limits(manager: &DownloadManager, poller: &mut Poller) {
 }
 
 /// Add torrents that were queued while the VPN was down, once the engine runs.
-async fn add_pending(manager: &DownloadManager, rows: Vec<DownloadRow>) {
+pub(super) async fn add_pending(manager: &DownloadManager, rows: Vec<DownloadRow>) {
     match manager.torrentd.health().await {
         Ok(health) if health.engine.state == EngineRunState::Running => {}
         _ => return,
@@ -519,7 +548,7 @@ async fn add_pending(manager: &DownloadManager, rows: Vec<DownloadRow>) {
                 Err(_) => None,
             };
         let Some(request) = request else {
-            manager.fail(&row.id, MSG_RESTORE).await;
+            manager.fail_waiting(&row.id, MSG_RESTORE).await;
             continue;
         };
         match manager.torrentd.add(&request).await {
@@ -538,7 +567,7 @@ async fn add_pending(manager: &DownloadManager, rows: Vec<DownloadRow>) {
             Err(TorrentdError::Api { status, message }) => {
                 tracing::warn!(status, message = %message, download = %row.id, "the engine refused a queued torrent");
                 let _ = tokio::fs::remove_file(manager.pending_path(&row.id)).await;
-                manager.fail(&row.id, MSG_ENGINE_REFUSED).await;
+                manager.fail_waiting(&row.id, MSG_ENGINE_REFUSED).await;
             }
         }
     }

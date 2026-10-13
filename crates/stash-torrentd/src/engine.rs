@@ -1446,6 +1446,173 @@ mod tests {
         assert_eq!(kbps_to_bps(16).map(NonZeroU32::get), Some(16 * 1024));
     }
 
+    /// An HTTP tracker that answers every announce with `peer` and asks for the next
+    /// announce in one second.
+    async fn one_peer_tracker(peer: SocketAddr) -> String {
+        let SocketAddr::V4(peer) = peer else {
+            panic!("the test tracker lists IPv4 peers only")
+        };
+        let mut body = b"d8:intervali1e5:peers6:".to_vec();
+        body.extend_from_slice(&peer.ip().octets());
+        body.extend_from_slice(&peer.port().to_be_bytes());
+        body.push(b'e');
+        let app = axum::Router::new().route(
+            "/announce",
+            axum::routing::get(move || std::future::ready(body.clone())),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        format!("http://{addr}/announce")
+    }
+
+    /// A lone seeder that goes away and comes back is reconnected as soon as the tracker
+    /// lists it again (the vendored librqbit patch, vendor/librqbit/PATCHED.md). Upstream
+    /// librqbit ignores addresses it already knows and waits out a reconnect backoff that
+    /// grows to an hour, so the download sat at zero peers. The leecher has no listener,
+    /// like the engine behind the VPN's NAT: only it can open the connection.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_seeder_that_comes_back_is_reconnected_while_the_tracker_lists_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (seed_dir, leech_dir) = (dir.path().join("seed"), dir.path().join("leech"));
+        std::fs::create_dir_all(&seed_dir).unwrap();
+        std::fs::create_dir_all(&leech_dir).unwrap();
+        let film = seed_dir.join("film.bin");
+        // 64 pieces at 16 KiB/s: the download is far from done when the seeder pauses.
+        std::fs::write(
+            &film,
+            (0..1024 * 1024)
+                .map(|i| (i % 251) as u8)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+
+        let seeder = Session::new_with_opts(
+            seed_dir.clone(),
+            SessionOptions {
+                dht: None,
+                disable_trackers: true,
+                listen: Some(ListenerOptions {
+                    mode: ListenerMode::TcpOnly,
+                    listen_addr: (Ipv4Addr::LOCALHOST, 0).into(),
+                    ipv4_only: true,
+                    ..Default::default()
+                }),
+                disable_local_service_discovery: true,
+                ipv4_only: true,
+                ratelimits: LimitsConfig {
+                    download_bps: None,
+                    upload_bps: kbps_to_bps(16),
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let seeder_addr = seeder.listen_addr().expect("the seeder listens");
+        let tracker = one_peer_tracker(seeder_addr).await;
+        let torrent = librqbit::create_torrent(
+            &film,
+            librqbit::CreateTorrentOptions {
+                name: None,
+                trackers: vec![tracker],
+                piece_length: Some(16 * 1024),
+            },
+            &librqbit::spawn_utils::BlockingSpawner::new(1),
+        )
+        .await
+        .unwrap()
+        .as_bytes()
+        .unwrap();
+        let seeded = seeder
+            .add_torrent(
+                AddTorrent::from_bytes(torrent.clone()),
+                Some(AddTorrentOptions {
+                    overwrite: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap()
+            .into_handle()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(30), seeded.wait_until_completed())
+            .await
+            .expect("the seeder checked its file in time")
+            .unwrap();
+
+        let leecher = Session::new_with_opts(
+            leech_dir,
+            SessionOptions {
+                dht: None,
+                listen: None,
+                disable_local_service_discovery: true,
+                ipv4_only: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let leeching = leecher
+            .add_torrent(AddTorrent::from_bytes(torrent), None)
+            .await
+            .unwrap()
+            .into_handle()
+            .unwrap();
+        let done = || leeching.stats().progress_bytes;
+        // The seeder's entry in the leecher's peer table.
+        let seeder_entry = || {
+            let snapshot = leeching
+                .live()
+                .map(|live| {
+                    live.per_peer_stats_snapshot(
+                        serde_json::from_value(serde_json::json!({"state": "all"})).unwrap(),
+                    )
+                })
+                .map(|s| serde_json::to_value(&s).unwrap());
+            snapshot
+                .and_then(|s| s["peers"].get(seeder_addr.to_string()).cloned())
+                .unwrap_or_default()
+        };
+        async fn wait_for(what: &str, limit: Duration, mut ready: impl FnMut() -> bool) {
+            let deadline = Instant::now() + limit;
+            while !ready() {
+                assert!(Instant::now() < deadline, "timed out waiting for {what}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+        wait_for("the first piece", Duration::from_secs(30), || done() > 0).await;
+
+        // The seeder goes away: the connection drops, and the paused seeder turns the
+        // leecher's first retry away. Upstream would now wait 60 to 120 s before the
+        // next try, then 6 to 12 minutes, while the tracker keeps listing the seeder.
+        seeder.pause(&seeded).await.unwrap();
+        wait_for(
+            "the leecher to fail twice on the paused seeder",
+            Duration::from_secs(60),
+            || seeder_entry()["counters"]["errors"].as_u64() >= Some(2),
+        )
+        .await;
+        let before = done();
+        seeder.unpause(&seeded).await.unwrap();
+        let resumed = Instant::now();
+        let deadline = resumed + Duration::from_secs(40);
+        while done() <= before {
+            assert!(
+                Instant::now() < deadline,
+                "no new data 40 s after the seeder came back; its entry in the leecher: {}",
+                seeder_entry()
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        eprintln!(
+            "reconnected {:?} after the seeder came back",
+            resumed.elapsed()
+        );
+        leecher.stop().await;
+        seeder.stop().await;
+    }
+
     #[test]
     fn delete_output_stays_inside_downloads() {
         let dir = tempfile::tempdir().unwrap();

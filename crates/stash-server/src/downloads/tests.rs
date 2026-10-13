@@ -34,7 +34,7 @@ use url::Url;
 
 use super::manager::{MSG_VPN_REQUIRED, MSG_WAITING_FOR_VPN, Tuning};
 use super::source::Magnet;
-use super::torrents::MSG_LOST;
+use super::torrents::{MSG_LOST, MSG_MOVE_RETRY};
 use super::{AddDownloadRequest, DownloadFilter, DownloadManager, ForwardedHeaders};
 use crate::auth::{AuthUser, Scope};
 use crate::error::ErrorCode;
@@ -2143,11 +2143,13 @@ async fn finished_torrent_that_cannot_be_moved_yet_is_retried() {
     std::fs::remove_dir_all(env.completed()).unwrap();
     std::fs::write(env.completed(), b"in the way").unwrap();
     env.engine().finish(&engine_id, 0);
+    // Every attempt to finish takes the torrent out of the engine first, so a second
+    // removal means the first move failed (and said so) and the manager tried again.
     wait_until!(
-        "the engine to let go",
-        !env.engine().with(|e| e.removed.is_empty())
+        "a failed move to be retried",
+        env.engine().with(|e| e.removed.len()) >= 2
+            && env.row(&d.id).await.error.as_deref() == Some(MSG_MOVE_RETRY)
     );
-    tokio::time::sleep(Duration::from_millis(400)).await;
     let row = env.row(&d.id).await;
     assert_eq!(
         row.state,
@@ -2165,6 +2167,31 @@ async fn finished_torrent_that_cannot_be_moved_yet_is_retried() {
     );
     assert!(env.completed().join("Big Buck Bunny").is_dir());
     assert_eq!(env.row(&d.id).await.error, None);
+}
+
+/// The poller works from rows it read a moment earlier. A torrent whose add finished in
+/// between (in the engine, its pending request gone) looks like one still waiting for
+/// the VPN; it must not be failed as "could not be restored after a restart". This race
+/// used to fail torrents just added, and the test above with them, now and then.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_torrent_added_during_a_poll_is_not_failed_from_a_stale_row() {
+    let env = env(Opts {
+        engine: true,
+        ..Default::default()
+    })
+    .await;
+    let d = env.add(MAGNET).await;
+    let mut stale = env.row(&d.id).await;
+    assert_eq!(stale.state, DownloadState::Downloading);
+    assert!(stale.engine_id.is_some());
+    // The row as a poll read it while the add was under way.
+    stale.state = DownloadState::Queued;
+    stale.engine_id = None;
+    super::torrents::add_pending(&env.manager, vec![stale]).await;
+    let row = env.row(&d.id).await;
+    assert_eq!(row.state, DownloadState::Downloading, "{:?}", row.error);
+    assert_eq!(row.error, None);
+    assert_eq!(env.engine().with(|e| e.added.len()), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
