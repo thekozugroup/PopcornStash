@@ -1,5 +1,5 @@
 # `cargo audit` settings. Each ignored advisory was reviewed; see docs/security.md
-# ("Dependencies"). Remove an entry as soon as a fixed version can be used.
+# ("Known limitations"). Remove an entry as soon as a fixed version can be used.
 [advisories]
 ignore = [
     # ringbuf 0.4.8, through librqbit-utp 0.7 (uTP in the torrent engine). The double

@@ -387,4 +387,55 @@ mod tests {
         }
         assert_eq!(mode(&config.db_path()), 0o600);
     }
+
+    /// Log lines written while a request is handled, at every level.
+    #[derive(Clone, Default)]
+    struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Invite and recovery codes work as passwords until they are used, and query
+    /// strings can carry pairing codes: neither reaches the logs, even with debug
+    /// logging on (`STASH_LOG=debug`), while the rest of the path still does.
+    #[tokio::test]
+    async fn request_logs_hide_codes_and_query_strings() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = super::test_state(dir.path()).await.unwrap();
+        let app = super::router(state);
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        for path in [
+            "/api/invites/SECRETINVITE42?ref=QUERYSECRET",
+            "/invite/SECRETINVITE42",
+            "/recover/SECRETINVITE42",
+            "/api/items/some-item/file?code=QUERYSECRET",
+        ] {
+            let request = Request::get(path).body(Body::empty()).unwrap();
+            app.clone().oneshot(request).await.unwrap();
+        }
+        let logs = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("/invite/<redacted>"), "{logs}");
+        assert!(logs.contains("/api/items/some-item/file"), "{logs}");
+        assert!(!logs.contains("SECRETINVITE42"), "{logs}");
+        assert!(!logs.contains("QUERYSECRET"), "{logs}");
+    }
 }

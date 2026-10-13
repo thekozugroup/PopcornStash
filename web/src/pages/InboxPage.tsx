@@ -173,7 +173,7 @@ export default function InboxPage() {
   const subtitle =
     status === 'ready' && count > 0
       ? `${count === 1 ? 'One file needs' : `${formatCount(count, 'file')} need`} a decision. Nothing moves until you choose.`
-      : 'Files PopcornStash was not sure about wait here for one look before they are sorted.';
+      : 'Files PopcornStash is not sure about wait here until you choose where they go.';
 
   return (
     <>
@@ -212,7 +212,7 @@ export default function InboxPage() {
       {status === 'ready' && count === 0 ? (
         <EmptyPanel
           title="Nothing needs a decision"
-          description="New files are sorted automatically. Anything PopcornStash is unsure about will wait here."
+          description="Everything new was sorted on its own."
           icon={<Inbox size={28} strokeWidth={1.5} />}
         />
       ) : null}

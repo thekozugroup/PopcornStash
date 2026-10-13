@@ -30,6 +30,14 @@ const styles = stylex.create({
     colorScheme: 'dark',
     overflow: 'hidden',
   },
+  // Shrinks to the photo, so the full-screen button sits on the photo's own corner
+  // rather than straddling the photo and the black stage around it.
+  frame: {
+    position: 'relative',
+    display: 'grid',
+    maxWidth: '100%',
+    minWidth: 0,
+  },
   photoButton: {
     display: 'block',
     padding: 0,
@@ -108,28 +116,30 @@ export function PhotoStage({item}: {item: ItemDetail}) {
   const alt = item.taken_at ? `Photo taken ${formatDateTime(item.taken_at)}` : item.title;
   return (
     <div {...stylex.props(styles.stage)}>
-      <button
-        type="button"
-        onClick={() => setIndex(0)}
-        aria-label={`View ${alt} full screen`}
-        {...stylex.props(styles.photoButton)}>
-        <img
-          src={itemsApi.viewUrl(item.id)}
-          alt={alt}
-          decoding="async"
-          {...stylex.props(styles.photo, ratio ? sizeStyles.ratio(ratio) : null)}
-        />
-      </button>
-      <span {...stylex.props(styles.expand)}>
-        <MediaTheme mode="dark">
-          <IconButton
-            label="View full screen"
-            icon={<Maximize2 size={18} strokeWidth={1.75} aria-hidden="true" />}
-            variant="ghost"
-            onClick={() => setIndex(0)}
+      <div {...stylex.props(styles.frame)}>
+        <button
+          type="button"
+          onClick={() => setIndex(0)}
+          aria-label={`View ${alt} full screen`}
+          {...stylex.props(styles.photoButton)}>
+          <img
+            src={itemsApi.viewUrl(item.id)}
+            alt={alt}
+            decoding="async"
+            {...stylex.props(styles.photo, ratio ? sizeStyles.ratio(ratio) : null)}
           />
-        </MediaTheme>
-      </span>
+        </button>
+        <span {...stylex.props(styles.expand)}>
+          <MediaTheme mode="dark">
+            <IconButton
+              label="View full screen"
+              icon={<Maximize2 size={18} strokeWidth={1.75} aria-hidden="true" />}
+              variant="ghost"
+              onClick={() => setIndex(0)}
+            />
+          </MediaTheme>
+        </span>
+      </div>
       <PhotoViewer photos={[item]} index={index} onIndexChange={setIndex} hasDetailsLink={false} hasZoom />
     </div>
   );

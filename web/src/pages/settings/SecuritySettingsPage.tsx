@@ -5,7 +5,6 @@
  */
 import * as stylex from '@stylexjs/stylex';
 import {Button} from '@astryxdesign/core/Button';
-import {Code} from '@astryxdesign/core/Code';
 import {ListItem} from '@astryxdesign/core/List';
 import {MoreMenu} from '@astryxdesign/core/MoreMenu';
 import {Text} from '@astryxdesign/core/Text';
@@ -15,9 +14,11 @@ import {me} from '../../api/client';
 import type {Passkey, Session} from '../../api/types';
 import {createPasskey, PasskeyError} from '../../api/webauthn';
 import {useAuth} from '../../auth/AuthProvider';
+import {OWNER_RECOVERY_COMMAND} from '../../auth/recovery';
 import {guessDeviceName} from '../../auth/deviceName';
 import {passkeyAvailability} from '../../auth/passkeyAvailability';
 import {PasskeyNotice} from '../../components/PasskeyNotice';
+import {CopyValue} from '../../components/settings/CopyValue';
 import {sessionName} from '../../components/settings/describe';
 import {EmptyRows, LoadError, LoadingRows, PanelList, Wrap} from '../../components/settings/SectionStates';
 import {SettingsGroup} from '../../components/settings/SettingsGroup';
@@ -38,9 +39,12 @@ const styles = stylex.create({
   note: {
     lineHeight: 1.55,
   },
+  lastPasskey: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+  },
 });
-
-const LAST_PASSKEY = 'This is your only passkey. Add another one first so you can still sign in.';
 
 function PasskeyRow({
   passkey,
@@ -209,18 +213,25 @@ export default function SecuritySettingsPage() {
                   />
                 ))}
               </PanelList>
+              {/* The group's description already asks for two passkeys; with one left,
+                  say so once and give the way back in that works from the host. */}
               {isLastPasskey ? (
-                <Text as="p" type="supporting" color="secondary" xstyle={styles.note}>
-                  {LAST_PASSKEY}{' '}
-                  {isOwner ? (
-                    <>
-                      If you lose it, run <Code>popcornstash admin reset-owner</Code> on the server for a recovery
-                      link.
-                    </>
-                  ) : (
-                    'If you lose it, an owner can remove you and send you a new invite.'
-                  )}
-                </Text>
+                isOwner ? (
+                  <div {...stylex.props(styles.lastPasskey)}>
+                    <Text as="p" type="supporting" color="secondary" xstyle={styles.note}>
+                      This is your only passkey.
+                    </Text>
+                    <CopyValue
+                      label="If you lose it, run this on the server, then open the link it prints"
+                      value={OWNER_RECOVERY_COMMAND}
+                      copyLabel="Copy command"
+                    />
+                  </div>
+                ) : (
+                  <Text as="p" type="supporting" color="secondary" xstyle={styles.note}>
+                    This is your only passkey. If you lose it, an owner can remove you and send you a new invite.
+                  </Text>
+                )
               ) : null}
             </>
           )}

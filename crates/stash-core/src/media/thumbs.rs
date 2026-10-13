@@ -486,19 +486,41 @@ async fn ffmpeg_still(
     finish_temp(&tmp, dest).await
 }
 
-/// Camera RAW photos. libvips reads them through ImageMagick (libraw), which it counts
-/// among its untrusted loaders; the image's ImageMagick policy allows only the RAW
-/// coders there.
+/// Camera RAW photos. The TIFF-based ones (DNG, CR2, NEF, ARW) are read by libvips' TIFF
+/// loader like any TIFF; the others need ImageMagick (libraw), one of libvips'
+/// untrusted loaders, and the image's ImageMagick policy allows only the RAW coders.
 const RAW_EXTENSIONS: [&str; 8] = ["dng", "cr2", "cr3", "nef", "arw", "orf", "rw2", "raf"];
+
+/// Whether a file starts like a camera RAW format that only ImageMagick reads: Olympus
+/// ORF, Panasonic RW2, Fujifilm RAF or Canon CR3. None of libvips' other loaders claim
+/// these starts, so such a file can only reach ImageMagick.
+fn starts_like_magick_raw(header: &[u8]) -> bool {
+    const STARTS: [&[u8]; 5] = [b"IIRO", b"IIRS", b"MMOR", b"IIU\0", b"FUJIFILMCCD-RAW"];
+    STARTS.iter().any(|start| header.starts_with(start))
+        || (header.len() >= 12 && &header[4..8] == b"ftyp" && &header[8..12] == b"crx ")
+}
+
+/// The first bytes of `path` (fewer if it is shorter or cannot be read).
+async fn file_header(path: &Path) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let mut header = Vec::with_capacity(16);
+    if let Ok(file) = tokio::fs::File::open(path).await {
+        let _ = file.take(16).read_to_end(&mut header).await;
+    }
+    header
+}
 
 /// A libvips command that reads `src`. libvips picks a loader by content, not by name,
 /// and library files can come from strangers (torrents), so only the loaders libvips
 /// trusts (JPEG, PNG, WebP, GIF, TIFF, HEIF) may read them. Its untrusted ones (PDF,
-/// SVG, ImageMagick, OpenSlide, MATLAB, FITS, ...) stay off, except ImageMagick for
-/// camera RAW files, which need it.
-fn vips_command(program: &str, src: &Path) -> tokio::process::Command {
+/// SVG, ImageMagick, OpenSlide, MATLAB, FITS, ...) stay off, except for a file that has
+/// a RAW name and starts like a RAW format only ImageMagick reads: a hostile file merely
+/// named like a RAW photo still gets the trusted loaders only.
+async fn vips_command(program: &str, src: &Path) -> tokio::process::Command {
     let mut cmd = tools::command(program);
-    if !RAW_EXTENSIONS.contains(&extension(src).as_str()) {
+    let raw = RAW_EXTENSIONS.contains(&extension(src).as_str())
+        && starts_like_magick_raw(&file_header(src).await);
+    if !raw {
         cmd.env("VIPS_BLOCK_UNTRUSTED", "1");
     }
     cmd
@@ -509,7 +531,7 @@ async fn vips_resize(src: &Path, dest: &Path, edge: u32, quality: u32) -> Result
     let tmp = temp_sibling(dest);
     let mut out = tmp.as_os_str().to_owned();
     out.push(format!("[Q={quality},strip]"));
-    let mut cmd = vips_command(tools::VIPSTHUMBNAIL, src);
+    let mut cmd = vips_command(tools::VIPSTHUMBNAIL, src).await;
     cmd.arg(src)
         .arg("--size")
         .arg(format!("{edge}x{edge}>"))
@@ -526,7 +548,7 @@ async fn vips_resize(src: &Path, dest: &Path, edge: u32, quality: u32) -> Result
 /// Stored pixel size of an image, via vipsheader, then ffprobe.
 async fn image_size(abs: &Path) -> Option<(i64, i64)> {
     if tools::has_vips().await {
-        let mut cmd = vips_command(tools::VIPSHEADER, abs);
+        let mut cmd = vips_command(tools::VIPSHEADER, abs).await;
         cmd.arg(abs);
         if let Ok(output) = tools::run_ok(cmd, tools::VIPSHEADER, Duration::from_secs(30)).await
             && let Some(size) = parse_vipsheader(&String::from_utf8_lossy(&output.stdout))
@@ -1476,6 +1498,84 @@ mod tests {
         );
         vips_resize(&real, &out, 64, 80).await.unwrap();
         assert_eq!(webp_size(&out), (40, 30));
+    }
+
+    /// Camera RAW names open libvips' untrusted loaders (ImageMagick reads RAW), but only
+    /// for files that really start like a RAW photo. Anything else under a RAW name (a
+    /// PPM, an SVG for librsvg) gets the trusted loaders only, like any other photo.
+    #[tokio::test]
+    async fn raw_names_do_not_open_untrusted_loaders_for_other_content() {
+        if !tools::has_vips().await {
+            eprintln!("skipping: libvips is not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.webp");
+        let ppm = dir.path().join("holiday.nef");
+        std::fs::write(
+            &ppm,
+            "P3\n2 2\n255\n255 0 0  0 255 0\n0 0 255  255 255 255\n",
+        )
+        .unwrap();
+        let svg = dir.path().join("holiday.dng");
+        std::fs::write(
+            &svg,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="red"/></svg>"#,
+        )
+        .unwrap();
+        for disguised in [&ppm, &svg] {
+            assert!(
+                vips_resize(disguised, &out, 64, 80).await.is_err(),
+                "{} was read by an untrusted loader",
+                disguised.display()
+            );
+            assert!(!out.exists());
+        }
+
+        // A JPEG with a RAW name is still read (by the trusted JPEG loader).
+        let jpeg = dir.path().join("renamed.cr2");
+        ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=red:s=40x30",
+                "-frames:v",
+                "1",
+                "-f",
+                "mjpeg",
+            ],
+            &jpeg,
+        );
+        vips_resize(&jpeg, &out, 64, 80).await.unwrap();
+        assert_eq!(webp_size(&out), (40, 30));
+    }
+
+    #[test]
+    fn magick_raw_starts() {
+        for header in [
+            &b"IIRO\x08\0\0\0"[..],
+            b"IIRS\x08\0\0\0",
+            b"MMOR\0\0\0\x08",
+            b"IIU\0\x08\0\0\0",
+            b"FUJIFILMCCD-RAW 0201",
+            b"\0\0\0\x18ftypcrx \0\0\0\x01",
+        ] {
+            assert!(starts_like_magick_raw(header), "{header:?}");
+        }
+        for header in [
+            // TIFF-based RAW files go to the trusted TIFF loader.
+            &b"II*\0\x08\0\0\0"[..],
+            b"MM\0*\0\0\0\x08",
+            b"P3\n2 2\n255\n",
+            b"<svg xmlns=",
+            b"%PDF-1.7",
+            b"\0\0\0\x18ftypheic",
+            b"IIR",
+            b"",
+        ] {
+            assert!(!starts_like_magick_raw(header), "{header:?}");
+        }
     }
 
     #[test]

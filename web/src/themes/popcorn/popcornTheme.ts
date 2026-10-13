@@ -285,6 +285,12 @@ export const popcornTheme = defineTheme({
       base: {borderRadius: 'var(--popcorn-radius-tag)'},
     },
 
+    // Disclosure rows ("Use a WireGuard or OpenVPN file instead") are targets
+    // too: the whole row keeps the 44px control height, not just its text line.
+    'collapsible-trigger': {
+      base: {minHeight: 'var(--size-element-md)'},
+    },
+
     'status-dot': {
       'variant:neutral': {backgroundColor: 'var(--popcorn-status-neutral)'},
     },

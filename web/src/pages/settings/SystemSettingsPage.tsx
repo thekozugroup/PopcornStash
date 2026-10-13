@@ -118,6 +118,15 @@ function useJobRefresh(reload: () => void) {
   );
 }
 
+/**
+ * The version without the tool's name, which the row label already shows:
+ * "ffmpeg version 6.1.1-3ubuntu5" reads "6.1.1-3ubuntu5".
+ */
+function ffmpegVersion(raw: string | null): string | null {
+  if (!raw) return null;
+  return raw.replace(/^ffmpeg\s+version\s+/i, '').trim() || raw;
+}
+
 function useFactLabels() {
   const isNarrow = useMediaQuery('(max-width: 639px)');
   return isNarrow ? ({position: 'top'} as const) : ({position: 'start', width: 150} as const);
@@ -155,12 +164,12 @@ function ServerGroup({info}: {info: SystemInfo}) {
                 <StatusTag tone="connected">Running</StatusTag>
               ) : (
                 <StatusTag tone="error" wrap>
-                  {isTurnedOff ? 'Off on this server' : 'Not reachable. Torrents are stopped.'}
+                  {isTurnedOff ? 'Off on this server' : 'Not answering. Torrents are unavailable.'}
                 </StatusTag>
               )}
             </MetadataListItem>
             <MetadataListItem label="ffmpeg">
-              {info.ffmpeg_version ?? (
+              {ffmpegVersion(info.ffmpeg_version) ?? (
                 <StatusTag tone="error" wrap>
                   Not found. Videos that need converting will not play.
                 </StatusTag>

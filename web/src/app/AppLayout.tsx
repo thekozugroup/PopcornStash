@@ -70,6 +70,8 @@ const styles = stylex.create({
   quickNav: {
     display: 'grid',
     gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+    // Room between cells so a long label's pill ("Downloads") never touches its neighbour.
+    columnGap: 4,
     maxWidth: 560,
     marginBottom: 24,
     // The current link's pill lines up with the page gutter, like the content below it.

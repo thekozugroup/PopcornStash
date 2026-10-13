@@ -259,7 +259,7 @@ export default function DownloadsPage() {
     <>
       <PageHeader
         title="Downloads"
-        subtitle="New files land here first, then move into your library. Anything unclear waits in Inbox."
+        subtitle="New files land here first, then move into your library."
       />
 
       <AddPanel

@@ -104,7 +104,7 @@ export function DownloadsEmpty({isOwner}: {isOwner: boolean}) {
           Nothing downloading yet
         </Heading>
         <Text as="p" color="secondary" xstyle={styles.lead}>
-          Paste a link above, upload files, or drop them anywhere. Every file takes the same path into your library.
+          Every file takes the same path into your library.
         </Text>
       </div>
       <ol {...stylex.props(styles.flow)} aria-label="How files come in">

@@ -31,8 +31,8 @@ const styles = stylex.create({
     position: 'absolute',
     inset: 0,
     borderRadius: 'inherit',
-    // Local value: the theme's --popcorn-media-hairline is solid white in dark mode.
-    boxShadow: 'inset 0 0 0 1px light-dark(oklch(14.1% 0.005 285.823 / 0.08), oklch(100% 0 0 / 0.1))',
+    // The same hairline as library tiles (DESIGN.md, Elevation & Depth).
+    boxShadow: 'inset 0 0 0 1px var(--popcorn-media-hairline)',
     pointerEvents: 'none',
   },
 });

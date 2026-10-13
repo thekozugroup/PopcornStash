@@ -24,12 +24,13 @@ export const CATEGORY_LABEL: Record<ItemCategory, string> = {
   other: 'Other',
 };
 
-export const CATEGORY_OPTIONS: {value: ItemCategory; label: string; description: string}[] = [
-  {value: 'movie', label: 'Movie', description: 'Goes to Movies, in a folder named after the title and year.'},
-  {value: 'episode', label: 'Show episode', description: 'Goes to Shows, by show and season.'},
-  {value: 'home_video', label: 'Home video', description: 'Goes to Home Videos, by the month it was recorded.'},
-  {value: 'photo', label: 'Photo', description: 'Goes to Photos, by the month it was taken.'},
-  {value: 'other', label: 'Other', description: 'Goes to Other, keeping its name.'},
+/** Choices for "What is this file?". Where each one goes is the live preview's job. */
+export const CATEGORY_OPTIONS: {value: ItemCategory; label: string}[] = [
+  {value: 'movie', label: 'Movie'},
+  {value: 'episode', label: 'Show episode'},
+  {value: 'home_video', label: 'Home video'},
+  {value: 'photo', label: 'Photo'},
+  {value: 'other', label: 'Other'},
 ];
 
 /** Last part of a relative path: "Downloads/Completed/Heat.1995.mkv" -> "Heat.1995.mkv". */
@@ -79,8 +80,8 @@ export interface DestinationPreview {
   place: string;
   /** The new file name when the sorter renames it, else null. */
   fileName: string | null;
-  /** What is still missing before the file can move, in words. */
-  missing: string | null;
+  /** One line under the destination: what is still missing, or that the name is kept. */
+  hint: string | null;
 }
 
 /** Live preview of where an edited inbox item will go. */
@@ -95,21 +96,21 @@ export function previewDestination(draft: DestinationDraft, item: ItemDetail): D
   switch (draft.category) {
     case 'movie': {
       const title = cleanName(draft.title);
-      if (!title) return {place: 'Movies', fileName: null, missing: 'Add a title to see where it goes.'};
+      if (!title) return {place: 'Movies', fileName: null, hint: 'Add a title to see where it goes.'};
       const folder = draft.year ? `${title} (${draft.year})` : title;
-      return {place: `Movies / ${folder}`, fileName: `${folder}${extension}`, missing: null};
+      return {place: `Movies / ${folder}`, fileName: `${folder}${extension}`, hint: null};
     }
     case 'episode': {
       const show = cleanName(draft.showName);
-      if (!show) return {place: 'Shows', fileName: null, missing: 'Add the show name to see where it goes.'};
+      if (!show) return {place: 'Shows', fileName: null, hint: 'Add the show name to see where it goes.'};
       if (draft.season === null || draft.episode === null) {
-        return {place: `Shows / ${show}`, fileName: null, missing: 'Add the season and episode numbers.'};
+        return {place: `Shows / ${show}`, fileName: null, hint: 'Add the season and episode numbers.'};
       }
       const season = `Season ${String(draft.season).padStart(2, '0')}`;
       return {
         place: `Shows / ${show} / ${season}`,
         fileName: `${show} - ${formatEpisodeCode(draft.season, draft.episode)}${extension}`,
-        missing: null,
+        hint: null,
       };
     }
     case 'home_video': {
@@ -117,7 +118,7 @@ export function previewDestination(draft: DestinationDraft, item: ItemDetail): D
       return {
         place: month ? `Home Videos / ${month}` : 'Home Videos, by the month it was recorded',
         fileName: null,
-        missing: null,
+        hint: null,
       };
     }
     case 'photo': {
@@ -125,12 +126,12 @@ export function previewDestination(draft: DestinationDraft, item: ItemDetail): D
       return {
         place: month ? `Photos / ${month}` : 'Photos, by the month it was taken',
         fileName: null,
-        missing: null,
+        hint: null,
       };
     }
     case 'other':
     default:
-      return {place: 'Other', fileName: null, missing: null};
+      return {place: 'Other', fileName: null, hint: 'It keeps its file name.'};
   }
 }
 

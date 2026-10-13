@@ -710,6 +710,10 @@
     background-color: var(--color-text-primary);
   }
 
+  .astryx-collapsible-trigger {
+    min-height: var(--size-element-md);
+  }
+
   .astryx-progress-bar-track {
     border-radius: var(--popcorn-radius-progress);
   }

@@ -11,13 +11,12 @@ import {ApiError, auth} from '../api/client';
 import {createPasskey} from '../api/webauthn';
 import {AuthLayout} from '../auth/AuthLayout';
 import {useAuth} from '../auth/AuthProvider';
+import {OWNER_RECOVERY_COMMAND} from '../auth/recovery';
 import {guessDeviceName} from '../auth/deviceName';
 import {passkeyAvailability} from '../auth/passkeyAvailability';
 import {PasskeyNotice} from '../components/PasskeyNotice';
 import {CopyValue} from '../components/settings/CopyValue';
 import {errorMessage, isCancelled} from '../lib/errors';
-
-const RESET_COMMAND = 'docker exec popcornstash popcornstash admin reset-owner';
 
 function isGone(error: unknown): boolean {
   return (
@@ -43,7 +42,7 @@ export default function RecoverPage() {
         subtitle="Recovery links work once and expire 30 minutes after they are printed. Print a new one on the server.">
         <CopyValue
           label="Run this on the server, then open the link it prints"
-          value={RESET_COMMAND}
+          value={OWNER_RECOVERY_COMMAND}
           copyLabel="Copy command"
         />
       </AuthLayout>

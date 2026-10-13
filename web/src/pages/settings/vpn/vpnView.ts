@@ -82,7 +82,8 @@ export function vpnView(status: VpnStatus | null, isUnavailable: boolean): VpnVi
     case 'unreachable':
       return {
         tone: 'error',
-        title: 'Torrents blocked: the torrent engine is not answering',
+        // "unavailable", the word every page uses while the engine is not answering.
+        title: 'Torrents unavailable: the torrent engine is not answering',
         detail: status.error ?? summary.detail,
         isDegraded: false,
       };

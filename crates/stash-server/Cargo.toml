@@ -45,6 +45,7 @@ nix = { version = "0.30", features = ["fs"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 webauthn-authenticator-rs = { version = "0.5.5", features = ["softpasskey"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 
 [lints]
 workspace = true

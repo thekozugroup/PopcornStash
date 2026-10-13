@@ -53,7 +53,7 @@ These are out of scope: someone with a shell on the host or access to Docker, ro
 ### Media from strangers
 
 - ffmpeg always reads `file:<path>`, so its protocol whitelist stays `file,crypto,data`. A playlist hidden in a "movie" cannot make it fetch URLs over the home connection.
-- libvips reads photos with its untrusted loaders blocked. Only JPEG, PNG, WebP, GIF, TIFF and HEIF are allowed. Camera RAW files are the exception, because they need ImageMagick.
+- libvips reads photos with its untrusted loaders blocked. Only JPEG, PNG, WebP, GIF, TIFF and HEIF are allowed. The one exception is a file with a camera RAW name that also starts like an Olympus, Panasonic, Fujifilm or Canon CR3 RAW photo, because only ImageMagick reads those. A hostile file that is merely named like a RAW photo still gets the trusted loaders only.
 - The image's ImageMagick policy allows only the camera RAW coders (plus JPEG and TIFF). It turns off delegate programs, filters and `@file` reads.
 - Probes, thumbnails and photo renditions have time limits, and transcodes stop when nobody watches. Renditions and transcodes run a fixed number at a time.
 
@@ -121,8 +121,7 @@ These are known and not fixed yet.
 - **Without Landlock, the library relies on file permissions.** The engine shares the web server's group so it can hand over finished torrents. Without Landlock it can read any library file that its group or everyone may read. On shares with open permissions, which Unraid uses by default, it can also change those files.
   - Check the container log for "Landlock sandbox enforced". The kernel must have Landlock enabled.
   - On kernels before Landlock ABI 8, only the engine's own threads are sandboxed. A memory-corruption exploit could still reach the others.
-- **Media decoders parse hostile files as the web server's user.** These include ffmpeg, libvips, libheif, librsvg through ffmpeg, and libraw and ImageMagick for RAW names. A memory-safety bug in one of them would give an attacker the web server's access.
-  - A file named like a camera RAW photo still reaches libvips' other loaders.
+- **Media decoders parse hostile files as the web server's user.** These include ffmpeg, libvips, libheif, librsvg through ffmpeg, and ImageMagick with libraw for Olympus, Panasonic, Fujifilm and Canon CR3 RAW photos. A memory-safety bug in one of them would give an attacker the web server's access.
   - Sandboxing the decoders is planned.
 - **The built-in web server has no connection limits.** Someone who opens many slow connections can tire it out. On the internet, put PopcornStash behind a reverse proxy, Tailscale or a tunnel that limits connections.
 - **Sign-in ceremonies share one pool of 10,000.** An attacker spread over many addresses can fill it for a few minutes and block sign-in until it drains.
@@ -130,6 +129,7 @@ These are known and not fixed yet.
 - **Members are trusted family.** They see the whole library and every download. They can pause or remove anyone's download, and they can organize files in the owner's own folders.
 - **Sessions outlive passkeys.** Removing a passkey, or recovering the owner account, does not end sessions that are already signed in. End them under Signed-in browsers in Settings → Security.
 - **`STASH_TRUST_PROXY=true` trusts `X-Forwarded-For`.** Turn it on only when the port can be reached only through your proxy. Otherwise an attacker can pick a fresh rate-limit budget for every request.
+- **Web downloads through the VPN pass through the engine.** While the VPN is connected, web downloads go through the engine's proxy by default (`http_via_vpn`). HTTPS is checked end to end, so a compromised engine sees only the host name. It can read and change a plain `http://` download and any cookies the extension forwards with it, as anyone else on that unencrypted path can.
 - **The VPN page reports what the engine says.** A compromised engine could show "Protected" and a made-up public address. The root kill switch, not the page, keeps torrent traffic in the tunnel.
 - **A compromised owner session can point the tunnel anywhere.** A hostile VPN file can choose the server and the DNS servers, and send WireGuard or OpenVPN handshakes to any address, including the LAN. It cannot run code, read files or route anything but torrent traffic.
 - **Older installs keep their `Downloads/` mode.** Versions before this audit created `Downloads/` group-writable (0775). New installs get 0755, and existing folders are left as the owner set them. Run `chmod 755` on it if nothing else needs group write there.

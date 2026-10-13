@@ -568,6 +568,11 @@ export const popcornTheme = {
         "backgroundColor": "var(--color-text-primary)"
       }
     },
+    "collapsible-trigger": {
+      "base": {
+        "minHeight": "var(--size-element-md)"
+      }
+    },
     "progress-bar-track": {
       "base": {
         "borderRadius": "var(--popcorn-radius-progress)"

@@ -195,16 +195,16 @@ A cool neutral zinc ramp with one saturated blue, plus three status hues that on
 - **Label** (550, 14px): form labels and short headings inside panels.
 - **Action** (600, 14px): every button label.
 - **Navigation** (500, 14px): sidebar and tabs.
-- **Metadata** (400, 13px): one line under tiles, download and inbox facts, settings group descriptions, helper text. Numbers use tabular figures.
+- **Metadata** (400, 13px): one line under tiles, download and inbox facts, settings group descriptions, helper text. Numbers use tabular figures. Two facts join with a middle dot ("2014 · 1 min"); a strip of three or more ("Upload  Finished 3 minutes ago  345 KB") is spaced 16px apart instead of dotted.
 - **Tag** (400, 12px): status tags and badges.
 
 **The Sentence Case Rule.** Every label, heading and button is sentence case. No uppercase eyebrows, no letter-spaced labels, no em dashes.
 
-**The Say It Once Rule.** A state is named once per place. A status line has a short name and, only when it adds something, a reason and what still works ("Torrents off" and "Web links and uploads still work.", not "Torrents unavailable" and "Torrents are turned off on this server."). One word per state across the app: "off" when torrents are off on purpose, "unavailable" when the engine is not answering, "paused" while the VPN connects, "blocked" when the VPN fails. A VPN reads "Protected · NordVPN · Netherlands", each part once.
+**The Say It Once Rule.** A state is named once per place. A status line has a short name and, only when it adds something, a reason and what still works ("Torrents off" and "Web links and uploads still work.", not "Torrents unavailable" and "Torrents are turned off on this server."). One word per state across the app: "off" when torrents are off on purpose, "unavailable" when the engine is not answering ("Torrents unavailable: the torrent engine is not answering"; "Not answering" for the engine in System), "paused" while the VPN connects, "blocked" when the VPN fails. A VPN reads "Protected · NordVPN · Netherlands", each part once. Facts under a status line never repeat it (no "Provider: NordVPN" under "Protected · NordVPN · Netherlands"), a value never repeats its label ("ffmpeg: 6.1.1", not "ffmpeg: ffmpeg version 6.1.1"), and a form's live preview is the one place that says where a file goes ("Will move to Other", not also "Goes to Other" above it).
 
 ## Layout
 
-**Shell.** Desktop: a sticky 228px sidebar (brand; Home, Movies, Shows, Home Videos, Photos, Other; Inbox with its count, Downloads; Settings; a foot with the VPN tag, the person's name and Sign out) and a bounded main column (max 1320px, padding `clamp(24px, 5vw, 64px)`, more at the bottom). Under 800px the sidebar becomes a compact top bar with a menu drawer, and a row of five quick links (Home, Movies, Shows, Photos, Downloads) sits on the 20px page gutter, its current pill aligned with the content edge.
+**Shell.** Desktop: a sticky 228px sidebar (brand; Home, Movies, Shows, Home Videos, Photos, Other; Inbox with its count, Downloads; Settings; a foot with the VPN tag, the person's name and Sign out) and a bounded main column (max 1320px, padding `clamp(24px, 5vw, 64px)`, more at the bottom). Under 800px the sidebar becomes a compact top bar with a menu drawer, and a row of five quick links (Home, Movies, Shows, Photos, Downloads) sits on the 20px page gutter in five equal cells 4px apart, its current pill aligned with the content edge.
 
 **Page header.** One h1, at most one sentence under it, then 32px to the content. Trailing actions are rare (Inbox's "Accept all suggestions"); when the action is the page's only way forward ("Go to Home" on a not-found page) it sits under the sentence.
 
@@ -212,13 +212,13 @@ A cool neutral zinc ramp with one saturated blue, plus three status hues that on
 
 **Media grids.** Columns come from `repeat(auto-fill, minmax(…))`, never fixed counts: posters 2:3 at least 148px with 20px columns and 28px rows (Movies, Shows), 16:9 frames at least 208px (Home Videos, Other), square photos at least 112px with 4px gaps grouped by month. Home shelves scroll sideways with snap points: posters 168px, frames 288px, photos 148px (132, 232 and 112px on phones, edge to edge with the gutter kept as scroll padding). Shelves with one or two tiles sit side by side instead of taking a row each.
 
-**Facts.** Short facts (a file's video, audio and size; the VPN's provider, server and kill switch; background jobs) read as columns: label above value, 32px between columns, wrapping on narrow screens. Longer fact lists use label-beside-value rows.
+**Facts.** Short facts (a file's video, audio and size; the VPN's server, protocol and kill switch; background jobs) read as columns: label above value, 32px between columns, wrapping on narrow screens. Longer fact lists use label-beside-value rows.
 
 **Rhythm.** 8px inside a field, 16px between related items, 20px between form fields, 24px between a section heading and its content, 32px between page blocks, 48px between Home's sections.
 
 ## Elevation & Depth
 
-Flat by default. Workspace surfaces have no shadows: a white panel on the zinc page is separated by its 1px divider border alone. Dialogs, menus, popovers and toasts keep Astryx's own elevation because they float above the page. Media tiles use a 1px inner hairline (zinc-950 at 8% in light, white at 8% in dark) instead of a shadow so light photos keep an edge on a light page; the same hairline carries the hover tint.
+Flat by default. Workspace surfaces have no shadows: a white panel on the zinc page is separated by its 1px divider border alone. Dialogs, menus, popovers and toasts keep Astryx's own elevation because they float above the page. Media tiles, episode frames and the small thumbnails in Downloads use one 1px inner hairline token (`--popcorn-media-hairline`: zinc-950 at 8% in light, white at 8% in dark) instead of a shadow so light photos keep an edge on a light page; the same hairline carries the hover tint.
 
 **The No Nesting Rule.** A panel never holds boxed cards. Inside a panel, groups are separated by a thin divider or by space (the Downloads path is three flat steps under one rule, not three filled boxes).
 
@@ -236,16 +236,20 @@ Gently rounded and consistent: controls 8px, panels and dialogs 16px, media tile
 - **Focus:** a 2px Action Blue ring with a 3px offset on every control.
 
 ### Inputs / Fields
-- **Style:** White Surface, 1px border, 8px corners, 44px tall, 16px text. Label above, optional description under the label, error under the field.
+- **Style:** White Surface, 1px border, 8px corners, 44px tall, 16px text. Label above, optional description under the label, error under the field. A select opens from anywhere on its 44px field.
 - **Numbers:** typed or stepped with the arrow keys; no stepper buttons (they cannot hold a 44px target). Units sit inside the field ("KB/s", "days").
 - **Focus:** the border turns Action Blue.
+- **Copyable values:** a value to paste elsewhere (an invite link, a device token, the owner recovery command `docker exec popcornstash popcornstash admin reset-owner`) sits in a Zinc Subtle monospace box with a "Copy" secondary button beside it, under a label that says what to do with it.
+
+### Disclosure rows
+A Collapsible trigger ("Use a WireGuard or OpenVPN file instead") is a 44px row with the chevron before a semibold label; the theme sets the height (`collapsible-trigger`), so every disclosure keeps the target.
 
 ### Status tag
 - **Style:** Zinc Subtle fill, 6px corners, 12px Zinc Muted text, a 7px status dot. It may wrap in the narrow sidebar.
 - **Use:** the VPN in the sidebar foot and on Downloads, engine and passkey health in System, failed job counts.
 
 ### VPN status panel
-The VPN page opens with a panel: a status dot and a title in words ("Protected · NordVPN · Netherlands", "Torrents are off on this server"), one detail sentence only when it adds a reason or says what still works, an explanation of what the tunnel covers, Reconnect and Remove, and the connection facts (public address, provider, server, protocol for NordVPN, connected since, kill switch).
+The VPN page opens with a panel: a status dot and a title in words ("Protected · NordVPN · Netherlands", "Torrents are off on this server"), one detail sentence only when it adds a reason or says what still works, an explanation of what the tunnel covers, Reconnect and Remove, and the connection facts (public address, server, protocol for NordVPN, connected since, kill switch, and the provider only while the status line does not already name it).
 
 ### Media tile
 - **Character:** the picture is the tile. Thumbnail at its shape's ratio with a 10px radius and the inner hairline, then the title (two lines, then truncated) and one metadata line ("2014 · 1 min", "Jun 13, 2024 · 12 s", "PDF · 592 B").
@@ -258,10 +262,10 @@ A 176px 16:9 frame, then the episode's name, then its state ("Watched", "Up next
 Downloads, Inbox decisions, people, devices, passkeys and browsers are rows inside one white panel, separated by thin dividers: name, a metadata line, and actions at the trailing edge (a quiet "More" menu for rarer actions).
 
 ### Empty states
-Astryx EmptyState in a flat panel: a 28px line icon (stroke 1.5, the same icon as the category's tile placeholder), a short title ("No movies yet"), one or two sentences that say how the space fills, and at most one action. Inside an existing panel the frame is dropped.
+Astryx EmptyState in a flat panel: a 28px line icon (stroke 1.5, the same icon as the category's tile placeholder), a short title ("No movies yet"), one or two sentences that say how the space fills, and at most one action. Inside an existing panel the frame is dropped. The sentences add to the page's subtitle and the controls above rather than restating them (empty Inbox: "Everything new was sorted on its own."; empty Downloads: "Every file takes the same path into your library." above the three steps).
 
 ### Player and lightbox
-Native `<video>` (hls.js only when HLS is needed) on the Stage Black stage; Play or "Resume from 0:31" as the primary button over the poster with "Start from the beginning" as a ghost below it; quality, audio and "Next episode" in a bar under the stage. Photos open in Astryx's Lightbox with arrow keys, a count, the date and camera, and "Download original".
+Native `<video>` (hls.js only when HLS is needed) on the Stage Black stage; Play or "Resume from 0:31" as the primary button over the poster with "Start from the beginning" as a ghost below it; quality, audio and "Next episode" in a bar under the stage. A photo's page shows it on the same stage (24px of black around it on desktop, edge to edge on phones) with a full-screen button on the photo's own top-right corner; photos open in Astryx's Lightbox with arrow keys, a count, the date and camera, and "Download original".
 
 ### Drop overlay
 The whole app accepts dropped files; a full-window overlay says where they will go.

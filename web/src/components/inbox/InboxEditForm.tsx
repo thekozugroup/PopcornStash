@@ -147,7 +147,6 @@ export function InboxEditForm({item, isBusy, error, onCancel, onSubmit}: InboxEd
   };
 
   const status = (message: string | undefined) => (message ? {type: 'error' as const, message} : undefined);
-  const categoryOption = CATEGORY_OPTIONS.find(option => option.value === category);
 
   return (
     <form ref={formRef} onSubmit={submit} noValidate aria-label={`Edit where ${item.title} goes`} {...stylex.props(styles.form)}>
@@ -155,7 +154,6 @@ export function InboxEditForm({item, isBusy, error, onCancel, onSubmit}: InboxEd
         <div {...stylex.props(styles.full)}>
           <Selector
             label="What is this file?"
-            description={categoryOption?.description}
             options={CATEGORY_OPTIONS.map(option => ({value: option.value, label: option.label}))}
             value={category}
             onChange={value => {
@@ -239,9 +237,9 @@ export function InboxEditForm({item, isBusy, error, onCancel, onSubmit}: InboxEd
         </span>
         <span {...stylex.props(styles.previewText)}>
           <Text type="label">{`Will move to ${preview.place}`}</Text>
-          {preview.missing ? (
+          {preview.hint ? (
             <Text type="supporting" color="secondary">
-              {preview.missing}
+              {preview.hint}
             </Text>
           ) : preview.fileName ? (
             <Text type="supporting" color="secondary">

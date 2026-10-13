@@ -127,7 +127,12 @@ export function VpnStatusPanel({status, error, isLoading, onReload, onChange, pa
   const view = vpnView(status, false);
   // NordVPN's brand (the country is in the status line, the server below), or an
   // uploaded file's label ("WireGuard · home-router"), which already names the protocol.
-  const provider = status.provider === 'nordvpn' ? providerBrand(status) : (status.label ?? providerBrand(status));
+  // Listed only when the status line above does not already name it (DESIGN.md, Say It
+  // Once): "Protected · NordVPN · Netherlands" needs no "Provider: NordVPN" under it.
+  const providerLabel =
+    status.provider === 'nordvpn' ? providerBrand(status) : (status.label ?? providerBrand(status));
+  const provider =
+    providerLabel && ![view.title, view.detail].some(line => line?.includes(providerLabel)) ? providerLabel : null;
   const protocol = status.provider === 'nordvpn' ? protocolName(status.protocol) : null;
   const canReconnect = status.configured && !view.isDegraded;
 
