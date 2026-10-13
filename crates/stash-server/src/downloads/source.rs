@@ -259,7 +259,10 @@ mod tests {
     #[test]
     fn cookie_dependent_links_are_stored_as_incomplete() {
         let url = Url::parse("https://example.com/files/a.mp4").unwrap();
-        assert_eq!(redact_url_with(&url, false), "https://example.com/files/a.mp4");
+        assert_eq!(
+            redact_url_with(&url, false),
+            "https://example.com/files/a.mp4"
+        );
         let stored = redact_url_with(&url, true);
         assert!(is_redacted_source(&stored), "{stored}");
     }

@@ -113,6 +113,23 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
 
   const retry = useCallback(() => setNonce(n => n + 1), []);
 
+  /** Brings in new arrivals at the top of a newest-first list. */
+  const mergeNewest = () => {
+    // Only a list sorted newest-first (added or filmed) has an obvious place for new arrivals.
+    if ((sort !== 'added' && sort !== 'taken') || order !== 'desc' || q || favorite) return;
+    const requestKey = key;
+    const dateOf = (item: Item) => (sort === 'taken' ? (item.taken_at ?? item.added_at) : item.added_at);
+    itemsApi.list({category, sort, order, limit: 20}).then(
+      page =>
+        setState(s =>
+          s.key !== requestKey
+            ? s
+            : {...s, items: mergeUnique(page.items, s.items).sort((a, b) => dateOf(b) - dateOf(a))},
+        ),
+      () => undefined,
+    );
+  };
+
   useLibraryEvents({
     onChanged: ids => {
       const shown = new Set(stateRef.current.items.map(item => item.id));
@@ -132,20 +149,12 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
       }
     },
     onRemoved: id => setState(s => ({...s, items: s.items.filter(item => item.id !== id)})),
-    onAdded: () => {
-      // Only a list sorted newest-first (added or filmed) has an obvious place for new arrivals.
-      if ((sort !== 'added' && sort !== 'taken') || order !== 'desc' || q || favorite) return;
-      const requestKey = key;
-      const dateOf = (item: Item) => (sort === 'taken' ? (item.taken_at ?? item.added_at) : item.added_at);
-      itemsApi.list({category, sort, order, limit: 20}).then(
-        page =>
-          setState(s =>
-            s.key !== requestKey
-              ? s
-              : {...s, items: mergeUnique(page.items, s.items).sort((a, b) => dateOf(b) - dateOf(a))},
-          ),
-        () => undefined,
-      );
+    onAdded: () => mergeNewest(),
+    // An item accepted from Inbox or organized into this category arrives as an update
+    // to an item this page has never shown.
+    onUpdated: ids => {
+      const shown = new Set(stateRef.current.items.map(item => item.id));
+      if (ids.some(id => !shown.has(id))) mergeNewest();
     },
   });
 

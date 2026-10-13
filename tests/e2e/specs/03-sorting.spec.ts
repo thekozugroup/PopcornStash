@@ -45,11 +45,18 @@ test('the startup scan moved the Inbox files into the library with tidy names', 
   expect(new Date((phone.taken_at ?? 0) * 1000).toISOString()).toBe('2024-06-13T10:21:00.000Z');
 });
 
-test('the ambiguous file waits in Inbox, and Accept with an edited title moves it', async ({page}) => {
+test('the ambiguous file waits in Inbox, and Accept with an edited title moves it', async ({page, context}) => {
   expect(exists('Inbox/clip_final_v2.mkv')).toBe(true);
   const inbox = await apiJson<{items: ItemSummary[]}>(page.request, '/api/inbox');
   expect(inbox.items.map(item => item.rel_path)).toEqual(['Inbox/clip_final_v2.mkv']);
   expect(inbox.items[0]?.suggestion).toMatchObject({category: 'other', confidence: 'low', destination: 'Other/clip_final_v2.mkv'});
+
+  // Movies is open in another tab; the accepted file should appear there by itself.
+  const moviesPage = await context.newPage();
+  await moviesPage.goto('/movies');
+  const movies = moviesPage.getByRole('list', {name: 'Movies'});
+  await expect(movies.getByRole('link', {name: /^Paper Boats/})).toBeVisible();
+  await expect(movies.getByRole('link', {name: /^Final Cut/})).toHaveCount(0);
 
   await page.goto('/inbox');
   await expect(page.getByRole('heading', {level: 1, name: 'Inbox'})).toBeVisible();
@@ -77,6 +84,8 @@ test('the ambiguous file waits in Inbox, and Accept with an edited title moves i
 
   const item = await findItem(page.request, 'Final Cut', '&category=movie');
   expect(item).toMatchObject({status: 'ready', rel_path: 'Movies/Final Cut (2020)/Final Cut (2020).mkv'});
+  await expect(movies.getByRole('link', {name: /^Final Cut 2020/})).toBeVisible();
+  await moviesPage.close();
   expect((await apiJson<{items: unknown[]}>(page.request, '/api/inbox')).items).toHaveLength(0);
 });
 
@@ -128,12 +137,18 @@ test('an item moved to Trash leaves the library and can be restored to its place
   const item = await findItem(page.request, 'Copper Trail', '&category=movie');
   expect(item.rel_path).toBe(rel);
 
+  // Nothing asks for the trashed item afterwards (the page leaves; it does not reload it).
+  const notFound: string[] = [];
+  page.on('response', response => {
+    if (response.status() === 404 && response.url().includes(`/api/items/${item.id}`)) notFound.push(response.url());
+  });
   await page.goto(`/item/${item.id}`);
   await page.getByRole('button', {name: 'More actions'}).click();
   await page.getByRole('menuitem', {name: 'Move to Trash'}).click();
   const confirm = page.getByRole('alertdialog', {name: /Move “Copper Trail” to Trash\?/});
   await confirm.getByRole('button', {name: 'Move to Trash'}).click();
   await expect(confirm).toBeHidden();
+  await expect(page).toHaveURL(/\/movies$/);
 
   // Out of the library folder and into the stash's own trash, not deleted.
   await expect.poll(() => exists(rel)).toBe(false);
@@ -147,6 +162,11 @@ test('an item moved to Trash leaves the library and can be restored to its place
   await page.goto('/settings/library');
   const row = page.getByRole('listitem').filter({hasText: 'Copper Trail'});
   await expect(row).toBeVisible();
+  // The owner sees the trashed item's picture.
+  await expect
+    .poll(() => row.locator('img').evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth))
+    .toBeGreaterThan(0);
+  expect(notFound).toEqual([]);
   await row.getByRole('button', {name: 'Restore'}).click();
   await expect(row).toBeHidden();
   await expectFile(rel);

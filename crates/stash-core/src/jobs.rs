@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::db::Db;
 use crate::events::{Event, EventBus};
-use crate::{now, Result};
+use crate::{Result, now};
 
 pub const MAX_ATTEMPTS: i64 = 3;
 
@@ -89,18 +89,28 @@ pub struct JobQueue {
 
 impl JobQueue {
     pub fn new(db: Db, events: EventBus) -> Self {
-        Self { db, events, notify: Arc::new(Notify::new()) }
+        Self {
+            db,
+            events,
+            notify: Arc::new(Notify::new()),
+        }
     }
 
     /// Queue a job. A queued job of the same kind for the same item is reused.
-    pub async fn enqueue(&self, kind: JobKind, item_id: Option<&str>, payload: serde_json::Value) -> Result<i64> {
+    pub async fn enqueue(
+        &self,
+        kind: JobKind,
+        item_id: Option<&str>,
+        payload: serde_json::Value,
+    ) -> Result<i64> {
         if let Some(item_id) = item_id {
-            let existing: Option<(i64,)> =
-                sqlx::query_as("SELECT id FROM jobs WHERE kind = ? AND item_id = ? AND state = 'queued' LIMIT 1")
-                    .bind(kind.as_str())
-                    .bind(item_id)
-                    .fetch_optional(&self.db)
-                    .await?;
+            let existing: Option<(i64,)> = sqlx::query_as(
+                "SELECT id FROM jobs WHERE kind = ? AND item_id = ? AND state = 'queued' LIMIT 1",
+            )
+            .bind(kind.as_str())
+            .bind(item_id)
+            .fetch_optional(&self.db)
+            .await?;
             if let Some((id,)) = existing {
                 return Ok(id);
             }
@@ -140,9 +150,10 @@ impl JobQueue {
     }
 
     pub async fn counts(&self) -> Result<JobCounts> {
-        let rows: Vec<(String, i64)> = sqlx::query_as("SELECT state, count(*) FROM jobs GROUP BY state")
-            .fetch_all(&self.db)
-            .await?;
+        let rows: Vec<(String, i64)> =
+            sqlx::query_as("SELECT state, count(*) FROM jobs GROUP BY state")
+                .fetch_all(&self.db)
+                .await?;
         let mut counts = JobCounts::default();
         for (state, n) in rows {
             match state.as_str() {
@@ -230,21 +241,25 @@ impl JobQueue {
             let result = handler(job).await;
             let t = now();
             let outcome = match result {
-                Ok(()) => sqlx::query("UPDATE jobs SET state = 'done', error = NULL, updated_at = ? WHERE id = ?")
+                Ok(()) => sqlx::query(
+                    "UPDATE jobs SET state = 'done', error = NULL, updated_at = ? WHERE id = ?",
+                )
+                .bind(t)
+                .bind(id)
+                .execute(&self.db)
+                .await
+                .map(|_| "done"),
+                Err(e) if attempts >= MAX_ATTEMPTS => {
+                    tracing::warn!(error = %e, job = id, kind = kind.as_str(), "job failed permanently");
+                    sqlx::query(
+                        "UPDATE jobs SET state = 'failed', error = ?, updated_at = ? WHERE id = ?",
+                    )
+                    .bind(format!("{e:#}"))
                     .bind(t)
                     .bind(id)
                     .execute(&self.db)
                     .await
-                    .map(|_| "done"),
-                Err(e) if attempts >= MAX_ATTEMPTS => {
-                    tracing::warn!(error = %e, job = id, kind = kind.as_str(), "job failed permanently");
-                    sqlx::query("UPDATE jobs SET state = 'failed', error = ?, updated_at = ? WHERE id = ?")
-                        .bind(format!("{e:#}"))
-                        .bind(t)
-                        .bind(id)
-                        .execute(&self.db)
-                        .await
-                        .map(|_| "failed")
+                    .map(|_| "failed")
                 }
                 Err(e) => {
                     let delay = 30 * (1 << attempts.clamp(0, 6));
@@ -267,7 +282,11 @@ impl JobQueue {
     }
 
     fn publish(&self, kind: JobKind, state: &str, item_id: Option<String>) {
-        self.events.publish(Event::Job { kind: kind.as_str().to_string(), state: state.to_string(), item_id });
+        self.events.publish(Event::Job {
+            kind: kind.as_str().to_string(),
+            state: state.to_string(),
+            item_id,
+        });
     }
 }
 
@@ -292,10 +311,19 @@ mod tests {
                 Ok(())
             }
         });
-        queue.enqueue(JobKind::Probe, Some("good"), serde_json::json!({})).await.unwrap();
+        queue
+            .enqueue(JobKind::Probe, Some("good"), serde_json::json!({}))
+            .await
+            .unwrap();
         // Same kind + item is deduplicated while queued.
-        queue.enqueue(JobKind::Probe, Some("good"), serde_json::json!({})).await.unwrap();
-        queue.enqueue(JobKind::Probe, Some("bad"), serde_json::json!({})).await.unwrap();
+        queue
+            .enqueue(JobKind::Probe, Some("good"), serde_json::json!({}))
+            .await
+            .unwrap();
+        queue
+            .enqueue(JobKind::Probe, Some("bad"), serde_json::json!({}))
+            .await
+            .unwrap();
         let cancel = CancellationToken::new();
         queue.start(HashMap::from([(JobKind::Probe, (h, 1))]), cancel.clone());
         for _ in 0..50 {
@@ -306,12 +334,17 @@ mod tests {
         }
         cancel.cancel();
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-        let (done,): (i64,) = sqlx::query_as("SELECT count(*) FROM jobs WHERE state = 'done'").fetch_one(&db).await.unwrap();
-        assert_eq!(done, 1);
-        let (retry,): (i64,) = sqlx::query_as("SELECT count(*) FROM jobs WHERE state = 'queued' AND error IS NOT NULL")
+        let (done,): (i64,) = sqlx::query_as("SELECT count(*) FROM jobs WHERE state = 'done'")
             .fetch_one(&db)
             .await
             .unwrap();
+        assert_eq!(done, 1);
+        let (retry,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM jobs WHERE state = 'queued' AND error IS NOT NULL",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
         assert_eq!(retry, 1);
     }
 }

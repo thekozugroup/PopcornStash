@@ -258,6 +258,11 @@ export interface VpnStatus {
   error: string | null;
   kill_switch: boolean;
   allow_no_vpn: boolean;
+  /**
+   * Torrents are off on this server by design (degraded container, or the web
+   * server running alone); `error` says why. Nothing waits for the VPN then.
+   */
+  torrents_off: boolean;
 }
 
 // ---------------------------------------------------------------------------

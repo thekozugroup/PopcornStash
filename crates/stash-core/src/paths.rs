@@ -64,7 +64,18 @@ impl StashLayout {
 
     /// Create every fixed folder and the marker file. Idempotent.
     pub async fn ensure(&self) -> Result<()> {
-        for dir in [MOVIES, SHOWS, HOME_VIDEOS, PHOTOS, OTHER, INBOX, IN_PROGRESS, COMPLETED, UPLOADS_TMP, TRASH] {
+        for dir in [
+            MOVIES,
+            SHOWS,
+            HOME_VIDEOS,
+            PHOTOS,
+            OTHER,
+            INBOX,
+            IN_PROGRESS,
+            COMPLETED,
+            UPLOADS_TMP,
+            TRASH,
+        ] {
             tokio::fs::create_dir_all(self.root.join(dir)).await?;
         }
         let marker = self.root.join(MARKER);
@@ -108,7 +119,11 @@ impl StashLayout {
                 _ => None,
             })
             .collect::<Option<_>>()?;
-        if parts.is_empty() { None } else { Some(parts.join("/")) }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("/"))
+        }
     }
 
     /// Classify a relative path into its zone.
@@ -194,7 +209,9 @@ pub fn sanitize_filename(name: &str) -> String {
     if cleaned.len() > 200 {
         // Keep the extension when truncating.
         let (stem, ext) = match cleaned.rfind('.') {
-            Some(i) if cleaned.len() - i <= 12 => (cleaned[..i].to_string(), cleaned[i..].to_string()),
+            Some(i) if cleaned.len() - i <= 12 => {
+                (cleaned[..i].to_string(), cleaned[i..].to_string())
+            }
             _ => (cleaned.clone(), String::new()),
         };
         let mut end = 200usize.saturating_sub(ext.len());
@@ -231,8 +248,14 @@ pub fn unique_path(dest: &Path) -> PathBuf {
         return dest.to_path_buf();
     }
     let parent = dest.parent().map(Path::to_path_buf).unwrap_or_default();
-    let stem = dest.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let ext = dest.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let stem = dest
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = dest
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
     (2..)
         .map(|n| parent.join(format!("{stem} ({n}){ext}")))
         .find(|p| !p.exists())
@@ -243,7 +266,10 @@ pub fn unique_path(dest: &Path) -> PathBuf {
 /// Never overwrites: fails if `dest` exists.
 pub async fn move_path(src: &Path, dest: &Path) -> Result<()> {
     if tokio::fs::symlink_metadata(dest).await.is_ok() {
-        return Err(CoreError::conflict(format!("{} already exists", dest.display())));
+        return Err(CoreError::conflict(format!(
+            "{} already exists",
+            dest.display()
+        )));
     }
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -272,18 +298,26 @@ fn copy_then_remove(src: &Path, dest: &Path) -> Result<()> {
     } else {
         let tmp = dest.with_extension(format!(
             "{}popcornstash-tmp",
-            dest.extension().map(|e| format!("{}.", e.to_string_lossy())).unwrap_or_default()
+            dest.extension()
+                .map(|e| format!("{}.", e.to_string_lossy()))
+                .unwrap_or_default()
         ));
         let copied = std::fs::copy(src, &tmp)?;
         let file = std::fs::File::open(&tmp)?;
         file.sync_all()?;
         if copied != meta.len() {
             let _ = std::fs::remove_file(&tmp);
-            return Err(CoreError::external(format!("copy of {} was incomplete", src.display())));
+            return Err(CoreError::external(format!(
+                "copy of {} was incomplete",
+                src.display()
+            )));
         }
         std::fs::rename(&tmp, dest)?;
         if let Ok(modified) = meta.modified() {
-            let _ = std::fs::File::options().write(true).open(dest).and_then(|f| f.set_modified(modified));
+            let _ = std::fs::File::options()
+                .write(true)
+                .open(dest)
+                .and_then(|f| f.set_modified(modified));
         }
         std::fs::remove_file(src)?;
     }
@@ -296,12 +330,27 @@ mod tests {
 
     #[test]
     fn zones() {
-        assert_eq!(StashLayout::zone("Movies/Heat (1995)/Heat (1995).mkv"), Zone::Library(Category::Movie));
-        assert_eq!(StashLayout::zone("Home Videos/2024/06/IMG_1.MOV"), Zone::Library(Category::HomeVideo));
+        assert_eq!(
+            StashLayout::zone("Movies/Heat (1995)/Heat (1995).mkv"),
+            Zone::Library(Category::Movie)
+        );
+        assert_eq!(
+            StashLayout::zone("Home Videos/2024/06/IMG_1.MOV"),
+            Zone::Library(Category::HomeVideo)
+        );
         assert_eq!(StashLayout::zone("Inbox/a.mp4"), Zone::Inbox);
-        assert_eq!(StashLayout::zone("Downloads/In Progress/x/a.mkv"), Zone::InProgress);
-        assert_eq!(StashLayout::zone("Downloads/Completed/x/a.mkv"), Zone::Completed);
-        assert_eq!(StashLayout::zone(".popcornstash/Trash/a.mkv"), Zone::Internal);
+        assert_eq!(
+            StashLayout::zone("Downloads/In Progress/x/a.mkv"),
+            Zone::InProgress
+        );
+        assert_eq!(
+            StashLayout::zone("Downloads/Completed/x/a.mkv"),
+            Zone::Completed
+        );
+        assert_eq!(
+            StashLayout::zone(".popcornstash/Trash/a.mkv"),
+            Zone::Internal
+        );
         assert_eq!(StashLayout::zone("Family 2019/beach.mp4"), Zone::Custom);
         assert_eq!(StashLayout::zone("Moviesque/a.mp4"), Zone::Custom);
     }

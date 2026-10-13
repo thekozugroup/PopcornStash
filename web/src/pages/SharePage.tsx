@@ -17,7 +17,7 @@ import {ApiError, downloads as downloadsApi} from '../api/client';
 import type {Download} from '../api/types';
 import {useAuth} from '../auth/AuthProvider';
 import {findLink, isTorrentLink, type DetectedLink} from '../components/downloads/linkDetect';
-import {torrentsAffected, VpnLine} from '../components/downloads/VpnLine';
+import {torrentsAffected, torrentsOff, VpnLine} from '../components/downloads/VpnLine';
 import {PageHeader} from '../components/PageHeader';
 import {useVpnStatus} from '../hooks/useVpnStatus';
 import {errorMessage} from '../lib/errors';
@@ -223,6 +223,13 @@ export default function SharePage() {
   const kind = KIND[link.kind];
   const KindIcon = kind.icon;
   const showVpn = isTorrentLink(link) && torrentsAffected(vpn.status, vpn.isUnavailable);
+  // A torrent cannot be added at all while torrents are off on this server.
+  const isBlocked = isTorrentLink(link) && torrentsOff(vpn.status);
+  const words = isBlocked
+    ? 'A torrent. Torrents are off on this server, so it cannot be added.'
+    : showVpn
+      ? `${kind.words(link)} It waits until the VPN is ready.`
+      : kind.words(link);
 
   return (
     <>
@@ -237,7 +244,7 @@ export default function SharePage() {
               <span {...stylex.props(styles.title)}>{title}</span>
             </Heading>
             <Text as="p" color="secondary">
-              {showVpn ? `${kind.words(link)} It waits until the VPN is ready.` : kind.words(link)}
+              {words}
             </Text>
             <p {...stylex.props(styles.url)} title={link.url}>
               {link.url}
@@ -267,7 +274,13 @@ export default function SharePage() {
         ) : null}
 
         <div {...stylex.props(styles.actions)}>
-          <Button label="Add to Downloads" variant="primary" isLoading={isSending} onClick={() => void send()} />
+          <Button
+            label="Add to Downloads"
+            variant="primary"
+            isLoading={isSending}
+            isDisabled={isBlocked}
+            onClick={() => void send()}
+          />
           <Button label="Cancel" variant="secondary" isDisabled={isSending} onClick={() => navigate('/', {replace: true})} />
         </div>
       </section>

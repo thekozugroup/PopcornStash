@@ -72,18 +72,34 @@ impl std::fmt::Debug for Config {
             .field("stash_root", &self.stash_root)
             .field("config_dir", &self.config_dir)
             .field("public_url", &self.public_url.as_ref().map(Url::as_str))
-            .field("extra_origins", &self.extra_origins.iter().map(Url::as_str).collect::<Vec<_>>())
+            .field(
+                "extra_origins",
+                &self
+                    .extra_origins
+                    .iter()
+                    .map(Url::as_str)
+                    .collect::<Vec<_>>(),
+            )
             .field("bind", &self.bind)
             .field("tls_cert", &self.tls_cert)
             .field("tls_key", &self.tls_key)
             .field("trust_proxy", &self.trust_proxy)
             .field("torrentd_url", &self.torrentd_url.as_ref().map(Url::as_str))
-            .field("torrentd_proxy", &self.torrentd_proxy.as_ref().map(Url::as_str))
-            .field("internal_token", &self.internal_token.as_ref().map(|_| "<redacted>"))
+            .field(
+                "torrentd_proxy",
+                &self.torrentd_proxy.as_ref().map(Url::as_str),
+            )
+            .field(
+                "internal_token",
+                &self.internal_token.as_ref().map(|_| "<redacted>"),
+            )
             .field("supervisor_socket", &self.supervisor_socket)
             .field("torrents_off_reason", &self.torrents_off_reason)
             .field("hwaccel", &self.hwaccel)
-            .field("android_assetlinks", &self.android_assetlinks.as_ref().map(|_| "<set>"))
+            .field(
+                "android_assetlinks",
+                &self.android_assetlinks.as_ref().map(|_| "<set>"),
+            )
             .finish()
     }
 }
@@ -97,7 +113,10 @@ fn env(name: &str) -> Option<String> {
 
 fn env_url(name: &str) -> Result<Option<Url>> {
     env(name)
-        .map(|v| Url::parse(&v).map_err(|e| CoreError::invalid(format!("{name} is not a valid URL: {e}"))))
+        .map(|v| {
+            Url::parse(&v)
+                .map_err(|e| CoreError::invalid(format!("{name} is not a valid URL: {e}")))
+        })
         .transpose()
 }
 
@@ -120,7 +139,11 @@ impl Config {
                 list.split(',')
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
-                    .map(|s| Url::parse(s).map_err(|e| CoreError::invalid(format!("STASH_EXTRA_ORIGINS entry {s:?}: {e}"))))
+                    .map(|s| {
+                        Url::parse(s).map_err(|e| {
+                            CoreError::invalid(format!("STASH_EXTRA_ORIGINS entry {s:?}: {e}"))
+                        })
+                    })
                     .collect::<Result<Vec<_>>>()
             })
             .transpose()?
@@ -198,21 +221,29 @@ impl Config {
         self.torrent_dir().join("vpn")
     }
     pub fn internal_token_path(&self) -> PathBuf {
-        self.torrent_dir().join(crate::internal_api::INTERNAL_TOKEN_FILE)
+        self.torrent_dir()
+            .join(crate::internal_api::INTERNAL_TOKEN_FILE)
     }
 
     /// True when the public URL is HTTPS (or plain-HTTP localhost, which browsers treat as secure).
     pub fn passkeys_ready(&self) -> bool {
-        self.public_url.as_ref().is_some_and(|u| validate_public_url(u).is_ok())
+        self.public_url
+            .as_ref()
+            .is_some_and(|u| validate_public_url(u).is_ok())
     }
 
     pub fn is_https(&self) -> bool {
-        self.public_url.as_ref().is_some_and(|u| u.scheme() == "https")
+        self.public_url
+            .as_ref()
+            .is_some_and(|u| u.scheme() == "https")
     }
 
     /// WebAuthn relying-party id: the host of the public URL.
     pub fn rp_id(&self) -> Option<String> {
-        self.public_url.as_ref().and_then(|u| u.host_str()).map(str::to_string)
+        self.public_url
+            .as_ref()
+            .and_then(|u| u.host_str())
+            .map(str::to_string)
     }
 
     /// Every origin allowed to make cookie-authenticated requests.
@@ -239,7 +270,9 @@ pub fn validate_public_url(url: &Url) -> Result<()> {
             match url.scheme() {
                 "https" => Ok(()),
                 "http" if local => Ok(()),
-                _ => Err(CoreError::invalid("Passkeys need HTTPS. Use an https:// address")),
+                _ => Err(CoreError::invalid(
+                    "Passkeys need HTTPS. Use an https:// address",
+                )),
             }
         }
     }

@@ -31,6 +31,11 @@ const styles = stylex.create({
   },
 });
 
+/** True when torrents are off on this server by design, so nothing waits for the VPN. */
+export function torrentsOff(status: VpnStatus | null): boolean {
+  return status?.torrents_off === true;
+}
+
 /** True when torrents cannot run right now (or the state cannot be read). */
 export function torrentsAffected(status: VpnStatus | null, isUnavailable: boolean): boolean {
   if (isUnavailable) return true;

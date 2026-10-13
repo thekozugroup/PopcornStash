@@ -87,7 +87,11 @@ export function NordVpnSetup({isPrimary, onConnected}: NordVpnSetupProps) {
       });
       setToken('');
       onConnected(status);
-      showToast({body: 'NordVPN is set up. Connecting now.'});
+      showToast({
+        body: status.torrents_off
+          ? 'NordVPN is set up. It connects once torrents can run on this server.'
+          : 'NordVPN is set up. Connecting now.',
+      });
     } catch (cause) {
       if (cause instanceof ApiError && cause.code === 'bad_request') setTokenError(cause.message);
       else setFormError(errorMessage(cause, 'NordVPN could not be set up. Try again.'));

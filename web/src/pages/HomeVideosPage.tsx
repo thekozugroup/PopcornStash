@@ -8,7 +8,7 @@ import {CategoryLibraryPage, type CategoryLibraryConfig} from '../components/lib
 const config: CategoryLibraryConfig = {
   category: 'home_video',
   title: 'Home Videos',
-  subtitle: 'Family clips from your phones and cameras, most recently filmed first.',
+  subtitle: 'Family clips from your phones and cameras.',
   shape: 'frame',
   noun: 'home videos',
   // Tiles show the date each clip was filmed, so that is the default order:

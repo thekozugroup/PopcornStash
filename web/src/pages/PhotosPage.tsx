@@ -185,6 +185,13 @@ export default function PhotosPage() {
       // New photos land at the top; reload only while the first page is all that is shown.
       if (stateRef.current.pages <= 1 && viewerIndex === null) setNonce(n => n + 1);
     },
+    // A file accepted from Inbox as a photo is an update to an item not shown yet.
+    onUpdated: ids => {
+      const shown = new Set(stateRef.current.months.flatMap(month => month.items.map(item => item.id)));
+      if (ids.some(id => !shown.has(id)) && stateRef.current.pages <= 1 && viewerIndex === null) {
+        setNonce(n => n + 1);
+      }
+    },
   });
 
   const flat = useMemo(() => state.months.flatMap(month => month.items), [state.months]);

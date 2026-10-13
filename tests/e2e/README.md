@@ -35,14 +35,14 @@ The `first-run` project registers the owner and saves the owner's cookie and pas
 
 | Spec | Covers |
 |---|---|
-| `first-run` | `setup_required`, `/setup` with the code from the log, owner passkey, lands on Home |
+| `first-run` | `setup_required`, `/setup` with the code from the log (and the hint that `admin setup-code` prints a new one), owner passkey, lands on Home |
 | `01-auth` | Sign out and back in with only the passkey; a browser without it stays at `/login`; owner recovery with `popcornstash admin reset-owner` |
-| `02-library` | Home counts and Recently added, Movies, Shows and seasons, Home Videos dates, Photos viewer with arrow keys, Other; no sideways scrolling at phone width |
-| `03-sorting` | Startup scan moved Inbox files on disk; the owner's own folder is left alone; ambiguous file in Inbox, Edit and accept moves it; a file copied into Inbox while running is sorted and Movies updates live; Organize moves an owner-folder file only on request |
-| `04-playback` | Direct play with range requests; HEVC/AC-3 MKV over HLS; segment alignment and resume; progress saving and Continue watching |
-| `05-uploads` | Upload from Downloads and by dropping on the page; progress, `Downloads/Completed`, sorting, library |
-| `06-links-and-torrents` | Private-address links are refused plainly and never fetched; magnets are refused while torrents are off; Settings say so; the PWA share target |
-| `07-people-and-devices` | Invite link and member passkey; members cannot reach owner settings; device pairing, token delivered once, scopes |
+| `02-library` | Home counts and Recently added (music and document icons), Movies, Shows and seasons, Home Videos dates, Photos viewer with arrow keys and readable buttons in light mode, Other; no sideways scrolling at phone width |
+| `03-sorting` | Startup scan moved Inbox files on disk; the owner's own folder is left alone; ambiguous file in Inbox, Edit and accept moves it and an open Movies page shows it; a file copied into Inbox while running is sorted and Movies updates live; Organize moves an owner-folder file only on request; Trash and restore, with the trashed item's picture and no requests for the gone item |
+| `04-playback` | Direct play with range requests; HEVC/AC-3 MKV over HLS; segment alignment and resume; progress saving and Continue watching; a show offers Resume only where the player resumes |
+| `05-uploads` | Upload from Downloads and by dropping on the page; progress, `Downloads/Completed`, sorting, library; a paused upload keeps its progress, and cancel cleans up |
+| `06-links-and-torrents` | Private-address links are refused plainly and never fetched; magnets are refused while torrents are off (`torrents_off`), Settings, the share page and the link field say so; the PWA share target |
+| `07-people-and-devices` | Invite link and member passkey, with the owner's People page updating by itself; members cannot reach owner settings; device pairing, token delivered once, scopes |
 | `08-security` | Cookie writes need a matching Origin; CSP and other headers; sandboxed library files; cookie flags |
 
 ## Sample stash

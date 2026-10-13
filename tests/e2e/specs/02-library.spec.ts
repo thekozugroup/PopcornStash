@@ -4,6 +4,25 @@
 import {expect, test} from '@playwright/test';
 import {env} from '../helpers/env';
 
+/** WCAG contrast ratio of two computed CSS colours (rgb() or oklch()). */
+function contrast(a: string, b: string): number {
+  const luminance = (color: string) => {
+    const oklch = /oklch\(([\d.]+)(%?)/.exec(color);
+    if (oklch?.[1]) {
+      // Lightness cubed approximates relative luminance for the neutral zinc palette.
+      const l = Number(oklch[1]) / (oklch[2] ? 100 : 1);
+      return l ** 3;
+    }
+    const [r, g, bl] = (color.match(/[\d.]+/g) ?? ['0', '0', '0']).slice(0, 3).map(v => {
+      const c = Number(v) / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * (r ?? 0) + 0.7152 * (g ?? 0) + 0.0722 * (bl ?? 0);
+  };
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return ((hi ?? 0) + 0.05) / ((lo ?? 0) + 0.05);
+}
+
 test.use({storageState: async ({}, use) => use(env.ownerState)});
 
 test('Home shows the library counts and what was recently added', async ({page}) => {
@@ -21,6 +40,9 @@ test('Home shows the library counts and what was recently added', async ({page})
   await expect(recent.getByRole('link', {name: /^Harbor Lights 2019/})).toBeVisible();
   await expect(recent.getByRole('link', {name: /^IMG_1234 /})).toBeVisible();
   await expect(recent.getByRole('link', {name: /^Quiet Meadow/})).toBeVisible();
+  // Files without a picture show what they are, as on the Other page (not a film clapperboard).
+  await expect(recent.getByRole('link', {name: /^Recipe Card PDF/}).locator('svg.lucide-file-text')).toBeVisible();
+  await expect(recent.getByRole('link', {name: /^Morning Notes MP3/}).locator('svg.lucide-music')).toBeVisible();
 
   // Counts link to their pages.
   await counts.getByRole('link', {name: '4 movies'}).click();
@@ -41,7 +63,12 @@ test('Movies lists the films, with thumbnails, and opens a movie', async ({page}
     })
     .toBeGreaterThan(0);
 
-  await paperBoats.click();
+  // The subtitle does not promise an order the sort menu can change.
+  await page.goto('/movies?sort=title');
+  await expect(grid.getByRole('link', {name: /^Glass Orchard/})).toBeVisible();
+  await expect(page.getByText(/most recently added first/)).toHaveCount(0);
+
+  await grid.getByRole('link', {name: /^Paper Boats 2011/}).click();
   await expect(page.getByRole('heading', {level: 1, name: 'Paper Boats'})).toBeVisible();
   await expect(page.getByRole('button', {name: 'Play'})).toBeVisible();
 });
@@ -98,6 +125,14 @@ test('the Photos timeline opens the viewer and the arrow keys move between photo
   expect(first).toContain('May 22, 2022');
   // The full-size image really loads.
   await expect.poll(() => photo.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth)).toBeGreaterThan(0);
+  // The viewer is a black stage in light mode too: its buttons are light on dark, not
+  // white-on-white (the light-dark() tokens must follow the stage's color-scheme).
+  const download = viewer.getByRole('link', {name: 'Download original'});
+  const colors = await download.evaluate((element: HTMLElement) => {
+    const style = getComputedStyle(element);
+    return {background: style.backgroundColor, text: style.color};
+  });
+  expect(contrast(colors.text, colors.background), JSON.stringify(colors)).toBeGreaterThan(4.5);
 
   await page.keyboard.press('ArrowRight');
   await expect(viewer.locator('img[alt^="Photo taken"]').first()).not.toHaveAttribute('alt', first ?? '');

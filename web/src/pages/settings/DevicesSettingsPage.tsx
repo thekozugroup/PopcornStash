@@ -10,7 +10,7 @@ import {Link} from '@astryxdesign/core/Link';
 import {ListItem} from '@astryxdesign/core/List';
 import {Text} from '@astryxdesign/core/Text';
 import {useToast} from '@astryxdesign/core/Toast';
-import {useEffect, useState} from 'react';
+import {useState} from 'react';
 import {pairing, tokens} from '../../api/client';
 import type {PendingPairing, Token} from '../../api/types';
 import {useAuth} from '../../auth/AuthProvider';
@@ -19,6 +19,7 @@ import {EmptyRows, LoadError, LoadingRows, RowsPanel, PanelList} from '../../com
 import {SettingsGroup} from '../../components/settings/SettingsGroup';
 import {Steps} from '../../components/settings/Steps';
 import {useConfirm} from '../../components/settings/useConfirm';
+import {usePolling} from '../../components/settings/usePolling';
 import {useResource} from '../../components/settings/useResource';
 import {formatDate, formatRelative} from '../../lib/format';
 import {errorMessage} from '../../lib/errors';
@@ -83,21 +84,6 @@ const styles = stylex.create({
     overflowWrap: 'anywhere',
   },
 });
-
-/** Reloads `reload` every few seconds while the tab is visible. */
-function usePolling(reload: () => void, intervalMs: number) {
-  useEffect(() => {
-    const tick = () => {
-      if (document.visibilityState === 'visible') reload();
-    };
-    const timer = window.setInterval(tick, intervalMs);
-    document.addEventListener('visibilitychange', tick);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener('visibilitychange', tick);
-    };
-  }, [reload, intervalMs]);
-}
 
 function PendingRequest({
   request,

@@ -180,6 +180,26 @@ test('progress is saved while watching and Home offers to continue', async ({pag
   await expect.poll(() => currentTime(page), {timeout: 15_000}).toBeGreaterThan(33);
 });
 
+test('a show offers Resume only when the player will pick up part-way', async ({page, baseURL}) => {
+  // A few seconds into the first episode: the player starts it over (under 15 s), so the
+  // show page must not promise to resume it.
+  const first = await findItem(page.request, 'The Lantern Keepers S01E01');
+  const saved = await page.request.put(`/api/items/${first.id}/progress`, {
+    data: {position_s: 2, duration_s: 4},
+    headers: {Origin: baseURL ?? ''},
+  });
+  expect(saved.status()).toBe(204);
+  await page.goto('/shows/The%20Lantern%20Keepers');
+  await expect(page.getByRole('button', {name: 'Play S01E01'})).toBeVisible();
+  await expect(page.getByRole('button', {name: /^Resume/})).toHaveCount(0);
+  // The line under the button names the episode without promising time left.
+  await expect(page.getByText('The Lantern Keepers S01E01', {exact: true}).first()).toBeVisible();
+  await expect(page.getByText(/S01E01(,| ·) .*left$/)).toHaveCount(0);
+  // The episode's own page agrees: it plays from the start.
+  await page.goto(`/item/${first.id}`);
+  await expect(page.getByRole('button', {name: 'Play', exact: true})).toBeVisible();
+});
+
 test('HLS segments line up and a stream can start part way through', async ({page, baseURL}) => {
   const orchard = await findItem(page.request, 'Glass Orchard');
   const caps = {video_codecs: ['h264'], audio_codecs: ['aac'], hdr: false};

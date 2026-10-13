@@ -78,7 +78,7 @@ function VpnSettings() {
             title={isConfigured ? 'Use a different VPN' : 'Connect NordVPN'}
             description={
               isDegraded
-                ? 'You can set it up now. It connects once the container has NET_ADMIN and /dev/net/tun.'
+                ? 'You can set it up now. It connects once torrents can run on this server.'
                 : isConfigured
                   ? 'Setting up a new VPN replaces the current one. Torrents pause while it connects.'
                   : 'The quickest way to protect torrents. You need a NordVPN plan and two minutes.'

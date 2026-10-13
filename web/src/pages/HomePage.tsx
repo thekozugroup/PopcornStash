@@ -8,6 +8,7 @@ import * as stylex from '@stylexjs/stylex';
 import {colorVars, fontWeightVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {Heading} from '@astryxdesign/core/Heading';
 import {Skeleton} from '@astryxdesign/core/Skeleton';
+import type {LucideIcon} from 'lucide-react';
 import {useEffect, useMemo, useState} from 'react';
 import {Link} from 'react-router';
 import {downloads as downloadsApi, library} from '../api/client';
@@ -16,6 +17,7 @@ import type {DownloadState, Item, LibrarySummary} from '../api/types';
 import {FirstRunPanel} from '../components/library/FirstRunPanel';
 import {HomeNotices} from '../components/library/HomeNotices';
 import {LoadError} from '../components/library/LoadError';
+import {placeholderIcon} from '../components/library/placeholderIcon';
 import {
   CATEGORY_PATH,
   displayTitle,
@@ -103,6 +105,8 @@ interface TileModel {
   meta: string;
   image: ReturnType<typeof thumbSources>;
   progress?: number | null;
+  /** Placeholder for files without a picture (music, documents). */
+  icon?: LucideIcon;
 }
 
 interface Group {
@@ -122,6 +126,7 @@ function itemTile(item: Item, version?: number): TileModel {
     title: displayTitle(item),
     meta: itemMeta(item),
     image: thumbSources(item, version),
+    icon: placeholderIcon(item),
   };
 }
 
@@ -244,6 +249,7 @@ function renderTiles(tiles: TileModel[], shape: MediaShape) {
       imageSrcSet={tile.image?.srcSet}
       shape={shape}
       progress={tile.progress}
+      placeholderIcon={tile.icon}
       isTextHidden={shape === 'square'}
     />
   ));

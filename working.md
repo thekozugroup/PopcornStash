@@ -14,3 +14,7 @@ Ship the Docker server for PopcornStash: a passkey-gated, private family library
 
 ## Status
 Started 2026-10-12. See the commit log on main for progress.
+
+## Evidence
+- `tests/e2e/`: Playwright against the real server and a fresh sample stash (33 tests), including a regression check for each bug found in exploratory QA on 2026-10-13.
+- `evidence/preview/` (git-ignored): every page as the owner at 1440 light, 1440 dark and 390 light, on a fuller sample library with illustrated stills; the design preview.

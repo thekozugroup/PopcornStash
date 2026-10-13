@@ -18,7 +18,7 @@ import {ApiError, downloads as downloadsApi} from '../../api/client';
 import type {Download, VpnStatus} from '../../api/types';
 import {errorMessage} from '../../lib/errors';
 import {checkLink, describeLink, isTorrentLink} from './linkDetect';
-import {torrentsAffected, VpnLine} from './VpnLine';
+import {torrentsAffected, torrentsOff, VpnLine} from './VpnLine';
 
 const styles = stylex.create({
   panel: {
@@ -144,8 +144,14 @@ export function AddPanel({
   } else if (check.status === 'invalid' && touched) {
     feedback = {text: check.message, icon: CircleAlert, isError: true};
   } else if (check.status === 'ok') {
-    const parts = [check.extracted ? 'Found a link in the pasted text.' : null, describeLink(check.link)];
-    if (isTorrentLink(check.link) && vpnBlocked) parts.push('It waits until the VPN is ready.');
+    const isTorrent = isTorrentLink(check.link);
+    const parts = [
+      check.extracted ? 'Found a link in the pasted text.' : null,
+      isTorrent && torrentsOff(vpnStatus)
+        ? 'A torrent. Torrents are off on this server, so it cannot be added.'
+        : describeLink(check.link),
+    ];
+    if (isTorrent && vpnBlocked && !torrentsOff(vpnStatus)) parts.push('It waits until the VPN is ready.');
     feedback = {text: parts.filter(Boolean).join(' '), icon: KIND_ICON[check.link.kind], isError: false};
   } else {
     feedback = {

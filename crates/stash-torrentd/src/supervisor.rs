@@ -452,7 +452,12 @@ fn render_group(pgid: u32) -> Option<u32> {
 }
 
 /// `off_reason` is the sentence the UI shows when torrents are off (degraded mode).
-fn serve_spec(options: &SupervisorOptions, inputs: &EnvInputs, torrents: bool, off_reason: Option<&str>) -> ChildSpec {
+fn serve_spec(
+    options: &SupervisorOptions,
+    inputs: &EnvInputs,
+    torrents: bool,
+    off_reason: Option<&str>,
+) -> ChildSpec {
     let mut env = children::serve_env(inputs, torrents);
     if let (false, Some(reason)) = (torrents, off_reason) {
         env.push(("STASH_TORRENTS_OFF_REASON".into(), reason.to_string()));

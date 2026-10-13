@@ -385,7 +385,9 @@ impl NordVpnClient {
             .map_err(|e| send_error("credentials", &e))?;
         match response.status().as_u16() {
             200..=299 => {}
-            401 | 403 => return Err(NordVpnError::InvalidToken),
+            // 400 is NordVPN's answer to a token that is not in its format ("Invalid
+            // authorization header"), for example a pasted password or a cut-off token.
+            400 | 401 | 403 => return Err(NordVpnError::InvalidToken),
             status => {
                 return Err(NordVpnError::unexpected(format!(
                     "credentials answered HTTP {status}"
@@ -758,26 +760,31 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn token_rejected_maps_to_friendly_message() {
+        use axum::http::StatusCode;
         use axum::routing::get;
-        let app = axum::Router::new().route(
-            "/v1/users/services/credentials",
-            get(|| async { (axum::http::StatusCode::UNAUTHORIZED, "{}") }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let base = Url::parse(&format!("http://{addr}/")).unwrap();
-        let client = NordVpnClient::with_base_urls(
-            reqwest::Client::builder().no_proxy().build().unwrap(),
-            base.clone(),
-            base,
-        );
-        let err = client.credentials("bad-token").await.unwrap_err();
-        assert!(matches!(err, NordVpnError::InvalidToken));
-        assert_eq!(
-            err.to_string(),
-            "NordVPN did not accept that access token. Create a new one in your Nord Account and try again."
-        );
+        // NordVPN answers 401 for an unknown token and 400 ("Invalid authorization
+        // header") for one that is not in its format.
+        for status in [StatusCode::UNAUTHORIZED, StatusCode::BAD_REQUEST] {
+            let app = axum::Router::new().route(
+                "/v1/users/services/credentials",
+                get(move || async move { (status, "{}") }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let base = Url::parse(&format!("http://{addr}/")).unwrap();
+            let client = NordVpnClient::with_base_urls(
+                reqwest::Client::builder().no_proxy().build().unwrap(),
+                base.clone(),
+                base,
+            );
+            let err = client.credentials("bad-token").await.unwrap_err();
+            assert!(matches!(err, NordVpnError::InvalidToken), "{status}: {err}");
+            assert_eq!(
+                err.to_string(),
+                "NordVPN did not accept that access token. Create a new one in your Nord Account and try again."
+            );
+        }
     }
 
     #[tokio::test]

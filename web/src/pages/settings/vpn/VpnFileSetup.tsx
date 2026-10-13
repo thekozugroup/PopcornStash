@@ -89,7 +89,12 @@ export function VpnFileSetup({onConnected}: {onConnected: (status: VpnStatus) =>
       setFile(null);
       setPassword('');
       onConnected(status);
-      showToast({body: `${kind === 'wireguard' ? 'WireGuard' : 'OpenVPN'} file saved. Connecting now.`});
+      const name = kind === 'wireguard' ? 'WireGuard' : 'OpenVPN';
+      showToast({
+        body: status.torrents_off
+          ? `${name} file saved. It connects once torrents can run on this server.`
+          : `${name} file saved. Connecting now.`,
+      });
     } catch (cause) {
       setFormError(errorMessage(cause, 'The file was not accepted. Try again.'));
     } finally {

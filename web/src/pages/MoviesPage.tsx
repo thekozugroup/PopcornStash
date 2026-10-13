@@ -8,7 +8,7 @@ import {CategoryLibraryPage, type CategoryLibraryConfig} from '../components/lib
 const config: CategoryLibraryConfig = {
   category: 'movie',
   title: 'Movies',
-  subtitle: 'Every film in your library, most recently added first.',
+  subtitle: 'Every film in your library.',
   shape: 'poster',
   noun: 'movies',
   // Films carry a release year, not a date taken, so that sort is left out.

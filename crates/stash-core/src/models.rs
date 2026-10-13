@@ -67,7 +67,10 @@ text_enum!(Confidence { High => "high", Low => "low" });
 impl DownloadState {
     /// Still moving bytes or waiting to.
     pub fn is_active(self) -> bool {
-        matches!(self, Self::Queued | Self::Downloading | Self::Paused | Self::Seeding | Self::Sorting)
+        matches!(
+            self,
+            Self::Queued | Self::Downloading | Self::Paused | Self::Seeding | Self::Sorting
+        )
     }
 }
 
@@ -107,11 +110,15 @@ pub struct ItemRow {
 
 impl ItemRow {
     pub fn media(&self) -> Option<MediaSummary> {
-        self.media_json.as_deref().and_then(|j| serde_json::from_str(j).ok())
+        self.media_json
+            .as_deref()
+            .and_then(|j| serde_json::from_str(j).ok())
     }
 
     pub fn suggestion(&self) -> Option<Classification> {
-        self.suggestion_json.as_deref().and_then(|j| serde_json::from_str(j).ok())
+        self.suggestion_json
+            .as_deref()
+            .and_then(|j| serde_json::from_str(j).ok())
     }
 
     /// API shape. `progress` is the requesting user's playback position.
@@ -134,7 +141,8 @@ impl ItemRow {
             height: self.height,
             taken_at: self.taken_at,
             camera: self.camera.clone(),
-            thumb: (self.thumb_state == ThumbState::Ready).then(|| format!("/api/items/{}/thumb?size=sm&v={}", self.id, self.updated_at)),
+            thumb: (self.thumb_state == ThumbState::Ready)
+                .then(|| format!("/api/items/{}/thumb?size=sm&v={}", self.id, self.updated_at)),
             favorite: self.favorite,
             added_at: self.added_at,
             progress,
@@ -339,6 +347,11 @@ pub struct VpnStatus {
     pub error: Option<String>,
     pub kill_switch: bool,
     pub allow_no_vpn: bool,
+    /// Torrents are off on this server by design (degraded mode, or `serve` running
+    /// without the supervisor); `error` says why. Nothing waits for the VPN then:
+    /// adding a torrent answers `vpn_unavailable`.
+    #[serde(default)]
+    pub torrents_off: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -370,6 +383,7 @@ impl VpnStatus {
             error: Some(error.into()),
             kill_switch: true,
             allow_no_vpn: false,
+            torrents_off: false,
         }
     }
 }

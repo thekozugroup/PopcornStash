@@ -19,9 +19,17 @@ pub async fn adopt(config: &Config, name: &str) -> anyhow::Result<()> {
     if name.is_empty() || name.contains('/') || name == "." || name == ".." {
         anyhow::bail!("refusing to adopt {name:?}: not a single path component");
     }
-    tokio::time::timeout(TIMEOUT, request(socket, &SupervisorRequest::Adopt { name: name.to_string() }))
-        .await
-        .map_err(|_| anyhow::anyhow!("the supervisor did not answer the adopt request in time"))?
+    tokio::time::timeout(
+        TIMEOUT,
+        request(
+            socket,
+            &SupervisorRequest::Adopt {
+                name: name.to_string(),
+            },
+        ),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("the supervisor did not answer the adopt request in time"))?
 }
 
 async fn request(socket: &Path, request: &SupervisorRequest) -> anyhow::Result<()> {
@@ -38,6 +46,10 @@ async fn request(socket: &Path, request: &SupervisorRequest) -> anyhow::Result<(
     if response.ok {
         Ok(())
     } else {
-        anyhow::bail!(response.error.unwrap_or_else(|| "the supervisor refused the request".into()))
+        anyhow::bail!(
+            response
+                .error
+                .unwrap_or_else(|| "the supervisor refused the request".into())
+        )
     }
 }

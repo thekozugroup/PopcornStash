@@ -76,19 +76,40 @@ test('a magnet link is refused in plain words while torrents are off', async ({p
 
 test('Settings say plainly that torrents are unavailable', async ({page}) => {
   const status = await (await page.request.get('/api/vpn/status')).json();
-  expect(status).toMatchObject({reachable: false, configured: false});
+  // Off by design, flagged as such (the UI does not guess from the wording of `error`).
+  expect(status).toMatchObject({reachable: false, configured: false, torrents_off: true, error: TORRENTS_OFF});
 
   await page.goto('/settings/vpn');
   await expect(page.getByRole('heading', {level: 2, name: 'VPN'})).toBeVisible();
   const vpn = page.getByRole('region', {name: 'VPN status'});
-  await expect(vpn.getByText(/^Torrents off: /)).toBeVisible();
-  await expect(vpn.getByText('Web links and uploads still work.', {exact: false})).toBeVisible();
+  await expect(vpn.getByText('Torrents are off on this server')).toBeVisible();
+  // The server's reason, and what still works.
+  await expect(vpn.getByText(`${TORRENTS_OFF} Web links and uploads still work.`)).toBeVisible();
+  // Nothing promises a container fix that may not apply.
+  await expect(page.getByText(/NET_ADMIN/)).toHaveCount(0);
   // The sidebar tag says it too, in words, not only a colour.
   await expect(page.getByRole('status', {name: TORRENTS_OFF})).toHaveText('Torrents unavailable');
 
   // System health says the engine is off on purpose, not that something crashed.
   await page.goto('/settings/system');
   await expect(page.getByText('Turned off on this server. Torrents are unavailable.')).toBeVisible();
+});
+
+test('a shared magnet says plainly that it cannot be added while torrents are off', async ({page}) => {
+  const magnet = 'magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&dn=Holiday';
+  await page.goto(`/share?text=${encodeURIComponent(magnet)}`);
+  await expect(page.getByRole('heading', {level: 1, name: 'Add shared link'})).toBeVisible();
+  await expect(page.getByText('A torrent. Torrents are off on this server, so it cannot be added.')).toBeVisible();
+  // Not "it waits until the VPN is ready": nothing waits while torrents are off.
+  await expect(page.getByText(/waits until the VPN/)).toHaveCount(0);
+  await expect(page.getByRole('button', {name: 'Add to Downloads'})).toBeDisabled();
+
+  // The Downloads field says the same before anything is sent.
+  await page.goto('/downloads');
+  await page.getByRole('textbox', {name: 'Paste a link or magnet'}).fill(magnet);
+  const panel = page.getByRole('region', {name: 'Add to downloads'});
+  await expect(panel.getByText('A torrent. Torrents are off on this server, so it cannot be added.')).toBeVisible();
+  await expect(panel.getByText(/waits until the VPN/)).toHaveCount(0);
 });
 
 test('a link shared from another app (PWA share target) is added after signing in', async ({browser, baseURL}) => {

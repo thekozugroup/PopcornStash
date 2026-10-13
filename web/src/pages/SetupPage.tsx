@@ -144,7 +144,7 @@ export default function SetupPage() {
       </form>
       <Text as="p" type="supporting" color="secondary" xstyle={styles.hint}>
         Lost the log? Run <Code>docker exec popcornstash popcornstash admin setup-code</Code> on the server to
-        print the code again.
+        print a new code. The one in the log then stops working.
       </Text>
     </AuthLayout>
   );

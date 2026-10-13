@@ -5,9 +5,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+use crate::Result;
 use crate::config::HwAccel;
 use crate::db::Db;
-use crate::Result;
 
 const KEY: &str = "app";
 
@@ -33,7 +33,14 @@ pub struct TorrentSettings {
 
 impl Default for TorrentSettings {
     fn default() -> Self {
-        Self { seed_after_complete: false, seed_ratio: 1.0, seed_hours: 24, max_active: 5, down_limit_kbps: 0, up_limit_kbps: 0 }
+        Self {
+            seed_after_complete: false,
+            seed_ratio: 1.0,
+            seed_hours: 24,
+            max_active: 5,
+            down_limit_kbps: 0,
+            up_limit_kbps: 0,
+        }
     }
 }
 
@@ -48,7 +55,12 @@ pub struct TranscodeSettings {
 
 impl Default for TranscodeSettings {
     fn default() -> Self {
-        Self { hwaccel: HwAccel::None, max_height: 1080, crf: 23, max_sessions: 2 }
+        Self {
+            hwaccel: HwAccel::None,
+            max_height: 1080,
+            crf: 23,
+            max_sessions: 2,
+        }
     }
 }
 
@@ -111,7 +123,10 @@ impl SettingsStore {
                 s
             }
         };
-        Ok(Self { db, cache: Arc::new(RwLock::new(settings.normalized())) })
+        Ok(Self {
+            db,
+            cache: Arc::new(RwLock::new(settings.normalized())),
+        })
     }
 
     pub async fn get(&self) -> Settings {
@@ -154,13 +169,27 @@ mod tests {
     #[tokio::test]
     async fn partial_update_merges() {
         let db = crate::db::open_memory().await.unwrap();
-        let store = SettingsStore::load(db.clone(), HwAccel::None).await.unwrap();
-        let s = store.update(serde_json::json!({"torrent": {"seed_ratio": 2.0}})).await.unwrap();
+        let store = SettingsStore::load(db.clone(), HwAccel::None)
+            .await
+            .unwrap();
+        let s = store
+            .update(serde_json::json!({"torrent": {"seed_ratio": 2.0}}))
+            .await
+            .unwrap();
         assert_eq!(s.torrent.seed_ratio, 2.0);
         assert_eq!(s.torrent.max_active, 5);
         assert!(s.auto_sort);
-        let reloaded = SettingsStore::load(db, HwAccel::None).await.unwrap().get().await;
+        let reloaded = SettingsStore::load(db, HwAccel::None)
+            .await
+            .unwrap()
+            .get()
+            .await;
         assert_eq!(reloaded.torrent.seed_ratio, 2.0);
-        assert!(store.update(serde_json::json!({"http_via_vpn": "sometimes"})).await.is_err());
+        assert!(
+            store
+                .update(serde_json::json!({"http_via_vpn": "sometimes"}))
+                .await
+                .is_err()
+        );
     }
 }

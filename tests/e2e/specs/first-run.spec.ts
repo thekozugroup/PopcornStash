@@ -14,6 +14,8 @@ test('the owner sets up the server with the code from the log and a passkey', as
   await page.goto('/');
   await expect(page).toHaveURL(/\/setup$/);
   await expect(page.getByRole('heading', {name: 'Set up PopcornStash'})).toBeVisible();
+  // `admin setup-code` prints a new code and the logged one stops working; the hint says so.
+  await expect(page.getByText('print a new code. The one in the log then stops working.', {exact: false})).toBeVisible();
 
   const authenticator = await VirtualAuthenticator.attach(page);
   await page.getByLabel('Setup code').fill(env.setupCode);

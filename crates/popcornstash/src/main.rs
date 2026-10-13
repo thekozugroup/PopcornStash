@@ -7,7 +7,11 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "popcornstash", version, about = "A private, organized home for your family's videos and photos")]
+#[command(
+    name = "popcornstash",
+    version,
+    about = "A private, organized home for your family's videos and photos"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -36,7 +40,11 @@ enum Command {
         state_dir: PathBuf,
         #[arg(long, env = "STASH_ENGINE_DOWNLOADS")]
         downloads_dir: PathBuf,
-        #[arg(long, env = "STASH_ENGINE_STATUS", default_value = "/run/popcornstash/status.json")]
+        #[arg(
+            long,
+            env = "STASH_ENGINE_STATUS",
+            default_value = "/run/popcornstash/status.json"
+        )]
         status_file: PathBuf,
         #[arg(long, env = "STASH_TUNNEL_IF")]
         tunnel_if: Option<String>,
@@ -65,15 +73,24 @@ enum AdminCommand {
 }
 
 fn init_tracing() {
-    let filter = EnvFilter::try_from_env("STASH_LOG").unwrap_or_else(|_| EnvFilter::new("info,librqbit=warn,sqlx=warn,tower_http=info"));
-    tracing_subscriber::fmt().with_env_filter(filter).with_target(false).init();
+    let filter = EnvFilter::try_from_env("STASH_LOG")
+        .unwrap_or_else(|_| EnvFilter::new("info,librqbit=warn,sqlx=warn,tower_http=info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .init();
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Run { puid, pgid, engine_uid, allow_no_vpn } => {
+        Command::Run {
+            puid,
+            pgid,
+            engine_uid,
+            allow_no_vpn,
+        } => {
             init_tracing();
             let config = stash_core::config::Config::from_env()?;
             stash_torrentd::run_supervisor(stash_torrentd::SupervisorOptions {
@@ -93,10 +110,21 @@ async fn main() -> anyhow::Result<()> {
             let config = stash_core::config::Config::from_env()?;
             stash_server::serve(config).await
         }
-        Command::TorrentEngine { state_dir, downloads_dir, status_file, tunnel_if, allow_no_vpn, api_bind, proxy_bind } => {
+        Command::TorrentEngine {
+            state_dir,
+            downloads_dir,
+            status_file,
+            tunnel_if,
+            allow_no_vpn,
+            api_bind,
+            proxy_bind,
+        } => {
             init_tracing();
-            let internal_token = std::env::var("STASH_INTERNAL_TOKEN")
-                .map_err(|_| anyhow::anyhow!("STASH_INTERNAL_TOKEN is not set; the engine is started by `popcornstash run`"))?;
+            let internal_token = std::env::var("STASH_INTERNAL_TOKEN").map_err(|_| {
+                anyhow::anyhow!(
+                    "STASH_INTERNAL_TOKEN is not set; the engine is started by `popcornstash run`"
+                )
+            })?;
             let code = stash_torrentd::run_engine(stash_torrentd::EngineOptions {
                 state_dir,
                 downloads_dir,
@@ -116,15 +144,24 @@ async fn main() -> anyhow::Result<()> {
             match command {
                 AdminCommand::ResetOwner => {
                     let link = stash_server::auth::create_owner_reset_link(&db, &config).await?;
-                    println!("Open this link within 30 minutes to add a new passkey for the owner:\n{link}");
+                    println!(
+                        "Open this link within 30 minutes to add a new passkey for the owner:\n{link}"
+                    );
                 }
                 AdminCommand::SetupCode => {
-                    let auth = stash_server::auth::AuthService::new(std::sync::Arc::new(config), db)?;
-                    match auth.ensure_setup_code().await.map_err(|e| anyhow::anyhow!("{e}"))? {
+                    let auth =
+                        stash_server::auth::AuthService::new(std::sync::Arc::new(config), db)?;
+                    match auth
+                        .ensure_setup_code()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?
+                    {
                         Some(code) => println!(
                             "Setup code: {code}\nThis new code is valid for 24 hours. The code in the server log no longer works."
                         ),
-                        None => println!("An owner already exists. Use `popcornstash admin reset-owner` to recover access."),
+                        None => println!(
+                            "An owner already exists. Use `popcornstash admin reset-owner` to recover access."
+                        ),
                     }
                 }
             }
@@ -146,7 +183,10 @@ async fn healthcheck() -> anyhow::Result<()> {
             .danger_accept_invalid_certs(true)
             .timeout(std::time::Duration::from_secs(3))
             .build()?;
-        let response = client.get(format!("https://127.0.0.1:{port}/api/health")).send().await?;
+        let response = client
+            .get(format!("https://127.0.0.1:{port}/api/health"))
+            .send()
+            .await?;
         if response.status().is_success() {
             return Ok(());
         }
@@ -154,12 +194,17 @@ async fn healthcheck() -> anyhow::Result<()> {
     }
     let addr = format!("127.0.0.1:{port}");
     let path = "/api/health";
-    let mut stream = tokio::time::timeout(std::time::Duration::from_secs(3), tokio::net::TcpStream::connect(&addr)).await??;
+    let mut stream = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::net::TcpStream::connect(&addr),
+    )
+    .await??;
     stream
         .write_all(format!("GET {path} HTTP/1.0\r\nHost: localhost\r\n\r\n").as_bytes())
         .await?;
     let mut buf = vec![0u8; 64];
-    let n = tokio::time::timeout(std::time::Duration::from_secs(3), stream.read(&mut buf)).await??;
+    let n =
+        tokio::time::timeout(std::time::Duration::from_secs(3), stream.read(&mut buf)).await??;
     let head = String::from_utf8_lossy(&buf[..n]);
     if head.starts_with("HTTP/1.0 200") || head.starts_with("HTTP/1.1 200") {
         Ok(())

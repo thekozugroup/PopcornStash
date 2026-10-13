@@ -288,11 +288,34 @@ export class ResumableUpload {
     } catch (error) {
       if (error instanceof ApiError && error.code === 'aborted') {
         this.phase = this.isCancelled ? 'cancelled' : 'paused';
+        if (!this.isCancelled) await this.refreshReceived();
       } else {
         this.phase = 'failed';
       }
       this.emit();
       throw error;
+    }
+  }
+
+  /**
+   * After a pause: the server keeps the part of the interrupted chunk that
+   * arrived, so show its count rather than the last whole chunk (a paused
+   * upload would otherwise drop back to 0%). It records that part once the
+   * aborted request ends, so ask twice, a moment apart.
+   */
+  private async refreshReceived(): Promise<void> {
+    const uploadId = this.uploadId;
+    if (!uploadId) return;
+    for (const delay of [150, 500]) {
+      await new Promise(resolve => setTimeout(resolve, delay));
+      try {
+        const status = await uploads.status(uploadId);
+        if (status.state !== 'receiving' || status.received <= this.acknowledged) continue;
+        this.acknowledged = Math.min(this.file.size, status.received);
+        return;
+      } catch {
+        return;
+      }
     }
   }
 

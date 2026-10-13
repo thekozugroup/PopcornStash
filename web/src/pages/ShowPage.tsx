@@ -18,10 +18,10 @@ import {ApiError, shows as showsApi} from '../api/client';
 import type {Item, ShowDetail} from '../api/types';
 import {EpisodeList} from '../components/library/EpisodeList';
 import {LoadError} from '../components/library/LoadError';
-import {itemHref, largeThumb, showMeta, timeLeft} from '../components/library/libraryFormat';
+import {itemHref, largeThumb, resumePosition, showMeta, timeLeft} from '../components/library/libraryFormat';
 import {useLibraryEvents} from '../components/library/useLibraryEvents';
 import {PageHeader, useDocumentTitle} from '../components/PageHeader';
-import {formatEpisodeCode, watchedFraction} from '../lib/format';
+import {formatEpisodeCode} from '../lib/format';
 
 const styles = stylex.create({
   back: {
@@ -221,19 +221,21 @@ export default function ShowPage() {
   }
 
   const upEpisode = up?.episode;
-  const resumeFraction = upEpisode ? watchedFraction(upEpisode.progress) : null;
+  // "Resume" only when the player will pick up part-way (the same rule it uses),
+  // not for an episode that was opened for a few seconds and starts over.
+  const resumes = upEpisode ? resumePosition(upEpisode) > 0 : false;
   const code = upEpisode ? formatEpisodeCode(upEpisode.season, upEpisode.episode) : '';
   const actionLabel = !upEpisode
     ? ''
     : up?.isRewatch
       ? 'Watch again from the start'
-      : resumeFraction !== null
+      : resumes
         ? `Resume ${code}`
         : `Play ${code}`;
   const upLine = upEpisode
-    ? [upEpisode.episode_title ?? upEpisode.title, resumeFraction !== null && !up?.isRewatch ? timeLeft(upEpisode) : null]
+    ? [upEpisode.episode_title ?? upEpisode.title, resumes && !up?.isRewatch ? timeLeft(upEpisode) : null]
         .filter(Boolean)
-        .join(', ')
+        .join(' · ')
     : '';
 
   const nextBlock = (extra: stylex.StyleXStyles) =>

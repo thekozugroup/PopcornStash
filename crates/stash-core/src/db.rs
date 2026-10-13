@@ -4,8 +4,8 @@ use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 
 use crate::Result;
 
@@ -48,7 +48,10 @@ mod tests {
     #[tokio::test]
     async fn migrations_apply() {
         let db = super::open_memory().await.unwrap();
-        let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM items").fetch_one(&db).await.unwrap();
+        let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM items")
+            .fetch_one(&db)
+            .await
+            .unwrap();
         assert_eq!(n, 0);
     }
 }

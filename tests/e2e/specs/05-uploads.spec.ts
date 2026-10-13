@@ -92,3 +92,43 @@ test('files dropped anywhere in the app are uploaded and sorted', async ({page})
   await page.goto('/');
   await expect(page.getByRole('region', {name: 'Recently added'}).getByRole('link', {name: /^Kite Festival 2021/})).toBeVisible();
 });
+
+test('a paused upload keeps showing what the server already has', async ({page}) => {
+  // Big enough that the first 16 MiB chunk is still on its way when it is paused.
+  const name = 'Family archive.zip';
+  const file = path.join(env.files, name);
+  fs.writeFileSync(file, Buffer.alloc(40_000_000, 7));
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Network.enable');
+  await cdp.send('Network.emulateNetworkConditions', {
+    offline: false,
+    latency: 20,
+    downloadThroughput: -1,
+    uploadThroughput: 2 * 1024 * 1024,
+  });
+
+  await page.goto('/downloads');
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', {name: 'Upload files'}).click();
+  await (await chooser).setFiles(file);
+  const row = page.getByRole('listitem').filter({hasText: name}).first();
+  const sentMb = async () => {
+    const match = /([\d.]+) MB of 40 MB/.exec(await row.innerText());
+    return match ? Number(match[1]) : 0;
+  };
+  await expect.poll(sentMb, {timeout: 20_000}).toBeGreaterThan(3);
+
+  await page.getByRole('button', {name: `Pause ${name}`}).click();
+  await expect(row.getByText(/^Upload · Paused/)).toBeVisible();
+  // Not back to 0 B: the part of the chunk that arrived is kept and counted.
+  await expect.poll(sentMb).toBeGreaterThan(2);
+  expect(await row.innerText()).not.toContain('0 B of 40 MB');
+
+  await cdp.send('Network.emulateNetworkConditions', {offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1});
+  await page.getByRole('button', {name: `More for ${name}`}).click();
+  await page.getByRole('menuitem', {name: 'Cancel upload…'}).click();
+  await page.getByRole('alertdialog').getByRole('button', {name: 'Cancel upload'}).click();
+  await expect(row).toBeHidden();
+  await expect.poll(() => fs.readdirSync(path.join(env.stash, 'Downloads', 'In Progress', '.uploads'))).toEqual([]);
+  fs.rmSync(file);
+});

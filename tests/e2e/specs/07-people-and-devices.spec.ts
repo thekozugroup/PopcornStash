@@ -39,6 +39,10 @@ test('an invited family member joins with a passkey and cannot open owner settin
   expect(await authenticator.credentials()).toHaveLength(1);
   expect(await (await page.request.get('/api/me')).json()).toMatchObject({display_name: MEMBER_NAME, role: 'member'});
 
+  // The owner's People page, still open, shows the new person and drops the used invite by itself.
+  await expect(ownerPage.getByRole('listitem').filter({hasText: MEMBER_NAME})).toBeVisible({timeout: 15_000});
+  await expect(ownerPage.getByText('No open invites.', {exact: false})).toBeVisible({timeout: 15_000});
+
   // Members can browse...
   await page.goto('/movies');
   await expect(page.getByRole('list', {name: 'Movies'}).getByRole('link', {name: /^Paper Boats/})).toBeVisible();

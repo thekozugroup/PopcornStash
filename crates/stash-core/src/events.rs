@@ -18,10 +18,19 @@ pub enum LibraryChange {
 #[serde(tag = "event", content = "data", rename_all = "snake_case")]
 pub enum Event {
     Download(Download),
-    Library { r#type: LibraryChange, item_id: String },
+    Library {
+        r#type: LibraryChange,
+        item_id: String,
+    },
     Vpn(VpnStatus),
-    Inbox { count: i64 },
-    Job { kind: String, state: String, item_id: Option<String> },
+    Inbox {
+        count: i64,
+    },
+    Job {
+        kind: String,
+        state: String,
+        item_id: Option<String>,
+    },
 }
 
 impl Event {
@@ -78,8 +87,14 @@ mod tests {
 
     #[test]
     fn event_shape() {
-        let e = Event::Library { r#type: LibraryChange::Added, item_id: "x".into() };
+        let e = Event::Library {
+            r#type: LibraryChange::Added,
+            item_id: "x".into(),
+        };
         assert_eq!(e.name(), "library");
-        assert_eq!(e.data(), serde_json::json!({"type": "added", "item_id": "x"}));
+        assert_eq!(
+            e.data(),
+            serde_json::json!({"type": "added", "item_id": "x"})
+        );
     }
 }

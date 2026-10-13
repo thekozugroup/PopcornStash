@@ -756,7 +756,10 @@ impl DownloadManager {
         if self.torrentd.enabled() {
             Ok(())
         } else {
-            Err(ApiError::new(ErrorCode::VpnUnavailable, crate::torrentd_client::disabled_message(&self.config)))
+            Err(ApiError::new(
+                ErrorCode::VpnUnavailable,
+                crate::torrentd_client::disabled_message(&self.config),
+            ))
         }
     }
 

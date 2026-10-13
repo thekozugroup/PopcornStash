@@ -370,7 +370,12 @@ async fn thumb(
     user.require(Scope::LibraryRead)?;
     let query: ThumbQuery = parse_query(req.uri())?;
     let size = query.size.unwrap_or(ThumbSize::Sm);
-    let item = visible_item(&state, &id).await?;
+    // Owners see trashed items in Settings, Library, Trash, so their pictures stay
+    // available to owners until the trash is emptied. Everyone else gets a 404.
+    let item = match repo::get(&state.db, &id).await? {
+        Some(row) if row.status != ItemStatus::Trashed || user.is_owner() => row,
+        _ => return Err(item_not_found()),
+    };
     let path = state.media.thumb_path(&item.id, size);
     let not_ready = || ApiError::not_found("This picture is not ready yet.");
     if !tokio::fs::metadata(&path)
@@ -1097,6 +1102,32 @@ mod tests {
             .get(&format!("/api/items/{id}/thumb?size=huge"), Some(&token))
             .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// The trash list (owner only) shows each item's picture; members still get 404.
+    #[tokio::test]
+    async fn trashed_thumbnails_are_for_owners_only() {
+        let app = TestApp::new().await;
+        let (_, owner) = app.user("owner").await;
+        let (_, member) = app.user("member").await;
+        let id = app
+            .item(
+                "Photos/2024/06/t.jpg",
+                MediaKind::Photo,
+                Category::Photo,
+                ItemStatus::Trashed,
+                None,
+            )
+            .await;
+        let path = app.state.media.thumb_path(&id, ThumbSize::Sm);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"RIFFxxxxWEBP").unwrap();
+        let url = format!("/api/items/{id}/thumb?size=sm&v=1");
+        let (status, _, body) = app.get(&url, Some(&owner)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&body[..], b"RIFFxxxxWEBP");
+        let (status, _, _) = app.get(&url, Some(&member)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     /// Only a versioned thumbnail URL (`v=<updated_at>`) may be cached forever; the

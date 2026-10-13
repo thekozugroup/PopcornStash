@@ -16,7 +16,7 @@ import {Text} from '@astryxdesign/core/Text';
 import {useToast} from '@astryxdesign/core/Toast';
 import {ToggleButton} from '@astryxdesign/core/ToggleButton';
 import {ChevronLeft, Download, FolderInput, MoreHorizontal, Pencil, Star, Trash2} from 'lucide-react';
-import {useEffect, useState} from 'react';
+import {useEffect, useRef, useState} from 'react';
 import {useLocation, useNavigate, useParams} from 'react-router';
 import {ApiError, items as itemsApi} from '../api/client';
 import type {ItemDetail} from '../api/types';
@@ -214,12 +214,18 @@ export default function ItemPage() {
   const error = state.id === id ? state.error : null;
   useDocumentTitle(item ? displayTitle(item) : 'Loading');
 
+  // Set when this page moved the item to Trash: the page is on its way out, so the
+  // server's "removed" event (which can arrive before the answer, while the dialog is
+  // still open) must not reload an item that is now gone (a 404).
+  const trashedHere = useRef(false);
+  const isLeaving = () => trashedHere.current || dialog?.kind === 'delete';
+
   useLibraryEvents({
     onChanged: ids => {
-      if (ids.includes(id)) setNonce(n => n + 1);
+      if (ids.includes(id) && !isLeaving()) setNonce(n => n + 1);
     },
     onRemoved: removed => {
-      if (removed === id) setNonce(n => n + 1);
+      if (removed === id && !isLeaving()) setNonce(n => n + 1);
     },
   });
 
@@ -419,6 +425,7 @@ export default function ItemPage() {
           isOpen
           onOpenChange={open => !open && setDialog(null)}
           onDeleted={() => {
+            trashedHere.current = true;
             showToast({body: `“${title}” moved to Trash.`});
             navigate(parent?.href ?? '/', {replace: true});
           }}

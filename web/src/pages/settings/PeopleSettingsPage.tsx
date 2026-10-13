@@ -7,7 +7,7 @@ import {Button} from '@astryxdesign/core/Button';
 import {ListItem} from '@astryxdesign/core/List';
 import {MoreMenu} from '@astryxdesign/core/MoreMenu';
 import {useToast} from '@astryxdesign/core/Toast';
-import {useState} from 'react';
+import {useCallback, useState} from 'react';
 import {invites, users} from '../../api/client';
 import type {Role, User} from '../../api/types';
 import {useAuth} from '../../auth/AuthProvider';
@@ -16,11 +16,15 @@ import {EmptyRows, LoadError, LoadingRows, PanelList, Wrap} from '../../componen
 import {SettingsGroup} from '../../components/settings/SettingsGroup';
 import {listOpenInvites, type InviteListEntry} from '../../components/settings/settingsApi';
 import {useConfirm} from '../../components/settings/useConfirm';
+import {usePolling} from '../../components/settings/usePolling';
 import {useResource} from '../../components/settings/useResource';
 import {errorMessage} from '../../lib/errors';
 import {formatDate, formatRelative} from '../../lib/format';
 import {InviteDialog} from './people/InviteDialog';
 import {SettingsSectionHeader} from './SettingsSectionHeader';
+
+/** How often People checks for used invites while one is open. */
+const INVITE_POLL_MS = 5000;
 
 const styles = stylex.create({
   groups: {
@@ -114,6 +118,16 @@ function People() {
   const openInvites = useResource(signal => listOpenInvites(signal), {key: 'invites'});
   const {ask, dialog} = useConfirm();
   const [isInviting, setIsInviting] = useState(false);
+
+  // An invite is used on someone else's device, with no live event: while one is
+  // open, check now and then so the new person appears and the invite leaves.
+  const reloadPeople = people.reload;
+  const reloadInvites = openInvites.reload;
+  const reloadPeopleAndInvites = useCallback(() => {
+    reloadPeople();
+    reloadInvites();
+  }, [reloadPeople, reloadInvites]);
+  usePolling(reloadPeopleAndInvites, INVITE_POLL_MS, (openInvites.data?.length ?? 0) > 0);
 
   const list = sortPeople(people.data ?? []);
   const ownerCount = list.filter(person => person.role === 'owner').length;

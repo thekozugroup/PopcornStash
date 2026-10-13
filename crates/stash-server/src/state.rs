@@ -7,8 +7,8 @@ use stash_core::db::Db;
 use stash_core::events::EventBus;
 use stash_core::jobs::JobQueue;
 use stash_core::library::Library;
-use stash_core::media::transcode::TranscodeManager;
 use stash_core::media::MediaService;
+use stash_core::media::transcode::TranscodeManager;
 use stash_core::paths::StashLayout;
 use stash_core::settings::SettingsStore;
 

@@ -4,11 +4,8 @@
  * the library.
  */
 import {Button} from '@astryxdesign/core/Button';
-import {FileArchive, FileText, Music} from 'lucide-react';
 import {CategoryLibraryPage, type CategoryLibraryConfig} from '../components/library/CategoryLibraryPage';
-import {fileType} from '../components/library/libraryFormat';
-
-const ARCHIVES = new Set(['ZIP', 'RAR', '7Z', 'TAR', 'GZ', 'ISO']);
+import {placeholderIcon} from '../components/library/placeholderIcon';
 
 const config: CategoryLibraryConfig = {
   category: 'other',
@@ -29,12 +26,7 @@ const config: CategoryLibraryConfig = {
       'Files that are not videos or photos, like music and documents, are kept here. Drop them anywhere in this window to add them.',
   },
   emptyAction: <Button label="Add files" variant="primary" href="/downloads" />,
-  placeholderFor: item => {
-    if (item.kind === 'audio') return Music;
-    if (ARCHIVES.has(fileType(item.rel_path) ?? '')) return FileArchive;
-    if (item.kind === 'other') return FileText;
-    return undefined;
-  },
+  placeholderFor: placeholderIcon,
 };
 
 export default function OtherPage() {

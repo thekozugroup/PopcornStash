@@ -33,7 +33,10 @@ pub const MSG_DISABLED: &str = "Torrents are turned off on this server.";
 
 /// Why torrents are off: the supervisor's reason when it gave one, else [`MSG_DISABLED`].
 pub fn disabled_message(config: &Config) -> &str {
-    config.torrents_off_reason.as_deref().unwrap_or(MSG_DISABLED)
+    config
+        .torrents_off_reason
+        .as_deref()
+        .unwrap_or(MSG_DISABLED)
 }
 pub const MSG_UNREACHABLE: &str = "The torrent container is not running or not reachable.";
 const MSG_TOKEN_REJECTED: &str =
@@ -495,6 +498,7 @@ pub fn status_from_supervisor(meta: Option<&VpnMeta>, tunnel: TunnelStatus) -> V
         error,
         kill_switch: tunnel.kill_switch,
         allow_no_vpn: false,
+        torrents_off: false,
     }
 }
 
@@ -546,9 +550,14 @@ pub fn combine_status(
                 error: tunnel.error,
                 kill_switch: tunnel.kill_switch,
                 allow_no_vpn: health.engine.allow_no_vpn,
+                torrents_off: false,
             }
         }
-        Err(TorrentdError::Disabled) => with_meta(VpnStatus::unreachable(configured, MSG_DISABLED)),
+        Err(TorrentdError::Disabled) => {
+            let mut status = with_meta(VpnStatus::unreachable(configured, MSG_DISABLED));
+            status.torrents_off = true;
+            status
+        }
         Err(TorrentdError::Unreachable(_)) => {
             with_meta(VpnStatus::unreachable(configured, MSG_UNREACHABLE))
         }
@@ -1075,6 +1084,9 @@ mod tests {
         let status = disabled.vpn_status().await;
         assert_eq!(status.state, VpnState::Unreachable);
         assert_eq!(status.error.as_deref(), Some(MSG_DISABLED));
+        assert!(status.torrents_off);
+        // An engine that is only unreachable is not "off": torrents wait for it.
+        assert!(!client.vpn_status().await.torrents_off);
         assert_eq!(
             TorrentdError::Disabled.api_error().code,
             ErrorCode::VpnUnavailable

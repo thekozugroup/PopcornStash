@@ -13,13 +13,13 @@ export interface VpnView {
   title: string;
   /** One or two sentences under it, or null. */
   detail: string | null;
-  /** Torrents cannot run in this container (no NET_ADMIN or /dev/net/tun). */
+  /** Torrents cannot run on this server (degraded container or no torrent engine). */
   isDegraded: boolean;
 }
 
-/** `serve` without the supervisor reports `unreachable` with this message. */
+/** Torrents are off on this server by design; `status.error` says why. */
 export function isTorrentsTurnedOff(status: VpnStatus): boolean {
-  return status.state === 'unreachable' && /turned off/i.test(status.error ?? '');
+  return status.torrents_off === true;
 }
 
 export function vpnView(status: VpnStatus | null, isUnavailable: boolean): VpnView {
@@ -35,11 +35,12 @@ export function vpnView(status: VpnStatus | null, isUnavailable: boolean): VpnVi
   }
 
   if (isTorrentsTurnedOff(status)) {
+    // The server's reason: no NET_ADMIN or /dev/net/tun, the kill switch failed, or
+    // the web server runs without the supervisor.
     return {
       tone: 'error',
-      title: 'Torrents off: this container cannot build a VPN tunnel',
-      detail:
-        'Give the container the NET_ADMIN capability and the /dev/net/tun device, then restart it. Web links and uploads still work.',
+      title: 'Torrents are off on this server',
+      detail: `${status.error ?? 'Torrents are turned off on this server.'} Web links and uploads still work.`,
       isDegraded: true,
     };
   }

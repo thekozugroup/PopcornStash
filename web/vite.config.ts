@@ -32,5 +32,10 @@ export default defineConfig({
     emptyOutDir: true,
     sourcemap: false,
     chunkSizeWarningLimit: 900,
+    // The browserslist in package.json. Vite's default CSS target predates
+    // light-dark(), so the minifier would replace it with root-level toggle
+    // variables, and tokens would stop following a nested color-scheme (a
+    // MediaTheme surface such as the photo viewer stayed light-mode inside).
+    cssTarget: ['chrome123', 'firefox120', 'safari17.5'],
   },
 });
