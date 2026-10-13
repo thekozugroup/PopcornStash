@@ -410,17 +410,100 @@ fn temp_sibling(dest: &Path) -> PathBuf {
     dest.with_file_name(format!(".{name}.{:016x}.tmp.webp", rand::random::<u64>()))
 }
 
+/// Whether a file name is one of [`temp_sibling`]'s: `.<name>.<16 hex>.tmp.webp`.
+fn is_temp_name(name: &str) -> bool {
+    let Some(rest) = name
+        .strip_prefix('.')
+        .and_then(|n| n.strip_suffix(".tmp.webp"))
+    else {
+        return false;
+    };
+    rest.rsplit_once('.').is_some_and(|(stem, hex)| {
+        !stem.is_empty() && hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_hexdigit())
+    })
+}
+
+/// The file a tool writes before it is moved into place (see [`temp_sibling`]). It is
+/// removed when dropped unless it was moved into place: a photo view the browser
+/// cancels drops the conversion midway (the tool is killed with it, see
+/// [`tools::command`]), and nothing else would remove the partial file.
+struct TempOutput {
+    path: PathBuf,
+    placed: bool,
+}
+
+impl TempOutput {
+    fn next_to(dest: &Path) -> Self {
+        Self {
+            path: temp_sibling(dest),
+            placed: false,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempOutput {
+    fn drop(&mut self) {
+        if !self.placed {
+            // Best effort and quick: one unlink, also when the file was never made.
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Remove unfinished thumbnails and renditions under `dirs` (and their subfolders),
+/// left by a crash or power cut mid-conversion. Only call it while nothing converts,
+/// that is on start. Returns how many were removed.
+pub async fn remove_temp_files(dirs: &[PathBuf]) -> u64 {
+    let dirs = dirs.to_vec();
+    tokio::task::spawn_blocking(move || {
+        let mut removed = 0;
+        for dir in dirs {
+            for entry in walkdir::WalkDir::new(&dir)
+                .follow_links(false)
+                .into_iter()
+                .flatten()
+            {
+                if entry.file_type().is_file()
+                    && is_temp_name(&entry.file_name().to_string_lossy())
+                    && std::fs::remove_file(entry.path()).is_ok()
+                {
+                    removed += 1;
+                }
+            }
+        }
+        removed
+    })
+    .await
+    .unwrap_or(0)
+}
+
+/// Run a tool that writes `tmp`, then move its output into `dest`. On failure, or when
+/// this future is dropped, `tmp` is removed.
+async fn run_into(
+    tmp: TempOutput,
+    cmd: tokio::process::Command,
+    program: &str,
+    dest: &Path,
+) -> Result<()> {
+    tools::run_ok(cmd, program, IMAGE_TIMEOUT).await?;
+    finish_temp(tmp, dest).await
+}
+
 /// Move a finished temp file into place, or remove it when it is not a WebP image.
 ///
 /// ffmpeg asked for a frame past the end of a clip exits successfully and leaves a few
 /// bytes that are no image at all; accepting those would skip the retry from the start
 /// and leave a broken thumbnail behind.
-async fn finish_temp(tmp: &Path, dest: &Path) -> Result<()> {
-    if is_webp(tmp).await {
-        tokio::fs::rename(tmp, dest).await?;
+async fn finish_temp(mut tmp: TempOutput, dest: &Path) -> Result<()> {
+    if is_webp(tmp.path()).await {
+        tokio::fs::rename(tmp.path(), dest).await?;
+        tmp.placed = true;
         Ok(())
     } else {
-        let _ = tokio::fs::remove_file(tmp).await;
         Err(CoreError::external("No image was produced."))
     }
 }
@@ -447,7 +530,7 @@ async fn ffmpeg_still(
     quality: u32,
     dest: &Path,
 ) -> Result<()> {
-    let tmp = temp_sibling(dest);
+    let tmp = TempOutput::next_to(dest);
     let mut cmd = tools::command(tools::FFMPEG);
     cmd.args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y"]);
     if let Some(seek) = seek.filter(|s| *s > 0.0) {
@@ -477,13 +560,8 @@ async fn ffmpeg_still(
         "-f",
         "webp",
     ])
-    .arg(&tmp);
-    let outcome = tools::run_ok(cmd, tools::FFMPEG, IMAGE_TIMEOUT).await;
-    if let Err(err) = outcome {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return Err(err);
-    }
-    finish_temp(&tmp, dest).await
+    .arg(tmp.path());
+    run_into(tmp, cmd, tools::FFMPEG, dest).await
 }
 
 /// Camera RAW photos. The TIFF-based ones (DNG, CR2, NEF, ARW) are read by libvips' TIFF
@@ -528,8 +606,8 @@ async fn vips_command(program: &str, src: &Path) -> tokio::process::Command {
 
 /// `vipsthumbnail` with EXIF auto-rotation, shrinking (never enlarging) into a `edge`×`edge` box.
 async fn vips_resize(src: &Path, dest: &Path, edge: u32, quality: u32) -> Result<()> {
-    let tmp = temp_sibling(dest);
-    let mut out = tmp.as_os_str().to_owned();
+    let tmp = TempOutput::next_to(dest);
+    let mut out = tmp.path().as_os_str().to_owned();
     out.push(format!("[Q={quality},strip]"));
     let mut cmd = vips_command(tools::VIPSTHUMBNAIL, src).await;
     cmd.arg(src)
@@ -537,12 +615,7 @@ async fn vips_resize(src: &Path, dest: &Path, edge: u32, quality: u32) -> Result
         .arg(format!("{edge}x{edge}>"))
         .arg("-o")
         .arg(out);
-    let outcome = tools::run_ok(cmd, tools::VIPSTHUMBNAIL, IMAGE_TIMEOUT).await;
-    if let Err(err) = outcome {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return Err(err);
-    }
-    finish_temp(&tmp, dest).await
+    run_into(tmp, cmd, tools::VIPSTHUMBNAIL, dest).await
 }
 
 /// Stored pixel size of an image, via vipsheader, then ffprobe.
@@ -1339,14 +1412,79 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("x.webp");
         // What ffmpeg leaves when asked for a frame past the end: 8 bytes, exit code 0.
-        let tmp = temp_sibling(&dest);
-        std::fs::write(&tmp, [0, 0, 0, 0, 0xF8, 0xFF, 0xFF, 0xFF]).unwrap();
-        assert!(finish_temp(&tmp, &dest).await.is_err());
-        assert!(!dest.exists() && !tmp.exists());
-        let tmp = temp_sibling(&dest);
-        std::fs::write(&tmp, b"RIFF\x0c\0\0\0WEBPVP8 \0\0\0\0").unwrap();
-        finish_temp(&tmp, &dest).await.unwrap();
-        assert!(dest.exists() && !tmp.exists());
+        let tmp = TempOutput::next_to(&dest);
+        let path = tmp.path().to_path_buf();
+        std::fs::write(&path, [0, 0, 0, 0, 0xF8, 0xFF, 0xFF, 0xFF]).unwrap();
+        assert!(finish_temp(tmp, &dest).await.is_err());
+        assert!(!dest.exists() && !path.exists());
+        let tmp = TempOutput::next_to(&dest);
+        let path = tmp.path().to_path_buf();
+        std::fs::write(&path, b"RIFF\x0c\0\0\0WEBPVP8 \0\0\0\0").unwrap();
+        finish_temp(tmp, &dest).await.unwrap();
+        assert!(dest.exists() && !path.exists());
+    }
+
+    /// A photo view the browser cancels drops the conversion midway, and the tool is
+    /// killed with it: the partial file it was writing goes too, instead of piling up
+    /// in the cache.
+    #[tokio::test]
+    async fn a_cancelled_conversion_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("item.webp");
+        let tmp = TempOutput::next_to(&dest);
+        let path = tmp.path().to_path_buf();
+        // A slow converter: it starts writing its output, then takes its time.
+        let mut cmd = tools::command("sh");
+        cmd.arg("-c")
+            .arg("printf partial > \"$1\"; exec sleep 30")
+            .arg("sh")
+            .arg(&path);
+        let mut conversion = Box::pin(run_into(tmp, cmd, "sh", &dest));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !path.exists() {
+            tokio::select! {
+                _ = &mut conversion => panic!("the slow converter finished"),
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the converter never started"
+            );
+        }
+        drop(conversion);
+        assert!(!path.exists(), "the partial output was left behind");
+        assert!(!dest.exists());
+    }
+
+    /// Temp files left by a crash or a power cut are removed on start; finished
+    /// thumbnails and renditions stay.
+    #[tokio::test]
+    async fn leftover_temp_files_are_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        let renditions = dir.path().join("renditions");
+        let thumbs = dir.path().join("thumbs/ab");
+        std::fs::create_dir_all(&renditions).unwrap();
+        std::fs::create_dir_all(&thumbs).unwrap();
+        let leftovers = [
+            renditions.join(".01a1.webp.738e27764815c28d.tmp.webp"),
+            thumbs.join(".01ab-sm.webp.987df5f94c454fb4.tmp.webp"),
+        ];
+        let kept = [
+            renditions.join("01a1.webp"),
+            thumbs.join("01ab-sm.webp"),
+            thumbs.join(".hidden-but-not-ours.webp"),
+        ];
+        for path in leftovers.iter().chain(&kept) {
+            std::fs::write(path, b"x").unwrap();
+        }
+        let removed = remove_temp_files(&[renditions.clone(), dir.path().join("thumbs")]).await;
+        assert_eq!(removed, 2);
+        for path in &leftovers {
+            assert!(!path.exists(), "{}", path.display());
+        }
+        for path in &kept {
+            assert!(path.exists(), "{}", path.display());
+        }
     }
 
     #[tokio::test]

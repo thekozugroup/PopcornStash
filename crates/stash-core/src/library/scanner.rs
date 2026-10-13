@@ -163,6 +163,11 @@ pub(crate) fn is_sample(name: &str, size: u64) -> bool {
 
 /// Whether a file in `zone` becomes an item at all.
 fn indexable(zone: Zone, rel: &str, kind: MediaKind, size: u64) -> bool {
+    // In Inbox and Completed the sorter decides what becomes an item (documents too, see
+    // `organizer::plan_sort`); indexing only refreshes the items it made.
+    if zone.auto_sorts() {
+        return true;
+    }
     let path = Path::new(rel);
     if is_sidecar(path) {
         return false;
@@ -188,8 +193,9 @@ fn indexable(zone: Zone, rel: &str, kind: MediaKind, size: u64) -> bool {
             matches!(kind, MediaKind::Video | MediaKind::Photo)
         }
         Zone::Library(Category::Other) => true,
-        Zone::Custom | Zone::Inbox | Zone::Completed => kind != MediaKind::Other,
-        Zone::InProgress | Zone::Internal => false,
+        Zone::Custom => kind != MediaKind::Other,
+        Zone::Inbox | Zone::Completed => true,
+        Zone::InProgress | Zone::Internal | Zone::OtherDownloads => false,
     }
 }
 
@@ -674,8 +680,8 @@ struct WalkedFile {
 struct SortCandidate {
     rel: String,
     newest_mtime: i64,
-    /// Media files inside (or the file itself) that the sorter would look at.
-    media: Vec<String>,
+    /// Files inside (or the file itself) that the sorter would look at.
+    files: Vec<String>,
 }
 
 #[derive(Default)]
@@ -684,7 +690,7 @@ struct Walk {
     candidates: Vec<SortCandidate>,
 }
 
-fn walk_stash(layout: &StashLayout) -> Walk {
+fn walk_stash(layout: &StashLayout, taken: &HashMap<String, organizer::Taken>) -> Walk {
     let root = layout.root();
     let mut walk = Walk::default();
     let entries = WalkDir::new(root)
@@ -698,7 +704,8 @@ fn walk_stash(layout: &StashLayout) -> Walk {
                 return false;
             }
             match layout.rel(e.path()) {
-                Some(rel) => StashLayout::zone(&rel).indexed(),
+                // Downloads/ itself is not indexed, but Downloads/Completed/ inside it is.
+                Some(rel) => rel == paths::DOWNLOADS || StashLayout::zone(&rel).indexed(),
                 None => false,
             }
         });
@@ -725,72 +732,45 @@ fn walk_stash(layout: &StashLayout) -> Walk {
             },
         );
     }
-    walk.candidates = sort_candidates(layout);
+    walk.candidates = sort_candidates(layout, taken);
     walk
 }
 
-/// Direct children of `Inbox/`, `Downloads/Completed/` and loose entries in `Downloads/`.
-fn sort_candidates(layout: &StashLayout) -> Vec<SortCandidate> {
+/// Direct children of `Inbox/` and `Downloads/Completed/`, the only places sorted
+/// automatically (anything else in `Downloads/` may be another download client's).
+/// `taken` says what earlier sorts moved out of each download folder.
+fn sort_candidates(
+    layout: &StashLayout,
+    taken: &HashMap<String, organizer::Taken>,
+) -> Vec<SortCandidate> {
     let mut out = Vec::new();
-    let downloads = layout.root().join(paths::DOWNLOADS);
-    for dir in [layout.inbox(), layout.completed(), downloads.clone()] {
+    for (dir, completed) in [(layout.inbox(), false), (layout.completed(), true)] {
         let Ok(read) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in read.flatten() {
             let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if is_junk_name(&name) || path == layout.in_progress() || path == layout.completed() {
+            if is_junk_name(&entry.file_name().to_string_lossy()) {
                 continue;
             }
             let Some(rel) = layout.rel(&path) else {
                 continue;
             };
-            let Ok(meta) = std::fs::symlink_metadata(&path) else {
-                continue;
+            let earlier = if completed {
+                taken.get(&rel).copied().unwrap_or_default()
+            } else {
+                organizer::Taken::default()
             };
-            let completed = StashLayout::zone(&rel) == Zone::Completed;
-            if meta.is_file() {
-                let mut media = Vec::new();
-                if media_kind(&path) != MediaKind::Other
-                    && !(completed && is_sample(&name, meta.len()))
-                {
-                    media.push(rel.clone());
-                }
-                out.push(SortCandidate {
-                    rel,
-                    newest_mtime: mtime_secs(&meta),
-                    media,
-                });
-            } else if meta.is_dir() {
-                let mut newest = mtime_secs(&meta);
-                let mut media = Vec::new();
-                let inner = WalkDir::new(&path)
-                    .follow_links(false)
-                    .into_iter()
-                    .filter_entry(|e| {
-                        let n = e.file_name().to_string_lossy();
-                        e.depth() == 0
-                            || !(is_junk_name(&n)
-                                || (completed && e.file_type().is_dir() && is_extras_dir(&n)))
-                    });
-                for e in inner.flatten() {
-                    let Ok(m) = e.metadata() else { continue };
-                    newest = newest.max(mtime_secs(&m));
-                    if e.file_type().is_file()
-                        && media_kind(e.path()) != MediaKind::Other
-                        && !(completed && is_sample(&e.file_name().to_string_lossy(), m.len()))
-                        && let Some(r) = layout.rel(e.path())
-                    {
-                        media.push(r);
-                    }
-                }
-                out.push(SortCandidate {
-                    rel,
-                    newest_mtime: newest,
-                    media,
-                });
-            }
+            let plan = organizer::plan_sort(layout, &path, completed, earlier);
+            out.push(SortCandidate {
+                rel,
+                newest_mtime: plan.newest_mtime,
+                files: plan
+                    .files
+                    .iter()
+                    .filter_map(|(file, _)| layout.rel(file))
+                    .collect(),
+            });
         }
     }
     out
@@ -809,7 +789,8 @@ pub async fn rescan(lib: &Library) -> Result<ScanReport> {
     let started = now();
     let review_before = repo::needs_review_count(&lib.db).await?;
     let layout = lib.layout.clone();
-    let walk = tokio::task::spawn_blocking(move || walk_stash(&layout))
+    let taken = organizer::taken_from_downloads(lib, None).await?;
+    let walk = tokio::task::spawn_blocking(move || walk_stash(&layout, &taken))
         .await
         .map_err(|e| CoreError::Other(e.into()))?;
     let mut report = ScanReport::default();
@@ -934,9 +915,9 @@ pub async fn rescan(lib: &Library) -> Result<ScanReport> {
             continue;
         }
         let unsorted = candidate
-            .media
+            .files
             .iter()
-            .any(|m| !by_path.contains_key(m.as_str()));
+            .any(|f| !by_path.contains_key(f.as_str()));
         if !unsorted {
             continue;
         }

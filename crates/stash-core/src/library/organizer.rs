@@ -215,16 +215,34 @@ pub async fn sort_path(
     let review_before = repo::needs_review_count(&lib.db).await?;
     let completed = StashLayout::zone(&rel) == Zone::Completed;
     let files = {
+        // A file inside a download is judged with the rest of that download (is there a
+        // video next to this picture?), so the plan covers the whole top-level entry.
+        let top = super::watcher::top_level_entry(&rel).unwrap_or_else(|| rel.clone());
+        let root = lib.layout.abs(&top)?;
+        let taken = if completed {
+            taken_from_downloads(lib, Some(&top))
+                .await?
+                .remove(&top)
+                .unwrap_or_default()
+        } else {
+            Taken::default()
+        };
         let (abs, layout) = (abs.clone(), lib.layout.clone());
-        tokio::task::spawn_blocking(move || collect_sortable(&layout, &abs, completed))
-            .await
-            .map_err(|e| CoreError::Other(e.into()))?
+        tokio::task::spawn_blocking(move || {
+            plan_sort(&layout, &root, completed, taken)
+                .files
+                .into_iter()
+                .filter(|(path, _)| path.starts_with(&abs))
+                .collect::<Vec<_>>()
+        })
+        .await
+        .map_err(|e| CoreError::Other(e.into()))?
     };
     let auto_sort = lib.settings.get().await.auto_sort;
     let mut changed = Vec::new();
     let mut linked = Vec::new();
-    for file in files {
-        match sort_file(lib, &file, download_id.as_deref(), auto_sort).await {
+    for (file, role) in files {
+        match sort_file(lib, &file, role, download_id.as_deref(), auto_sort).await {
             Ok(Sorted::Changed(id)) => {
                 linked.push(id.clone());
                 changed.push(id);
@@ -246,10 +264,253 @@ pub async fn sort_path(
     Ok(changed)
 }
 
-/// Media files under a sort root, skipping samples, extras folders (in Completed) and junk.
-fn collect_sortable(layout: &StashLayout, abs: &Path, completed: bool) -> Vec<PathBuf> {
+// ---------------------------------------------------------------------------
+// What a sort looks at
+
+/// How the sorter treats one file under a sort root (a top-level entry of `Inbox/` or
+/// `Downloads/Completed/`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Role {
+    /// A video, photo or song: classified as usual.
+    Media,
+    /// Not media, and not part of a download that holds media: an uploaded PDF, a zip,
+    /// a folder of documents. It waits in the Inbox, suggested for `Other/`.
+    Standalone,
+    /// A picture that may be a release's artwork rather than a family photo: one in a
+    /// download that also holds a video or a song, or one named like artwork in a
+    /// folder. It waits for review, suggested for `Other/`, instead of going straight
+    /// into Photos.
+    MaybeArtwork,
+}
+
+/// The files a sort of one root looks at, and the newest modification time under the
+/// root (the rescan sorts a root only once it has settled).
+pub(crate) struct SortPlan {
+    pub files: Vec<(PathBuf, Role)>,
+    pub newest_mtime: i64,
+}
+
+/// What earlier sorts already took out of a download folder. Once a release's video
+/// has moved into the library, the folder is sorted again (it changed), and its
+/// leftovers (poster.jpg, RARBG.txt) must not then pass for a download of pictures or
+/// documents.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Taken {
+    /// A video or a song.
+    pub av: bool,
+    /// Any video, photo or song.
+    pub media: bool,
+}
+
+/// [`Taken`] for each download folder in Completed that PopcornStash sorted before
+/// (from the items linked to its download), or for just `rel` when given.
+pub(crate) async fn taken_from_downloads(
+    lib: &Library,
+    rel: Option<&str>,
+) -> Result<std::collections::HashMap<String, Taken>> {
+    let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        "SELECT d.rel_path, MAX(i.kind IN ('video', 'audio')), MAX(i.kind != 'other')
+         FROM downloads d
+         JOIN download_items di ON di.download_id = d.id
+         JOIN items i ON i.id = di.item_id
+         WHERE d.rel_path IS NOT NULL AND (? IS NULL OR d.rel_path = ?)
+         GROUP BY d.rel_path",
+    )
+    .bind(rel)
+    .bind(rel)
+    .fetch_all(&lib.db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(path, av, media)| {
+            (
+                path,
+                Taken {
+                    av: av != 0,
+                    media: media != 0,
+                },
+            )
+        })
+        .collect())
+}
+
+/// Release files that only mean something next to the release's video: never sorted
+/// on their own when they sit in a folder.
+const CLUTTER_EXTS: &[&str] = &[
+    "nfo", "sfv", "url", "md5", "sha1", "sha256", "sha512", "par2", "webloc", "lnk",
+];
+
+/// Folders inside a download that hold the release's pictures.
+const ARTWORK_DIRS: &[&str] = &[
+    "screens",
+    "screenshots",
+    "screenshot",
+    "screencaps",
+    "artwork",
+    "art",
+    "covers",
+    "scans",
+    "posters",
+    "fanart",
+    "extrafanart",
+    "extrathumbs",
+    "proof",
+    "booklet",
+];
+
+/// Picture names that media players and releases use for artwork, after trailing
+/// numbers are dropped ("poster.jpg", "fanart2.jpg", "screen01.png", "cd1.jpg").
+const ARTWORK_NAMES: &[&str] = &[
+    "poster",
+    "cover",
+    "folder",
+    "fanart",
+    "banner",
+    "thumb",
+    "backdrop",
+    "background",
+    "clearart",
+    "clearlogo",
+    "logo",
+    "disc",
+    "discart",
+    "cd",
+    "landscape",
+    "keyart",
+    "front",
+    "back",
+    "inlay",
+    "albumart",
+    "albumartsmall",
+    "screen",
+    "screens",
+    "screenshot",
+    "screencap",
+    "shot",
+    "snapshot",
+    "proof",
+];
+
+/// Kodi-style artwork next to a video, named after it: "Heat (1995)-poster.jpg".
+const ARTWORK_SUFFIXES: &[&str] = &[
+    "poster",
+    "fanart",
+    "banner",
+    "thumb",
+    "landscape",
+    "clearart",
+    "clearlogo",
+    "logo",
+    "disc",
+    "discart",
+    "keyart",
+    "backdrop",
+    "cover",
+];
+
+/// Whether a picture at `path` inside the download `root` is the release's artwork.
+fn is_artwork(root: &Path, path: &Path) -> bool {
+    let in_artwork_dir = path
+        .strip_prefix(root)
+        .ok()
+        .and_then(Path::parent)
+        .is_some_and(|dirs| {
+            dirs.components().any(|c| {
+                ARTWORK_DIRS.contains(&c.as_os_str().to_string_lossy().to_lowercase().as_str())
+            })
+        });
+    if in_artwork_dir {
+        return true;
+    }
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let base = stem.trim_end_matches(|c: char| c.is_ascii_digit() || matches!(c, ' ' | '-' | '_'));
+    ARTWORK_NAMES.contains(&base)
+        || base.starts_with("albumart")
+        // Site adverts ("www.YTS.MX.jpg").
+        || base.starts_with("www.")
+        || ARTWORK_SUFFIXES.iter().any(|name| {
+            base.strip_suffix(name)
+                .is_some_and(|rest| rest.ends_with(['-', '_', '.']))
+        })
+}
+
+fn is_clutter(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| CLUTTER_EXTS.contains(&e.to_string_lossy().to_ascii_lowercase().as_str()))
+}
+
+/// A subtitle or other sidecar next to the media file it belongs to: it travels with
+/// that file (see [`move_sidecars`]) and is not sorted on its own.
+fn claimed_by_media(path: &Path) -> bool {
+    if !super::scanner::is_sidecar(path) {
+        return false;
+    }
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return false;
+    };
+    let name = name.to_string_lossy();
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    read.flatten().any(|entry| {
+        let media = entry.file_name().to_string_lossy().into_owned();
+        entry.file_type().is_ok_and(|t| t.is_file())
+            && !is_junk_name(&media)
+            && media_kind(&entry.path()) != MediaKind::Other
+            && sidecar_claim(&name, &media).is_some()
+    })
+}
+
+/// What a sort of `root` (a file or folder) looks at. `taken` says what earlier sorts
+/// of this folder already moved out.
+/// - Videos, photos and songs, except samples and extras folders inside downloads.
+/// - In a folder with a video or a song (or named like a release), pictures named or
+///   kept like artwork are left alone, and in a download with a video or song the other
+///   pictures wait for review ([`Role::MaybeArtwork`]). In other folders artwork-like
+///   pictures wait for review too, and the rest are photos.
+/// - In a folder with any media, the other files are its companions and stay
+///   (subtitles travel with their video when it moves).
+/// - Anything else is sorted on its own ([`Role::Standalone`]), except release clutter
+///   (`.nfo`, `.sfv`, ...) in a folder, or a sidecar whose media file sits next to it.
+/// - A single file is taken as it is: a sent image named "poster.jpg" is a photo.
+pub(crate) fn plan_sort(
+    layout: &StashLayout,
+    root: &Path,
+    completed: bool,
+    taken: Taken,
+) -> SortPlan {
+    let mut plan = SortPlan {
+        files: Vec::new(),
+        newest_mtime: 0,
+    };
+    let Ok(meta) = std::fs::symlink_metadata(root) else {
+        return plan;
+    };
+    plan.newest_mtime = mtime_secs(&meta);
+    if meta.is_file() {
+        let name = file_name(root);
+        if is_junk_name(&name) {
+            return plan;
+        }
+        match media_kind(root) {
+            MediaKind::Other if claimed_by_media(root) => {}
+            MediaKind::Other => plan.files.push((root.to_path_buf(), Role::Standalone)),
+            // Samples are only skipped inside downloads; "Sample day.mp4" in the Inbox is a video.
+            _ if completed && is_sample(&name, meta.len()) => {}
+            _ => plan.files.push((root.to_path_buf(), Role::Media)),
+        }
+        return plan;
+    }
+    if !meta.is_dir() {
+        return plan;
+    }
     let in_progress = layout.in_progress();
-    WalkDir::new(abs)
+    let mut found = Vec::new();
+    let mut has_av = taken.av;
+    let entries = WalkDir::new(root)
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| {
@@ -260,19 +521,56 @@ fn collect_sortable(layout: &StashLayout, abs: &Path, completed: bool) -> Vec<Pa
             !(is_junk_name(&name)
                 || e.path().starts_with(&in_progress)
                 || (completed && e.file_type().is_dir() && is_extras_dir(&name)))
-        })
-        .flatten()
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| {
-            let name = e.file_name().to_string_lossy();
-            let size = e.metadata().map(|m| m.len()).unwrap_or(0);
-            // Samples are only skipped inside downloads; "Sample day.mp4" in the Inbox is a video.
-            media_kind(e.path()) != MediaKind::Other
-                && !(completed && is_sample(&name, size))
-                && !is_junk_name(&name)
-        })
-        .map(|e| e.into_path())
-        .collect()
+        });
+    for entry in entries.flatten() {
+        let Ok(m) = entry.metadata() else { continue };
+        plan.newest_mtime = plan.newest_mtime.max(mtime_secs(&m));
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let kind = media_kind(entry.path());
+        has_av |= matches!(kind, MediaKind::Video | MediaKind::Audio);
+        if kind != MediaKind::Other
+            && completed
+            && is_sample(&entry.file_name().to_string_lossy(), m.len())
+        {
+            continue;
+        }
+        found.push((entry.into_path(), kind));
+    }
+    let has_media =
+        has_av || taken.media || found.iter().any(|(_, kind)| *kind != MediaKind::Other);
+    // A folder named like a release ("Some.Movie.2019.1080p.WEB.x264-GRP") is one, even
+    // when it was copied in by hand and its video has moved on: its artwork stays put.
+    let release = has_av || {
+        let parsed = parse_name(&file_name(root));
+        parsed.has_release_tags || parsed.episode.is_some()
+    };
+    for (path, kind) in found {
+        let role = match kind {
+            MediaKind::Video | MediaKind::Audio => Some(Role::Media),
+            MediaKind::Photo if is_artwork(root, &path) => (!release).then_some(Role::MaybeArtwork),
+            MediaKind::Photo if has_av && completed => Some(Role::MaybeArtwork),
+            MediaKind::Photo => Some(Role::Media),
+            MediaKind::Other if has_media || is_clutter(&path) => None,
+            MediaKind::Other => Some(Role::Standalone),
+        };
+        if let Some(role) = role {
+            plan.files.push((path, role));
+        }
+    }
+    plan
+}
+
+/// A picture that may be a release's artwork: suggested for `Other/` and left for
+/// review, so neither artwork nor a family photo is filed blindly. Its date is kept in
+/// case the reviewer files it under Photos.
+fn possible_artwork(mut c: Classification, file_name: &str) -> Classification {
+    c.category = Category::Other;
+    c.confidence = Confidence::Low;
+    c.reason = "This picture may be artwork from a movie, show or album".into();
+    c.destination = destination_for(&c, file_name);
+    c
 }
 
 /// ffprobe for videos and EXIF for photos. Failures (including a crash in the probe) are
@@ -328,6 +626,7 @@ async fn analyze(
 async fn sort_file(
     lib: &Library,
     abs: &Path,
+    role: Role,
     download_id: Option<&str>,
     auto_sort: bool,
 ) -> Result<Sorted> {
@@ -356,6 +655,9 @@ async fn sort_file(
     let kind = media_kind(abs);
     let (probe, exif) = analyze(lib, abs, kind).await;
     let mut c = classify(&rel, probe.as_ref(), exif.as_ref(), mtime);
+    if role == Role::MaybeArtwork {
+        c = possible_artwork(c, &file_name(abs));
+    }
     if c.category == Category::Episode {
         canonicalize_show(lib, &mut c, &file_name(abs)).await?;
     }

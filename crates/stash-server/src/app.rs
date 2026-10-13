@@ -28,8 +28,8 @@ use crate::uploads::UploadService;
 /// Open the database, create the stash layout and build every service.
 pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
     let config = Arc::new(config);
-    tokio::fs::create_dir_all(&config.config_dir).await?;
     for dir in [
+        config.config_dir.clone(),
         config.secrets_dir(),
         config.thumbs_dir(),
         config.renditions_dir(),
@@ -37,7 +37,9 @@ pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
         config.vpn_dir(),
         config.pending_torrents_dir(),
     ] {
-        tokio::fs::create_dir_all(dir).await?;
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| anyhow::anyhow!("Cannot create {}: {e}.", dir.display()))?;
     }
     // Thumbnails, photo renditions and live transcodes are pictures of the family's
     // media, and pending torrents can carry private tracker keys: only the web
@@ -52,9 +54,24 @@ pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
             tracing::warn!(error = %format!("{e:#}"), "could not make a private folder private");
         }
     }
+    // Nothing converts photos yet: half-made thumbnails and renditions left by a crash
+    // or a cancelled view can go.
+    let swept = stash_core::media::thumbs::remove_temp_files(&[
+        config.thumbs_dir(),
+        config.renditions_dir(),
+    ])
+    .await;
+    if swept > 0 {
+        tracing::info!(count = swept, "removed unfinished thumbnail files");
+    }
     let db = stash_core::db::open(&config.db_path()).await?;
     let layout = Arc::new(StashLayout::new(&config.stash_root));
-    layout.ensure().await?;
+    if let Err(e) = layout.ensure().await {
+        // The sentence names the folder and the owner it needs (most often a library
+        // folder made with `sudo mkdir`); the supervisor restarts `serve` until fixed.
+        tracing::error!("{e}");
+        anyhow::bail!("PopcornStash cannot start until its library folder is fixed.");
+    }
     let events = EventBus::new();
     let jobs = JobQueue::new(db.clone(), events.clone());
     let settings = SettingsStore::load(db.clone(), config.hwaccel).await?;
@@ -399,6 +416,61 @@ mod tests {
         }
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
+        }
+    }
+
+    /// A library folder PopcornStash cannot prepare stops the start with a log line
+    /// that names the folder, not a bare "Permission denied (os error 13)".
+    #[tokio::test]
+    async fn a_library_folder_that_cannot_be_prepared_is_named_in_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let stash = dir.path().join("stash");
+        std::fs::create_dir_all(&stash).unwrap();
+        std::fs::write(stash.join("Movies"), b"a file where a folder belongs").unwrap();
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let err = super::test_state(dir.path())
+            .await
+            .err()
+            .expect("start fails");
+        let logs = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        let sentence = format!("Cannot create {}: ", stash.join("Movies").display());
+        assert!(logs.contains("ERROR") && logs.contains(&sentence), "{logs}");
+        assert_eq!(
+            format!("{err:#}"),
+            "PopcornStash cannot start until its library folder is fixed."
+        );
+    }
+
+    /// Conversions a crash or a cancelled photo view left half done are removed on
+    /// start; finished thumbnails and renditions stay.
+    #[tokio::test]
+    async fn leftover_conversion_files_are_removed_on_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let renditions = dir.path().join("config/cache/renditions");
+        let thumbs = dir.path().join("config/cache/thumbs/a1");
+        std::fs::create_dir_all(&renditions).unwrap();
+        std::fs::create_dir_all(&thumbs).unwrap();
+        let leftovers = [
+            renditions.join(".01a1.webp.738e27764815c28d.tmp.webp"),
+            thumbs.join(".01a1-lg.webp.987df5f94c454fb4.tmp.webp"),
+        ];
+        let finished = [renditions.join("01a1.webp"), thumbs.join("01a1-lg.webp")];
+        for path in leftovers.iter().chain(&finished) {
+            std::fs::write(path, b"").unwrap();
+        }
+        super::test_state(dir.path()).await.unwrap();
+        for path in &leftovers {
+            assert!(!path.exists(), "{}", path.display());
+        }
+        for path in &finished {
+            assert!(path.exists(), "{}", path.display());
         }
     }
 
