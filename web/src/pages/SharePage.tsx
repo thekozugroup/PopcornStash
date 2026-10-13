@@ -46,7 +46,7 @@ import {useAuth} from '../auth/AuthProvider';
 import {BreakableName} from '../components/BreakableName';
 import {findLink, isTorrentLink, type DetectedLink} from '../components/downloads/linkDetect';
 import {MediaThumb} from '../components/downloads/MediaThumb';
-import {torrentsAffected, torrentsOff, VpnLine} from '../components/downloads/VpnLine';
+import {torrentsAffected, torrentsOff, torrentsWait, VpnLine} from '../components/downloads/VpnLine';
 import {PageHeader} from '../components/PageHeader';
 import {
   deleteOldShares,
@@ -59,6 +59,7 @@ import {
 import {useVpnStatus} from '../hooks/useVpnStatus';
 import {errorMessage} from '../lib/errors';
 import {formatBytes, formatCount} from '../lib/format';
+import {isNoVpnMode} from '../lib/vpn';
 
 const styles = stylex.create({
   card: {
@@ -197,11 +198,12 @@ const styles = stylex.create({
   },
 });
 
-const KIND: Record<DetectedLink['kind'], {icon: LucideIcon; words: (link: DetectedLink) => string}> = {
-  magnet: {icon: Magnet, words: () => 'Magnet link. Downloads as a torrent, only through the VPN.'},
+/** `route` is ", only through the VPN", or empty when the server runs torrents without one. */
+const KIND: Record<DetectedLink['kind'], {icon: LucideIcon; words: (link: DetectedLink, route: string) => string}> = {
+  magnet: {icon: Magnet, words: (_link, route) => `Magnet link. Downloads as a torrent${route}.`},
   'torrent-url': {
     icon: FileUp,
-    words: link => `Link to a .torrent file on ${link.host ?? 'the web'}. Downloads as a torrent, only through the VPN.`,
+    words: (link, route) => `Link to a .torrent file on ${link.host ?? 'the web'}. Downloads as a torrent${route}.`,
   },
   http: {icon: Globe, words: link => `Web link from ${link.host ?? 'the web'}.`},
 };
@@ -613,11 +615,13 @@ function SharedLink() {
   const showVpn = isTorrentLink(link) && torrentsAffected(vpn.status, vpn.isUnavailable);
   // A torrent cannot be added at all while torrents are off on this server.
   const isBlocked = isTorrentLink(link) && torrentsOff(vpn.status);
+  // Torrents run only through the VPN, unless the server allows them without one.
+  const route = isNoVpnMode(vpn.status) ? '' : ', only through the VPN';
   const words = isBlocked
     ? 'A torrent. Torrents are off on this server, so it cannot be added.'
-    : showVpn
-      ? `${kind.words(link)} It waits until the VPN is ready.`
-      : kind.words(link);
+    : isTorrentLink(link) && torrentsWait(vpn.status, vpn.isUnavailable)
+      ? `${kind.words(link, route)} It waits until the VPN is ready.`
+      : kind.words(link, route);
 
   return (
     <>

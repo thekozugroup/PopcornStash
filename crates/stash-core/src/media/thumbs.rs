@@ -1149,6 +1149,76 @@ mod tests {
         );
     }
 
+    /// A real iPhone-style HEIC (tests/fixtures/portrait.heic, a generated test pattern):
+    /// 1200x800 stored pixels turned upright by the HEIF container, EXIF from an iPhone.
+    #[tokio::test]
+    async fn heic_photo_is_read_upright() {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/portrait.heic");
+        let vips = |args: &[&str]| {
+            Command::new(args[0])
+                .args(&args[1..])
+                .arg(&fixture)
+                .output()
+                .is_ok_and(|out| out.status.success())
+        };
+        if !tools::has_vips().await || !vips(&["vipsheader"]) {
+            eprintln!("skipping: libvips cannot read HEIC on this machine");
+            return;
+        }
+        // libheif may read the container without an HEVC decoder (the image has one).
+        let decodes = vips(&["vips", "avg"]);
+        let h = harness().await;
+        let media = &h.media;
+        let rel = "Photos/2023/07/portrait.heic";
+        let abs = media.layout.abs(rel).unwrap();
+        std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+        std::fs::copy(&fixture, &abs).unwrap();
+        let id = insert_item(media, rel, MediaKind::Photo, Category::Photo).await;
+
+        media.process_item(&id).await.unwrap();
+        let item = row(media, &id).await;
+        assert_eq!((item.width, item.height), (Some(800), Some(1200)));
+        assert_eq!(item.camera.as_deref(), Some("Apple iPhone 15 Pro"));
+        // 2023-07-04 18:30:00 at UTC-07:00.
+        assert_eq!(item.taken_at, Some(1_688_520_600));
+        assert_eq!(item.mime.as_deref(), Some("image/heic"));
+
+        // Without PixelXDimension and PixelYDimension in its EXIF, the size comes from
+        // vipsheader, which reports it upright already: orientation 6 must not swap it again.
+        let mut bytes = std::fs::read(&fixture).unwrap();
+        for (tag, unknown) in [
+            (b"\xa0\x02\x00\x03", b"\xa0\xf2\x00\x03"),
+            (b"\xa0\x03\x00\x03", b"\xa0\xf3\x00\x03"),
+        ] {
+            let at = bytes
+                .windows(4)
+                .position(|w| w == tag)
+                .expect("the fixture's EXIF has its pixel size");
+            bytes[at..at + 4].copy_from_slice(unknown);
+        }
+        let sizeless = "Photos/2023/07/portrait-sizeless.heic";
+        std::fs::write(media.layout.abs(sizeless).unwrap(), bytes).unwrap();
+        let sizeless = insert_item(media, sizeless, MediaKind::Photo, Category::Photo).await;
+        media.process_item(&sizeless).await.unwrap();
+        let sizeless = row(media, &sizeless).await;
+        assert_eq!((sizeless.width, sizeless.height), (Some(800), Some(1200)));
+        assert_eq!(sizeless.camera.as_deref(), Some("Apple iPhone 15 Pro"));
+
+        if !decodes {
+            eprintln!("skipping the thumbnail: libheif has no HEVC decoder on this machine");
+            return;
+        }
+        media.thumbnail_item(&id).await.unwrap();
+        let item = row(media, &id).await;
+        assert_eq!(item.thumb_state, ThumbState::Ready);
+        let (w, h) = webp_size(&media.thumb_path(&id, ThumbSize::Lg));
+        assert!(h > w, "the thumbnail is upright, not {w}x{h}");
+        let view = media.photo_view(&item).await.unwrap();
+        assert_eq!(view, media.rendition_path(&id));
+        assert_eq!(webp_size(&view), (800, 1200));
+    }
+
     #[tokio::test]
     async fn tiff_gets_a_cached_rendition() {
         let h = harness().await;

@@ -153,6 +153,14 @@ test('with STASH_ALLOW_NO_VPN every VPN surface warns that torrents use this net
   await expect(page.getByText('Not used while STASH_ALLOW_NO_VPN is on', {exact: false})).toBeVisible();
   await expect(vpn.getByText(/paused|connecting/i)).toHaveCount(0);
   await expect(page.getByRole('status', {name: WARNING})).toHaveText(WARNING);
+
+  // A magnet shared from another app says the same.
+  await page.goto(`/share?text=${encodeURIComponent(magnet)}`);
+  await expect(page.getByRole('heading', {level: 1, name: 'Add shared link'})).toBeVisible();
+  const shared = page.getByRole('main');
+  await expect(shared.getByText('Magnet link. Downloads as a torrent.', {exact: true})).toBeVisible();
+  await expect(shared.getByText(WARNING, {exact: true})).toBeVisible();
+  await expect(shared.getByText(/paused|connecting|waits until the VPN|through the VPN/i)).toHaveCount(0);
 });
 
 test('a shared magnet says plainly that it cannot be added while torrents are off', async ({page}) => {

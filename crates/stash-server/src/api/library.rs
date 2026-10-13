@@ -29,6 +29,8 @@ pub fn routes() -> Router<AppState> {
 pub struct Health {
     pub status: String,
     pub version: String,
+    /// Where this version's source code is (AGPL section 13).
+    pub source: String,
 }
 
 /// Public liveness check used by the Docker healthcheck.
@@ -36,6 +38,7 @@ async fn health() -> Json<Health> {
     Json(Health {
         status: "ok".into(),
         version: stash_core::VERSION.into(),
+        source: super::system::source_url(),
     })
 }
 
@@ -314,7 +317,17 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({"status": "ok", "version": stash_core::VERSION})
+            serde_json::json!({
+                "status": "ok",
+                "version": stash_core::VERSION,
+                "source": crate::api::system::source_url(),
+            })
+        );
+        assert!(
+            json["source"]
+                .as_str()
+                .unwrap()
+                .starts_with("https://github.com/thekozugroup/PopcornStash")
         );
     }
 
