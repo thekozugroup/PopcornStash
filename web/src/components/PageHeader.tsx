@@ -57,7 +57,7 @@ export function useDocumentTitle(title: string | null | undefined) {
 export function PageHeader({title, subtitle, actions, documentTitle, children}: PageHeaderProps) {
   useDocumentTitle(documentTitle ?? title);
   return (
-    <header {...stylex.props(styles.header)}>
+    <div {...stylex.props(styles.header)}>
       <div {...stylex.props(styles.copy)}>
         <Heading level={1} textWrap="balance">
           {title}
@@ -70,6 +70,6 @@ export function PageHeader({title, subtitle, actions, documentTitle, children}: 
         {children}
       </div>
       {actions ? <div {...stylex.props(styles.actions)}>{actions}</div> : null}
-    </header>
+    </div>
   );
 }

@@ -35,7 +35,8 @@ const zinc = {
   950: 'oklch(14.1% 0.005 285.823)', // zinc-black
 } as const;
 
-const white = '#ffffff';
+// Written in oklch so alpha() can derive translucent variants from it.
+const white = 'oklch(100% 0 0)';
 
 const blue = {
   400: 'oklch(70.7% 0.165 254.624)',
@@ -60,10 +61,16 @@ const red = {
   400: 'oklch(70.4% 0.191 22.216)',
   500: 'oklch(63.7% 0.237 25.331)', // status-error
   600: 'oklch(57.7% 0.245 27.325)',
+  700: 'oklch(50.5% 0.213 27.518)',
 } as const;
 
-const alpha = (color: string, amount: number) =>
-  color.replace(/\)$/, ` / ${amount})`);
+/** `oklch(L C H)` → `oklch(L C H / amount)`. Every palette value above is oklch. */
+const alpha = (color: string, amount: number) => {
+  if (!color.startsWith('oklch(') || !color.endsWith(')')) {
+    throw new Error(`alpha() needs an oklch() colour, got ${color}`);
+  }
+  return color.replace(/\)$/, ` / ${amount})`);
+};
 
 const systemSans = '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
 
@@ -157,14 +164,15 @@ export const popcornTheme = defineTheme({
     '--color-icon-secondary': [zinc[600], zinc[400]],
     '--color-icon-disabled': [zinc[400], zinc[600]],
 
-    // Status (always paired with words in the UI)
+    // Status (always paired with words in the UI). Error text steps to red-700
+    // in light mode so it keeps AA contrast on the muted error fill.
     '--color-success': [emerald[700], emerald[400]],
     '--color-success-muted': [alpha(emerald[500], 0.16), alpha(emerald[500], 0.22)],
     '--color-on-success': zinc[950],
     '--color-warning': [amber[700], amber[400]],
     '--color-warning-muted': [alpha(amber[500], 0.18), alpha(amber[500], 0.22)],
     '--color-on-warning': zinc[950],
-    '--color-error': [red[600], red[400]],
+    '--color-error': [red[700], red[400]],
     '--color-error-muted': [alpha(red[500], 0.14), alpha(red[500], 0.22)],
     '--color-on-error': [white, zinc[950]],
 

@@ -430,7 +430,7 @@ export const downloads = {
 };
 
 export const uploads = {
-  create: (body: UploadCreateRequest) => post<UploadCreated>('/api/uploads', body),
+  create: (body: UploadCreateRequest, signal?: AbortSignal) => post<UploadCreated>('/api/uploads', body, {signal}),
   /** Raw bytes at `offset` (at most 64 MiB). 409 carries `{received}` on an offset mismatch. */
   putChunk: (id: string, offset: number, chunk: Blob, signal?: AbortSignal) =>
     request<UploadReceived>(`/api/uploads/${enc(id)}`, {

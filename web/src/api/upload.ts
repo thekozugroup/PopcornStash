@@ -51,8 +51,21 @@ export interface UploadOptions {
   retries?: number;
 }
 
+function abortedError(): ApiError {
+  return new ApiError('aborted', FALLBACK_MESSAGES.aborted ?? '', 0);
+}
+
+/** A signal aborted before a listener is attached never fires 'abort', so check first. */
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw abortedError();
+}
+
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(abortedError());
+      return;
+    }
     const timer = setTimeout(resolve, ms);
     signal.addEventListener(
       'abort',
@@ -74,6 +87,10 @@ function putChunk(
   onBytes: (sent: number) => void,
 ): Promise<number> {
   return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(abortedError());
+      return;
+    }
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', `/api/uploads/${encodeURIComponent(uploadId)}?offset=${offset}`);
     xhr.withCredentials = true;
@@ -183,10 +200,10 @@ export class ResumableUpload {
     });
   }
 
-  private async ensureSession(): Promise<void> {
+  private async ensureSession(signal: AbortSignal): Promise<void> {
     if (this.uploadId) {
       try {
-        const status = await uploads.status(this.uploadId, this.controller.signal);
+        const status = await uploads.status(this.uploadId, signal);
         if (status.state === 'receiving' && status.size === this.file.size) {
           this.acknowledged = status.received;
           return;
@@ -196,12 +213,15 @@ export class ResumableUpload {
         // Unknown or finished upload: start a new one below.
       }
     }
-    const created: UploadCreated = await uploads.create({
-      filename: this.file.name,
-      size: this.file.size,
-      mime: this.file.type || undefined,
-      last_modified: this.file.lastModified ? Math.floor(this.file.lastModified / 1000) : undefined,
-    });
+    const created: UploadCreated = await uploads.create(
+      {
+        filename: this.file.name,
+        size: this.file.size,
+        mime: this.file.type || undefined,
+        last_modified: this.file.lastModified ? Math.floor(this.file.lastModified / 1000) : undefined,
+      },
+      signal,
+    );
     this.uploadId = created.id;
     this.chunkSize = Math.min(MAX_CHUNK_SIZE, created.chunk_size > 0 ? created.chunk_size : UPLOAD_CHUNK_SIZE);
     this.acknowledged = created.received;
@@ -213,18 +233,24 @@ export class ResumableUpload {
     if (this.controller.signal.aborted) this.controller = new AbortController();
     const signal = this.controller.signal;
     const retries = this.options.retries ?? DEFAULT_RETRIES;
+    // A resume starts a fresh speed measurement; bytes the server already had are not speed.
+    this.rate = 0;
+    this.lastSample = null;
     this.phase = 'starting';
     this.emit();
 
     try {
-      await this.ensureSession();
+      await this.ensureSession(signal);
+      throwIfAborted(signal);
       const uploadId = this.uploadId;
       if (!uploadId) throw new ApiError('unknown', FALLBACK_MESSAGES.unknown ?? '', 0);
 
       this.phase = 'uploading';
       this.emit();
       let failures = 0;
+      this.lastSample = null;
       while (this.acknowledged < this.file.size) {
+        throwIfAborted(signal);
         const offset = this.acknowledged;
         const chunk = this.file.slice(offset, Math.min(this.file.size, offset + this.chunkSize));
         try {
@@ -252,6 +278,7 @@ export class ResumableUpload {
         }
       }
 
+      throwIfAborted(signal);
       this.phase = 'finishing';
       this.emit();
       const download = await uploads.complete(uploadId);
