@@ -10,8 +10,8 @@ use serde::de::DeserializeOwned;
 use stash_core::config::Config;
 use stash_core::events::{Event, EventBus};
 use stash_core::internal_api::{
-    AddTorrentRequest, AddTorrentResponse, EngineHealth, EngineTorrent, LimitsRequest, TunnelState,
-    TunnelStatus, VpnMeta,
+    AddTorrentRequest, AddTorrentResponse, EngineHealth, EngineRunState, EngineTorrent,
+    LimitsRequest, MSG_NOT_PROTECTED, TunnelState, TunnelStatus, VpnMeta,
 };
 use stash_core::models::{VpnState, VpnStatus};
 use tokio::sync::Notify;
@@ -563,6 +563,16 @@ pub fn combine_status(
             let tunnel = health.vpn;
             let allow_no_vpn = health.engine.allow_no_vpn;
             let state = shown_state(configured, tunnel.state, allow_no_vpn);
+            // Torrents are stopped because the address is not a VPN address: never show
+            // the connection as protected, whatever the engine's last answer field says.
+            let not_protected = !allow_no_vpn
+                && health.engine.state == EngineRunState::Blocked
+                && health.engine.reason.as_deref() == Some(MSG_NOT_PROTECTED);
+            let protected = if not_protected {
+                Some(false)
+            } else {
+                health.protected
+            };
             VpnStatus {
                 configured,
                 reachable: true,
@@ -576,7 +586,7 @@ pub fn combine_status(
                     .or(tunnel.country)
                     .or(health.country),
                 public_ip: health.public_ip,
-                protected: health.protected,
+                protected,
                 since: tunnel.since,
                 // No tunnel is used in this mode, so a tunnel problem is not one.
                 error: tunnel.error.filter(|_| !allow_no_vpn),
@@ -1250,6 +1260,36 @@ mod tests {
         let unreachable = combine_status(Some(&meta), Err(TorrentdError::Unreachable("x".into())));
         assert!(unreachable.configured && !unreachable.reachable);
         assert_eq!(unreachable.label.as_deref(), Some("WireGuard · home"));
+    }
+
+    /// An engine stopped because the address is not a VPN address is never shown as
+    /// protected, also when its last answer is missing (for example just after the
+    /// tunnel came back), so the UI never says "Protected" while torrents are stopped.
+    #[test]
+    fn an_engine_blocked_for_not_protected_is_never_shown_as_protected() {
+        let blocked = |protected: Option<bool>| {
+            let mut health = sample_health(TunnelState::Connected);
+            health.engine.state = EngineRunState::Blocked;
+            health.engine.reason = Some(MSG_NOT_PROTECTED.into());
+            health.protected = protected;
+            if protected.is_none() {
+                health.public_ip = None;
+            }
+            health
+        };
+        for protected in [None, Some(true), Some(false)] {
+            let status = combine_status(None, Ok(blocked(protected)));
+            assert_eq!(status.state, VpnState::Connected, "{protected:?}");
+            assert_eq!(status.protected, Some(false), "{protected:?}");
+        }
+        // Blocked for another reason, or running: the engine's answer is passed on.
+        let mut waiting = sample_health(TunnelState::Connected);
+        waiting.engine.state = EngineRunState::Blocked;
+        waiting.engine.reason = Some("Waiting for the VPN to connect.".into());
+        waiting.protected = None;
+        assert_eq!(combine_status(None, Ok(waiting)).protected, None);
+        let running = combine_status(None, Ok(sample_health(TunnelState::Connected)));
+        assert_eq!(running.protected, Some(true));
     }
 
     /// With STASH_ALLOW_NO_VPN the supervisor never applies a VPN, so a saved one stays

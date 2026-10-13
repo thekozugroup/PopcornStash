@@ -25,6 +25,7 @@ use librqbit::{
     SessionPersistenceConfig, TorrentStatsState,
 };
 use serde::{Deserialize, Serialize};
+pub use stash_core::internal_api::MSG_NOT_PROTECTED;
 use stash_core::internal_api::{
     AddTorrentResponse, EXIT_RELOAD, EngineHealth, EngineRunState, EngineState, EngineTorrent,
     EngineTorrentState, LimitsRequest, MIN_SPEED_LIMIT_KBPS, TunnelState, TunnelStatus,
@@ -47,8 +48,6 @@ const POLL: Duration = Duration::from_secs(1);
 pub const NORDVPN_INSIGHTS: &str = "https://api.nordvpn.com/v1/helpers/ips/insights";
 pub const IPIFY: &str = "https://api.ipify.org?format=json";
 pub const MSG_NOT_CONFIGURED: &str = "The VPN is not set up yet.";
-/// The public-address check said the address is not a VPN address (NordVPN `protected: false`).
-pub const MSG_NOT_PROTECTED: &str = "The VPN is connected, but the public address is not a VPN address. Torrents stay stopped until a later check passes.";
 /// Between public-address checks while an earlier check said the address is not a VPN
 /// address, so torrents start again soon after a check passes.
 const UNPROTECTED_RECHECK: Duration = Duration::from_secs(60);
@@ -56,6 +55,10 @@ const UNPROTECTED_RECHECK: Duration = Duration::from_secs(60);
 const START_RETRY: Duration = Duration::from_secs(60);
 const PENDING_FILE: &str = "pending.json";
 const LIMITS_FILE: &str = "limits.json";
+/// The last public-address answer while it says the address is not a VPN address, so a
+/// restarted engine (Reconnect, a saved VPN, a container restart) keeps torrents stopped
+/// until a check passes instead of starting them before its first check.
+const NOT_PROTECTED_FILE: &str = "not-protected.json";
 const SESSION_DIR: &str = "session";
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -248,7 +251,7 @@ struct PendingAdd {
     resolving: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct IpInfo {
     ip: String,
     country: Option<String>,
@@ -485,6 +488,39 @@ impl Engine {
         {
             inner.limits = limits;
         }
+        // A "not protected" answer from before the restart: torrents wait for a check
+        // that passes, and the status keeps showing the answer meanwhile.
+        if !self.allow_no_vpn
+            && let Ok(bytes) = std::fs::read(self.state_dir.join(NOT_PROTECTED_FILE))
+            && let Ok(info) = serde_json::from_slice::<IpInfo>(&bytes)
+            && info.protected == Some(false)
+        {
+            inner.unprotected = true;
+            inner.ip = Some(info);
+        }
+    }
+
+    /// Keep the "not protected" answer across engine restarts, or forget it once a check
+    /// no longer says so.
+    fn save_not_protected(&self, info: Option<&IpInfo>) {
+        if self.allow_no_vpn {
+            // Torrents do not wait for the check in this mode.
+            return;
+        }
+        let path = self.state_dir.join(NOT_PROTECTED_FILE);
+        let result = match info {
+            Some(info) => {
+                let bytes = serde_json::to_vec(info).unwrap_or_default();
+                sys::write_atomic(&path, &bytes, 0o600)
+            }
+            None => match std::fs::remove_file(&path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                other => other,
+            },
+        };
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "could not save the public-address answer");
+        }
     }
 
     fn save_pending(&self, pending: &BTreeMap<String, PendingAdd>) {
@@ -532,7 +568,9 @@ impl Engine {
             let changed = inner.running != running || inner.reason != reason;
             inner.running = running;
             inner.reason = reason.clone();
-            if !running {
+            // A "not protected" answer stays until a check no longer says so, also while
+            // the tunnel is down, so the status never reads as protected meanwhile.
+            if !running && !inner.unprotected {
                 inner.ip = None;
             }
             changed
@@ -637,6 +675,9 @@ impl Engine {
                         self.stop_session().await;
                     }
                     self.set_running(false, Some(reason));
+                    // Check again as soon as the tunnel is back, so a "not protected"
+                    // answer from before the drop is confirmed or cleared at once.
+                    last_ip_check = None;
                 }
             }
             tokio::select! {
@@ -859,11 +900,23 @@ impl Engine {
         match fetch_public_ip(self.tunnel_if.as_deref(), url).await {
             Ok(info) => {
                 tracing::info!(ip = %info.ip, country = ?info.country, protected = ?info.protected, "public IP through the tunnel");
-                let mut inner = lock(&self.inner);
                 // Only a clear "not protected" blocks; no answer (ipify) or an error does not.
-                inner.unprotected = info.protected == Some(false);
-                if inner.running || inner.unprotected {
-                    inner.ip = Some(info);
+                let unprotected = info.protected == Some(false);
+                let was_unprotected = {
+                    let mut inner = lock(&self.inner);
+                    let was = inner.unprotected;
+                    inner.unprotected = unprotected;
+                    // A passing answer replaces the failing one at once, before the
+                    // session has started again.
+                    if inner.running || unprotected || was {
+                        inner.ip = Some(info.clone());
+                    }
+                    was
+                };
+                if unprotected {
+                    self.save_not_protected(Some(&info));
+                } else if was_unprotected {
+                    self.save_not_protected(None);
                 }
             }
             Err(e) => tracing::warn!(error = %e, "public IP check failed"),
@@ -1842,6 +1895,188 @@ mod tests {
         assert!(engine.live_session().await.is_some());
         shutdown.cancel();
         let _ = tokio::time::timeout(Duration::from_secs(10), task).await;
+    }
+
+    /// Writes the supervisor's status file every 200 ms with whatever state the test sets,
+    /// so it never goes stale.
+    fn fake_supervisor(status_file: PathBuf, stop: CancellationToken) -> Arc<Mutex<TunnelState>> {
+        let state = Arc::new(Mutex::new(TunnelState::Connected));
+        let shared = state.clone();
+        tokio::spawn(async move {
+            while !stop.is_cancelled() {
+                let mut status = TunnelStatus::not_configured(now_unix());
+                status.state = *lock(&shared);
+                status.provider = Some(VpnProvider::Nordvpn);
+                crate::status::write(&status_file, &status).unwrap();
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        });
+        state
+    }
+
+    async fn wait_until(what: &str, mut ready: impl AsyncFnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !ready().await {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// A "not protected" answer survives a short tunnel drop: while the tunnel is back but
+    /// torrents are still stopped, the status keeps saying not protected (never protected
+    /// with no answer), and the address is checked again as soon as the tunnel is back
+    /// rather than after the one-minute wait.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tunnel_drop_keeps_the_not_protected_answer_and_checks_again_on_reconnect() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut opts = options(dir.path());
+        opts.tunnel_if = Some("lo".into());
+        let answer = Arc::new(Mutex::new(serde_json::json!({
+            "ip": "198.51.100.23", "country": "Netherlands", "protected": false
+        })));
+        let (base, hits) = fake_ip_service(answer.clone()).await;
+        // The production waits: a recheck would not come within the test.
+        let engine = Arc::new(Engine::new(&opts).with_ip_check(IpCheck {
+            nordvpn_url: format!("{base}/nordvpn"),
+            other_url: format!("{base}/ipify"),
+            ..IpCheck::default()
+        }));
+        let shutdown = CancellationToken::new();
+        let tunnel = fake_supervisor(opts.status_file.clone(), shutdown.clone());
+        let task = tokio::spawn(engine.clone().supervise(shutdown.clone()));
+
+        wait_until("the not-protected answer to block torrents", async || {
+            let health = engine.health().await;
+            health.protected == Some(false) && health.engine.state == EngineRunState::Blocked
+        })
+        .await;
+        let checks = hits.load(Ordering::SeqCst);
+
+        // The tunnel drops for a moment, then comes back.
+        *lock(&tunnel) = TunnelState::Connecting;
+        wait_until("the engine to see the drop", async || {
+            engine.health().await.engine.reason.as_deref() == Some(MSG_VPN_WAIT)
+        })
+        .await;
+        let health = engine.health().await;
+        assert_eq!(
+            health.protected,
+            Some(false),
+            "kept while the tunnel is down"
+        );
+        assert_eq!(health.public_ip.as_deref(), Some("198.51.100.23"));
+        *lock(&tunnel) = TunnelState::Connected;
+        wait_until("the tunnel to be back", async || {
+            engine.health().await.engine.reason.as_deref() == Some(MSG_NOT_PROTECTED)
+        })
+        .await;
+        let health = engine.health().await;
+        assert_eq!(health.vpn.state, TunnelState::Connected);
+        assert_eq!(health.engine.state, EngineRunState::Blocked);
+        assert_eq!(
+            health.protected,
+            Some(false),
+            "never protected while blocked"
+        );
+        assert_eq!(health.public_ip.as_deref(), Some("198.51.100.23"));
+        wait_until("a check right after the reconnect", async || {
+            hits.load(Ordering::SeqCst) > checks
+        })
+        .await;
+        assert!(
+            engine.live_session().await.is_none(),
+            "torrents stay stopped"
+        );
+
+        // That check passes: torrents run, and the status says protected at once.
+        *lock(&answer) = serde_json::json!({
+            "ip": "185.153.177.12", "country": "Netherlands", "protected": true
+        });
+        *lock(&tunnel) = TunnelState::Connecting;
+        wait_until("the second drop", async || {
+            engine.health().await.engine.reason.as_deref() == Some(MSG_VPN_WAIT)
+        })
+        .await;
+        *lock(&tunnel) = TunnelState::Connected;
+        wait_until("torrents to run again", async || {
+            let health = engine.health().await;
+            health.engine.state == EngineRunState::Running && health.protected == Some(true)
+        })
+        .await;
+        shutdown.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(10), task).await;
+    }
+
+    /// A restarted engine (Reconnect, a newly saved VPN, a container restart) remembers a
+    /// "not protected" answer: it starts no torrents before a check passes, and shows the
+    /// answer meanwhile.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_restarted_engine_keeps_torrents_stopped_until_a_check_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut opts = options(dir.path());
+        opts.tunnel_if = Some("lo".into());
+        let answer = Arc::new(Mutex::new(serde_json::json!({
+            "ip": "198.51.100.23", "country": "Netherlands", "protected": false
+        })));
+        let (base, hits) = fake_ip_service(answer.clone()).await;
+        let check = IpCheck {
+            nordvpn_url: format!("{base}/nordvpn"),
+            other_url: format!("{base}/ipify"),
+            interval: Duration::from_secs(600),
+            recheck_unprotected: Duration::from_millis(300),
+        };
+        let stop_writer = CancellationToken::new();
+        let _tunnel = fake_supervisor(opts.status_file.clone(), stop_writer.clone());
+
+        let first = Arc::new(Engine::new(&opts).with_ip_check(check.clone()));
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(first.clone().supervise(shutdown.clone()));
+        wait_until("the not-protected answer to block torrents", async || {
+            first.health().await.protected == Some(false)
+        })
+        .await;
+        shutdown.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(10), task).await;
+        drop(first);
+
+        // The new engine knows the answer before it checks anything.
+        let engine = Arc::new(Engine::new(&opts).with_ip_check(check));
+        let health = engine.health().await;
+        assert_eq!(health.protected, Some(false));
+        assert_eq!(health.public_ip.as_deref(), Some("198.51.100.23"));
+        let shutdown = CancellationToken::new();
+        let mut running = engine.running();
+        let task = tokio::spawn(engine.clone().supervise(shutdown.clone()));
+        // Several checks still say not protected: torrents never start meanwhile.
+        let checks = hits.load(Ordering::SeqCst);
+        let watch = async {
+            loop {
+                running.changed().await.unwrap();
+                assert!(!*running.borrow(), "torrents started before a check passed");
+            }
+        };
+        tokio::select! {
+            _ = watch => {}
+            _ = wait_until("three more checks", async || hits.load(Ordering::SeqCst) >= checks + 3) => {}
+        }
+        let health = engine.health().await;
+        assert_eq!(health.engine.state, EngineRunState::Blocked);
+        assert_eq!(health.engine.reason.as_deref(), Some(MSG_NOT_PROTECTED));
+        assert!(engine.live_session().await.is_none());
+
+        // A check passes: torrents run, and the answer is forgotten for the next restart.
+        *lock(&answer) = serde_json::json!({
+            "ip": "185.153.177.12", "country": "Netherlands", "protected": true
+        });
+        wait_until("torrents to run again", async || {
+            engine.health().await.engine.state == EngineRunState::Running
+        })
+        .await;
+        assert!(!opts.state_dir.join(NOT_PROTECTED_FILE).exists());
+        shutdown.cancel();
+        stop_writer.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(10), task).await;
+        assert_eq!(Engine::new(&opts).health().await.protected, None);
     }
 
     #[test]

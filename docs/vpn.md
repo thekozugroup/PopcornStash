@@ -66,7 +66,7 @@ Any provider with OpenVPN files works the same way through the **OpenVPN file** 
 
 - whether the tunnel is **Connected**, **Connecting** or **Disconnected**, and since when;
 - the provider, server and country;
-- the **public address** the torrent engine is seen from on the internet, checked through the tunnel every 10 minutes. It should be the VPN's address, not your home address. With NordVPN, PopcornStash also shows whether NordVPN considers the connection protected; if it says no, torrents stop until a later check (every minute) no longer says so;
+- the **public address** the torrent engine is seen from on the internet, checked through the tunnel every 10 minutes. It should be the VPN's address, not your home address. With NordVPN, PopcornStash also shows whether NordVPN considers the connection protected; if it says no, torrents stop until a later check (every minute) no longer says so. That answer is kept when the tunnel drops, when you press Reconnect and when the container restarts, and the address is checked again as soon as the tunnel is back;
 - that the kill switch is on.
 
 When the VPN is not connected, new torrents are added and wait with the message **Waiting for the VPN to connect**. Torrents beyond the **Torrents at once** setting (on the same page) wait with **Waiting for a free slot**.

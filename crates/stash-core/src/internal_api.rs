@@ -114,9 +114,15 @@ impl TunnelStatus {
 pub enum EngineRunState {
     /// Accepting torrents.
     Running,
-    /// Refusing torrents because the tunnel is not up.
+    /// Refusing torrents because the tunnel is not up, or the public-address check said
+    /// the address is not a VPN address ([`MSG_NOT_PROTECTED`]).
     Blocked,
 }
+
+/// The engine's blocked reason while the public-address check says the address is not
+/// a VPN address (NordVPN `protected: false`). The web server reads it as
+/// `protected: false` whatever else the engine reports.
+pub const MSG_NOT_PROTECTED: &str = "The VPN is connected, but the public address is not a VPN address. Torrents stay stopped until a later check passes.";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EngineState {
