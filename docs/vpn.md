@@ -69,7 +69,7 @@ Any provider with OpenVPN files works the same way through the **OpenVPN file** 
 - the **public address** the torrent engine is seen from on the internet, checked through the tunnel every 10 minutes. It should be the VPN's address, not your home address. With NordVPN, PopcornStash also shows whether NordVPN considers the connection protected; if it says no, torrents stop until a later check (every minute) no longer says so. That answer is kept when the tunnel drops, when you press Reconnect and when the container restarts, and the address is checked again as soon as the tunnel is back;
 - that the kill switch is on.
 
-When the VPN is not connected, new torrents are added and wait with the message **Waiting for the VPN to connect**. Torrents beyond the **Torrents at once** setting (on the same page) wait with **Waiting for a free slot**.
+When the VPN is not connected, new torrents are added and wait with the message **Waiting for the VPN to connect**. While torrents are stopped because the public address is not a VPN address, they wait with **Blocked: VPN not protecting** instead. Torrents beyond the **Torrents at once** setting (on the same page) wait with **Waiting for a free slot**.
 
 You can also check from the server. These commands should show the kill switch table and the routing rules for the engine user:
 
@@ -90,7 +90,7 @@ docker exec popcornstash ip rule show
 
 `STASH_ALLOW_NO_VPN=true` runs the torrent engine without a tunnel, routing rules or kill switch. It exists only for networks where the router already sends all traffic through a VPN.
 
-It is off by default because the risk is silent: if the router's VPN ever drops, torrents keep running over your home connection and nothing inside PopcornStash can notice. With the built-in VPN, a drop stops torrents instead. If you turn it on, PopcornStash shows a permanent warning on the VPN and Downloads pages, in the sidebar, on the share page for links and in the extension, even if a VPN is saved. A saved VPN is not used, and the VPN page hides its setup forms. Web downloads go out over the same network whatever **Web downloads use the VPN** says; the choice is greyed out and applies again once the variable is removed.
+It is off by default because the risk is silent: if the router's VPN ever drops, torrents keep running over your home connection and nothing inside PopcornStash can notice. With the built-in VPN, a drop stops torrents instead. If you turn it on, PopcornStash shows a permanent warning on the VPN and Downloads pages, in the sidebar, on the share page for links and in the extension, even if a VPN is saved. A saved VPN is not used, the VPN page hides its setup forms, and the server refuses to save a new one (it can still be removed). Web downloads go out over the same network whatever **Web downloads use the VPN** says; the choice is greyed out and applies again once the variable is removed.
 
 To turn it on, add `STASH_ALLOW_NO_VPN: "true"` to the `environment` section of `compose.yaml` (on Unraid, add a variable with that name and the value `true`), then recreate the container.
 

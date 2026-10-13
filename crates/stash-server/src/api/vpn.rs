@@ -34,6 +34,8 @@ pub const OPENVPN_MAX_BYTES: usize = 256 * 1024;
 const CREDENTIAL_MAX_CHARS: usize = 512;
 /// Longest `.ovpn` line OpenVPN reads in one piece (255 bytes with the newline).
 const OPENVPN_MAX_LINE: usize = 254;
+/// A VPN set up while STASH_ALLOW_NO_VPN is on would never be used (409).
+pub const MSG_NO_VPN_MODE: &str = "Torrents run without a VPN on this server, so a VPN saved here would not be used. To use one, remove STASH_ALLOW_NO_VPN from the container settings and recreate the container.";
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -50,6 +52,17 @@ pub fn routes() -> Router<AppState> {
 fn nord(state: &AppState) -> &'static NordVpnClient {
     static CLIENT: OnceLock<NordVpnClient> = OnceLock::new();
     CLIENT.get_or_init(|| NordVpnClient::new(state.http.clone()))
+}
+
+/// Refuse to save a VPN while torrents run without one (STASH_ALLOW_NO_VPN, as the
+/// status reports it): the supervisor never applies it, and the VPN page hides the setup
+/// forms then. Removing a saved VPN stays allowed.
+async fn refuse_without_vpn(state: &AppState) -> ApiResult<()> {
+    let status = state.torrentd.vpn_status().await;
+    if status.allow_no_vpn && !status.torrents_off {
+        return Err(ApiError::conflict(MSG_NO_VPN_MODE));
+    }
+    Ok(())
 }
 
 /// Serialises writes to the VPN directory.
@@ -102,6 +115,7 @@ async fn setup_nordvpn(
     body: Bytes,
 ) -> ApiResult<Json<VpnStatus>> {
     user.require_owner()?;
+    refuse_without_vpn(&state).await?;
     let setup: NordVpnSetup = serde_json::from_slice(&body).map_err(|_| {
         ApiError::bad_request(
             "Send the NordVPN access token as JSON with access_token, country_id and protocol.",
@@ -126,6 +140,7 @@ async fn upload_wireguard(
     request: Request,
 ) -> ApiResult<Json<VpnStatus>> {
     user.require_owner()?;
+    refuse_without_vpn(&state).await?;
     let upload = if is_multipart(&request) {
         read_multipart(request, &state, WIREGUARD_MAX_BYTES, "WireGuard", "64 KB").await?
     } else {
@@ -166,6 +181,7 @@ async fn upload_openvpn(
     request: Request,
 ) -> ApiResult<Json<VpnStatus>> {
     user.require_owner()?;
+    refuse_without_vpn(&state).await?;
     let upload = if is_multipart(&request) {
         read_multipart(request, &state, OPENVPN_MAX_BYTES, "OpenVPN", "256 KB").await?
     } else {
@@ -2134,5 +2150,120 @@ e685bdaf659a25a200e2b9e39e51ff03\n-----END OpenVPN Static key V1-----\n</tls-aut
                 .unwrap()
                 .starts_with("Send the NordVPN access token")
         );
+    }
+
+    /// With STASH_ALLOW_NO_VPN the supervisor never applies a VPN and the VPN page hides
+    /// the setup forms, so the API refuses to save one (409, with the way back) instead of
+    /// keeping a VPN nobody uses. Removing a saved VPN still works.
+    #[tokio::test]
+    async fn saving_a_vpn_is_refused_while_torrents_skip_the_vpn() {
+        let dir = tempfile::tempdir().unwrap();
+        let stash = dir.path().join("stash");
+        std::fs::create_dir_all(&stash).unwrap();
+        let mut config = Config::for_tests(&stash, &dir.path().join("config"));
+        // The engine is not answering (restarting); the supervisor's fresh status file says
+        // the kill switch is off, which only STASH_ALLOW_NO_VPN does.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        config.torrentd_url = Some(Url::parse(&format!("http://127.0.0.1:{port}")).unwrap());
+        config.internal_token = Some("internal-token".into());
+        let run_dir = dir.path().join("run");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        config.supervisor_socket = Some(run_dir.join("supervisor.sock"));
+        let tunnel = stash_core::internal_api::TunnelStatus {
+            kill_switch: false,
+            ..stash_core::internal_api::TunnelStatus::not_configured(stash_core::now())
+        };
+        std::fs::write(
+            run_dir.join(stash_core::internal_api::STATUS_FILE),
+            serde_json::to_vec(&tunnel).unwrap(),
+        )
+        .unwrap();
+        let state = crate::app::build_state(config).await.unwrap();
+        let vpn = state.config.vpn_dir();
+        // A VPN saved before the variable was set.
+        apply_wireguard(&state.config, &good_wireguard(), Some("home.conf"))
+            .await
+            .unwrap();
+        let saved = std::fs::read(vpn.join(WIREGUARD_FILE)).unwrap();
+        let app = crate::app::router(state);
+
+        let refused = |code: StatusCode, body: &serde_json::Value| {
+            assert_eq!(code, StatusCode::CONFLICT, "{body}");
+            assert_eq!(body["error"]["code"], "conflict");
+            assert_eq!(body["error"]["message"], MSG_NO_VPN_MODE);
+        };
+        let json = serde_json::json!({ "config": good_wireguard() }).to_string();
+        let (code, body) = call(
+            &app,
+            request(
+                Method::POST,
+                "/api/vpn/wireguard",
+                Some(owner()),
+                "application/json",
+                Body::from(json.clone()),
+            ),
+        )
+        .await;
+        refused(code, &body);
+        let (ct, body) = multipart(&[
+            ("file", Some("home.ovpn"), &generic_ovpn()),
+            ("username", None, "me"),
+            ("password", None, "pw"),
+        ]);
+        let (code, body) = call(
+            &app,
+            request(Method::POST, "/api/vpn/openvpn", Some(owner()), &ct, body),
+        )
+        .await;
+        refused(code, &body);
+        let token = serde_json::json!({ "access_token": "a-token", "protocol": "wireguard" });
+        let (code, body) = call(
+            &app,
+            request(
+                Method::POST,
+                "/api/vpn/nordvpn",
+                Some(owner()),
+                "application/json",
+                Body::from(token.to_string()),
+            ),
+        )
+        .await;
+        refused(code, &body);
+        // Nothing was written over the saved VPN.
+        assert_eq!(std::fs::read(vpn.join(WIREGUARD_FILE)).unwrap(), saved);
+        assert!(!vpn.join(OPENVPN_FILE).exists());
+        // Members still get the plain "owners only" answer.
+        let (code, _) = call(
+            &app,
+            request(
+                Method::POST,
+                "/api/vpn/wireguard",
+                Some(member()),
+                "application/json",
+                Body::from(json),
+            ),
+        )
+        .await;
+        assert_eq!(code, StatusCode::FORBIDDEN);
+
+        // Removing the unused VPN is allowed.
+        let (code, body) = call(
+            &app,
+            request(
+                Method::DELETE,
+                "/api/vpn",
+                Some(owner()),
+                "application/json",
+                Body::empty(),
+            ),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        assert_eq!(body["configured"], false);
+        assert_eq!(body["allow_no_vpn"], true);
+        assert!(!vpn.join(WIREGUARD_FILE).exists() && !vpn.join(VPN_META_FILE).exists());
     }
 }

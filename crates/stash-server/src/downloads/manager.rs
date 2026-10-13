@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use stash_core::config::Config;
 use stash_core::db::Db;
 use stash_core::events::{Event, EventBus};
+use stash_core::internal_api::EngineHealth;
 use stash_core::jobs::JobQueue;
 use stash_core::library::Library;
 use stash_core::models::{Download, DownloadKind, DownloadRow, DownloadState};
@@ -27,12 +28,27 @@ use super::source::{self, Magnet};
 use super::ssrf::AddressGuard;
 use super::torrents::InFlight;
 use crate::error::{ApiError, ApiResult, ErrorCode};
-use crate::torrentd_client::{TorrentdClient, TorrentdError};
+use crate::torrentd_client::{TorrentdClient, TorrentdError, blocked_not_protected};
 
 /// Largest `.torrent` file accepted (upload or link).
 pub const MAX_TORRENT_FILE: usize = 10 * 1024 * 1024;
 /// Shown while a torrent waits for the engine.
 pub const MSG_WAITING_FOR_VPN: &str = "Waiting for the VPN to connect.";
+/// Shown while a torrent waits because the engine is blocked: the tunnel is up, but the
+/// public address check found an address that is not a VPN address. The words of the VPN
+/// status for this state ("Torrents blocked: VPN not protecting").
+pub const MSG_BLOCKED_NOT_PROTECTED: &str =
+    "Blocked: VPN not protecting. The public address is not a VPN address.";
+
+/// Why a torrent the engine cannot take now waits, from the engine's health answer
+/// (`None` when it did not answer). The engine refuses adds with one message whatever
+/// blocks it, so its health says which.
+pub(crate) fn engine_wait_message(health: Option<&EngineHealth>) -> &'static str {
+    match health {
+        Some(health) if blocked_not_protected(health) => MSG_BLOCKED_NOT_PROTECTED,
+        _ => MSG_WAITING_FOR_VPN,
+    }
+}
 
 /// Shown while a torrent waits in line for "Torrents at once" (`torrent.max_active`).
 pub fn slot_message(max_active: u32) -> String {
@@ -701,10 +717,11 @@ impl DownloadManager {
                     self.torrent_wake.notify_one();
                 }
                 (DownloadState::Paused, None) => {
+                    let waiting = self.engine_wait_reason().await;
                     sqlx::query(
                         "UPDATE downloads SET state = 'queued', error = ?, updated_at = ? WHERE id = ? AND state = 'paused'",
                     )
-                    .bind(MSG_WAITING_FOR_VPN)
+                    .bind(waiting)
                     .bind(now())
                     .bind(id)
                     .execute(&self.db)
@@ -825,6 +842,11 @@ impl DownloadManager {
     }
 
     // --- shared helpers -----------------------------------------------------------
+
+    /// Why a torrent waits for the engine right now, asked of the engine.
+    pub(crate) async fn engine_wait_reason(&self) -> &'static str {
+        engine_wait_message(self.torrentd.health().await.ok().as_ref())
+    }
 
     fn require_torrents(&self) -> ApiResult<()> {
         if self.torrentd.enabled() {

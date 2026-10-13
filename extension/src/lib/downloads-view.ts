@@ -65,13 +65,15 @@ export interface DownloadRow {
 
 /**
  * Why a queued torrent waits, in a few words. The server's `error` says it in
- * full (architecture section 11): "Waiting for the VPN to connect." or
+ * full (architecture section 11): "Waiting for the VPN to connect.",
+ * "Blocked: VPN not protecting. The public address is not a VPN address." or
  * "Waiting for a free slot (N at once)."
  */
 function waitingState(download: Download): string {
   const reason = download.kind === 'torrent' ? (download.error ?? '') : '';
   if (reason.startsWith('Waiting for a free slot')) return 'Waiting for a slot';
   if (reason.startsWith('Waiting for the VPN')) return 'Waiting for VPN';
+  if (reason.startsWith('Blocked: VPN not protecting')) return 'VPN not protecting';
   return 'Waiting';
 }
 

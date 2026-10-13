@@ -21,7 +21,7 @@ use stash_core::db::Db;
 use stash_core::events::EventBus;
 use stash_core::internal_api::{
     AddTorrentRequest, AddTorrentResponse, EngineHealth, EngineRunState, EngineState,
-    EngineTorrent, EngineTorrentState, LimitsRequest, TunnelState, TunnelStatus,
+    EngineTorrent, EngineTorrentState, LimitsRequest, MSG_NOT_PROTECTED, TunnelState, TunnelStatus,
 };
 use stash_core::jobs::JobQueue;
 use stash_core::library::Library;
@@ -32,7 +32,7 @@ use stash_core::settings::SettingsStore;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use super::manager::{MSG_VPN_REQUIRED, MSG_WAITING_FOR_VPN, Tuning};
+use super::manager::{MSG_BLOCKED_NOT_PROTECTED, MSG_VPN_REQUIRED, MSG_WAITING_FOR_VPN, Tuning};
 use super::source::Magnet;
 use super::torrents::{MSG_LOST, MSG_MOVE_RETRY};
 use super::{AddDownloadRequest, DownloadFilter, DownloadManager, ForwardedHeaders};
@@ -480,6 +480,9 @@ async fn serve_file(State(files): State<Files>, uri: Uri, headers: HeaderMap) ->
 #[derive(Default)]
 struct EngineInner {
     blocked: bool,
+    /// With `blocked`: the tunnel is up, but the public address check found an address
+    /// that is not a VPN address (the engine's `MSG_NOT_PROTECTED` block).
+    not_protected: bool,
     allow_no_vpn: bool,
     /// How long an add or a resume takes to answer, and how many arrived.
     add_delay_ms: u64,
@@ -571,13 +574,17 @@ async fn engine_health(State(s): State<EngineShared>, headers: HeaderMap) -> Res
     if !authorized(&s, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let (blocked, allow_no_vpn) = {
+    let (blocked, not_protected, allow_no_vpn) = {
         let inner = s.inner.lock().unwrap();
-        (inner.blocked, inner.allow_no_vpn)
+        (
+            inner.blocked,
+            inner.blocked && inner.not_protected,
+            inner.allow_no_vpn,
+        )
     };
     Json(EngineHealth {
         vpn: TunnelStatus {
-            state: if blocked {
+            state: if blocked && !not_protected {
                 TunnelState::Disconnected
             } else {
                 TunnelState::Connected
@@ -599,12 +606,12 @@ async fn engine_health(State(s): State<EngineShared>, headers: HeaderMap) -> Res
             } else {
                 EngineRunState::Running
             },
-            reason: None,
+            reason: not_protected.then(|| MSG_NOT_PROTECTED.to_string()),
             allow_no_vpn,
         },
-        public_ip: None,
+        public_ip: not_protected.then(|| "203.0.113.7".to_string()),
         country: None,
-        protected: None,
+        protected: not_protected.then_some(false),
         checked_at: None,
     })
     .into_response()
@@ -1524,6 +1531,55 @@ async fn torrent_added_while_the_vpn_is_down_waits_then_starts() {
     assert_eq!(row.error, None);
     assert!(!env.manager.pending_path(&d.id).exists());
     assert_eq!(env.engine().with(|e| e.torrents.len()), 1);
+}
+
+/// A torrent added while the engine is blocked because the public address is not a VPN
+/// address says so in the VPN status's words ("VPN not protecting"), never "Waiting for
+/// the VPN to connect.": when it is added, after every poll, and after a resume. The
+/// reason follows the engine when the block changes, and the torrent starts once the
+/// engine runs again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn torrent_added_while_the_vpn_is_not_protecting_says_why() {
+    let env = env(Opts {
+        engine: true,
+        start: true,
+        ..Default::default()
+    })
+    .await;
+    env.engine().with(|e| {
+        e.blocked = true;
+        e.not_protected = true;
+    });
+    let d = env.add(MAGNET).await;
+    assert_eq!(d.state, DownloadState::Queued);
+    assert_eq!(d.error.as_deref(), Some(MSG_BLOCKED_NOT_PROTECTED));
+    assert!(env.manager.pending_path(&d.id).exists());
+    // The poller keeps the reason (a poll runs here at once, and again on its own).
+    super::torrents::fill_slots(&env.manager).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let row = env.row(&d.id).await;
+    assert_eq!(row.state, DownloadState::Queued);
+    assert_eq!(row.error.as_deref(), Some(MSG_BLOCKED_NOT_PROTECTED));
+
+    // Paused and resumed while still blocked: the same reason.
+    env.manager.pause(&d.id).await.unwrap();
+    let resumed = env.manager.resume(&d.id).await.unwrap();
+    assert_eq!(resumed.state, DownloadState::Queued);
+    assert_eq!(resumed.error.as_deref(), Some(MSG_BLOCKED_NOT_PROTECTED));
+
+    // The tunnel drops: the torrent waits for the VPN to connect again.
+    env.engine().with(|e| e.not_protected = false);
+    wait_until!(
+        "the reason to follow the engine",
+        env.row(&d.id).await.error.as_deref() == Some(MSG_WAITING_FOR_VPN)
+    );
+
+    env.engine().set_blocked(false);
+    wait_until!(
+        "the engine to take it",
+        env.row(&d.id).await.state == DownloadState::Downloading
+    );
+    assert_eq!(env.row(&d.id).await.error, None);
 }
 
 /// "Torrents at once" (`torrent.max_active`): torrents beyond the limit wait in line as

@@ -174,6 +174,13 @@ describe('downloadRow', () => {
     expect(
       downloadRow(download({kind: 'torrent', state: 'queued', progress: 0, error: 'Waiting for the VPN to connect.'})),
     ).toMatchObject({meta: 'Waiting for VPN', bar: null, description: 'Waiting for the VPN to connect.'});
+    // The tunnel is up but the public address is not a VPN address: the VPN status's words.
+    const notProtecting = 'Blocked: VPN not protecting. The public address is not a VPN address.';
+    expect(downloadRow(download({kind: 'torrent', state: 'queued', progress: 0, error: notProtecting}))).toMatchObject({
+      meta: 'VPN not protecting',
+      bar: null,
+      description: notProtecting,
+    });
     // Beyond "Torrents at once" a torrent waits in line, also while the VPN is connected.
     expect(
       downloadRow(download({kind: 'torrent', state: 'queued', progress: 0, error: 'Waiting for a free slot (5 at once).'})),

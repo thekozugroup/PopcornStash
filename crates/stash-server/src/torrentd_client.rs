@@ -542,6 +542,14 @@ fn vpn_state(state: TunnelState) -> VpnState {
     }
 }
 
+/// The engine stopped torrents because the public address check found an address that
+/// is not a VPN address (the VPN status's `protected: false`, "VPN not protecting").
+pub fn blocked_not_protected(health: &EngineHealth) -> bool {
+    !health.engine.allow_no_vpn
+        && health.engine.state == EngineRunState::Blocked
+        && health.engine.reason.as_deref() == Some(MSG_NOT_PROTECTED)
+}
+
 /// Build the UI status from the saved VPN choice and the engine's health answer.
 pub fn combine_status(
     meta: Option<&VpnMeta>,
@@ -560,19 +568,16 @@ pub fn combine_status(
     };
     match health {
         Ok(health) => {
-            let tunnel = health.vpn;
-            let allow_no_vpn = health.engine.allow_no_vpn;
-            let state = shown_state(configured, tunnel.state, allow_no_vpn);
             // Torrents are stopped because the address is not a VPN address: never show
             // the connection as protected, whatever the engine's last answer field says.
-            let not_protected = !allow_no_vpn
-                && health.engine.state == EngineRunState::Blocked
-                && health.engine.reason.as_deref() == Some(MSG_NOT_PROTECTED);
-            let protected = if not_protected {
+            let protected = if blocked_not_protected(&health) {
                 Some(false)
             } else {
                 health.protected
             };
+            let tunnel = health.vpn;
+            let allow_no_vpn = health.engine.allow_no_vpn;
+            let state = shown_state(configured, tunnel.state, allow_no_vpn);
             VpnStatus {
                 configured,
                 reachable: true,

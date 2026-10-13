@@ -15,7 +15,9 @@ use stash_core::paths::{self, StashLayout, Zone};
 use stash_core::{new_id, now};
 use tokio_util::sync::CancellationToken;
 
-use super::manager::{DownloadManager, MSG_WAITING_FOR_VPN, NewDownload, slot_message};
+use super::manager::{
+    DownloadManager, MSG_WAITING_FOR_VPN, NewDownload, engine_wait_message, slot_message,
+};
 use crate::error::{ApiError, ApiResult};
 use crate::torrentd_client::TorrentdError;
 
@@ -208,9 +210,13 @@ impl DownloadManager {
                 tracing::info!(download = %id, "torrent added");
                 self.publish_id(&id).await
             }
-            Err(TorrentdError::Blocked(_) | TorrentdError::Unreachable(_)) => {
+            Err(e @ (TorrentdError::Blocked(_) | TorrentdError::Unreachable(_))) => {
+                let waiting = match e {
+                    TorrentdError::Blocked(_) => self.engine_wait_reason().await,
+                    _ => MSG_WAITING_FOR_VPN,
+                };
                 sqlx::query("UPDATE downloads SET error = ?, updated_at = ? WHERE id = ?")
-                    .bind(MSG_WAITING_FOR_VPN)
+                    .bind(waiting)
                     .bind(now())
                     .bind(&id)
                     .execute(&self.db)
@@ -586,14 +592,15 @@ pub(super) async fn fill_slots(manager: &DownloadManager) -> bool {
     if waiting.is_empty() {
         return false;
     }
-    let engine_runs = matches!(
-        manager.torrentd.health().await,
-        Ok(health) if health.engine.state == EngineRunState::Running
-    );
+    let health = manager.torrentd.health().await.ok();
+    let engine_runs = health
+        .as_ref()
+        .is_some_and(|health| health.engine.state == EngineRunState::Running);
+    let engine_wait = engine_wait_message(health.as_ref());
     let mut free = max.saturating_sub(running.len());
     for row in &waiting {
         if !engine_runs {
-            note_waiting(manager, row, MSG_WAITING_FOR_VPN).await;
+            note_waiting(manager, row, engine_wait).await;
         } else if free == 0 {
             note_waiting(manager, row, &slot_message(max_active)).await;
         } else {

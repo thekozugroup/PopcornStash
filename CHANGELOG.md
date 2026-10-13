@@ -97,6 +97,8 @@ Problems found in the final review of 0.1.0. They affected only builds made from
 - "Torrents at once" was saved but not enforced. It is now.
 - Resuming a converted video in Chrome restarted the conversion twice. It now starts at the resume point.
 - When NordVPN said the address was not protected, the VPN page said torrents had stopped, but they kept running. They now stop.
+- A torrent added while torrents were stopped for that reason said "Waiting for the VPN to connect." On the Downloads page and in the extension it now says "Blocked: VPN not protecting" with the reason.
+- With `STASH_ALLOW_NO_VPN`, the server still saved a new VPN sent to it directly, although the VPN page hides the setup. It now refuses and says how to turn the VPN back on.
 - Documents and other files that are not media stayed unsorted and could not be reached. They now wait in the Inbox, then go to `Other/`.
 - Loose files and other download clients' folders in `Downloads/` were sorted into the library. They are now left alone.
 - Posters and screenshots from movie and show downloads were added to Photos. They now stay with the download.
