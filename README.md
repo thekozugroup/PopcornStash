@@ -84,7 +84,7 @@ Releases are made from the maintainer's machine with [scripts/release.sh](script
 Set up once:
 
 - Docker with buildx, and QEMU emulation so that it can build the arm64 image ([docs/deployment.md](docs/deployment.md#building-the-image-yourself)).
-- The GitHub CLI, logged in with `gh auth login`. It creates the GitHub release and uploads the extension zip.
+- The GitHub CLI, logged in with `gh auth login`. It creates the GitHub release and uploads the extension zip. Without it, `scripts/release.sh --skip-github-release VERSION` does everything else and prints the steps to create the release on github.com.
 - A GitHub personal access token (classic) with the `write:packages` scope, for pushing images to ghcr.io. Fine-grained tokens do not work with ghcr.io. Keep it for releases only. The script reads it from `GHCR_TOKEN`, checks it before building, uses it for a temporary Docker login that it deletes at the end, and keeps it away from the checks and builds.
 - GitHub Actions turned off for the repository (Settings, Actions, General, Disable actions), so the workflow files in old commits can never run again.
 - cargo-about 0.9.2 (`cargo install --locked cargo-about --version 0.9.2 --features cli`) for `scripts/notices.sh`.

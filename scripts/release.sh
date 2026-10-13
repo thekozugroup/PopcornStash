@@ -5,6 +5,9 @@
 #   scripts/release.sh --bump 0.2.0      set every version number to 0.2.0 and stop
 #   scripts/release.sh --dry-run 0.2.0   everything except pushing, tagging and the GitHub release
 #   scripts/release.sh 0.2.0             release 0.2.0
+#   scripts/release.sh --skip-github-release 0.2.0
+#                                        release 0.2.0, but do not use gh: print the
+#                                        steps to create the GitHub release on github.com
 #
 # 1. Preflight, before anything is built. VERSION is MAJOR.MINOR.PATCH, optionally
 #    with a -pre-release. The branch is main, has no uncommitted or untracked files,
@@ -13,7 +16,8 @@
 #    (--bump sets them). Docker can run the other architecture (QEMU). GHCR_TOKEN is a
 #    classic token with write:packages that ghcr.io accepts. The image package is
 #    public, or does not exist yet, and has no VERSION tag. gh is logged in, can push
-#    to the repository, and it has no vVERSION release.
+#    to the repository, and it has no vVERSION release (not checked with
+#    --skip-github-release).
 # 2. scripts/check.sh --quick --e2e --audit on the working tree: fmt, clippy, the Rust
 #    tests, the web and extension checks, the Playwright suite, cargo audit, npm audit.
 #    Then scripts/notices.sh --check: the committed third-party notices match
@@ -70,11 +74,13 @@ unset GHCR_TOKEN GH_TOKEN GITHUB_TOKEN
 
 dry_run=0
 bump=0
+skip_gh=0
 version=""
 for arg in "$@"; do
   case "$arg" in
     --dry-run) dry_run=1 ;;
     --bump) bump=1 ;;
+    --skip-github-release) skip_gh=1 ;;
     -h | --help)
       usage
       exit 0
@@ -324,9 +330,29 @@ finish_commands() {
   if ((!tag_pushed)); then
     printf '  git push %q %q\n' "$REMOTE" "refs/tags/$TAG"
   fi
+  if ((skip_gh)); then
+    manual_release_steps
+    return
+  fi
   printf '  '
   printf '%q ' "${gh_release_cmd[@]}"
   printf '\n'
+}
+
+# The GitHub release made by hand on github.com, for --skip-github-release.
+manual_release_steps() {
+  local kind="Set as the latest release"
+  if [[ -n "$prerelease" ]]; then
+    kind="Set as a pre-release"
+  elif ((!move_latest)); then
+    kind="leave \"Set as the latest release\" unticked"
+  fi
+  printf '  Create the GitHub release on github.com:\n'
+  printf '    1. Open https://github.com/%s/releases/new?tag=%s\n' "$GITHUB_REPO" "$TAG"
+  printf '    2. Release title: %s\n' "${title:-PopcornStash $version}"
+  printf '    3. Description: paste the contents of %s\n' "$NOTES_FILE"
+  printf '    4. Attach %s\n' "$ZIP"
+  printf '    5. %s, then Publish release\n' "$kind"
 }
 
 cleanup() {
@@ -609,7 +635,9 @@ else
 fi
 
 # The GitHub release, made with the GitHub CLI.
-if ! command -v gh >/dev/null 2>&1; then
+if ((skip_gh)); then
+  note "the GitHub release is not made here (--skip-github-release): the steps to make it on github.com are printed at the end"
+elif ! command -v gh >/dev/null 2>&1; then
   problem "the GitHub CLI (gh) is not installed; it creates the GitHub release and uploads the extension zip (https://cli.github.com, then gh auth login)"
 elif ! gh_out="$(gh api "repos/$GITHUB_REPO" --jq .permissions.push 2>&1)"; then
   problem "gh cannot read $GITHUB_REPO ($(tail -n 1 <<<"$gh_out")): run gh auth login, or set GH_TOKEN"
@@ -796,7 +824,11 @@ run docker buildx imagetools inspect "$IMAGE_REPO:$version" || die "docker build
 run git push "$REMOTE" "refs/tags/$TAG" || die "git push $REMOTE refs/tags/$TAG failed"
 ((dry_run)) || tag_pushed=1
 stage=release
-run "${gh_release_cmd[@]}" || die "gh release create failed"
+if ((skip_gh)); then
+  printf 'skipped: gh release create (--skip-github-release); the steps are printed at the end\n'
+else
+  run "${gh_release_cmd[@]}" || die "gh release create failed"
+fi
 stage=""
 
 # Anyone must be able to pull the image without logging in.
@@ -851,4 +883,8 @@ elif ((!public)); then
   exit 1
 else
   printf '\nReleased %s: https://github.com/%s/releases/tag/%s\n' "$version" "$GITHUB_REPO" "$TAG"
+fi
+if ((skip_gh && !dry_run)); then
+  printf '\nOne step left:\n'
+  manual_release_steps
 fi
