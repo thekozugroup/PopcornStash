@@ -23,6 +23,8 @@ Ship the Docker server for PopcornStash: a passkey-gated, private family library
 ## Status
 Started 2026-10-12. See the commit log on main for progress.
 
+Next round: [docs/next-round.md](docs/next-round.md) holds the owner's decisions of 2026-10-14 and the plan for live work on the owner's server over SSH: what has never run on real hardware, torrents, Android passkeys, the extension's media grabber, file deletion, download history, choosing a download's library, hardware encoding, updates and the right-edge bar.
+
 ## Evidence
 - `tests/e2e/`: Playwright against the real server and a fresh sample stash (49 tests since the review of the merged fixes), including a regression check for each bug found in exploratory QA and in the final design preview on 2026-10-13.
 - `scripts/fullstack-e2e.sh` (`tests/fullstack/`): the whole journey in Docker through the real UI: first-run setup, a WireGuard file, a magnet downloaded from a local seeder only through the VPN (the tracker and the seeder see only the VPN peer's address), sorted into `Movies/Lantern Bay (2018)/` as 1000:1000, played; the VPN peer stopped and restarted. Screenshots and records in `evidence/fullstack/` (git-ignored).
