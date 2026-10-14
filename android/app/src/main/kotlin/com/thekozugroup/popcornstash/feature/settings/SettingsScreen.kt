@@ -49,6 +49,7 @@ import com.thekozugroup.popcornstash.data.api.Role as PersonRole
 import com.thekozugroup.popcornstash.data.api.UnassignedFolder
 import com.thekozugroup.popcornstash.data.api.User
 import com.thekozugroup.popcornstash.data.repo.Loadable
+import com.thekozugroup.popcornstash.feature.downloads.breakableUrl
 import com.thekozugroup.popcornstash.navigation.TabPage
 import com.thekozugroup.popcornstash.ui.components.ConfirmDialog
 import com.thekozugroup.popcornstash.ui.components.ListRow
@@ -126,7 +127,8 @@ fun SettingsRootPage(
         item(key = "server") {
             SectionHeading("This server")
             ListRow(
-                title = serverDisplay,
+                // A long address wraps after a dot or a hyphen, never inside a word.
+                title = breakableUrl(serverDisplay),
                 supporting = serverVersion?.let { "Version $it" },
                 leading = { LucideIcon(PopcornIcons.Server, contentDescription = null, tint = Popcorn.colors.textMuted) },
             )

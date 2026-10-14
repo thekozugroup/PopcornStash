@@ -63,9 +63,18 @@ object Fixtures {
         "label":"NordVPN","server":"nl123.nordvpn.com","country":"Netherlands","public_ip":"203.0.113.5",
         "protected":true,"since":1760400000,"error":null,"kill_switch":true,"allow_no_vpn":false,"torrents_off":false}"""
 
+    /** 20:00 on 30 June in Los Angeles (UTC-07:00), which is 1 July in UTC. */
+    const val PHOTO = """{"id":"p1","kind":"photo","category":"photo","status":"ready","title":"IMG_1",
+        "rel_path":"Photos/2024/06/IMG_1.jpg","size":1,"width":4032,"height":3024,"taken_at":1719802800,
+        "taken_local":"2024-06-30T20:00:00","taken_offset":-420,"camera":"Pixel 8","thumb":null,"favorite":false,
+        "added_at":1760400400,"progress":null,"library_id":"0192a000-0000-7000-8000-000000000004","place":"library"}"""
+
     fun home() = """{"continue_watching":[$ITEM],"libraries":[
-        {"library":$MOVIES,"recent":[$ITEM],"show_posters":{}},
-        {"library":$SHOWS,"recent":[$EPISODE],"show_posters":{"The Lantern Keepers":"i-lantern-1"}}],
+        {"library":$MOVIES,"recent":[$ITEM],"show_posters":{},"shows":[]},
+        {"library":$SHOWS,"recent":[$EPISODE],"show_posters":{"The Lantern Keepers":"i-lantern-1"},
+         "shows":[{"show_name":"The Lantern Keepers","poster_item_id":"i-lantern-1","item_count":3,"new_count":1,
+                   "latest":$EPISODE,"last_added_at":1760400300}]},
+        {"library":$PHOTOS,"recent":[$PHOTO],"show_posters":{},"shows":[]}],
         "other_files_count":2,"inbox_count":1,"total_bytes":382044}"""
 }
 

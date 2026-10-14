@@ -1,5 +1,6 @@
 package com.thekozugroup.popcornstash.share
 
+import com.thekozugroup.popcornstash.testing.hasPlainText
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
@@ -59,7 +60,7 @@ class ShareSheetTest {
         compose.onNodeWithText("Upload 5 files?").assertIsDisplayed()
         compose.onNodeWithText("PXL_20261013_1815.jpg").assertIsDisplayed()
         compose.onNodeWithText("and 2 more").assertIsDisplayed()
-        compose.onNodeWithText("Uploads as Ana Ribeiro to stash.example.com.").assertIsDisplayed()
+        compose.onNode(hasPlainText("Uploads as Ana Ribeiro to stash.example.com.")).assertIsDisplayed()
         compose.onNodeWithText("Upload").performClick()
         assertEquals(listOf("upload"), calls)
     }

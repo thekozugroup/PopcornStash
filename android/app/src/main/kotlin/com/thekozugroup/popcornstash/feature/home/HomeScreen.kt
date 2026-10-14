@@ -169,7 +169,7 @@ private fun LibrarySection(entry: HomeLibrary, format: MediaFormat, actions: Hom
                     is ShelfTile.Show -> MediaTile(
                         title = tile.name,
                         line = format.showTileLine(tile),
-                        url = tile.posterId?.let { pictures.thumbOf(it, large = true) } ?: pictures.thumb(tile.episodes.first(), large = true),
+                        url = tile.posterId?.let { pictures.thumbOf(it, large = true) } ?: pictures.thumb(tile.latest, large = true),
                         shape = shape,
                         glyph = glyph,
                         onClick = { actions.openShow(library, tile.name) },

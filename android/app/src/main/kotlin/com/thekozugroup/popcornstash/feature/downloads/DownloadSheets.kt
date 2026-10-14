@@ -43,7 +43,9 @@ import androidx.compose.ui.unit.dp
 import com.thekozugroup.popcornstash.data.api.Category
 import com.thekozugroup.popcornstash.data.api.Download
 import com.thekozugroup.popcornstash.data.api.Structure
+import com.thekozugroup.popcornstash.ui.components.ChoiceSegmentMark
 import com.thekozugroup.popcornstash.ui.components.ConfirmDialog
+import com.thekozugroup.popcornstash.ui.components.choiceSegmentColors
 import com.thekozugroup.popcornstash.ui.components.PrimaryButton
 import com.thekozugroup.popcornstash.ui.components.QuietButton
 import com.thekozugroup.popcornstash.ui.icons.LucideIcon
@@ -319,15 +321,8 @@ private fun KindChoice(selected: Category, enabled: Boolean, onSelect: (Category
                 onClick = { onSelect(category) },
                 enabled = enabled,
                 shape = SegmentedButtonDefaults.itemShape(index, options.size, RoundedCornerShape(8.dp)),
-                colors = SegmentedButtonDefaults.colors(
-                    activeContainerColor = Popcorn.colors.subtle,
-                    activeContentColor = Popcorn.colors.text,
-                    activeBorderColor = Popcorn.colors.fieldOutline,
-                    inactiveContainerColor = Popcorn.colors.surface,
-                    inactiveContentColor = Popcorn.colors.textMuted,
-                    inactiveBorderColor = Popcorn.colors.fieldOutline,
-                ),
-                icon = {},
+                colors = choiceSegmentColors(Popcorn.colors.surface),
+                icon = { ChoiceSegmentMark(selected == category) },
                 label = { Text(label, style = Popcorn.type.item) },
             )
         }

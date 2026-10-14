@@ -1,5 +1,6 @@
 package com.thekozugroup.popcornstash.feature.settings
 
+import com.thekozugroup.popcornstash.testing.plain
 import com.thekozugroup.popcornstash.data.api.Category
 import com.thekozugroup.popcornstash.data.api.ContentType
 import com.thekozugroup.popcornstash.data.api.FolderState
@@ -75,17 +76,20 @@ class LibraryWordsTest {
         // A video series shows videos only: the photos and other files stay out of it.
         assertEquals(
             "Files stay in Family 2019/. Nothing is moved. 20 photos and 4 other files there will not show in this library.",
-            existingFolderSentence("Family 2019", family, ContentType.Video, Structure.Episodes, emptyList()),
+            plain(existingFolderSentence("Family 2019", family, ContentType.Video, Structure.Episodes, emptyList())),
         )
         // One-offs that take camera videos show the photos too.
         assertEquals(
             "Files stay in Family 2019/. Nothing is moved. 4 other files there will not show in this library.",
-            existingFolderSentence("Family 2019", family, ContentType.Video, Structure.OneOffs, listOf(Category.HomeVideo)),
+            plain(existingFolderSentence("Family 2019", family, ContentType.Video, Structure.OneOffs, listOf(Category.HomeVideo))),
         )
         // One-offs that take movies only show videos.
         assertEquals(20L to 4L, hiddenCounts(family, ContentType.Video, Structure.OneOffs, listOf(Category.Movie)))
         assertEquals(0L to 0L, hiddenCounts(folders[1], ContentType.Photos, null, emptyList()))
-        assertEquals("Files stay in Grandma's scans/. Nothing is moved.", existingFolderSentence("Grandma's scans", folders[1], ContentType.Photos, null, emptyList()))
+        assertEquals("Files stay in Grandma's scans/. Nothing is moved.", plain(existingFolderSentence("Grandma's scans", folders[1], ContentType.Photos, null, emptyList())))
+        // A folder name that fits on a line is never split across two; a longer one wraps at its spaces.
+        assertEquals("Files stay in Grandma's scans/. Nothing is moved.", existingFolderSentence("Grandma's scans", null, ContentType.Photos, null, emptyList()))
+        assertEquals("Summer holidays in the mountains 2018/", folderInSentence("Summer holidays in the mountains 2018"))
         assertEquals("12 videos and 20 photos", shownWords(family, ContentType.Photos, null, emptyList()))
         assertNull(shownWords(family.copy(videoCount = 0, photoCount = 0), ContentType.Photos, null, emptyList()))
     }

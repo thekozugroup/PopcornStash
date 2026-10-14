@@ -380,6 +380,10 @@ class ServerIntegrationTest {
         assertTrue(movies.recent.map { it.title }.containsAll(listOf("Paper Boats", "Glass Orchard", "Tin Lighthouse")))
         val shows = home.libraries.first { it.library.name == "Shows" }
         assertTrue("The Lantern Keepers" in shows.showPosters)
+        // The series shelf has a tile for every show the heading counts (up to 12).
+        val shelf = shows.shows.orEmpty()
+        assertTrue("The Lantern Keepers" in shelf.map { it.showName })
+        assertEquals(minOf(shows.library.showCount ?: 0L, 12L), shelf.size.toLong())
         assertTrue("Other files are counted", home.otherFilesCount >= 2)
         val firstThumb = movies.recent.first().thumb
         if (firstThumb != null) assertEquals(base.host, api.absolute(firstThumb).host)

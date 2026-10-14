@@ -18,6 +18,8 @@ import com.thekozugroup.popcornstash.data.api.VpnState
 import com.thekozugroup.popcornstash.data.api.VpnStatus
 import com.thekozugroup.popcornstash.data.api.Waiting
 import com.thekozugroup.popcornstash.share.UploadBatchProgress
+import java.time.LocalDateTime
+import java.time.ZoneOffset
 
 /** The family's downloads as the screenshots and UI tests show them (invented names). */
 object DownloadsSamples {
@@ -99,7 +101,10 @@ object DownloadsSamples {
     )
     val photo = ItemDetail(
         id = "i-photo", kind = MediaKind.Photo, category = Category.Photo, status = ItemStatus.NeedsReview, title = "IMG_4821",
-        relPath = "Inbox/IMG_4821.HEIC", size = 2_840_000, takenAt = 1_790_870_400, place = Place.Incoming,
+        relPath = "Inbox/IMG_4821.HEIC", size = 2_840_000, place = Place.Incoming,
+        // 21:30 on 30 September in Los Angeles, already 1 October in UTC: it is filed under September.
+        takenAt = LocalDateTime.of(2026, 9, 30, 21, 30).toEpochSecond(ZoneOffset.ofHours(-7)),
+        takenLocal = "2026-09-30T21:30:00", takenOffset = -420,
         thumb = "/api/items/i-photo/thumb?v=1",
         suggestion = suggestion(Category.Photo, "IMG_4821", Waiting.FolderUnavailable, photos),
     )

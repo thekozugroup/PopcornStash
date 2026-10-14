@@ -42,7 +42,7 @@ class HomeViewModel(
     }
 }
 
-/** One tile on a library's Home shelf: an item, or a show standing for its new episodes. */
+/** One tile on a library's Home shelf: an item, or a show. */
 sealed interface ShelfTile {
     val key: String
 
@@ -50,37 +50,52 @@ sealed interface ShelfTile {
         override val key get() = item.id
     }
 
-    /** A show with [episodes] among the newest items; its picture is [posterId]'s (the show's poster). */
-    data class Show(val name: String, val episodes: List<Item>, val posterId: String?) : ShelfTile {
+    /**
+     * A show of a series library: its picture is [posterId]'s (the show's poster), else its
+     * [latest] episode's; [episodeCount] episodes in the library, [newCount] of them new.
+     */
+    data class Show(
+        val name: String,
+        val posterId: String?,
+        val episodeCount: Long,
+        val newCount: Long,
+        val latest: Item,
+    ) : ShelfTile {
         override val key get() = "show:$name"
     }
 }
 
 /**
- * The tiles of a library's shelf: its newest items in its own shape, where a series
- * library's episodes are grouped by show, newest show first, each pictured by the show's
- * poster (`show_posters`), as on the web.
+ * The tiles of a library's shelf: its newest items in its own shape. A series library has a
+ * tile per show from `shows` (docs/architecture.md section 8, HomeShow), the show with the
+ * newest episode first, so a library of three shows shows three tiles whatever was added
+ * last. A server older than `shows` gets the shows of the newest episodes, as before.
  */
 fun shelfTiles(entry: HomeLibrary): List<ShelfTile> {
     if (entry.library.layout != Layout.Series) return entry.recent.map { ShelfTile.Single(it) }
-    val shows = LinkedHashMap<String, MutableList<Item>>()
-    for (item in entry.recent) {
-        val name = item.showName?.takeIf { it.isNotBlank() }
-        if (name == null) continue
-        shows.getOrPut(name) { mutableListOf() } += item
-    }
+    // Episodes with no show name have no show page; they keep a tile of their own.
     val loose = entry.recent.filter { it.showName.isNullOrBlank() }.map { ShelfTile.Single(it) }
-    return shows.map { (name, episodes) -> ShelfTile.Show(name, episodes, entry.showPosters[name]) } + loose
+    val shows = entry.shows ?: return showsOfRecent(entry) + loose
+    return shows.map { ShelfTile.Show(it.showName, it.posterItemId, it.itemCount, it.newCount, it.latest) } + loose
 }
 
-/** The line under a show tile: "New: S01E03", or "3 new episodes". */
-fun MediaFormat.showTileLine(tile: ShelfTile.Show): String {
-    val only = tile.episodes.singleOrNull()
-    return if (only != null) {
-        "New: ${MediaFormat.episodeCode(only.season, only.episode)}"
-    } else {
-        count(tile.episodes.size.toLong(), "new episode")
+/** An older server's series shelf: the shows among the newest episodes, every one of them new. */
+private fun showsOfRecent(entry: HomeLibrary): List<ShelfTile.Show> {
+    val shows = LinkedHashMap<String, MutableList<Item>>()
+    for (item in entry.recent) {
+        val name = item.showName?.takeIf { it.isNotBlank() } ?: continue
+        shows.getOrPut(name) { mutableListOf() } += item
     }
+    return shows.map { (name, episodes) ->
+        ShelfTile.Show(name, entry.showPosters[name], episodes.size.toLong(), episodes.size.toLong(), episodes.first())
+    }
+}
+
+/** The line under a show tile: "New: S01E03", "3 new episodes", or "12 episodes" when none is new. */
+fun MediaFormat.showTileLine(tile: ShelfTile.Show): String = when {
+    tile.newCount == 1L -> "New: ${MediaFormat.episodeCode(tile.latest.season, tile.latest.episode)}"
+    tile.newCount > 1L -> count(tile.newCount, "new episode")
+    else -> count(tile.episodeCount, "episode")
 }
 
 /** The title and line of a continue-watching card: the show and episode code for an episode, as on the web. */

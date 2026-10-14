@@ -40,6 +40,8 @@ Libraries the owner defines, each with its own icon and its own audience, and th
 - Home: what to carry on watching, then every library you can see; libraries as grids, shows by season, photos by month with a full-screen viewer; item pages and a full-screen player that resumes, saves your place, offers the next episode and keeps playing in a small window.
 - Downloads: live progress, the VPN line, pause, resume, remove and add a link; the files waiting to be imported with the library picker, edit, accept, ignore and accept all; finished downloads say where they went. Links, photos, videos and files shared from other apps are added or uploaded.
 - Settings: who you are, the server and sign out; owners manage the libraries here too. The other admin pages open the web settings.
+- Photos and home videos show the camera's clock in the app too, whatever time zone the phone is in, and a waiting photo previews the month folder of that clock. A series shelf on Home has a tile for every show.
+- Long words wrap where they should on narrow phones and with large text: a server address after its dots and hyphens (the sign-in page no longer squeezes "Version" into a column), a folder name in a sentence stays whole, "Accept all" and photo counts are never split, and dates never break inside. The chosen season or file kind carries a check, not only a faint tint.
 - Not yet run on a phone or an emulator; docs/android.md lists what is not done.
 
 ### Tooling

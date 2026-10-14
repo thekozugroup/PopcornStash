@@ -55,7 +55,7 @@ class StashDataTest {
         server.respond(Fixtures.home())
         data.refreshHome().join()
         val home = (data.home.value as Loadable.Ready).value
-        assertEquals(2, home.libraries.size)
+        assertEquals(3, home.libraries.size)
         assertEquals(1L, data.readyToImport.value)
     }
 
@@ -68,7 +68,7 @@ class StashDataTest {
         data.refreshHome().join()
         val failed = data.home.value as Loadable.Failed
         assertEquals("PopcornStash could not read its database.", failed.message)
-        assertEquals(2, failed.previous!!.libraries.size)
+        assertEquals(3, failed.previous!!.libraries.size)
     }
 
     @Test

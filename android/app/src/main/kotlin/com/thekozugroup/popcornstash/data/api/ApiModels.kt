@@ -294,7 +294,12 @@ data class Item(
     val durationS: Double? = null,
     val width: Int? = null,
     val height: Int? = null,
+    /** The capture moment, unix seconds: for ordering and "how long ago", never shown as a date (use [takenLocal]). */
     val takenAt: Long? = null,
+    /** The camera's clock, `YYYY-MM-DDTHH:MM:SS`: what everyone sees, with no time zone conversion. */
+    val takenLocal: String? = null,
+    /** Minutes east of UTC that the file wrote beside the clock; null when it wrote none. */
+    val takenOffset: Int? = null,
     val camera: String? = null,
     /** A server-relative thumbnail URL. */
     val thumb: String? = null,
@@ -316,6 +321,9 @@ data class Suggestion(
     val episode: Int? = null,
     val episodeTitle: String? = null,
     val takenAt: Long? = null,
+    /** As on [Item]: where a photo or camera video would be filed (its `YYYY/MM/`). */
+    val takenLocal: String? = null,
+    val takenOffset: Int? = null,
     val confidence: String = "high",
     /** The classifier's sentence about the file ("Not sure this is a movie."). */
     val reason: String = "",
@@ -384,6 +392,8 @@ data class ItemDetail(
     val width: Int? = null,
     val height: Int? = null,
     val takenAt: Long? = null,
+    val takenLocal: String? = null,
+    val takenOffset: Int? = null,
     val camera: String? = null,
     val thumb: String? = null,
     val favorite: Boolean = false,
@@ -401,7 +411,7 @@ data class ItemDetail(
     val item: Item
         get() = Item(
             id, kind, category, status, title, year, showName, season, episode, episodeTitle, relPath, size,
-            durationS, width, height, takenAt, camera, thumb, favorite, addedAt, progress, libraryId, place,
+            durationS, width, height, takenAt, takenLocal, takenOffset, camera, thumb, favorite, addedAt, progress, libraryId, place,
         )
 }
 
@@ -440,8 +450,29 @@ data class ItemPatch(
 data class HomeLibrary(
     val library: Library,
     val recent: List<Item> = emptyList(),
-    /** For each show with an episode in [recent]: the item whose picture stands for the show. */
+    /** For each show with an episode in [recent]: the item whose picture stands for the show. Kept for older apps. */
     val showPosters: Map<String, String> = emptyMap(),
+    /**
+     * A series library's shelf: up to 12 of its shows, the one with the most recently added
+     * episode first, one per show while it has 12 or fewer. Empty for other layouts; null from a
+     * server older than the field, where the shelf is built from [recent] as before.
+     */
+    val shows: List<HomeShow>? = null,
+)
+
+/** One show on a series library's Home shelf (`HomeShow`). */
+@Serializable
+data class HomeShow(
+    val showName: String,
+    /** The show's picture in this library, the same one the shows page uses. */
+    val posterItemId: String? = null,
+    /** The show's ready episodes in this library. */
+    val itemCount: Long = 0,
+    /** Of those, the ones added in the last 30 days. */
+    val newCount: Long = 0,
+    /** The show's most recently added episode. */
+    val latest: Item,
+    val lastAddedAt: Long = 0,
 )
 
 @Serializable

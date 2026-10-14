@@ -9,6 +9,8 @@ import androidx.compose.ui.test.performScrollToIndex
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.thekozugroup.popcornstash.data.api.Home
+import com.thekozugroup.popcornstash.data.api.HomeLibrary
+import com.thekozugroup.popcornstash.data.api.HomeShow
 import com.thekozugroup.popcornstash.data.repo.Loadable
 import com.thekozugroup.popcornstash.feature.home.HomeActions
 import com.thekozugroup.popcornstash.feature.home.HomeScreen
@@ -57,6 +59,32 @@ class HomeScreenshotTest {
 
     @Test
     fun contentDark() = home("home-dark", dark = true, Loadable.Ready(SampleMedia.home))
+
+    /**
+     * A series library of three shows whose twelve newest episodes all belong to two of them:
+     * the shelf still has a tile for each of the three shows its heading counts.
+     */
+    @Test
+    fun aSeriesShelfHasATileForEveryShowLight() {
+        val day = 86_400L
+        val lantern = SampleMedia.lanternSeason2 + SampleMedia.lantern
+        val tidepool = (1..5).map {
+            SampleMedia.episode("e-t2$it", "Tidepool Detectives", 2, it, null, minutes = 11, added = SampleMedia.NOW - 2 * day - it)
+        }
+        val olderGarden = SampleMedia.episode("e-g324", "Garden Hour", 3, 24, "First frost", minutes = 28, added = SampleMedia.NOW - 60 * day)
+        val library = SampleMedia.shows.copy(itemCount = 43, showCount = 3)
+        val shelf = HomeLibrary(
+            library,
+            recent = (lantern + tidepool).sortedByDescending { it.addedAt }.take(12),
+            showPosters = mapOf("The Lantern Keepers" to "e-l101", "Tidepool Detectives" to "e-t104"),
+            shows = listOf(
+                HomeShow("The Lantern Keepers", "e-l101", itemCount = 7, newCount = 2, latest = lantern[1], lastAddedAt = lantern[1].addedAt),
+                HomeShow("Tidepool Detectives", "e-t104", itemCount = 12, newCount = 5, latest = tidepool[0], lastAddedAt = tidepool[0].addedAt),
+                HomeShow("Garden Hour", "e-g301", itemCount = 24, newCount = 0, latest = olderGarden, lastAddedAt = olderGarden.addedAt),
+            ),
+        )
+        home("home-series-shelf-light", dark = false, Loadable.Ready(Home(libraries = listOf(shelf))))
+    }
 
     /** Further down Home: the series shelf, camera videos, photos, an empty library and Other files. */
     private fun scrolled(name: String, dark: Boolean, index: Int) =

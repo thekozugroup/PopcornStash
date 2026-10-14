@@ -129,10 +129,12 @@ fun checkLink(raw: String): LinkCheck {
  */
 fun describeLink(link: DetectedLink, viaVpn: Boolean = true): String {
     val route = if (viaVpn) ", only through the VPN" else ""
+    // A long host wraps after its dots and hyphens, never in the middle of a word.
+    val host = link.host?.let(::breakableUrl) ?: "the web"
     return when (link.kind) {
         LinkKind.Magnet -> "Magnet link. Downloads as a torrent$route."
-        LinkKind.TorrentUrl -> "Link to a .torrent file on ${link.host ?: "the web"}. Downloads as a torrent$route."
-        LinkKind.Http -> "Web link from ${link.host ?: "the web"}. Downloads straight to PopcornStash."
+        LinkKind.TorrentUrl -> "Link to a .torrent file on $host. Downloads as a torrent$route."
+        LinkKind.Http -> "Web link from $host. Downloads straight to PopcornStash."
     }
 }
 
@@ -141,5 +143,9 @@ fun DetectedLink.isTorrent(): Boolean = kind == LinkKind.Magnet || kind == LinkK
 /** What a link is called on screen: the magnet's name or the file at the end of the address. */
 fun DetectedLink.displayName(): String = name ?: host ?: url
 
-/** A link that may wrap after its separators, so two lines fill instead of breaking once after "magnet:?". */
+/**
+ * A link or a server's address that may wrap after its separators, so two lines fill instead
+ * of breaking once after "magnet:?", and a long host ("popcorn-stash.family-home.example.com")
+ * breaks after a dot or a hyphen, never inside a word ("family-h", "ome").
+ */
 fun breakableUrl(url: String): String = url.replace(Regex("([/?&=:._-])"), "$1​")

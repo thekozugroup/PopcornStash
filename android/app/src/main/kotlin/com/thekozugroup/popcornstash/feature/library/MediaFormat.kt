@@ -9,10 +9,13 @@ import com.thekozugroup.popcornstash.data.api.SubtitleStream
 import com.thekozugroup.popcornstash.data.api.VideoStream
 import java.text.NumberFormat
 import java.time.Instant
+import java.time.LocalDateTime
 import java.time.YearMonth
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
+import java.time.temporal.TemporalAccessor
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
@@ -21,6 +24,11 @@ import kotlin.math.roundToLong
  * The words and numbers the library pages show, the same as the web app's
  * (web/src/lib/format.ts, web/src/components/library/libraryFormat.ts): sentence case,
  * decimal sizes, the phone's own date and number style, two facts joined by a middle dot.
+ *
+ * Two kinds of time (docs/architecture.md section 4, Capture time): a moment, such as when a
+ * file was added, is shown in the phone's [zone]; a capture time is the camera's clock
+ * ([Item.capturedAt]) and is shown exactly as it read, whatever zone the phone is in.
+ * Dates, times and months never break across lines.
  */
 class MediaFormat(
     private val locale: Locale = Locale.getDefault(),
@@ -87,25 +95,35 @@ class MediaFormat(
         return if (hours > 0) "%d:%02d:%02d".format(locale, hours, minutes, secs) else "%d:%02d".format(locale, minutes, secs)
     }
 
-    /** "12 Oct 2026", in the phone's order. */
-    fun date(unixSeconds: Long): String =
-        DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(locale).format(at(unixSeconds))
+    /** The day of a moment ("12 Oct 2026", in the phone's order and time zone): when a file was added. */
+    fun date(unixSeconds: Long): String = date(Instant.ofEpochSecond(unixSeconds).atZone(zone))
 
-    /** "12 Oct 2026, 14:05", in the phone's order. */
-    fun dateTime(unixSeconds: Long): String =
-        DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT).withLocale(locale).format(at(unixSeconds))
+    /** The day of a clock reading as it reads ("12 Oct 2026"): a capture time's day. */
+    fun date(clock: TemporalAccessor): String =
+        unbroken(DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(locale).format(clock))
 
-    /** "14:05" or "2:05 PM", as the phone tells time. */
-    fun time(unixSeconds: Long): String =
-        DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale).format(at(unixSeconds))
+    /**
+     * A capture time as the camera's clock read it ("12 Oct 2026, 14:05", in the phone's order),
+     * never moved to the phone's time zone. A line may end between the date and the time only.
+     */
+    fun dateTime(clock: LocalDateTime): String {
+        val whole = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT).withLocale(locale).format(clock)
+        val date = DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(locale).format(clock)
+        val time = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale).format(clock)
+        return whole.replace(date, unbroken(date)).replace(time, unbroken(time))
+    }
 
-    /** "2024-06" is "June 2024". */
+    /** "14:05" or "2:05 PM", as the phone tells time, from a clock reading. */
+    fun time(clock: LocalDateTime): String =
+        unbroken(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale).format(clock))
+
+    /** "2024-06" is "June 2024": the month as written, with no time zone in play. */
     fun month(month: String): String = runCatching {
-        DateTimeFormatter.ofPattern("LLLL yyyy", locale).format(YearMonth.parse(month))
-            .replaceFirstChar { it.titlecase(locale) }
+        unbroken(
+            DateTimeFormatter.ofPattern("LLLL yyyy", locale).format(YearMonth.parse(month))
+                .replaceFirstChar { it.titlecase(locale) },
+        )
     }.getOrDefault(month)
-
-    private fun at(unixSeconds: Long) = Instant.ofEpochSecond(unixSeconds).atZone(zone)
 
     /** The watched part of a video, or null when there is nothing worth a bar. */
     fun watchedFraction(progress: Progress?): Float? {
@@ -131,8 +149,8 @@ class MediaFormat(
     fun tileLine(item: Item): String = when (item.category) {
         Category.Movie -> join(item.year?.toString(), duration(item.durationS))
         Category.Episode -> join(episodeCode(item.season, item.episode), duration(item.durationS))
-        Category.HomeVideo -> join(date(item.takenAt ?: item.addedAt), duration(item.durationS))
-        Category.Photo -> if (hasFileNameTitle(item)) item.camera.orEmpty() else date(item.takenAt ?: item.addedAt)
+        Category.HomeVideo -> join(item.capturedAt?.let(::date) ?: date(item.addedAt), duration(item.durationS))
+        Category.Photo -> if (hasFileNameTitle(item)) item.camera.orEmpty() else item.capturedAt?.let(::date) ?: date(item.addedAt)
         else -> fileLine(item)
     }
 
@@ -152,13 +170,16 @@ class MediaFormat(
             join(where, duration(item.durationS))
         }
         Category.HomeVideo -> join(
-            item.takenAt?.let { "Recorded ${dateTime(it)}" } ?: "Added ${date(item.addedAt)}",
+            item.capturedAt?.let { "Recorded ${dateTime(it)}" } ?: "Added ${date(item.addedAt)}",
             duration(item.durationS),
         )
-        Category.Photo -> when {
-            item.takenAt == null -> "Added ${date(item.addedAt)}"
-            hasFileNameTitle(item) -> "Taken at ${time(item.takenAt)}"
-            else -> "Taken ${dateTime(item.takenAt)}"
+        Category.Photo -> {
+            val taken = item.capturedAt
+            when {
+                taken == null -> "Added ${date(item.addedAt)}"
+                hasFileNameTitle(item) -> "Taken at ${time(taken)}"
+                else -> "Taken ${dateTime(taken)}"
+            }
         }
         else -> fileLine(item)
     }
@@ -199,6 +220,15 @@ class MediaFormat(
     companion object {
         private val UNITS = listOf("B", "KB", "MB", "GB", "TB", "PB")
 
+        /** A no-break space: the words on either side of it stay on one line. */
+        const val NO_BREAK = '\u00A0'
+
+        /**
+         * Words that read as one ("12 Oct 2026", "Grandma's Slides") kept on one line: their
+         * spaces become no-break spaces, so a line ends before or after them, never inside.
+         */
+        fun unbroken(words: String): String = words.replace(' ', NO_BREAK)
+
         /** The file's name from its stash path. */
         fun fileName(relPath: String): String = relPath.substringAfterLast('/')
 
@@ -222,7 +252,7 @@ class MediaFormat(
 
         /** A photo still named after its camera file (IMG_2041): its date is a better name. */
         fun hasFileNameTitle(item: Item): Boolean {
-            if (item.category != Category.Photo || item.takenAt == null) return false
+            if (item.category != Category.Photo || item.capturedAt == null) return false
             val name = fileName(item.relPath)
             val dot = name.lastIndexOf('.')
             return item.title == (if (dot > 0) name.substring(0, dot) else name)
@@ -293,9 +323,22 @@ class MediaFormat(
 /** The name people know an item by: episode titles for episodes, the date for camera-named photos. */
 fun MediaFormat.displayTitle(item: Item): String = when {
     item.category == Category.Episode && !item.episodeTitle.isNullOrBlank() -> item.episodeTitle
-    MediaFormat.hasFileNameTitle(item) -> "Photo from ${date(item.takenAt!!)}"
+    MediaFormat.hasFileNameTitle(item) -> "Photo from ${date(item.capturedAt!!)}"
     else -> item.title
 }
+
+/**
+ * When a photo or camera video was taken, as the camera's clock read where it was taken
+ * (`taken_local`, docs/architecture.md section 4, Capture time): shown as it is in every time
+ * zone. A server from before that field sends only `taken_at`, where it kept the camera's clock
+ * as if it were UTC, so that is read in UTC. Null when the file has no capture time.
+ */
+val Item.capturedAt: LocalDateTime? get() = captureClock(takenLocal, takenAt)
+
+/** The camera's clock from `taken_local`, else from an older server's `taken_at` read in UTC. */
+fun captureClock(takenLocal: String?, takenAt: Long?): LocalDateTime? =
+    takenLocal?.let { runCatching { LocalDateTime.parse(it) }.getOrNull() }
+        ?: takenAt?.let { LocalDateTime.ofEpochSecond(it, 0, ZoneOffset.UTC) }
 
 /** Whether the item plays in the player (videos, wherever they are). */
 val Item.isVideo: Boolean get() = kind == MediaKind.Video

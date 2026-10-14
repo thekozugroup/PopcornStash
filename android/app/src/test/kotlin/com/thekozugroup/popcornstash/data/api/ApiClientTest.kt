@@ -1,5 +1,6 @@
 package com.thekozugroup.popcornstash.data.api
 
+import com.thekozugroup.popcornstash.feature.library.capturedAt
 import com.thekozugroup.popcornstash.testing.Fixtures
 import com.thekozugroup.popcornstash.testing.bodyText
 import com.thekozugroup.popcornstash.testing.next
@@ -194,12 +195,27 @@ class ApiClientTest {
     fun home() = runTest {
         server.respond(Fixtures.home())
         val home = api.home()
-        assertEquals(listOf("Movies", "Shows"), home.libraries.map { it.library.name })
+        assertEquals(listOf("Movies", "Shows", "Photos"), home.libraries.map { it.library.name })
         assertEquals("i-paper", home.continueWatching.single().id)
         assertEquals(2.5, home.continueWatching.single().progress!!.positionS, 0.0)
         assertEquals("i-lantern-1", home.libraries[1].showPosters["The Lantern Keepers"])
         assertEquals(1L, home.inboxCount)
         assertEquals(Layout.Series, home.libraries[1].library.layout)
+        // A series shelf comes as shows; the other libraries send an empty list.
+        val show = home.libraries[1].shows!!.single()
+        assertEquals("The Lantern Keepers", show.showName)
+        assertEquals("i-lantern-1", show.posterItemId)
+        assertEquals(3L, show.itemCount)
+        assertEquals(1L, show.newCount)
+        assertEquals("i-lantern-1", show.latest.id)
+        assertEquals(1_760_400_300L, show.lastAddedAt)
+        assertEquals(emptyList<HomeShow>(), home.libraries[0].shows)
+        // A capture time: the moment, the camera's clock and the offset the file wrote.
+        val photo = home.libraries[2].recent.single()
+        assertEquals(1_719_802_800L, photo.takenAt)
+        assertEquals("2024-06-30T20:00:00", photo.takenLocal)
+        assertEquals(-420, photo.takenOffset)
+        assertEquals(java.time.LocalDateTime.of(2024, 6, 30, 20, 0), photo.capturedAt)
         val request = server.next()
         assertEquals("GET /api/home", "${request.method} ${request.path}")
         assertAuthorized(request)

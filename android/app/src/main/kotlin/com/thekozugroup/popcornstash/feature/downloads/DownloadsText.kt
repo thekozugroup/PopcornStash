@@ -5,6 +5,7 @@ import com.thekozugroup.popcornstash.data.api.DownloadKind
 import com.thekozugroup.popcornstash.data.api.DownloadState
 import com.thekozugroup.popcornstash.data.api.Library
 import com.thekozugroup.popcornstash.data.api.Place
+import com.thekozugroup.popcornstash.feature.library.MediaFormat
 import java.text.NumberFormat
 import java.time.Instant
 import java.time.ZoneId
@@ -206,8 +207,10 @@ fun formatAgo(unixSeconds: Long, nowSeconds: Long, locale: Locale = Locale.getDe
         delta < 86_400 -> "${delta / 3_600} h ago"
         delta < 2 * 86_400 -> "Yesterday"
         delta < 7 * 86_400 -> "${delta / 86_400} days ago"
-        else -> DateTimeFormatter.ofPattern("d MMM", locale)
-            .format(Instant.ofEpochSecond(unixSeconds).atZone(ZoneId.systemDefault()))
+        // A moment, so in the phone's own zone; the day and month stay on one line.
+        else -> MediaFormat.unbroken(
+            DateTimeFormatter.ofPattern("d MMM", locale).format(Instant.ofEpochSecond(unixSeconds).atZone(ZoneId.systemDefault())),
+        )
     }
 }
 
@@ -224,6 +227,10 @@ fun joinWords(words: List<String>): String = when (words.size) {
 
 /**
  * A file name that may break after dots, underscores and hyphens
- * ("Harbor.Lights.2019.1080p" wraps at its dots instead of overflowing).
+ * ("Harbor.Lights.2019.1080p" wraps at its dots instead of overflowing). The extension stays
+ * with the word before it, so a line never holds "zip" or "mp4" alone.
  */
-fun breakableName(name: String): String = name.replace(Regex("([._-])"), "$1​")
+fun breakableName(name: String): String = name.replace(NAME_BREAK, "$1​")
+
+/** Dots, underscores and hyphens, but not the dot of an extension (".zip" at the end or before a space). */
+private val NAME_BREAK = Regex("([_-]|\\.(?![A-Za-z0-9]{1,5}(?:\\s|$)))")

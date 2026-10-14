@@ -38,6 +38,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import com.thekozugroup.popcornstash.ui.components.ChoiceSegmentMark
+import com.thekozugroup.popcornstash.ui.components.choiceSegmentColors
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -181,15 +183,8 @@ private fun SeasonPicker(seasons: List<Int>, selected: Int, onSelect: (Int) -> U
                     selected = season == selected,
                     onClick = { onSelect(season) },
                     shape = SegmentedButtonDefaults.itemShape(index, seasons.size, RoundedCornerShape(8.dp)),
-                    icon = {},
-                    colors = SegmentedButtonDefaults.colors(
-                        activeContainerColor = colors.subtle,
-                        activeContentColor = colors.text,
-                        activeBorderColor = colors.outline,
-                        inactiveContainerColor = colors.page,
-                        inactiveContentColor = colors.textMuted,
-                        inactiveBorderColor = colors.outline,
-                    ),
+                    icon = { ChoiceSegmentMark(season == selected) },
+                    colors = choiceSegmentColors(colors.page),
                     modifier = Modifier.heightIn(min = 48.dp),
                 ) {
                     Text(
