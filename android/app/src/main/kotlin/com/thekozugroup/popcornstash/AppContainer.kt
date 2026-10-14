@@ -14,6 +14,8 @@ import com.thekozugroup.popcornstash.data.session.Session
 import com.thekozugroup.popcornstash.data.session.SessionRepository
 import com.thekozugroup.popcornstash.feature.signin.SignInDependencies
 import com.thekozugroup.popcornstash.navigation.ViewModelStores
+import com.thekozugroup.popcornstash.share.UploadBatchStore
+import com.thekozugroup.popcornstash.share.UploadQueue
 import com.thekozugroup.popcornstash.ui.media.imageCacheDir
 import com.thekozugroup.popcornstash.ui.media.sessionImageLoader
 import kotlinx.coroutines.CoroutineScope
@@ -39,6 +41,9 @@ class AppContainer(context: Context) {
         runCatching { Settings.Global.getString(app.contentResolver, Settings.Global.DEVICE_NAME) }.getOrNull()
             ?.takeIf { it.isNotBlank() } ?: Build.MODEL
 
+    /** The share sheet's uploads; they belong to the person signed in and end with the session. */
+    val uploads = UploadQueue(app, UploadBatchStore(UploadQueue.storeDir(app)), appScope)
+
     val sessions = SessionRepository(
         store = SessionStore(app.noBackupFilesDir, KeystoreCipher()),
         memory = PreferencesServerMemory(app),
@@ -50,7 +55,10 @@ class AppContainer(context: Context) {
             { File(app.cacheDir, "opened").deleteRecursively() },
             // The pictures the person looked at (Coil's disk cache).
             { imageCacheDir(app).deleteRecursively() },
+            // Share sheet batches, their jobs and notifications.
+            { uploads.forget() },
         ),
+        beforeSignOut = { session -> uploads.stopAll(session.api) },
     )
 
     private var sessionUi: SessionUi? = null

@@ -4,7 +4,9 @@ import androidx.compose.runtime.Composable
 import com.thekozugroup.popcornstash.data.api.Role
 import com.thekozugroup.popcornstash.data.api.User
 import com.thekozugroup.popcornstash.data.repo.Loadable
-import com.thekozugroup.popcornstash.feature.downloads.DownloadsTab
+import com.thekozugroup.popcornstash.feature.downloads.DownloadsActions
+import com.thekozugroup.popcornstash.feature.downloads.DownloadsPage
+import com.thekozugroup.popcornstash.feature.downloads.DownloadsSamples
 import com.thekozugroup.popcornstash.feature.home.HomeActions
 import com.thekozugroup.popcornstash.feature.home.HomeScreen
 import com.thekozugroup.popcornstash.feature.library.MediaFormat
@@ -26,7 +28,7 @@ val SampleFormat = MediaFormat(Locale.US, ZoneId.of("America/New_York"))
 @Composable
 fun SampleTabRoot(page: TabPage, user: User = SampleOwner) {
     when (page.tab) {
-        Tab.Downloads -> DownloadsTab(page)
+        Tab.Downloads -> DownloadsPage(page, DownloadsSamples.content(), DownloadsActions(), DownloadsSamples.NOW)
         Tab.Home -> WithSampleImages {
             HomeScreen(page, Loadable.Ready(SampleMedia.home), isOwner = user.role == Role.Owner, actions = HomeActions(), format = SampleFormat)
         }

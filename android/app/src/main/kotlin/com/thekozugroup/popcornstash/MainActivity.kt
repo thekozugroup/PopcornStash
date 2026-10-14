@@ -1,6 +1,7 @@
 package com.thekozugroup.popcornstash
 
 import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -40,7 +41,9 @@ import com.thekozugroup.popcornstash.feature.settings.SettingsTab
 import com.thekozugroup.popcornstash.feature.signin.SignInFlow
 import com.thekozugroup.popcornstash.feature.signin.SignInViewModel
 import com.thekozugroup.popcornstash.navigation.AppShell
+import com.thekozugroup.popcornstash.navigation.OpenTab
 import com.thekozugroup.popcornstash.navigation.Tab
+import com.thekozugroup.popcornstash.share.UploadQueue
 import com.thekozugroup.popcornstash.ui.media.LocalPictures
 import com.thekozugroup.popcornstash.ui.media.LocalStashImages
 import com.thekozugroup.popcornstash.ui.media.Pictures
@@ -50,21 +53,30 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 class MainActivity : ComponentActivity() {
+    /** A tab asked for by a notification or the share sheet ([OpenTab]), until the shell shows it. */
+    private var requestedTab by mutableStateOf<Tab?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) requestedTab = OpenTab.from(intent)
         val container = (application as PopcornStashApplication).container
         setContent {
             PopcornTheme {
-                PopcornStashApp(container, this)
+                PopcornStashApp(container, this, requestedTab, onOpenedTab = { requestedTab = null })
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        OpenTab.from(intent)?.let { requestedTab = it }
     }
 }
 
 /** Sign-in while nobody is signed in; the three tabs once someone is. */
 @Composable
-fun PopcornStashApp(container: AppContainer, activity: Activity) {
+fun PopcornStashApp(container: AppContainer, activity: Activity, openTab: Tab? = null, onOpenedTab: () -> Unit = {}) {
     val state by container.sessions.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val openUrl: (String) -> Unit = { url ->
@@ -87,8 +99,11 @@ fun PopcornStashApp(container: AppContainer, activity: Activity) {
             SignedInApp(
                 session = current.session,
                 ui = container.sessionUi(current.session),
+                uploads = container.uploads,
                 openUrl = openUrl,
                 onSignOut = { scope.launch { container.sessions.signOut() } },
+                openTab = openTab,
+                onOpenedTab = onOpenedTab,
             )
         }
     }
@@ -96,7 +111,15 @@ fun PopcornStashApp(container: AppContainer, activity: Activity) {
 
 /** The three tabs for [session]; everything here is made again for the next person. */
 @Composable
-fun SignedInApp(session: Session, ui: SessionUi, openUrl: (String) -> Unit, onSignOut: () -> Unit) {
+fun SignedInApp(
+    session: Session,
+    ui: SessionUi,
+    uploads: UploadQueue,
+    openUrl: (String) -> Unit,
+    onSignOut: () -> Unit,
+    openTab: Tab? = null,
+    onOpenedTab: () -> Unit = {},
+) {
     val user by session.user.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val library = remember(session, ui) {
@@ -125,9 +148,9 @@ fun SignedInApp(session: Session, ui: SessionUi, openUrl: (String) -> Unit, onSi
     fun webPage(vararg segments: String) =
         session.server.newBuilder().apply { segments.forEach { addPathSegment(it) } }.build().toString()
     CompositionLocalProvider(LocalStashImages provides ui.images, LocalPictures provides pictures) {
-        AppShell(readyToImport = readyToImport.toInt()) { page ->
+        AppShell(readyToImport = readyToImport.toInt(), openTab = openTab, onOpenedTab = onOpenedTab) { page ->
             when (page.tab) {
-                Tab.Downloads -> DownloadsTab(page)
+                Tab.Downloads -> DownloadsTab(page, session, uploads, openUrl)
                 Tab.Home -> HomeTab(
                     page = page,
                     services = library,

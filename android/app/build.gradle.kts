@@ -144,6 +144,9 @@ dependencies {
     implementation(libs.media3.datasource.okhttp)
     implementation(libs.media3.ui.compose)
 
+    // Share sheet uploads (share/): a WorkManager job with a foreground notification.
+    implementation(libs.androidx.work.runtime)
+
     testImplementation(platform(libs.compose.bom))
     testImplementation(libs.compose.ui.test.junit4)
     testImplementation(libs.junit)
@@ -156,6 +159,7 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.coil.test)
+    testImplementation(libs.androidx.work.testing)
 }
 
 // ---------------------------------------------------------------- Lucide glyphs ----
