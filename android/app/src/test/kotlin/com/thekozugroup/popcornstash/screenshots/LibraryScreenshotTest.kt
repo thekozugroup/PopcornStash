@@ -1,11 +1,18 @@
 package com.thekozugroup.popcornstash.screenshots
 
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.thekozugroup.popcornstash.data.api.Library
@@ -84,6 +91,19 @@ class LibraryScreenshotTest {
     @Test
     fun postersDark() = library("library-posters-dark", true, SampleMedia.movies, movies, owner = false)
 
+    /** The poster grid scrolled to its end: the last row of posters and their titles sit above the bar. */
+    private fun postersAtTheEnd(name: String, dark: Boolean) = library(name, dark, SampleMedia.movies, movies) {
+        compose.onNodeWithTag("library grid").performScrollToIndex(movies.page.items.size - 1)
+        compose.waitForIdle()
+        compose.assertNothingUnderTheToolbar()
+    }
+
+    @Test
+    fun postersAtTheEndLight() = postersAtTheEnd("library-posters-end-light", false)
+
+    @Test
+    fun postersAtTheEndDark() = postersAtTheEnd("library-posters-end-dark", true)
+
     @Test
     fun sortMenuLight() = library("library-sort-light", false, SampleMedia.movies, movies) {
         compose.onNodeWithContentDescription("Sort").performClick()
@@ -129,12 +149,20 @@ class LibraryScreenshotTest {
 
     // ---------------------------------------------------------------------- shows ----
 
-    private fun show(name: String, dark: Boolean, ui: ShowViewModel.Ui) = shoot(name, dark) { page ->
-        ShowScreen("The Lantern Keepers", "tv", ui, page.bottomClearance, ShowActions(), format = SampleFormat)
-    }
+    /** A show's page; [atTheEnd] opens it scrolled to its end and checks that nothing there lies under the toolbar. */
+    private fun show(name: String, dark: Boolean, ui: ShowViewModel.Ui, atTheEnd: Boolean = false) =
+        shoot(name, dark, before = { if (atTheEnd) compose.assertNothingUnderTheToolbar() }) { page ->
+            // Past the last index: the list settles at its end.
+            val list = remember { LazyListState(firstVisibleItemIndex = if (atTheEnd) 999 else 0) }
+            ShowScreen("The Lantern Keepers", "tv", ui, page.bottomClearance, ShowActions(), format = SampleFormat, listState = list)
+        }
 
     @Test
     fun showLight() = show("show-light", false, ShowViewModel.Ui(Loadable.Ready(SampleMedia.lanternShow), season = 1))
+
+    /** A pushed page scrolled to its end: the last episode, its name and its line sit above the bar. */
+    @Test
+    fun showAtTheEndLight() = show("show-end-light", false, ShowViewModel.Ui(Loadable.Ready(SampleMedia.lanternShow), season = 1), atTheEnd = true)
 
     @Test
     fun showDark() = show("show-dark", true, ShowViewModel.Ui(Loadable.Ready(SampleMedia.lanternShow), season = 1))
@@ -173,7 +201,9 @@ class LibraryScreenshotTest {
 
     // --------------------------------------------------------------- photo viewer ----
 
-    private fun viewer(name: String, dark: Boolean, startId: String, controls: Boolean = true) = shoot(name, dark) {
+    private fun viewer(name: String, dark: Boolean, startId: String, controls: Boolean = true, message: String? = null) = shoot(name, dark) {
+        val snackbar = remember { SnackbarHostState() }
+        if (message != null) LaunchedEffect(Unit) { snackbar.showSnackbar(message, duration = SnackbarDuration.Indefinite) }
         PhotoViewer(
             photos = SampleMedia.timeline.flatMap { it.items },
             startId = startId,
@@ -183,6 +213,7 @@ class LibraryScreenshotTest {
             onSaveOriginal = {},
             initialControls = controls,
             format = SampleFormat,
+            snackbar = snackbar,
         )
     }
 
@@ -191,6 +222,10 @@ class LibraryScreenshotTest {
 
     @Test
     fun viewerDark() = viewer("viewer-dark", true, "s2")
+
+    /** "Original saved." sits on top of the plate, never over Save the original or Details. */
+    @Test
+    fun viewerSavedLight() = viewer("viewer-saved-light", false, "s2", message = "Original saved.")
 
     @Test
     fun viewerControlsHiddenDark() = viewer("viewer-bare-dark", true, "s5", controls = false)

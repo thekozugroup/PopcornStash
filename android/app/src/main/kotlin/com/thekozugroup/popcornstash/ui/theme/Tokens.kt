@@ -22,15 +22,15 @@ data class PopcornSpacing(
 )
 
 /**
- * The floating toolbar (android/DESIGN.md, Floating toolbar). The outer radius is
- * derived, never set: square radius plus padding, so the selected square sits
- * concentric in the bar's corners.
+ * The floating toolbar (android/DESIGN.md, Floating toolbar): one column of squares on the
+ * right edge of the screen. The outer radius is derived, never set: square radius plus
+ * padding, so the selected square sits concentric in the bar's corners.
  */
 @Immutable
 data class ToolbarTokens(
     /** Size of each square target on a normal phone. */
     val square: Dp = 52.dp,
-    /** The squares shrink on narrow screens, never below this. */
+    /** The squares shrink on short windows, never below this. */
     val minSquare: Dp = 48.dp,
     val squareRadius: Dp = 12.dp,
     /**
@@ -50,20 +50,40 @@ data class ToolbarTokens(
     val glassBlur: Dp = 24.dp,
     /** How much more saturated the colours behind the glass read through its tint. */
     val glassSaturation: Float = 1.8f,
-    /** Distance from the screen edges and from the navigation bar inset. */
+    /**
+     * Distance from the right edge of the screen and from the navigation bar inset under it, and
+     * between the bar and a snackbar beside it. With gesture navigation the system's back-swipe
+     * zone is usually wider than this, so the bar's outer part lies in it; that is fine, because
+     * the bar takes only taps and long presses, which the system passes on.
+     */
     val margin: Dp = 16.dp,
+    /** Between the bar's edge and a square's tooltip, which opens to the left of the bar. */
+    val tooltipGap: Dp = 8.dp,
+    /** Between the end of a page's content and the top of the bar, once the page is scrolled to its end. */
+    val contentGap: Dp = 16.dp,
     /** The ready-to-import count on the Downloads square. */
     val badgeHeight: Dp = 18.dp,
     /** A ring in the toolbar's colour that keeps the badge apart from the icon under it. */
     val badgeRing: Dp = 2.dp,
-    /** How far the badge sits out from the square's top-end corner. */
+    /** How far the badge sits out from the square's top-left corner (the side away from the screen edge). */
     val badgeOffset: Dp = 4.dp,
 ) {
     val outerRadius: Dp get() = squareRadius + padding
-    val height: Dp get() = square + padding * 2
 
-    /** Space a page leaves at its end so its last row clears the toolbar (plus the navigation bar inset). */
-    val clearance: Dp get() = height + margin + 16.dp
+    /** How wide the bar is: one square and its padding. */
+    val thickness: Dp get() = square + padding * 2
+
+    /** How tall the bar is with [count] squares stacked in it. */
+    fun length(count: Int): Dp = square * count + gap * (count - 1) + padding * 2
+
+    /**
+     * Space a page leaves at its end (plus the navigation bar inset) so that, scrolled to the end,
+     * its last row sits [contentGap] above a bar of [count] squares.
+     */
+    fun clearance(count: Int): Dp = length(count) + margin + contentGap
+
+    /** Space a snackbar leaves on the right (plus the right inset) so it sits beside the bar, not under it. */
+    val besideClearance: Dp get() = thickness + margin * 2
 }
 
 /** Tile widths for shelves and minimum widths for grids (android/DESIGN.md, Tiles and shelves). */

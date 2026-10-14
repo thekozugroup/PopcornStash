@@ -12,8 +12,6 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Snackbar
-import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
@@ -40,6 +38,7 @@ import com.thekozugroup.popcornstash.ui.components.LoadFailed
 import com.thekozugroup.popcornstash.ui.components.PageTopBar
 import com.thekozugroup.popcornstash.ui.components.PrimaryButton
 import com.thekozugroup.popcornstash.ui.components.QuietButton
+import com.thekozugroup.popcornstash.ui.components.TabSnackbarHost
 import com.thekozugroup.popcornstash.ui.components.TopBarAction
 import com.thekozugroup.popcornstash.ui.icons.PopcornIcons
 import com.thekozugroup.popcornstash.ui.theme.Popcorn
@@ -209,19 +208,7 @@ fun DownloadsPage(
                 }
             }
         }
-        SnackbarHost(
-            snackbar,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = page.bottomClearance - Popcorn.spacing.m),
-        ) { data ->
-            Snackbar(
-                data,
-                containerColor = Popcorn.colors.text,
-                contentColor = Popcorn.colors.page,
-                shape = Popcorn.shapes.control,
-            )
-        }
+        TabSnackbarHost(snackbar, page)
     }
 
     state.add?.let { add ->

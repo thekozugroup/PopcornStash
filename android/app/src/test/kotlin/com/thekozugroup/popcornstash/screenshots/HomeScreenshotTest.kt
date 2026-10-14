@@ -86,17 +86,31 @@ class HomeScreenshotTest {
         home("home-series-shelf-light", dark = false, Loadable.Ready(Home(libraries = listOf(shelf))))
     }
 
-    /** Further down Home: the series shelf, camera videos, photos, an empty library and Other files. */
-    private fun scrolled(name: String, dark: Boolean, index: Int) =
-        shoot(name, dark, before = { compose.onNodeWithTag("list Home").performScrollToIndex(index) }) { page ->
+    /**
+     * Further down Home: the series shelf, camera videos, photos, an empty library and Other
+     * files. [atTheEnd] also checks that nothing on the page lies under the toolbar there.
+     */
+    private fun scrolled(name: String, dark: Boolean, index: Int, atTheEnd: Boolean = false) =
+        shoot(
+            name,
+            dark,
+            before = {
+                compose.onNodeWithTag("list Home").performScrollToIndex(index)
+                if (atTheEnd) {
+                    compose.waitForIdle()
+                    compose.assertNothingUnderTheToolbar()
+                }
+            },
+        ) { page ->
             HomeScreen(page, Loadable.Ready(SampleMedia.home), isOwner = true, actions = HomeActions(), format = SampleFormat)
         }
 
     @Test
     fun middleDark() = scrolled("home-middle-dark", dark = true, index = 3)
 
+    /** Home scrolled to its end: Other files and its count sit above the bar. */
     @Test
-    fun endLight() = scrolled("home-end-light", dark = false, index = 7)
+    fun endLight() = scrolled("home-end-light", dark = false, index = 7, atTheEnd = true)
 
     @Test
     fun loadingLight() = home("home-loading-light", dark = false, Loadable.Loading)

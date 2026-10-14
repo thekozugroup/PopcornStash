@@ -4,7 +4,9 @@ import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
@@ -12,31 +14,22 @@ import com.thekozugroup.popcornstash.ui.theme.PopcornMotion
 
 /**
  * Which way a tab change moves on the screen: the new page comes in from the side of the
- * tapped square. +1 when that square lies to the right of the current one, -1 to the left,
- * 0 for the same tab. In a right-to-left layout the toolbar is mirrored (Settings on the
- * left), so the direction is too.
+ * tapped square on the upright toolbar. +1 when that square lies below the current one (the
+ * new page rises from the bottom), -1 above it (the new page comes down from the top), 0 for
+ * the same tab. The bar's order is top to bottom in every layout direction, so this is too.
  */
-fun slideDirection(from: Tab, to: Tab, layoutDirection: LayoutDirection = LayoutDirection.Ltr): Int =
-    to.ordinal.compareTo(from.ordinal) * layoutDirection.sign
-
-/** +1 left to right, -1 right to left: slide offsets are in screen pixels and do not mirror. */
-private val LayoutDirection.sign: Int get() = if (this == LayoutDirection.Rtl) -1 else 1
+fun slideDirection(from: Tab, to: Tab): Int = to.ordinal.compareTo(from.ordinal)
 
 /**
- * A tab change (android/DESIGN.md, Tab transitions): a full-width, direction-aware
- * slide on the page spring, the old page leaving the other way. Under reduce motion
- * the pages crossfade in 150 ms instead.
+ * A tab change (android/DESIGN.md, Tab transitions): a full-height slide in the direction
+ * the selection moves on the toolbar, on the page spring, the old page leaving the other
+ * way. Under reduce motion the pages crossfade in 150 ms instead.
  */
-fun tabTransition(
-    from: Tab,
-    to: Tab,
-    reduceMotion: Boolean,
-    layoutDirection: LayoutDirection = LayoutDirection.Ltr,
-): ContentTransform {
+fun tabTransition(from: Tab, to: Tab, reduceMotion: Boolean): ContentTransform {
     if (reduceMotion) return crossfade()
-    val direction = slideDirection(from, to, layoutDirection)
-    return slideInHorizontally(PopcornMotion.pageSpring()) { width -> width * direction } togetherWith
-        slideOutHorizontally(PopcornMotion.pageSpring()) { width -> -width * direction }
+    val direction = slideDirection(from, to)
+    return slideInVertically(PopcornMotion.pageSpring()) { height -> height * direction } togetherWith
+        slideOutVertically(PopcornMotion.pageSpring()) { height -> -height * direction }
 }
 
 /**
@@ -52,7 +45,8 @@ fun pushTransition(
 ): ContentTransform {
     if (reduceMotion) return crossfade()
     val shift = with(density) { PopcornMotion.pushShift.roundToPx() }
-    val sign = (if (forward) 1 else -1) * layoutDirection.sign
+    // Slide offsets are in screen pixels and do not mirror: -1 brings the page from the left.
+    val sign = (if (forward) 1 else -1) * (if (layoutDirection == LayoutDirection.Rtl) -1 else 1)
     return (slideInHorizontally(PopcornMotion.pageSpring()) { shift * sign } + fadeIn(PopcornMotion.pageSpring())) togetherWith
         (slideOutHorizontally(PopcornMotion.pageSpring()) { -shift * sign } + fadeOut(PopcornMotion.pageSpring()))
 }

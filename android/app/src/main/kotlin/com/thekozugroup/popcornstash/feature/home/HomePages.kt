@@ -80,7 +80,6 @@ internal fun LibraryPage(route: HomeRoute.Library, bottomClearance: Dp, services
             onClose = { viewer = null },
             onDetails = { nav.open(HomeRoute.Item(it.id, format.displayTitle(it))) },
             onPlay = { nav.play(it.id, false) },
-            onMessage = nav::message,
             onNearEnd = model::loadMore,
         )
     }
@@ -152,7 +151,6 @@ internal fun ItemPage(route: HomeRoute.Item, bottomClearance: Dp, services: Libr
             onClose = { viewing = false },
             onDetails = { viewing = false },
             onPlay = {},
-            onMessage = nav::message,
         )
     }
 }
