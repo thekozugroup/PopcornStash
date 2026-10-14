@@ -369,7 +369,7 @@ The whole app accepts dropped files; a full-window overlay says where they will 
 - **Do** put a settings group's action under its description, and a lone way forward under the page's sentence.
 
 ### Don't:
-- **Don't** add gradients, glass, decorative charts, shadows on workspace panels or fake activity.
+- **Don't** add gradients, glass, decorative charts, shadows on workspace panels or fake activity. The one glass surface is the Android app's floating toolbar (android/DESIGN.md, Frosted glass).
 - **Don't** use status colours as action colours, or blue for navigation.
 - **Don't** repeat a state, a name or a code twice in one place (a title and detail that say the same thing, "NordVPN · Netherlands · nl812 · Netherlands", "S01E01" above "The Lantern Keepers S01E01").
 - **Don't** nest boxed cards inside a panel.
