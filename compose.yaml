@@ -21,6 +21,8 @@ services:
       STASH_HWACCEL: "${STASH_HWACCEL:-}"
       STASH_TORRENT_UID: "${STASH_TORRENT_UID:-6881}"
       STASH_EXTRA_ORIGINS: "${STASH_EXTRA_ORIGINS:-}"
+      # The Android app's passkeys (docs/android.md); empty: the app signs in by pairing.
+      STASH_ANDROID_ASSETLINKS: "${STASH_ANDROID_ASSETLINKS:-}"
       STASH_LOG: "${STASH_LOG:-info}"
     volumes:
       - type: bind

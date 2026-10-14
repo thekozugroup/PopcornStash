@@ -231,7 +231,7 @@ How files move:
 - Documents, archives and other files that are not videos, photos or music wait in the Inbox page, then go to `Other/`. Release files inside a download (`.nfo`, `.txt`, `.sfv`) stay in `Downloads/Completed/`.
 - Posters, covers and screenshots that come with a movie, show or album are not added to Photos; other pictures in such a download wait in the Inbox page.
 - Files still being copied are left alone until their size has not changed for 10 seconds, so slow network copies are safe.
-- Deleting an item moves it to the trash folder first. It is removed for good after 30 days (change this in **Settings**, then **Library**, **Trash**), or when an owner empties the trash.
+- Deleting an item moves it to the trash folder first. It is removed for good after 30 days (change this in **Settings**, then **Libraries**, **Trash**), or when an owner empties the trash.
 
 ## File ownership
 
@@ -332,7 +332,7 @@ Starting the container as a non-root user (`--user` or `user:` in Compose) has t
 | `STASH_HWACCEL` | empty | `none`, `vaapi`, `qsv` or `nvenc`. When set, it overrides **Settings > System > Streaming** |
 | `STASH_TORRENT_UID` | `6881` | User the torrent engine runs as |
 | `STASH_EXTRA_ORIGINS` | none | Extra allowed addresses on the same domain, comma separated |
-| `STASH_ANDROID_ASSETLINKS` | none | The Digital Asset Links statement (JSON) that lets the PopcornStash Android app use your passkeys. Without it the app signs in by pairing with a code |
+| `STASH_ANDROID_ASSETLINKS` | none | The Digital Asset Links statement (JSON) that lets the PopcornStash Android app use your passkeys ([docs/android.md](android.md#sign-in-with-a-passkey) has the exact text). Without it the app signs in by pairing with a code |
 | `STASH_TLS_CERT`, `STASH_TLS_KEY` | none | Certificate and key for built-in HTTPS |
 | `STASH_LOG` | `info` | Log detail |
 | `STASH_ALLOW_NO_VPN` | `false` | See [Running without a VPN](vpn.md#running-without-a-vpn) |

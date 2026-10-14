@@ -2,7 +2,7 @@
 
 A private home for your family's videos, photos and downloaded media. Part of the Popcorn series of open source video projects.
 
-PopcornStash points at one folder on your NAS, Unraid share or home server and keeps it organized. Family members sign in with passkeys, browse the libraries the owner shares with them (a new stash starts with Movies, Shows, Home Videos and Photos; the owner can rename them, add more with their own icons and choose who sees each), and watch in any browser. New files arrive from torrents, web links, the Chrome extension, links, photos and videos shared from Android, browser uploads, or by copying them into the Inbox folder, and are sorted automatically.
+PopcornStash points at one folder on your NAS, Unraid share or home server and keeps it organized. Family members sign in with passkeys, browse the libraries the owner shares with them (a new stash starts with Movies, Shows, Home Videos and Photos; the owner can rename them, add more with their own icons and choose who sees each), and watch in any browser or in the Android app. New files arrive from torrents, web links, the Chrome extension, links, photos and videos shared from Android, browser uploads, or by copying them into the Inbox folder, and are sorted automatically.
 
 ## What it does
 
@@ -39,6 +39,7 @@ On Unraid, use the template in [unraid/popcornstash.xml](unraid/popcornstash.xml
 - [Installing and running PopcornStash](docs/deployment.md): HTTPS options, Compose, Unraid, first run, recovery, folders, hardware acceleration, backups.
 - [Torrents and your VPN](docs/vpn.md): how torrent traffic is kept inside the tunnel, NordVPN and WireGuard/OpenVPN setup, checking that it works.
 - [Chrome extension](docs/extension.md): pairing, sending links and downloads, privacy.
+- [Android app](docs/android.md): what it does, building and installing it, signing in by pairing or with a passkey (`STASH_ANDROID_ASSETLINKS`), and what is not done yet.
 - [Security](docs/security.md): the threat model and what each layer protects.
 - [Architecture](docs/architecture.md): the API, database, folder layout and process model.
 
@@ -48,6 +49,7 @@ On Unraid, use the template in [unraid/popcornstash.xml](unraid/popcornstash.xml
 - Rust for everything on the server: axum, SQLite, webauthn-rs, librqbit, ffmpeg and libvips for media.
 - The web UI is React with Meta's [Astryx](https://astryx.atmeta.com) design system and a Popcorn theme shared with Popcorn SR.
 - The Chrome extension is a small Manifest V3 extension in TypeScript.
+- The Android app is Kotlin and Jetpack Compose with Material 3 in the Popcorn theme ([android/README.md](android/README.md), [android/DESIGN.md](android/DESIGN.md)).
 
 ## Development
 

@@ -2,6 +2,39 @@
 
 Changes to PopcornStash, newest first. Version numbers follow [Semantic Versioning](https://semver.org/). Releases are built, checked and published from a developer machine with `scripts/release.sh`, which takes the release notes from this file (see "Releasing" in the README).
 
+## [Unreleased]
+
+Libraries the owner defines, each with its own icon and its own audience, and the first Android app.
+
+### Libraries
+
+- The fixed Movies, Shows, Home Videos and Photos folders become libraries the owner defines: a name, an icon from a curated list of 31 Lucide icons, Videos or Photos, for videos series (shows, seasons, episodes) or one-offs, which kinds of new file it takes (movies, TV episodes, camera videos, photos; each kind goes to one library at most), a folder, who sees it and its place in the order. Existing stashes keep working: they start with Movies, Shows, Home Videos and Photos as before, seen by everyone, and every item is assigned by its folder.
+- A new library gets a new folder in the stash, or an existing top-level folder whose files are indexed where they are. Renaming a library never renames its folder, its type can change only while it is empty, and deleting it takes it out of the app without touching a file.
+- New files go to the library that takes their kind, laid out by kind (`Title (Year)/`, `Show/Season 01/`, `2024/06/`). A kind no library takes waits in Inbox, where you pick the library. Music, documents and other files go to Other files as before.
+- Who sees what: only owners make, change, reorder and delete libraries, and each library is shown to everyone or only to the people the owner picks. Someone who cannot see a library learns nothing about it anywhere: lists, Home, search, pictures, playback, downloads, the trash and live updates all treat its items as not there, and its files arriving or being sorted send them nothing.
+- Other files are now private: each one is seen by the person who added it and the owners. Folders on the share that are not a library are seen by owners only, and Settings offers "Make a library" for each.
+- Settings has a Libraries section for owners, with an icon picker; Inbox lets you choose the library; owners can move any item into a library ("Organize into library"). Old addresses (`/movies`, `/shows`, `/home-videos`, `/photos`) go to the library that takes that kind.
+
+### Web app
+
+- The sidebar lists Home, then every library you can see with its own icon, in the owner's order, then Other files, Inbox, Downloads and Settings; the phone menu and quick links follow it. Each library's page fits what it holds: posters or video frames, shows with seasons and episodes, or the photo timeline.
+- A library that holds files shows what it holds as a plain fact in its settings ("Holds  Videos, arranged as series") instead of greyed choices.
+- Messages say each thing once: "Checking VPN" alone while it checks, "VPN status unavailable" with what still works, no VPN line while the server does not answer at all, and no "Add the episode number" under a form field that already says so.
+- The web app has unit tests (vitest) for its library and VPN rules, run by `npm --prefix web run check`.
+
+### Android app
+
+- A new app for Android 9 and later (`android/`, docs/android.md), in the Popcorn design, light and dark with the system. Three tabs in a floating bar, icons only: Downloads, Home (where it opens) and Settings. The pages slide in from the side of the tab you tap, or fade when the phone's animations are off, and each tab keeps its place.
+- Sign in with your server's address, then pair with a code or use your passkey (`STASH_ANDROID_ASSETLINKS`, now passed through by `compose.yaml`).
+- Home: what to carry on watching, then every library you can see; libraries as grids, shows by season, photos by month with a full-screen viewer; item pages and a full-screen player that resumes, saves your place, offers the next episode and keeps playing in a small window.
+- Downloads: live progress, the VPN line, pause, resume, remove and add a link; the files waiting to be imported with the library picker, edit, accept, ignore and accept all; finished downloads say where they went. Links, photos, videos and files shared from other apps are added or uploaded.
+- Settings: who you are, the server and sign out; owners manage the libraries here too. The other admin pages open the web settings.
+- Not yet run on a phone or an emulator; docs/android.md lists what is not done.
+
+### Tooling
+
+- `scripts/check.sh --e2e` also runs the Android app against a real server, never from Gradle's cache.
+
 ## [0.1.0] - 2026-10-13
 
 The first release: the PopcornStash server as one Docker image for amd64 and arm64 (`ghcr.io/thekozugroup/popcornstash`), and the Chrome extension as `popcornstash-extension.zip`. A few parts have not yet been tried with the real services or hardware, such as a NordVPN token, a real VPN connection, graphics-chip encoding and arm64 machines; "Not yet verified" lists them and what was checked instead.
