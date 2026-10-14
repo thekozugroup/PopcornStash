@@ -10,7 +10,9 @@
 # Run it after pushing to main a change that touches android/ (AGENTS.md). It refuses
 # unless the tree is clean, on main, and HEAD equals REMOTE/main after a fetch. The build
 # number N is the number of commits on main (git rev-list --count HEAD), so it only ever
-# grows: versionCode N, versionName "<Cargo workspace version>+N" (0.1.0+412). When no
+# grows: versionCode N, versionName "<Cargo workspace version>+N" (0.1.0+412). A shallow
+# clone would count only the commits it holds, so the script fetches the whole history
+# first, and it refuses when an android-* tag of N or higher is on another commit. When no
 # file under android/ changed since the newest android-* tag it says so and stops
 # (exit 0), unless --force.
 #
@@ -53,7 +55,8 @@ usage() {
 }
 
 # Secrets stay in shell variables: Gradle gets only what it signs with, and nothing
-# below prints them.
+# below prints them. Tracing (bash -x) would print them, so it is turned off first.
+{ set +x; } 2>/dev/null
 release_token="${GITHUB_RELEASE_TOKEN:-}"
 keystore_b64="${POPCORNSTASH_KEYSTORE_B64:-}"
 unset GITHUB_RELEASE_TOKEN POPCORNSTASH_KEYSTORE_B64
@@ -168,16 +171,54 @@ if git fetch --quiet "$REMOTE" main 2>"$work_dir/fetch.err"; then
 else
   problem "could not fetch main from $REMOTE: $(tail -n 1 "$work_dir/fetch.err")"
 fi
+# The build number counts the commits on main, so it needs all of them: a shallow clone
+# (a cloud session's checkout often is one) would count only its depth.
+if [[ "$(git rev-parse --is-shallow-repository)" == true ]]; then
+  if git fetch --quiet --unshallow "$REMOTE" 2>"$work_dir/unshallow.err"; then
+    ok "fetched the whole history of this shallow clone, so the build number counts every commit"
+  else
+    problem "this clone is shallow and its history could not be fetched (git fetch --unshallow $REMOTE: $(tail -n 1 "$work_dir/unshallow.err")); the build number would be wrong"
+  fi
+fi
 # A tree that is not exactly the pushed main is refused before anything else is looked at,
 # even when there would be nothing to publish.
 if ((${#problems[@]} && !dry_run)); then
   die "publish from a clean main that is pushed to $REMOTE; nothing was built or published"
 fi
-# The tags GitHub made for earlier builds; a failure here only means none are known.
-git fetch --quiet "$REMOTE" '+refs/tags/android-*:refs/tags/android-*' 2>/dev/null || true
+# The tags GitHub made for earlier builds. No tag at all is fine (the fetch succeeds); a
+# fetch that fails would make this look like the first build, so it stops a real run.
+if ! git fetch --quiet "$REMOTE" '+refs/tags/android-*:refs/tags/android-*' 2>"$work_dir/tags.err"; then
+  if ((dry_run)); then
+    problem "could not fetch the android-* tags from $REMOTE: $(tail -n 1 "$work_dir/tags.err")"
+  else
+    die "could not fetch the android-* tags from $REMOTE ($(tail -n 1 "$work_dir/tags.err")); nothing was built or published"
+  fi
+fi
 
 build="$(git rev-list --count HEAD)"
 tag="android-$build"
+
+# A build number that does not grow would never be offered to a phone: refuse when a tag of
+# N or higher is on another commit (a clone that is not main's whole history, or a rewritten main).
+later_tags=()
+while IFS= read -r existing; do
+  number="${existing#android-}"
+  [[ "$number" =~ ^[0-9]+$ ]] || continue
+  ((number >= build)) || continue
+  if ((number == build)) && [[ "$(git rev-parse --verify --quiet "refs/tags/$existing^{commit}" || true)" == "$head_sha" ]]; then
+    continue
+  fi
+  later_tags+=("$existing")
+done < <(git tag --list 'android-*')
+if ((${#later_tags[@]})); then
+  message="HEAD is build $build, but ${later_tags[*]} already exist on other commits: phones would never be offered this build. Is main's history complete and unchanged?"
+  if ((dry_run)); then
+    problem "$message"
+  else
+    die "$message Nothing was built or published."
+  fi
+fi
+
 cargo_version="$(awk '/^\[/ { s = $0 } s == "[workspace.package]" && /^version *= *"/ { sub(/^version *= *"/, ""); sub(/".*$/, ""); print; exit }' Cargo.toml)"
 [[ -n "$cargo_version" ]] || die "no version in Cargo.toml [workspace.package]"
 version_name="$cargo_version+$build"
@@ -186,7 +227,7 @@ ok "build $build: versionCode $build, versionName $version_name"
 # The newest earlier build, by number.
 previous_tag="$(git tag --list 'android-*' | awk -F- '$2 ~ /^[0-9]+$/ && $2 < '"$build"' { print $2 }' | sort -n | tail -n 1)"
 previous_tag="${previous_tag:+android-$previous_tag}"
-if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
+if [[ "$(git rev-parse --verify --quiet "refs/tags/$tag^{commit}" || true)" == "$head_sha" ]]; then
   printf '\nBuild %s is already published (tag %s). Nothing to do.\n' "$build" "$tag"
   exit 0
 fi
