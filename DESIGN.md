@@ -2,7 +2,10 @@
 name: PopcornStash
 description: A quiet, private family library where the media itself provides the colour.
 colors:
-  accent: "oklch(62.3% 0.214 259.815)"
+  accent: "oklch(54.6% 0.245 262.881)"
+  accent-hover: "oklch(48.8% 0.243 264.376)"
+  accent-pressed: "oklch(42.4% 0.199 265.638)"
+  on-accent: "#ffffff"
   accent-text: "oklch(54.6% 0.245 262.881)"
   accent-text-dark: "oklch(70.7% 0.165 254.624)"
   white-surface: "#ffffff"
@@ -87,7 +90,7 @@ spacing:
 components:
   button-primary:
     backgroundColor: "{colors.accent}"
-    textColor: "{colors.zinc-black}"
+    textColor: "{colors.on-accent}"
     typography: "{typography.action}"
     rounded: "{rounded.control}"
     padding: "8px 12px"
@@ -134,7 +137,7 @@ components:
 
 A private shelf for a family's videos and photos. Neutral surfaces step back so posters, frames and photos carry the colour. Every incoming file has a visible, honest path: in progress, completed, sorted. The interface earns trust by saying exactly where things are and whether torrent traffic is protected, once and in plain words.
 
-PopcornStash shares Popcorn SR's world: Tailwind zinc neutrals, Tailwind blue-500 as the single action and focus accent with zinc-950 text on blue, the platform system sans, flat panels, thin dividers, 44px controls, system light and dark, and reduced motion. Components come from Astryx (`@astryxdesign/core`) with a custom `popcorn` theme (`web/src/themes/popcorn`, rebuilt with `npm run theme:build`) that maps these tokens onto Astryx's token surface. Astryx components are used as they are wherever one exists; local components are limited to media pieces (poster grid, shelf, episode rows, photo timeline, player chrome) and small layout wrappers (page header, settings group, status tag).
+PopcornStash shares Popcorn SR's world: Tailwind zinc neutrals, Tailwind blue-600 as the single action and focus accent with white on blue, the platform system sans, flat panels, thin dividers, 44px controls, system light and dark, and reduced motion. Components come from Astryx (`@astryxdesign/core`) with a custom `popcorn` theme (`web/src/themes/popcorn`, rebuilt with `npm run theme:build`) that maps these tokens onto Astryx's token surface. Astryx components are used as they are wherever one exists; local components are limited to media pieces (poster grid, shelf, episode rows, photo timeline, player chrome) and small layout wrappers (page header, settings group, status tag).
 
 It is an operating surface, not a showcase: familiar patterns, steady density, and no decoration that the library's own pictures do not provide.
 
@@ -150,7 +153,7 @@ It is an operating surface, not a showcase: familiar patterns, steady density, a
 A cool neutral zinc ramp with one saturated blue, plus three status hues that only ever appear next to words.
 
 ### Primary
-- **Action Blue** (`accent`): fill of the one primary button per view, focus rings (2px, 3px offset), the progress fill of downloads and the watched hairline on tiles, text selection tint, and the caret. Text on Action Blue is Zinc Black in both themes.
+- **Action Blue** (`accent`, Tailwind blue-600): fill of the one primary button per view, checked boxes and radios, on switches, focus rings (2px, 3px offset), the progress fill of downloads and the watched hairline on tiles, text selection tint, and the caret. One blue for all of them. Everything on Action Blue is white in both themes: button labels and icons, checkbox marks and radio dots, the on switch's knob, a badge's text, a spinner inside a busy button. Hovered and pressed fills go darker, never lighter, so white keeps 4.5:1: a primary button takes blue-700 on hover and blue-800 when pressed (`accent-hover`, `accent-pressed`), and a checked box, radio or on switch mixes 15% of blue-800 into its fill on hover. Over a picture (MediaTheme) Astryx turns the accent into the surface's own on-colour, and what sits on it takes the opposite one (Zinc Black on a dark picture).
 - **Link Blue** (`accent-text` in light, `accent-text-dark` in dark): inline text links only ("Nord Account", "Sunset Drive (2020)"). It steps one shade away from the surface so links keep AA contrast. A standalone link that is the way forward in a row is a ghost button instead, so it keeps a 44px target.
 
 ### Neutral
@@ -175,10 +178,30 @@ A cool neutral zinc ramp with one saturated blue, plus three status hues that on
 | Border/divider | Zinc Divider | Zinc Dark Divider |
 | Subtle fill | Zinc Subtle | Zinc Dark Divider |
 | Action fill/focus | Action Blue | Action Blue |
-| Action text | Zinc Black | Zinc Black |
+| Action fill, hovered / pressed | blue-700 / blue-800 | blue-700 / blue-800 |
+| On Action Blue | White | White |
+| Track behind an Action Blue fill | zinc-300 | Zinc Black |
+| Fill that holds controls | Zinc Subtle | Zinc Black |
 | Link text | Link Blue (blue-600) | Link Blue (blue-400) |
 
 **The One Accent Rule.** Blue marks the next action, focus and real progress. Navigation, tabs, filters and secondary actions stay neutral; the selected tab marker is ink, not blue.
+
+**Action Blue, measured** (WCAG 2 contrast; `web/src/themes/popcorn/contrast.test.ts` and `extension/test/unit/contrast.test.ts` hold every row to its bar). White on blue needs 4.5:1; a thin blue mark (a focus ring, the caret, a progress fill, a checked box's or an on switch's edge) needs 3:1 against what it sits on.
+
+| Pairing | Light | Dark |
+| --- | --- | --- |
+| White on Action Blue (labels, marks, knob, badge text) | 5.3:1 | 5.3:1 |
+| White on a hovered primary (blue-700) / a pressed one (blue-800) | 6.8:1 / 8.8:1 | 6.8:1 / 8.8:1 |
+| White on a hovered checked box, radio or on switch | 5.7:1 | 5.7:1 |
+| Action Blue against the page | 5.0:1 | 3.8:1 |
+| Action Blue against a panel or dialog | 5.3:1 | 3.4:1 |
+| A hovered checked control against the page / a panel | 5.4:1 / 5.7:1 | 3.5:1 / 3.1:1 |
+| Focus ring against the fill that holds the Inbox edit form | 4.8:1 | 3.8:1 |
+| Download progress fill against its track | 3.6:1 | 3.8:1 |
+| Watched hairline on its Stage Black track | 4.0:1 | 4.0:1 |
+| Selected text on the selection tint over a panel | 14.0:1 | 13.4:1 |
+
+Three things changed with the darker blue so the thin marks keep 3:1. In dark the track behind a download's progress fill is Zinc Black, a groove in the panel (it was zinc-700: 2.0:1), and the Inbox edit form sits on Zinc Black rather than Zinc Dark Divider, where its focus rings were 2.8:1 (`--popcorn-progress-track`, `--popcorn-control-well`). The watched hairline's track on tiles and episode frames is opaque Stage Black: the translucent one let a bright or mid-grey frame show through, at 1.0:1 to 3.0:1. The extension does the same with its own tokens: its progress track in dark is Zinc Ink (3.4:1; Zinc Dark Divider was 2.8:1) and a notice that holds a button is Zinc Ink in dark (3.4:1).
 
 **The Words First Rule.** Emerald, amber and red never stand alone: every dot sits beside the words that carry the meaning.
 
@@ -236,7 +259,7 @@ Gently rounded and consistent: controls 8px, panels and dialogs 16px, media tile
 
 ### Buttons
 - **Shape:** 8px corners, 44px tall (36px "small" on fine pointers only; 44px on touch), 8px by 12px padding, 14px semibold labels.
-- **Primary:** Action Blue fill, Zinc Black label. One per view: the action that moves the task forward ("Add", "Approve", "Connect NordVPN", "Resume S01E02").
+- **Primary:** Action Blue fill, white label and icon (5.3:1). Hover goes darker to blue-700 and a press to blue-800 (6.8:1 and 8.8:1), in both themes; Astryx's default overlay is white in dark, which would lighten the blue under the label, so the theme sets the primary's own (`button`, `variant:primary`). One per view: the action that moves the task forward ("Add", "Approve", "Connect NordVPN", "Resume S01E02").
 - **Secondary:** White Surface fill, 1px Zinc Divider border, Zinc Ink label.
 - **Ghost:** no fill, Zinc Muted label, a quiet fill on hover. Used for "See all", back links (chevron plus parent name), "Show file details", "Open VPN settings". When a ghost button ends or starts a text row it shifts by its 12px padding so its label lines up with the text.
 - **Focus:** a 2px Action Blue ring with a 3px offset on every control.
@@ -245,8 +268,8 @@ Gently rounded and consistent: controls 8px, panels and dialogs 16px, media tile
 - **Style:** White Surface, 1px border, 8px corners, 44px tall, 16px text. Label above, optional description under the label, error under the field. A select opens from anywhere on its 44px field.
 - **Numbers:** typed or stepped with the arrow keys; no stepper buttons (they cannot hold a 44px target). Units sit inside the field ("KB/s", "days").
 - **Focus:** the border turns Action Blue.
-- **Switches:** on is the Action Blue track with a White Surface knob (Zinc Ink in dark). Off reads on its own, without the blue to compare with: a Zinc Subtle track (Zinc Dark Divider in dark) inside a 2px ring, with a knob in the ring's colour, Zinc Status in light and Zinc Dark Muted in dark. Ring and knob are 3:1 or more against the page, a panel and the track (measured: ring 4.6:1 on the light page and 7.6:1 on the dark one, knob 4.4:1 and 5.7:1 on its track), and in dark the knob is lighter than its track. Set once in the theme (`switch`, `switch-thumb`), so every switch has it.
-- **Checkboxes and radios:** checked is the Action Blue fill with a Zinc Black mark. Unchecked has the off switch's edge: a 1px border in Zinc Status (light) or Zinc Dark Muted (dark), 4.6:1 and 7.6:1 against the page, so an unchosen radio, an unchecked box and an off switch on one page read alike and all reach 3:1 (WCAG 1.4.11); the Android app draws them in its `fieldOutline` (zinc-500) for the same reason. Set once in the theme (`checkbox-indicator`, `radio-indicator`); disabled ones keep Astryx's faint border.
+- **Switches:** on is the Action Blue track with a white knob in both themes (5.3:1); hovered, the track mixes 15% of blue-800 in, darker in both themes, so the knob keeps 5.7:1 and the track 3:1 against a dark panel. Off reads on its own, without the blue to compare with: a Zinc Subtle track (Zinc Dark Divider in dark) inside a 2px ring, with a knob in the ring's colour, Zinc Status in light and Zinc Dark Muted in dark. Ring and knob are 3:1 or more against the page, a panel and the track (measured: ring 4.6:1 on the light page and 7.6:1 on the dark one, knob 4.4:1 and 5.7:1 on its track), and in dark the knob is lighter than its track. Set once in the theme (`switch`, `switch-thumb`), so every switch has it.
+- **Checkboxes and radios:** checked is the Action Blue fill with a white mark or dot (5.3:1), tinted darker on hover like an on switch (5.7:1). Unchecked has the off switch's edge: a 1px border in Zinc Status (light) or Zinc Dark Muted (dark), 4.6:1 and 7.6:1 against the page, so an unchosen radio, an unchecked box and an off switch on one page read alike and all reach 3:1 (WCAG 1.4.11); the Android app draws them in its `fieldOutline` (zinc-500) for the same reason. Set once in the theme (`checkbox-indicator`, `radio-indicator`, and their `checked` state for the hover); disabled ones keep Astryx's faint border.
 - **Choice lists:** a CheckboxList row is bare like a RadioList row: no inline inset and no checked fill, so checkboxes sit in the radios' column and a choice shows by its own mark.
 - **Copyable values:** a value to paste elsewhere (an invite link, a device token, the owner recovery command `docker exec popcornstash popcornstash admin reset-owner`) sits in a Zinc Subtle monospace box with a "Copy" secondary button beside it, under a label that says what to do with it.
 
@@ -269,7 +292,7 @@ The VPN page opens with a panel: a status dot and a title in words ("Protected �
 
 ### Media tile
 - **Character:** the picture is the tile. Thumbnail at its shape's ratio with a 10px radius and the inner hairline, then the title (two lines, then truncated) and one metadata line ("2014 · 1 min", "Jun 13, 2024 · 12 s", "PDF · 592 B").
-- **States:** a 4px Action Blue hairline on the image shows partial watch progress; hover tints the image; keyboard focus rings the whole tile. Files without a picture show a 22px icon on Zinc Subtle: the library's icon in a library, the file type's (music, document) in Other files.
+- **States:** a 4px Action Blue hairline on an opaque Stage Black track along the image's bottom edge shows partial watch progress (4.0:1 whatever the frame); hover tints the image; keyboard focus rings the whole tile. Files without a picture show a 22px icon on Zinc Subtle: the library's icon in a library, the file type's (music, document) in Other files.
 
 ### Episode rows
 A 176px 16:9 frame, then the episode's name, then its state ("Watched", "Up next · 5 min left", or its runtime). Inside its show an untitled episode is "Episode 3"; the code ("S01E03") appears only above a real episode title. The show's Resume or Play button names the code, and the line under it names the episode.

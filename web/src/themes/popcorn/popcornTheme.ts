@@ -2,8 +2,8 @@
  * Popcorn theme for Astryx.
  *
  * Maps the PopcornStash DESIGN.md tokens (shared with Popcorn SR) onto
- * Astryx's themeable surface: Tailwind zinc neutrals, Tailwind blue-500 as
- * the single action and focus accent with zinc-950 text on blue, the platform
+ * Astryx's themeable surface: Tailwind zinc neutrals, Tailwind blue-600 as
+ * the single action and focus accent with white on blue, the platform
  * system sans, flat panels, thin dividers, 44px controls, 8px control radius,
  * 16px panel radius and 10px media radius. Light and dark follow the system
  * preference through Astryx's [light, dark] token tuples.
@@ -39,10 +39,10 @@ const zinc = {
 const white = 'oklch(100% 0 0)';
 
 const blue = {
-  400: 'oklch(70.7% 0.165 254.624)',
-  500: 'oklch(62.3% 0.214 259.815)', // action blue
-  600: 'oklch(54.6% 0.245 262.881)',
-  700: 'oklch(48.8% 0.243 264.376)',
+  400: 'oklch(70.7% 0.165 254.624)', // link blue in dark
+  600: 'oklch(54.6% 0.245 262.881)', // action blue; link blue in light
+  700: 'oklch(48.8% 0.243 264.376)', // action blue, hovered
+  800: 'oklch(42.4% 0.199 265.638)', // action blue, pressed
 } as const;
 
 const emerald = {
@@ -80,14 +80,28 @@ const systemSans = '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
 // without touching component rules.
 // ---------------------------------------------------------------------------
 const localTokens: Record<string, TokenValue> = {
-  '--astryx-theme-neutral-color-status-fill-accent': blue[500],
+  '--astryx-theme-neutral-color-status-fill-accent': blue[600],
   '--astryx-theme-neutral-color-status-fill-success': emerald[500],
   '--astryx-theme-neutral-color-status-fill-warning': amber[500],
   '--astryx-theme-neutral-color-status-fill-error': red[500],
   '--astryx-theme-neutral-color-status-muted-accent': [
-    alpha(blue[500], 0.14),
-    alpha(blue[500], 0.24),
+    alpha(blue[600], 0.14),
+    alpha(blue[600], 0.24),
   ],
+  // A primary button hovered and pressed: darker steps of Action Blue, so its white label
+  // keeps 4.5:1 or more (6.8:1 and 8.8:1). A light overlay would take it under 4.5:1.
+  '--popcorn-accent-hover': blue[700],
+  '--popcorn-accent-pressed': blue[800],
+  // A checked box, radio or switch mixes 15% of this into its Action Blue on hover: a darker
+  // blue in both themes, so the white mark keeps 5.7:1 and the fill keeps 3:1 against a dark
+  // panel (Astryx tints toward white in dark; zinc-950 would leave the fill at 2.7:1).
+  '--popcorn-accent-hover-tint': blue[800],
+  // The track behind an Action Blue progress fill. In dark it is Zinc Black, a groove in the
+  // panel: zinc-700 left the fill at 2.0:1 against it, Zinc Black gives 3.8:1.
+  '--popcorn-progress-track': [zinc[300], zinc[950]],
+  // A quiet fill that holds controls (the Inbox edit form). In dark it is Zinc Black, where
+  // Zinc Dark Divider would leave the Action Blue focus ring at 2.8:1; it gives 3.8:1.
+  '--popcorn-control-well': [zinc[100], zinc[950]],
   // Popcorn shape and media tokens that Astryx has no slot for.
   '--popcorn-radius-media': '10px',
   '--popcorn-radius-tag': '6px',
@@ -108,8 +122,6 @@ const localTokens: Record<string, TokenValue> = {
   // than the track, so "off" reads without the blue of "on" to compare with. Unchecked
   // checkboxes and radios take the same colour for their edge.
   '--popcorn-switch-off': [zinc[500], zinc[400]],
-  // The on knob keeps the surface colour (white, Zinc Ink in dark) on the blue track.
-  '--popcorn-switch-on-knob': [white, zinc[900]],
 };
 
 export const popcornTheme = defineTheme({
@@ -156,10 +168,11 @@ export const popcornTheme = defineTheme({
     '--color-overlay-hover': [alpha(zinc[950], 0.05), alpha(white, 0.06)],
     '--color-overlay-pressed': [alpha(zinc[950], 0.1), alpha(white, 0.12)],
 
-    // Action and focus: Tailwind blue-500 with zinc-950 text in both themes.
-    '--color-accent': blue[500],
-    '--color-accent-muted': [alpha(blue[500], 0.16), alpha(blue[500], 0.26)],
-    '--color-on-accent': zinc[950],
+    // Action and focus: Tailwind blue-600 with white on it in both themes (5.3:1; the
+    // blue-500 it replaces held white at only 3.8:1).
+    '--color-accent': blue[600],
+    '--color-accent-muted': [alpha(blue[600], 0.16), alpha(blue[600], 0.26)],
+    '--color-on-accent': white,
     // Accent used as text (links) needs AA contrast on its surface, so it
     // steps one shade toward the surface's opposite.
     '--color-text-accent': [blue[600], blue[400]],
@@ -208,7 +221,7 @@ export const popcornTheme = defineTheme({
     // Focus: a 2px accent ring with clear offset.
     '--focus-outline-width': '2px',
     '--focus-outline-style': 'solid',
-    '--focus-outline-color': blue[500],
+    '--focus-outline-color': blue[600],
     '--focus-outline-offset': '3px',
 
     // Type ramp from DESIGN.md
@@ -252,6 +265,13 @@ export const popcornTheme = defineTheme({
     // Secondary buttons: surface fill with a thin divider border (Popcorn SR).
     button: {
       base: {fontWeight: '600'},
+      // Hover and press paint their overlay over the fill. On the primary the overlay is a
+      // darker, opaque Action Blue, so the white label stays at 4.5:1 or more in both themes
+      // (the default overlay is white in dark, which would lighten the blue under the label).
+      'variant:primary': {
+        '--color-overlay-hover': 'var(--popcorn-accent-hover)',
+        '--color-overlay-pressed': 'var(--popcorn-accent-pressed)',
+      },
       'variant:secondary': {
         backgroundColor: 'var(--color-background-surface)',
         borderWidth: '1px',
@@ -303,37 +323,49 @@ export const popcornTheme = defineTheme({
     },
 
     // Switch: off is a Zinc Subtle track (Zinc Dark Divider in dark) inside a 2px ring with
-    // a knob in the same zinc as the ring; on is the Action Blue track with the surface knob.
-    // The ring is an inset shadow, so the track keeps its size and forced colors keeps
-    // Astryx's own system-colour border.
+    // a knob in the same zinc as the ring; on is the Action Blue track with a white knob,
+    // tinted darker on hover in both themes (Astryx tints toward white in dark). The ring is
+    // an inset shadow, so the track keeps its size and forced colors keeps Astryx's own
+    // system-colour border.
     switch: {
       base: {
         '--color-background-gray': 'var(--color-background-muted)',
         boxShadow: 'inset 0 0 0 2px var(--popcorn-switch-off)',
       },
-      checked: {boxShadow: 'none'},
+      checked: {
+        boxShadow: 'none',
+        '--color-tint-hover': 'var(--popcorn-accent-hover-tint)',
+      },
     },
     'switch-thumb': {
       base: {'--color-background-surface': 'var(--popcorn-switch-off)'},
-      checked: {'--color-background-surface': 'var(--popcorn-switch-on-knob)'},
+      checked: {'--color-background-surface': 'var(--color-on-accent)'},
     },
 
     // An unchecked checkbox or radio has the off switch's edge, so every control that is
     // off or not chosen on a page reads the same and at 3:1 or more (WCAG 1.4.11): its
     // border is --color-border-emphasized, set here on the indicator alone (zinc-300 and
     // zinc-700 elsewhere are only 1.4:1 and 1.9:1). Checked ones keep the Action Blue
-    // fill; disabled ones keep Astryx's own faint border.
+    // fill with a white mark, tinted darker on hover like the switch; disabled ones keep
+    // Astryx's own faint border.
     'checkbox-indicator': {
       base: {'--color-border-emphasized': 'var(--popcorn-switch-off)'},
+      checked: {'--color-tint-hover': 'var(--popcorn-accent-hover-tint)'},
     },
     'radio-indicator': {
       base: {'--color-border-emphasized': 'var(--popcorn-switch-off)'},
+      checked: {'--color-tint-hover': 'var(--popcorn-accent-hover-tint)'},
     },
 
     'status-dot': {
       'variant:neutral': {backgroundColor: 'var(--popcorn-status-neutral)'},
     },
 
+    // An Action Blue fill keeps 3:1 against its track: zinc-300 in light (3.6:1), Zinc
+    // Black in dark (3.8:1). Other bars keep the neutral theme's track.
+    'progress-bar': {
+      'variant:accent': {'--color-background-muted': 'var(--popcorn-progress-track)'},
+    },
     'progress-bar-track': {
       base: {borderRadius: 'var(--popcorn-radius-progress)'},
     },
@@ -341,6 +373,12 @@ export const popcornTheme = defineTheme({
       base: {borderRadius: 'var(--popcorn-radius-progress)'},
     },
   },
+
+  // Over media (MediaTheme: the player stage, the photo viewer) Astryx turns the accent into
+  // the surface's own on-colour, zinc-50 on a dark picture. Whatever sits on that fill takes
+  // the opposite one, as it did before the on-accent became white.
+  onDark: {tokens: {'--color-on-accent': 'var(--color-on-light)'}},
+  onLight: {tokens: {'--color-on-accent': 'var(--color-on-dark)'}},
 
   adaptations: {
     // Popcorn SR's compact-navigation breakpoint is 800px; AppShell's mobile

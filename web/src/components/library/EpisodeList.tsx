@@ -78,7 +78,8 @@ const styles = stylex.create({
     insetInline: 0,
     bottom: 0,
     height: 4,
-    backgroundColor: 'color-mix(in oklch, var(--popcorn-stage) 45%, transparent)',
+    // Opaque Stage Black, as on a media tile: the Action Blue fill keeps 4:1 on any frame.
+    backgroundColor: 'var(--popcorn-stage)',
   },
   fill: {
     display: 'block',

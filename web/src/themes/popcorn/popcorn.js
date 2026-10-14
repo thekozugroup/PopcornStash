@@ -105,8 +105,8 @@ export const popcornTheme = {
     "--color-background-card": "light-dark(oklch(100% 0 0), oklch(21% 0.006 285.885))",
     "--color-background-popover": "light-dark(oklch(100% 0 0), oklch(21% 0.006 285.885))",
     "--color-background-muted": "light-dark(oklch(96.7% 0.001 286.375), oklch(27.4% 0.006 286.033))",
-    "--color-accent": "oklch(62.3% 0.214 259.815)",
-    "--color-accent-muted": "light-dark(oklch(62.3% 0.214 259.815 / 0.16), oklch(62.3% 0.214 259.815 / 0.26))",
+    "--color-accent": "oklch(54.6% 0.245 262.881)",
+    "--color-accent-muted": "light-dark(oklch(54.6% 0.245 262.881 / 0.16), oklch(54.6% 0.245 262.881 / 0.26))",
     "--color-neutral": "light-dark(oklch(21% 0.006 285.885 / 0.06), oklch(98.5% 0 0 / 0.1))",
     "--color-overlay": "light-dark(oklch(14.1% 0.005 285.823 / 0.45), oklch(14.1% 0.005 285.823 / 0.72))",
     "--color-overlay-hover": "light-dark(oklch(14.1% 0.005 285.823 / 0.05), oklch(100% 0 0 / 0.06))",
@@ -117,7 +117,7 @@ export const popcornTheme = {
     "--color-text-accent": "light-dark(oklch(54.6% 0.245 262.881), oklch(70.7% 0.165 254.624))",
     "--color-on-dark": "oklch(98.5% 0 0)",
     "--color-on-light": "oklch(14.1% 0.005 285.823)",
-    "--color-on-accent": "oklch(14.1% 0.005 285.823)",
+    "--color-on-accent": "oklch(100% 0 0)",
     "--color-on-success": "oklch(14.1% 0.005 285.823)",
     "--color-on-error": "light-dark(oklch(100% 0 0), oklch(14.1% 0.005 285.823))",
     "--color-on-warning": "oklch(14.1% 0.005 285.823)",
@@ -197,20 +197,25 @@ export const popcornTheme = {
     "--size-element-lg": "48px",
     "--focus-outline-width": "2px",
     "--focus-outline-style": "solid",
-    "--focus-outline-color": "oklch(62.3% 0.214 259.815)",
+    "--focus-outline-color": "oklch(54.6% 0.245 262.881)",
     "--focus-outline-offset": "3px"
   },
   localTokens: {
-    "--astryx-theme-neutral-color-status-fill-accent": "oklch(62.3% 0.214 259.815)",
+    "--astryx-theme-neutral-color-status-fill-accent": "oklch(54.6% 0.245 262.881)",
     "--astryx-theme-neutral-color-status-fill-success": "oklch(69.6% 0.17 162.48)",
     "--astryx-theme-neutral-color-status-fill-warning": "oklch(76.9% 0.188 70.08)",
     "--astryx-theme-neutral-color-status-fill-error": "oklch(63.7% 0.237 25.331)",
-    "--astryx-theme-neutral-color-status-muted-accent": "light-dark(oklch(62.3% 0.214 259.815 / 0.14), oklch(62.3% 0.214 259.815 / 0.24))",
+    "--astryx-theme-neutral-color-status-muted-accent": "light-dark(oklch(54.6% 0.245 262.881 / 0.14), oklch(54.6% 0.245 262.881 / 0.24))",
     "--astryx-theme-neutral-color-on-tint-neutral": "light-dark(#fafafa4D, #0a0a0a4D)",
     "--astryx-theme-neutral-color-on-tint-overlay-hover": "light-dark(#fafafa1A, #0a0a0a1A)",
     "--astryx-theme-neutral-color-on-tint-overlay-pressed": "light-dark(#fafafa33, #0a0a0a33)",
     "--astryx-theme-neutral-color-destructive-overlay-hover": "light-dark(#ff7f770D, #ee736c0D)",
     "--astryx-theme-neutral-color-destructive-overlay-pressed": "light-dark(#ff7f771A, #ee736c1A)",
+    "--popcorn-accent-hover": "oklch(48.8% 0.243 264.376)",
+    "--popcorn-accent-pressed": "oklch(42.4% 0.199 265.638)",
+    "--popcorn-accent-hover-tint": "oklch(42.4% 0.199 265.638)",
+    "--popcorn-progress-track": "light-dark(oklch(87.1% 0.006 286.286), oklch(14.1% 0.005 285.823))",
+    "--popcorn-control-well": "light-dark(oklch(96.7% 0.001 286.375), oklch(14.1% 0.005 285.823))",
     "--popcorn-radius-media": "10px",
     "--popcorn-radius-tag": "6px",
     "--popcorn-radius-progress": "4px",
@@ -223,8 +228,7 @@ export const popcornTheme = {
     "--popcorn-status-warning": "oklch(76.9% 0.188 70.08)",
     "--popcorn-status-error": "oklch(63.7% 0.237 25.331)",
     "--popcorn-status-neutral": "oklch(55.2% 0.016 285.938)",
-    "--popcorn-switch-off": "light-dark(oklch(55.2% 0.016 285.938), oklch(70.5% 0.015 286.067))",
-    "--popcorn-switch-on-knob": "light-dark(oklch(100% 0 0), oklch(21% 0.006 285.885))"
+    "--popcorn-switch-off": "light-dark(oklch(55.2% 0.016 285.938), oklch(70.5% 0.015 286.067))"
   },
   __localTokenOwners: {
     "--astryx-theme-neutral-color-status-fill-accent": "neutral",
@@ -237,6 +241,11 @@ export const popcornTheme = {
     "--astryx-theme-neutral-color-on-tint-overlay-pressed": "neutral",
     "--astryx-theme-neutral-color-destructive-overlay-hover": "neutral",
     "--astryx-theme-neutral-color-destructive-overlay-pressed": "neutral",
+    "--popcorn-accent-hover": "popcorn",
+    "--popcorn-accent-pressed": "popcorn",
+    "--popcorn-accent-hover-tint": "popcorn",
+    "--popcorn-progress-track": "popcorn",
+    "--popcorn-control-well": "popcorn",
     "--popcorn-radius-media": "popcorn",
     "--popcorn-radius-tag": "popcorn",
     "--popcorn-radius-progress": "popcorn",
@@ -249,8 +258,7 @@ export const popcornTheme = {
     "--popcorn-status-warning": "popcorn",
     "--popcorn-status-error": "popcorn",
     "--popcorn-status-neutral": "popcorn",
-    "--popcorn-switch-off": "popcorn",
-    "--popcorn-switch-on-knob": "popcorn"
+    "--popcorn-switch-off": "popcorn"
   },
   __localTokenLineage: ["neutral","popcorn"],
   components: {
@@ -360,6 +368,10 @@ export const popcornTheme = {
       },
       "base": {
         "fontWeight": "600"
+      },
+      "variant:primary": {
+        "--color-overlay-hover": "var(--popcorn-accent-hover)",
+        "--color-overlay-pressed": "var(--popcorn-accent-pressed)"
       },
       "variant:secondary": {
         "backgroundColor": "var(--color-background-surface)",
@@ -528,7 +540,8 @@ export const popcornTheme = {
         "boxShadow": "inset 0 0 0 2px var(--popcorn-switch-off)"
       },
       "checked": {
-        "boxShadow": "none"
+        "boxShadow": "none",
+        "--color-tint-hover": "var(--popcorn-accent-hover-tint)"
       }
     },
     "progress-bar": {
@@ -536,7 +549,8 @@ export const popcornTheme = {
         "--color-background-muted": "var(--color-border-emphasized)"
       },
       "variant:accent": {
-        "--color-accent": "var(--astryx-theme-neutral-color-status-fill-accent)"
+        "--color-accent": "var(--astryx-theme-neutral-color-status-fill-accent)",
+        "--color-background-muted": "var(--popcorn-progress-track)"
       },
       "variant:success": {
         "--color-success": "var(--astryx-theme-neutral-color-status-fill-success)"
@@ -590,17 +604,23 @@ export const popcornTheme = {
         "--color-background-surface": "var(--popcorn-switch-off)"
       },
       "checked": {
-        "--color-background-surface": "var(--popcorn-switch-on-knob)"
+        "--color-background-surface": "var(--color-on-accent)"
       }
     },
     "checkbox-indicator": {
       "base": {
         "--color-border-emphasized": "var(--popcorn-switch-off)"
+      },
+      "checked": {
+        "--color-tint-hover": "var(--popcorn-accent-hover-tint)"
       }
     },
     "radio-indicator": {
       "base": {
         "--color-border-emphasized": "var(--popcorn-switch-off)"
+      },
+      "checked": {
+        "--color-tint-hover": "var(--popcorn-accent-hover-tint)"
       }
     },
     "progress-bar-track": {
@@ -619,7 +639,8 @@ export const popcornTheme = {
       "color-scheme": "dark",
       "--color-text-primary": "var(--color-on-dark)",
       "--color-icon-primary": "var(--color-on-dark)",
-      "--color-accent": "var(--color-on-dark)"
+      "--color-accent": "var(--color-on-dark)",
+      "--color-on-accent": "var(--color-on-light)"
     }
   },
   __onLight: {
@@ -627,7 +648,8 @@ export const popcornTheme = {
       "color-scheme": "light",
       "--color-text-primary": "var(--color-on-light)",
       "--color-icon-primary": "var(--color-on-light)",
-      "--color-accent": "var(--color-on-light)"
+      "--color-accent": "var(--color-on-light)",
+      "--color-on-accent": "var(--color-on-dark)"
     }
   },
   __adaptations: {

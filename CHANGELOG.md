@@ -35,6 +35,11 @@ Libraries the owner defines, each with its own icon and its own audience, and th
 - Switches are easy to see when they are off, in light and dark (a ring and knob with at least 3:1 contrast). Unchecked checkboxes and radios now have the same edge, so every control that is off or not chosen reads alike and at 3:1 or more. In the library editor the checkboxes line up with the choices above them.
 - Settings, Devices starts with the Android app: what it does, where it comes from (for an owner, how to build it; for anyone else, from whoever runs the server), and how to get in: pair with a code, which always works, or a passkey once the server is set up for it. Installing PopcornStash from Chrome stays as the way to share from a phone without the app ("Share without the app").
 - The Photos timeline follows a photo whose date changes while it is open (the one-time redating after an upgrade, or a photo whose EXIF is read later): it moves to its month, in order, with both months' counts, without a reload. A grid sorted by date taken keeps its order the same way.
+- Everything on the blue is white: button labels and icons, checkbox marks, the knob of a switch that is on, badges. The blue is one shade deeper (Tailwind blue-600) so white reads at 5.3:1, and a hovered or pressed button gets darker instead of lighter (6.8:1 and 8.8:1). Focus rings, progress bars and the watched line on tiles use the same blue; a download's progress track in dark, the Inbox edit form's fill in dark and the watched line's track were changed so these thin marks keep 3:1. A theme test measures every pairing in light and dark.
+
+### Chrome extension
+
+- The Send and Connect buttons and the switch that is on are white on the deeper blue, in light and dark, and hover goes darker; the progress track and a notice that holds a button keep the blue at 3:1 in dark. A unit test measures the pairings.
 
 ### Android app
 
