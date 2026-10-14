@@ -133,6 +133,9 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
     implementation(libs.okhttp.sse)
+    // Thumbnails and photos, loaded with the session's bearer client (feature/home).
+    implementation(libs.coil.compose)
+    implementation(libs.coil.network.okhttp)
 
     testImplementation(platform(libs.compose.bom))
     testImplementation(libs.compose.ui.test.junit4)
@@ -145,6 +148,7 @@ dependencies {
     testImplementation(libs.roborazzi.junit.rule)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.coil.test)
 }
 
 // ---------------------------------------------------------------- Lucide glyphs ----
@@ -168,6 +172,8 @@ val lucideIconNames = listOf(
     "plus", "pause", "play", "ellipsis-vertical", "arrow-left", "external-link", "x",
     "server", "log-out", "chevron-right", "chevron-down", "check", "key-round", "link",
     "smartphone", "rotate-ccw",
+    // Home and libraries: save the original, details, sort, file types.
+    "download", "info", "arrow-up-down", "file-archive",
 )
 
 abstract class LucideGlyphsTask : DefaultTask() {

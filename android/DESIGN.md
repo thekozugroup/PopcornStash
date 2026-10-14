@@ -91,6 +91,11 @@ Every target is at least 48dp. Icons are Lucide (the web's set, from the same Lu
 | Server | `server` |
 | Sign out | `log-out` |
 | Open a library | `chevron-right` |
+| Sort a library | `arrow-up-down` |
+| Edit library (owners) | `settings` |
+| Save the original (photo viewer) | `download` |
+| Details (photo viewer) | `info` |
+| Music, archives (Other files) | `music`, `file-archive` |
 
 ## Navigation
 
@@ -114,7 +119,7 @@ One Action Blue square that lives behind the icons and slides along the bar to t
 ### Tab transitions (`navigation/PageTransitions.kt`)
 
 - Tapping a tab slides the pages horizontally, direction aware: the new page comes in from the side of the tapped square (from the right when it is to the right of the current one, from the left when it is to the left) while the old one leaves the other way. Full width, `pageSpring` (about 300 ms).
-- Each tab keeps its own back stack, state and scroll position (a saveable state holder per tab, data in a view model per destination). Tapping the current tab again scrolls its first page to the top, or pops its stack to the first page.
+- Each tab keeps its own back stack, state and scroll position (a saveable state holder per tab, data in a view model per destination). Tapping the current tab again scrolls its first page to the top, or pops its stack to the first page. The stack is `navigation/PageStack.kt`: routes saved with the tab (they survive another tab, a rotation and a recreated process), one saveable state and one view model store per page; a page's view models live until it closes or the person's session ends.
 - Inside a tab, pages open and close with `push`. The toolbar stays while browsing.
 - System Back pops the current tab's stack first; at a tab's first page it returns to Home (sliding back), and from Home it leaves the app. Back closes the viewer or player before anything else.
 - Reduce motion: a 150 ms crossfade for tabs and pushes.
@@ -126,33 +131,35 @@ One Action Blue square that lives behind the icons and slides along the bar to t
 - A tab's first page: the page title in `headline` ("Home", "Downloads", "Settings"). A pushed page: a 48dp back button (`arrow-left`, "Back") before the title in `title` type (the library's name, the show, the item, "New library").
 - Trailing actions, at most two 48dp icon buttons with tooltips: Downloads has "Add a link" (`plus`); an owner's library page has "Edit library" (`settings`).
 - When the page scrolls under it, a 1dp `divider` rule appears at its bottom edge; no colour change, no shadow.
+- A pushed page that starts with its own large heading under its picture (a show, an item) leaves the bar's title empty until that heading has scrolled away, so the name is never shown twice.
 
 ## Pages
 
 ### Home
 
-1. **Continue watching** (only when there is something to resume; no empty state here). A horizontal pager of 16:9 frames, each card the gutter-to-gutter width minus a 32dp peek of the next card, 12dp apart, snapping one card at a time. Under each frame, 10dp down: the title in `item` and one `metadata` line ("S01E02 · 12 min left"). The frame carries the 4dp Action Blue progress bar over a zinc-950 40% track along its bottom. Tapping a card resumes it in the player at once; a 48dp More button beside the title offers "Details" and "Start from the beginning". Content description: "Resume Bluey S01E02, 12 minutes left". The pager has no dots: the peek shows there is more.
-2. **Libraries**, every one the person can see, in the owner's order, 40dp apart. Each starts with a 56dp header row: the library icon at 24dp in `textMuted`, 12dp, the name in `section`, its count in `metadata` beside it, and a trailing `chevron-right`; the whole row opens the library. Under it, 12dp down, a shelf of up to twelve of its newest items in the library's shape: posters for `posters` and `series` (a show's poster stands for its episodes), frames for `frames`, squares for `timeline`. A library with nothing yet keeps its header with "Nothing here yet" in `metadata` under it.
+1. **Continue watching** (only when there is something to resume; no empty state here). A horizontal pager of 16:9 frames, each card the gutter-to-gutter width minus a 32dp peek of the next card, 12dp apart, snapping one card at a time (`CarouselTokens`). Under each frame, 10dp down: the title in `item` (the show's name for an episode) and one `metadata` line ("S01E02 · 12 min left"); the More button takes no more height than these two lines, its 48dp target reaching past them. The frame carries the 4dp Action Blue progress bar over a zinc-950 40% track along its bottom. Tapping a card resumes it in the player at once; a 48dp More button beside the title offers "Details" and "Start from the beginning". Content description: "Resume Bluey S01E02, 12 minutes left". The pager has no dots: the peek shows there is more.
+2. **Libraries**, every one the person can see, in the owner's order, 40dp apart. Each starts with a 56dp header row: the library icon at 24dp in `textMuted`, 12dp, the name in `section`, its count in `metadata` beside it ("214 videos", "12 shows", "3,214 photos"; the name gives way with an ellipsis first), and a trailing `chevron-right` on the gutter; the whole row opens the library. Under it, 4dp down (the row's own padding parts the name from the tiles), a shelf of up to twelve of its newest items in the library's shape: posters for `posters` and `series` (a show stands for its new episodes: "New: S01E03" or "3 new episodes", pictured by its poster), frames for `frames`, squares for `timeline` (a photo opens the viewer on that shelf's photos; a phone clip plays). A library with nothing yet keeps its header, without a count, with "Nothing here yet" in `metadata` under it.
 3. **Other files**, last, as a single 56dp row (`file-text`, "Other files", its count, chevron) when the person has any.
 
 When the person can see no library: an empty state with the `house` icon, "Nothing has been shared with you yet." for members, or "No libraries yet" with "Make a library" (opening the editor in Settings) for the owner.
 
 ### A library (pushed from Home)
 
-- **Posters or frames (one-offs):** a lazy grid (posters at least 104dp, three columns on a phone; frames at least 160dp, two columns), newest first, with a sort menu (Newest, Title, Year) as a trailing top bar action.
-- **Series (episodes):** a poster grid of shows ("3 seasons" or "12 episodes" under each). A show page: its poster frame at the top (16:9 crop of the poster episode), "Resume S01E02" or "Play S01E01" as the primary button, a season picker (Material segmented buttons up to four seasons, a dropdown beyond), then episode rows: a 128dp 16:9 frame, the episode name in `item`, its state in `metadata` ("Watched", "Up next · 5 min left", or the runtime).
-- **Timeline (photos):** month headings in `title` with the count in `metadata`, square tiles four across with 3dp gaps. A photo opens the full-screen viewer.
+- **Posters or frames (one-offs):** a lazy grid (posters at least 104dp, three columns on a phone; frames at least 160dp, two columns) with a sort menu as a trailing top bar action, the web's choices (the API sorts by `added`, `title`, `taken` or `size`): posters "Recently added" (first), "Title", "Largest first"; frames "Date filmed" (first), "Recently added", "Title", "Largest first". The next page loads when the person nears the end; a page that does not come says why with "Try again" at the end of the grid.
+- **Series (episodes):** a poster grid of shows ("3 seasons" or "12 episodes" under each). A show page: its poster frame at the top (16:9 crop of the poster episode), "Resume S01E02" or "Play S01E01" as the primary button, a season picker (Material segmented buttons up to four seasons, a dropdown beyond), then episode rows: a 128dp 16:9 frame with the watched bar, the episode name in `item` ("3. The lantern keepers"; "Episode 5" when it has no title), its state in `metadata` ("Watched", "Up next · 5 min left" in `text`, or the runtime). The pictures part the rows, so they have no rules. What plays next: the last episode touched if it is not finished, else the one after it, else the first; specials only when the show has nothing else.
+- **Timeline (photos):** month headings in `title` with the count in `metadata` (on the gutter), square tiles four across with 3dp gaps from edge to edge, without corners. A photo opens the full-screen viewer; a phone clip kept with the photos carries a 24dp `mediaControl` disc with `play` at its bottom start and plays when tapped.
 - **Other files:** a list of rows with the file-type glyph, name and "PDF · 592 B", under the same sentence as the web ("Music, documents and anything else. Only you and the owners see these." for members). Tapping one opens it in another app: PopcornStash fetches a private copy, hands that app a read-only link to it and deletes the copy afterwards (docs/architecture.md section 10), so nothing lands in the phone's Downloads. While it fetches, the row's trailing spot shows a small indeterminate indicator; when no app opens the type, a snackbar says "No app on this phone opens this kind of file."
-- Empty: the library's own icon, "Nothing in Kids yet", and how it fills, as on the web.
-- A library that disappears while open (deleted or hidden) pops back to Home with a snackbar: "Kids is not available any more."
+- Empty: the library's own icon, "Nothing in Kids yet", and how it fills, as on the web ("New movies land here on their own.", or "Files you accept from Downloads into Kids show up here." for a library that takes nothing); owners also get "Edit library".
+- A library that disappears while open (deleted or hidden) pops back to Home, with every page opened from it, and a snackbar: "Kids is not available any more." A show that left the library closes the same way ("The Lantern Keepers is not in Shows any more."), and an item the person can no longer see ("That file is not available any more.").
+- Snackbars sit just above the floating toolbar, in the inverse surface with 8dp corners.
 
 ### Item detail (pushed)
 
-The picture at the top (frame or poster crop, full width, 10dp corners inside the gutter), the title in `headline`, one `metadata` line ("2014 · 1 h 52 min"), then the one primary button ("Resume from 12:04" or "Play") with "Start from the beginning" as a text button under it, a favourite toggle (`heart`, "Add to favourites" or "Remove from favourites"), and the facts (video, audio, size) as label-over-value columns. An episode adds "Next: S01E03 The lantern keepers" as a row when there is one in the same library.
+The picture at the top (the 16:9 frame with the watched bar, full width, 10dp corners inside the gutter; a photo keeps its own shape between 3:4 and 16:9 and opens the viewer), the title in `headline`, one `metadata` line ("2014 · 1 h 52 min", "Season 1, episode 2 · 24 min", "Taken 12 Oct 2026, 14:05"), then the one primary button ("Resume from 12:04" or "Play") with the favourite beside it as a 48dp outlined square (`heart`; filled on a `subtle` square while it is on; "Add to favourites" or "Remove from favourites" as its name and tooltip) and "Start from the beginning" as a text button under them, lined up with the page's text. A photo has no play button: the favourite is a secondary button with its words. Then a 1dp rule and the facts (video, audio, subtitles, dimensions, camera, file size) as label-over-value columns, two across. An episode adds "Next" over "S01E03 The lantern keepers" as a row with a 96dp frame when there is one in the same library. A missing file says so with the warning dot.
 
 ### Player and photo viewer (immersive)
 
-Full-bleed `stage` black, the toolbar hidden, edge to edge under the system bars (bars hidden while controls are hidden). Player controls sit on `mediaControl` discs and plates: close at the top start, the title beside it, play and pause in the centre, the seek bar with Action Blue progress and times at the bottom, audio and quality in a trailing menu. At the end of an episode with a next one: "Play next episode" as the primary button and "Back"; nothing starts on its own. Picture-in-picture keeps only play and pause. When the server stops answering for this video: "This video is no longer available." and Back. The photo viewer pages sideways between photos, with close at the top start and the date and camera on a `mediaControl` plate at the bottom.
+Full-bleed `stage` black, the toolbar hidden, edge to edge under the system bars (bars hidden while controls are hidden). Player controls sit on `mediaControl` discs and plates: close at the top start, the title beside it, play and pause in the centre, the seek bar with Action Blue progress and times at the bottom, audio and quality in a trailing menu. At the end of an episode with a next one: "Play next episode" as the primary button and "Back"; nothing starts on its own. Picture-in-picture keeps only play and pause. When the server stops answering for this video: "This video is no longer available." and Back. The photo viewer (`feature/photos/PhotoViewer.kt`) pages sideways between photos (16dp apart), with close on a 48dp disc at the top start and, at the bottom, a `mediaControl` plate (16dp corners) with the date and camera and two icon buttons: "Save the original" (`download`: the system's "Save to" picker, then the app copies the original into the chosen file with its own client; a small indicator while it saves, a snackbar when done) and "Details" (`info`: the photo's page). A tap shows or hides the controls, and the system bars with them (their icons stay light on the stage). A pinch zooms up to 5x around the fingers, a double tap zooms to 2.5x at the tap and back (no travel under reduce motion), a zoomed photo pans within its edges and the pager waits until it is whole again. Phone clips show their frame with a 64dp play disc. The photo is decoded at up to twice the window's long edge (4096 px at most) over its large thumbnail.
 
 ### Downloads
 
@@ -193,9 +200,9 @@ A bottom sheet over the app that shared. A link or magnet: the link (two lines),
 
 ## Components
 
-### Tiles and shelves (`ui/components/MediaTile.kt`, `Shelf.kt`, `MediaGrid.kt`)
+### Tiles and shelves (`ui/components/MediaTile.kt`, `Shelf.kt`; grids in `feature/library/LibraryScreen.kt`)
 
-- The picture is the tile. Shapes follow the library's `layout`: posters 2:3 (`posters`, `series`), frames 16:9 (`frames`, continue watching), photos square (`timeline`). 10dp corners, the 1dp hairline inside the edge, `subtle` placeholder with the library's icon at 22dp when there is no picture.
+- The picture is the tile. Shapes follow the library's `layout`: posters 2:3 (`posters`, `series`), frames 16:9 (`frames`, continue watching), photos square (`timeline`). 10dp corners, the 1dp hairline inside the edge, `subtle` placeholder with the library's icon at 22dp when there is no picture or while it loads; the picture fades in over it (`fast`; none under reduce motion). Pictures come through Coil with the session's own client (`ui/media/StashImages.kt`): thumbnails `sm` (400 px) for photos and episode rows, `lg` (1280 px) for posters, frames, continue watching and the item page.
 - Under the picture, 10dp down: the title in `item` (two lines, then an ellipsis) and one `metadata` line. Photo tiles have no caption.
 - Partial watch progress: a 4dp Action Blue bar along the bottom of the picture over a zinc-950 40% track.
 - Shelves: a row that scrolls sideways with snapping, 12dp under their header. Tile widths: posters 132dp, frames 232dp, photos 112dp; 14dp between tiles.
@@ -209,10 +216,14 @@ Downloads, imports, libraries, folders and settings are rows on `page` separated
 
 Centred in the page: a 28dp line icon (stroke 1.5, the place's glyph; a library's own icon) in `textMuted`, a `section` title ("Nothing in Kids yet"), one or two `body` sentences in `textMuted` that say how the space fills, at most one action. No illustration, no box around it.
 
+### Menus
+
+Dropdown menus (sort, More, seasons beyond four) sit on `surface` with 8dp corners and a 1dp `divider` edge, so they hold their edge over a bright picture; the chosen entry carries a trailing `check`.
+
 ### Loading and errors
 
 Loading pages show placeholder tiles and rows in `subtle` at their final sizes (no spinners on pages; a small indeterminate indicator only inside a button or the pairing wait). A failed load shows one sentence and "Try again" where the content would be. Lost connection: a single row under the top bar, "Not connected to the server. Trying again.", in `metadata` with the Warning dot.
 
 ## Owner's knobs
 
-The values most likely to change as the design is iterated, all in `ui/theme`: `ToolbarTokens` (square size, radius, padding, gap, elevation, selected colours, badge), `PopcornMotion.pageSpring`, `indicatorSpring` and `push`, `IconStroke`, the type table, the tile widths in `MediaTokens`, and `CarouselTokens` (card peek, gap, frame ratio).
+The values most likely to change as the design is iterated, all in `ui/theme`: `ToolbarTokens` (square size, radius, padding, gap, elevation, selected colours, badge), `PopcornMotion.pageSpring`, `indicatorSpring` and `push`, `IconStroke`, the type table, the tile widths in `MediaTokens` (also the episode frame and the row glyph square), and `CarouselTokens` (card peek, gap, frame ratio).

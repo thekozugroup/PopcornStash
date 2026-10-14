@@ -1,6 +1,7 @@
 package com.thekozugroup.popcornstash.ui.components
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -26,6 +27,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -40,7 +43,9 @@ import com.thekozugroup.popcornstash.ui.theme.PopcornMotion
  * The top of a page (android/DESIGN.md, Top app bar). Part of the page, so it slides
  * with it. A tab's first page shows its title in the headline style; a pushed page
  * ([onBack] set) shows a back button and the title in the title style. A 1dp rule
- * appears under it once the page scrolls under it ([scrolled]).
+ * appears under it once the page scrolls under it ([scrolled]). A page that starts with
+ * its own large heading (an item, a show) shows the bar's title only once that heading
+ * has scrolled away ([titleVisible]).
  */
 @Composable
 fun PageTopBar(
@@ -48,9 +53,15 @@ fun PageTopBar(
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
     scrolled: Boolean = false,
+    titleVisible: Boolean = true,
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     val colors = Popcorn.colors
+    val titleAlpha by animateFloatAsState(
+        targetValue = if (titleVisible) 1f else 0f,
+        animationSpec = PopcornMotion.fast(),
+        label = "top bar title",
+    )
     val rule by animateColorAsState(
         targetValue = if (scrolled) colors.divider else Color.Transparent,
         animationSpec = PopcornMotion.fast(),
@@ -78,7 +89,10 @@ fun PageTopBar(
                 color = colors.text,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).semantics { heading() },
+                modifier = Modifier
+                    .weight(1f)
+                    .graphicsLayer { alpha = titleAlpha }
+                    .then(if (titleVisible) Modifier.semantics { heading() } else Modifier.clearAndSetSemantics { }),
             )
             actions()
         }

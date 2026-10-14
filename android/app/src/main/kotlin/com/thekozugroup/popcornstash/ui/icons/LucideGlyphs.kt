@@ -514,6 +514,46 @@ object LucideGlyphs {
         ),
     )
 
+    val Download = LucideGlyph(
+        "download",
+        listOf(
+            "M12 15V3",
+            "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4",
+            "m7 10 5 5 5-5",
+        ),
+    )
+
+    val Info = LucideGlyph(
+        "info",
+        listOf(
+            "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0Z",
+            "M12 16v-4",
+            "M12 8h.01",
+        ),
+    )
+
+    val ArrowUpDown = LucideGlyph(
+        "arrow-up-down",
+        listOf(
+            "m21 16-4 4-4-4",
+            "M17 20V4",
+            "m3 8 4-4 4 4",
+            "M7 4v16",
+        ),
+    )
+
+    val FileArchive = LucideGlyph(
+        "file-archive",
+        listOf(
+            "M13.659 22H18a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v11.5",
+            "M14 2v5a1 1 0 0 0 1 1h5",
+            "M8 12v-1",
+            "M8 18v-2",
+            "M8 7V6",
+            "M6 20a2 2 0 1 0 4 0a2 2 0 1 0 -4 0Z",
+        ),
+    )
+
     val all: List<LucideGlyph> = listOf(
         Film,
         Clapperboard,
@@ -568,5 +608,9 @@ object LucideGlyphs {
         Link,
         Smartphone,
         RotateCcw,
+        Download,
+        Info,
+        ArrowUpDown,
+        FileArchive,
     )
 }

@@ -6,6 +6,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.io.File
 
 /** The process: holds the app's services (the session, the API client) for every screen. */
 class PopcornStashApplication : Application() {
@@ -17,6 +18,8 @@ class PopcornStashApplication : Application() {
         container = AppContainer(this)
         // Reading the kept session touches the Keystore and a file: off the main thread.
         container.appScope.launch(Dispatchers.IO) { container.sessions.restore() }
+        // Private copies of Other files opened before the process ended (docs/architecture.md section 10).
+        container.appScope.launch(Dispatchers.IO) { File(cacheDir, "opened").deleteRecursively() }
         // Live events run only while the app is in the foreground.
         ProcessLifecycleOwner.get().lifecycle.addObserver(
             object : DefaultLifecycleObserver {

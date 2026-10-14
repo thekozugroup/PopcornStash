@@ -11,7 +11,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
+import mockwebserver3.SocketEffect
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.junit.After
@@ -483,6 +485,20 @@ class ApiClientTest {
     }
 
     // ------------------------------------------------------------- errors ----
+
+    @Test
+    fun aConnectionThatBreaksWhileTheAnswerArrivesIsANetworkError() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .addHeader("Content-Type", "application/json")
+                .body("""{"libraries":[""" + "x".repeat(200_000))
+                .onResponseBody(SocketEffect.ShutdownConnection)
+                .build(),
+        )
+        val error = expectApiError { api.libraries() }
+        assertTrue(error.isNetwork)
+        assertEquals("PopcornStash did not answer. Check the connection and try again.", error.message)
+    }
 
     @Test
     fun theServersSentenceAndFieldComeThrough() = runTest {
