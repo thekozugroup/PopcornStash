@@ -4,7 +4,8 @@
 #
 #   scripts/check.sh            Rust, web UI, extension, Android app, Docker image and smoke test
 #   scripts/check.sh --quick    the same without Docker
-#   scripts/check.sh --e2e      also the Playwright suite in tests/e2e
+#   scripts/check.sh --e2e      also the Playwright suite in tests/e2e and the Android app
+#                               against a real server
 #   scripts/check.sh --full     also tests/e2e, scripts/vpn-e2e.sh and scripts/fullstack-e2e.sh
 #   scripts/check.sh --audit    also cargo audit and npm audit --omit=dev (web, extension)
 #
@@ -183,6 +184,13 @@ gradle() {
   (cd android && ./gradlew --console=plain "$@")
 }
 
+# The app's own client against a real `popcornstash serve` on a scripts/dev-fixture.sh
+# stash: pairing, passkey sign-in, libraries, Home and live events (android/README.md, Tests).
+android_integration() {
+  cargo build -p popcornstash --locked || return 1
+  gradle :app:testDebugUnitTest --tests '*ServerIntegrationTest*' -PpopcornstashServer=../target/debug/popcornstash
+}
+
 # --------------------------------------------------------------- secrets ----
 # The names PopcornStash and VPN providers give to secrets (.dockerignore keeps the
 # same ones out of image builds) must be ignored by git, and none may be tracked.
@@ -276,8 +284,13 @@ fi
 if ((e2e)); then
   step "tests/e2e: npm ci (if needed)" npm_install tests/e2e
   step "tests/e2e: Playwright suite" e2e_suite
+  if android_sdk; then
+    step "android: the app against a real server" android_integration
+  else
+    skip "android: the app against a real server (no Android SDK)"
+  fi
 else
-  skip "tests/e2e (--e2e or --full)"
+  skip "tests/e2e and the Android app against a real server (--e2e or --full)"
 fi
 
 if ((docker_checks)); then

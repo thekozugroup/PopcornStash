@@ -14,6 +14,7 @@ Every value below is a token in `app/src/main/kotlin/com/thekozugroup/popcornsta
 | `surface` | white `#FFFFFF` | zinc-900 `#18181B` | toolbar, sheet, panels |
 | `subtle` | zinc-100 `#F4F4F5` | zinc-800 `#27272A` | media placeholders, avatar, progress track |
 | `divider` | zinc-200 `#E4E4E7` | zinc-800 `#27272A` | panel borders, row dividers, the scrolled top bar's rule |
+| `fieldOutline` | zinc-500 `#71717B` | zinc-500 `#71717B` | the edge of a text field (3:1 or more on the page) |
 | `text` | zinc-900 `#18181B` | zinc-50 `#FAFAFA` | main text and icons |
 | `textMuted` | zinc-600 `#52525C` | zinc-400 `#9F9FA9` | metadata, unselected toolbar icons, ghost buttons |
 | `accent` (Action Blue) | blue-500 `#2B7FFF` | blue-500 `#2B7FFF` | the selected toolbar square, primary buttons, progress, focus |

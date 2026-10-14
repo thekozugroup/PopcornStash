@@ -7,8 +7,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
-import com.thekozugroup.popcornstash.TabRoot
 import com.thekozugroup.popcornstash.navigation.AppShell
 import com.thekozugroup.popcornstash.navigation.Tab
 import com.thekozugroup.popcornstash.ui.theme.PopcornTheme
@@ -30,7 +30,7 @@ class ShellScreenshotTest {
     private fun shell(dark: Boolean, tab: Tab, readyToImport: Int = 0) {
         compose.setContent {
             PopcornTheme(darkTheme = dark, reduceMotion = false) {
-                AppShell(initialTab = tab, readyToImport = readyToImport) { TabRoot(it) }
+                AppShell(initialTab = tab, readyToImport = readyToImport) { SampleTabRoot(it) }
             }
         }
         compose.waitForIdle()
@@ -75,9 +75,18 @@ class ShellScreenshotTest {
     @Test
     fun toolbarTooltipLight() {
         shell(dark = false, tab = Tab.Home)
+        // Hold the clock so the press ripple has faded the same way on every run, and the
+        // tooltip (which hides by itself after a while) is still up.
+        compose.mainClock.autoAdvance = false
         compose.onNodeWithTag("tab Settings").performTouchInput { longClick() }
-        compose.waitForIdle()
-        compose.onNodeWithTag("toolbar").captureRoboImage(screenshot("toolbar-tooltip-light"))
-        compose.onRoot().captureRoboImage(screenshot("shell-tooltip-light"))
+        repeat(40) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+        // The press ripple is drawn by the platform on its own clock, so its last traces
+        // differ a little from run to run; allow 1% of the pixels to differ.
+        val ripple = RoborazziOptions(compareOptions = RoborazziOptions.CompareOptions(changeThreshold = 0.01f))
+        compose.onNodeWithTag("toolbar").captureRoboImage(screenshot("toolbar-tooltip-light"), roborazziOptions = ripple)
+        compose.onRoot().captureRoboImage(screenshot("shell-tooltip-light"), roborazziOptions = ripple)
     }
 }

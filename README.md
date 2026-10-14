@@ -68,7 +68,7 @@ Before you commit, run the checks on your own machine; there is no CI service:
 ```sh
 scripts/check.sh            # fmt, clippy, tests, web, extension, Android app, Docker image and smoke test
 scripts/check.sh --quick    # the same without Docker
-scripts/check.sh --e2e      # also the Playwright suite (tests/e2e)
+scripts/check.sh --e2e      # also the Playwright suite (tests/e2e) and the Android app against a real server
 scripts/check.sh --full     # also the VPN and full-stack tests in Docker
 scripts/check.sh --audit    # also cargo audit and npm audit
 ```
