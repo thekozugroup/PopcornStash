@@ -9,7 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::SqliteConnection;
 
 use super::access::Access;
-use super::scanner::{in_place_category, is_junk_name, library_metadata};
+use super::scanner::{in_place_category, is_junk_name, kept_capture_time, library_metadata};
 use super::{Library, repo};
 use crate::db::Db;
 use crate::events::{Event, LibraryChange};
@@ -1401,10 +1401,7 @@ async fn take_in_folder(
         match in_place_category(def, &item.rel_path, item.kind, size) {
             Some(category) => {
                 let meta = library_metadata(category, &item.rel_path, item.mtime);
-                let taken = match category {
-                    Category::HomeVideo | Category::Photo => item.taken().or(meta.taken),
-                    _ => None,
-                };
+                let taken = kept_capture_time(category, item.taken(), meta.taken);
                 let (taken_at, taken_local, taken_offset) =
                     crate::capture::CaptureTime::columns(taken.as_ref());
                 sqlx::query(

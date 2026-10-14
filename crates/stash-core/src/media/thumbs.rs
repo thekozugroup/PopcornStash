@@ -82,6 +82,8 @@ pub enum Dating {
 
 /// The capture time a probed item gets. Movies and episodes have none (their creation
 /// time is the encode date); other kinds keep a stored time unless the metadata has one.
+/// A photo or home video's UTC creation time is paired with the clock its camera-style
+/// name writes when the two agree (`capture::with_name_clock`, with `item.duration_s`).
 pub fn capture_time(
     item: &ItemRow,
     recorded: Option<Recorded>,
@@ -97,8 +99,11 @@ pub fn capture_time(
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let named = parse_name(&stem).date;
+            let parsed = parse_name(&stem);
+            let named = parsed.date;
             let file_time = Recorded::instant(item.mtime);
+            // A UTC creation time beside the phone's clock in the name gives both (Android).
+            let recorded = capture::with_name_clock(recorded, parsed.camera_clock, item.duration_s);
             match dating {
                 Dating::Keep => recorded
                     .and_then(|r| r.resolve(zone))
@@ -180,8 +185,13 @@ pub async fn process_item(media: &MediaService, item_id: &str, dating: Dating) -
     }
 
     // The capture date from EXIF or the clip's own tags beats whatever the scanner had
-    // (a date in the name or the file's modification time), as section 4 orders them.
-    let taken = capture_time(&item, result.recorded, dating, &capture::server_zone());
+    // (a date in the name or the file's modification time), as section 4 orders them. The
+    // clip's length is the one just read.
+    let probed = ItemRow {
+        duration_s: result.duration_s,
+        ..item.clone()
+    };
+    let taken = capture_time(&probed, result.recorded, dating, &capture::server_zone());
     let camera = result.camera.clone().or_else(|| item.camera.clone());
     // A waiting file's suggestion carries the same capture time, so where it would go
     // (its `YYYY/MM/` folder) follows what the probe learned.
@@ -1056,6 +1066,41 @@ mod tests {
         assert_eq!(webp_size(&media.thumb_path(&id, ThumbSize::Sm)), (400, 225));
     }
 
+    /// An Android clip as the phone writes it: the name on the phone's clock, the
+    /// container's creation time in UTC when the recording stopped.
+    #[tokio::test]
+    async fn an_android_clip_is_dated_by_its_name_and_creation_time() {
+        let h = harness().await;
+        let media = &h.media;
+        let rel = "Home Videos/2024/07/VID_20240630_223000.mp4";
+        ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=s=320x240:r=25:d=1.5",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-metadata",
+                "creation_time=2024-07-01T02:30:01Z",
+            ],
+            &media.layout.abs(rel).unwrap(),
+        );
+        let id = insert_item(media, rel, MediaKind::Video, Category::HomeVideo).await;
+        media.process_item(&id).await.unwrap();
+        let item = row(media, &id).await;
+        assert_eq!(
+            (
+                item.taken_at,
+                item.taken_local.as_deref(),
+                item.taken_offset
+            ),
+            (Some(MONTH_EDGE), Some("2024-06-30T22:30:00"), Some(-240))
+        );
+    }
+
     #[tokio::test]
     async fn hdr_video_thumbnail_is_tone_mapped() {
         let h = harness().await;
@@ -1698,6 +1743,55 @@ mod tests {
         let other = probed_row("Other/scan.jpg", Category::Other, MONTH_EDGE);
         assert_eq!(capture_time(&other, None, Dating::Keep, &ny), None);
         assert_eq!(capture_time(&other, exif, Dating::Keep, &ny), Some(t));
+    }
+
+    /// A clip's UTC creation time and the phone's clock in its name (Android, Samsung):
+    /// the probe keeps the name's clock with the offset between them, on any server.
+    #[test]
+    fn the_probe_pairs_a_utc_creation_time_with_the_name_clock() {
+        let created = Recorded::utc(2024, 7, 1, 2, 30, 0);
+        for server in ["UTC", "America/New_York"] {
+            let zone = zone(server);
+            for (rel, category) in [
+                (
+                    "Home Videos/2024/07/VID_20240630_223000.mp4",
+                    Category::HomeVideo,
+                ),
+                (
+                    "Home Videos/2024/07/20240630_223000.mp4",
+                    Category::HomeVideo,
+                ),
+                ("Photos/Camera/20240630_223000.mp4", Category::Photo),
+            ] {
+                let mut item = probed_row(rel, category, MONTH_EDGE + 86_400);
+                // Dated from its name when it was indexed.
+                item.set_taken(
+                    Recorded::clock(2024, 6, 30, 22, 30, 0, None)
+                        .unwrap()
+                        .resolve(&zone),
+                );
+                for dating in [Dating::Keep, Dating::Redate] {
+                    let t = capture_time(&item, created, dating, &zone).unwrap();
+                    assert_eq!(
+                        (t.at, t.local_text().as_str(), t.offset),
+                        (MONTH_EDGE, "2024-06-30T22:30:00", Some(-240)),
+                        "{rel} {dating:?} on {server}"
+                    );
+                }
+                // Written when a 40 second clip stopped.
+                item.duration_s = Some(40.0);
+                let stopped = Recorded::utc(2024, 7, 1, 2, 30, 40);
+                let t = capture_time(&item, stopped, Dating::Keep, &zone).unwrap();
+                assert_eq!((t.at, t.offset), (MONTH_EDGE, Some(-240)), "{rel}");
+            }
+        }
+        // Without a clock in the name the moment is read in the server's zone, as before.
+        let item = probed_row("Home Videos/clip.mp4", Category::HomeVideo, MONTH_EDGE);
+        let t = capture_time(&item, created, Dating::Keep, &zone("UTC")).unwrap();
+        assert_eq!(
+            (t.local_text().as_str(), t.offset),
+            ("2024-07-01T02:30:00", None)
+        );
     }
 
     /// Rows dated before migration 0003: the migration stored each old moment's UTC reading

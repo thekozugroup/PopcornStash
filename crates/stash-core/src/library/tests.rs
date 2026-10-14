@@ -700,6 +700,147 @@ async fn custom_folders_are_indexed_but_never_moved() {
     assert_eq!(organized.title, "Heat: Director's Cut");
 }
 
+/// Store a capture time the way the probe would after reading EXIF or QuickTime tags.
+async fn set_taken(h: &Harness, id: &str, at: i64, local: &str, offset: Option<i32>) {
+    sqlx::query("UPDATE items SET taken_at = ?, taken_local = ?, taken_offset = ? WHERE id = ?")
+        .bind(at)
+        .bind(local)
+        .bind(offset)
+        .bind(id)
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+}
+
+fn taken_of(item: &crate::models::ItemRow) -> (Option<i64>, Option<&str>, Option<i32>) {
+    (
+        item.taken_at,
+        item.taken_local.as_deref(),
+        item.taken_offset,
+    )
+}
+
+fn move_file(h: &Harness, from: &str, to: &str) {
+    std::fs::create_dir_all(h.root.join(to).parent().unwrap()).unwrap();
+    std::fs::rename(h.root.join(from), h.root.join(to)).unwrap();
+}
+
+/// A photo or clip moved by hand between Home Videos and Photos becomes the other kind
+/// but keeps the time its EXIF or QuickTime tags gave: the name and the file time
+/// (which the move does not change) never replace it.
+#[tokio::test]
+async fn a_file_moved_between_photos_and_home_videos_keeps_its_capture_time() {
+    let h = harness().await;
+    h.write("Home Videos/2024/06/IMG_0001.MOV", &bytes("clip"));
+    h.write("Photos/2024/06/june30_p0900.jpg", &bytes("photo"));
+    h.lib.rescan().await.unwrap();
+    let clip = repo::get_by_path(&h.lib.db, "Home Videos/2024/06/IMG_0001.MOV")
+        .await
+        .unwrap()
+        .unwrap();
+    let photo = repo::get_by_path(&h.lib.db, "Photos/2024/06/june30_p0900.jpg")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(clip.category, Category::HomeVideo);
+    assert_eq!(photo.category, Category::Photo);
+    // 23:30 in Tokyo and 09:00 in Los Angeles, as the probe read them from the files.
+    set_taken(
+        &h,
+        &clip.id,
+        1_719_757_800,
+        "2024-06-30T23:30:00",
+        Some(540),
+    )
+    .await;
+    set_taken(
+        &h,
+        &photo.id,
+        1_719_763_200,
+        "2024-06-30T09:00:00",
+        Some(-420),
+    )
+    .await;
+
+    move_file(
+        &h,
+        "Home Videos/2024/06/IMG_0001.MOV",
+        "Photos/Moved/IMG_0001.MOV",
+    );
+    move_file(
+        &h,
+        "Photos/2024/06/june30_p0900.jpg",
+        "Home Videos/Moved/june30_p0900.jpg",
+    );
+    let report = h.lib.rescan().await.unwrap();
+    assert_eq!(report.moved, 2, "{report:?}");
+
+    let clip = h.item(&clip.id).await;
+    assert_eq!(clip.rel_path, "Photos/Moved/IMG_0001.MOV");
+    assert_eq!(clip.category, Category::Photo);
+    assert_eq!(
+        taken_of(&clip),
+        (Some(1_719_757_800), Some("2024-06-30T23:30:00"), Some(540))
+    );
+    let photo = h.item(&photo.id).await;
+    assert_eq!(photo.rel_path, "Home Videos/Moved/june30_p0900.jpg");
+    assert_eq!(photo.category, Category::HomeVideo);
+    assert_eq!(
+        taken_of(&photo),
+        (Some(1_719_763_200), Some("2024-06-30T09:00:00"), Some(-420))
+    );
+
+    // And back again, and once more through a rescan that finds nothing new.
+    move_file(
+        &h,
+        "Photos/Moved/IMG_0001.MOV",
+        "Home Videos/2024/06/IMG_0001.MOV",
+    );
+    h.lib.rescan().await.unwrap();
+    h.lib.rescan().await.unwrap();
+    let clip = h.item(&clip.id).await;
+    assert_eq!(clip.category, Category::HomeVideo);
+    assert_eq!(
+        taken_of(&clip),
+        (Some(1_719_757_800), Some("2024-06-30T23:30:00"), Some(540))
+    );
+}
+
+/// A movie moved by hand into Photos had no capture time: it is dated from its name or
+/// file time, and the probe is queued to read its tags.
+#[tokio::test]
+async fn a_movie_moved_into_photos_is_dated_and_probed() {
+    let h = harness().await;
+    h.write("Movies/Heat (1995)/Heat (1995).mkv", &bytes("heat"));
+    // Something stays in Photos, so its folder never looks like an unplugged disk.
+    h.write("Photos/2020/01/IMG_0001.jpg", &bytes("photo"));
+    h.lib.rescan().await.unwrap();
+    let heat = repo::get_by_path(&h.lib.db, "Movies/Heat (1995)/Heat (1995).mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(heat.taken_at, None);
+    sqlx::query("DELETE FROM jobs")
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+
+    move_file(&h, "Movies/Heat (1995)/Heat (1995).mkv", "Photos/heat.mkv");
+    h.lib.rescan().await.unwrap();
+    let heat = h.item(&heat.id).await;
+    assert_eq!(heat.category, Category::Photo);
+    assert_eq!(heat.taken_at, Some(heat.mtime), "dated from the file time");
+    let probes = h.jobs("probe").await;
+    assert_eq!(probes, vec![(Some(heat.id.clone()), serde_json::json!({}))]);
+
+    // Back into Movies: a movie has no capture time.
+    move_file(&h, "Photos/heat.mkv", "Movies/Heat (1995)/Heat (1995).mkv");
+    h.lib.rescan().await.unwrap();
+    let heat = h.item(&heat.id).await;
+    assert_eq!(heat.category, Category::Movie);
+    assert_eq!(taken_of(&heat), (None, None, None));
+}
+
 #[tokio::test]
 async fn moved_and_missing_files_are_reconciled() {
     let h = harness().await;
@@ -2402,6 +2543,55 @@ mod libraries {
             ),
             "{err:?}"
         );
+    }
+
+    /// A restore into a library that now reads the file as another kind keeps the time
+    /// its EXIF or tags gave.
+    #[tokio::test]
+    async fn a_restore_that_changes_the_kind_keeps_the_capture_time() {
+        let h = harness().await;
+        add_owner(&h).await;
+        h.write("Home Videos/2024/06/IMG_0001.MOV", &bytes("clip"));
+        h.lib.rescan().await.unwrap();
+        let clip = repo::get_by_path(&h.lib.db, "Home Videos/2024/06/IMG_0001.MOV")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(clip.category, Category::HomeVideo);
+        set_taken(
+            &h,
+            &clip.id,
+            1_719_757_800,
+            "2024-06-30T23:30:00",
+            Some(540),
+        )
+        .await;
+        h.lib.trash_item(&clip.id, Some("u")).await.unwrap();
+
+        // Home Videos is remade as a photos library on the same folder.
+        h.lib.delete_library(STARTING_HOME_VIDEOS).await.unwrap();
+        std::fs::create_dir_all(h.root.join("Home Videos")).unwrap();
+        let mut camera = new_library("Camera roll", None, &[]);
+        camera.folder = Some(FolderRequest {
+            mode: Some("existing".into()),
+            name: Some("Home Videos".into()),
+        });
+        camera.visibility = Some("selected".into());
+        let camera = h.lib.create_library(camera, "u").await.unwrap();
+        sqlx::query("DELETE FROM jobs")
+            .execute(&h.lib.db)
+            .await
+            .unwrap();
+
+        let restored = h.lib.restore_item(&clip.id).await.unwrap();
+        assert_eq!(restored.rel_path, "Home Videos/2024/06/IMG_0001.MOV");
+        assert_eq!(restored.library_id.as_deref(), Some(camera.id.as_str()));
+        assert_eq!(restored.category, Category::Photo);
+        assert_eq!(
+            taken_of(&restored),
+            (Some(1_719_757_800), Some("2024-06-30T23:30:00"), Some(540))
+        );
+        assert!(h.jobs("probe").await.is_empty(), "nothing to read again");
     }
 
     /// Restoring a file its library would no longer show is refused before anything moves.

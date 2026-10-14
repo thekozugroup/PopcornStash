@@ -352,6 +352,22 @@ pub(crate) fn library_metadata(category: Category, rel: &str, mtime: i64) -> Met
     }
 }
 
+/// The capture time an item has once it is indexed again as `category` (a file moved by
+/// hand into another library, a restore into a library that now reads it differently, a
+/// library made from its folder): the one it already has, which its EXIF or tags gave,
+/// else the one its path gives (`from_path`). A name or a file time never replaces the
+/// camera's own date. Movies and episodes have none (section 4, Capture time).
+pub(crate) fn kept_capture_time(
+    category: Category,
+    stored: Option<CaptureTime>,
+    from_path: Option<CaptureTime>,
+) -> Option<CaptureTime> {
+    match category {
+        Category::Movie | Category::Episode => None,
+        Category::HomeVideo | Category::Photo | Category::Other => stored.or(from_path),
+    }
+}
+
 /// A fresh row for a file. Media fields stay empty until the probe job fills them.
 pub(crate) fn new_row(
     rel: &str,
@@ -796,10 +812,16 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
             row.season = meta.season;
             row.episode = meta.episode;
             row.episode_title = meta.episode_title.clone();
-            row.set_taken(meta.taken.or(old.taken()));
+            row.set_taken(kept_capture_time(category, old.taken(), meta.taken));
         }
         row.source_download_id = None;
         overwrite_row(lib, &old.id, &row).await?;
+        if category_changed && old.taken().is_none() && row.taken().is_some() {
+            // Dated from its name or file time only: the probe reads its EXIF or tags.
+            lib.jobs
+                .enqueue(JobKind::Probe, Some(&old.id), serde_json::json!({}))
+                .await?;
+        }
         publish_moved(lib, LibraryChange::Updated, &old.id, old.facts());
         tracing::info!(item = %old.id, from = %old.rel_path, to = %rel, "found a moved file");
         let row = repo::get(&lib.db, &old.id)

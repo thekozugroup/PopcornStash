@@ -238,7 +238,7 @@ How files move:
 Photos and home videos show the time on the camera's clock where they were taken, the same for everyone who looks, in any time zone, and the Photos timeline and the `2024/06/` folders use that clock's month. Many files carry that clock themselves (most cameras and iPhones write it in the photo's EXIF data or the video's tags). Some only say when they were taken in UTC, or not at all:
 
 - a file with no date inside it, dated by when the file was last changed,
-- videos from most Android phones and many cameras, which store only a UTC time,
+- videos from many cameras, and Android videos whose file name has no date and time, which store only a UTC time (an Android or Samsung video named like `VID_20240630_223000.mp4` or `20240630_223000.mp4` gets its clock and time zone from the name and that UTC time together, so it needs no `TZ`),
 - Pixel phone file names (`PXL_20240613_...`), which are in UTC.
 
 PopcornStash gives those the date and time in the server's time zone, set with the `TZ` environment variable. Without it the container uses UTC, so a family in New York would see a video taken at 9 in the evening on June 30 listed under July 1. Set it to where you live:

@@ -13,8 +13,8 @@ use super::defs::{self, LibraryDef, Shape};
 use super::parse::parse_name;
 use super::scanner::{
     Meta, enqueue_media_jobs, find_moved, in_place_category, is_extras_dir, is_junk_name,
-    is_sample, library_metadata, mtime_secs, new_row, normalize_rel, overwrite_row, publish,
-    publish_moved, quick_hash_async,
+    is_sample, kept_capture_time, library_metadata, mtime_secs, new_row, normalize_rel,
+    overwrite_row, publish, publish_moved, quick_hash_async,
 };
 use super::{Library, OrganizeRequest, ReviewAction, repo};
 use crate::capture::{self, CaptureTime, Recorded};
@@ -1915,16 +1915,18 @@ pub async fn restore_item(lib: &Library, item_id: &str) -> Result<ItemRow> {
         .execute(&mut *tx)
         .await?;
     // Indexed under the rules of the library its path is in now.
+    let mut probe_again = false;
     if let Some((_, category)) = plan
         && category != item.category
     {
         let meta = library_metadata(category, &new_rel, item.mtime);
-        let (taken_at, taken_local, taken_offset) = CaptureTime::columns(meta.taken.as_ref());
+        let taken = kept_capture_time(category, item.taken(), meta.taken);
+        // Dated from its name or file time only: the probe reads its EXIF or tags.
+        probe_again = item.taken().is_none() && taken.is_some();
+        let (taken_at, taken_local, taken_offset) = CaptureTime::columns(taken.as_ref());
         sqlx::query(
             "UPDATE items SET category = ?, title = ?, sort_title = ?, year = ?, show_name = ?, season = ?,
-                episode = ?, episode_title = ?, taken_at = COALESCE(?, taken_at),
-                taken_local = COALESCE(?, taken_local),
-                taken_offset = CASE WHEN ? IS NULL THEN taken_offset ELSE ? END
+                episode = ?, episode_title = ?, taken_at = ?, taken_local = ?, taken_offset = ?
              WHERE id = ?",
         )
         .bind(category.as_str())
@@ -1937,7 +1939,6 @@ pub async fn restore_item(lib: &Library, item_id: &str) -> Result<ItemRow> {
         .bind(&meta.episode_title)
         .bind(taken_at)
         .bind(&taken_local)
-        .bind(taken_at)
         .bind(taken_offset)
         .bind(item_id)
         .execute(&mut *tx)
@@ -1948,6 +1949,11 @@ pub async fn restore_item(lib: &Library, item_id: &str) -> Result<ItemRow> {
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    if probe_again {
+        lib.jobs
+            .enqueue(JobKind::Probe, Some(item_id), serde_json::json!({}))
+            .await?;
+    }
     tracing::info!(item = %item_id, path = %new_rel, "restored an item from the trash");
     publish_moved(lib, LibraryChange::Added, item_id, item.facts());
     publish_inbox_if_changed(lib, review_before).await?;

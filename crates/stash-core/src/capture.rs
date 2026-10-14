@@ -209,6 +209,61 @@ impl CaptureTime {
     }
 }
 
+/// Seconds a camera-style name's clock and a clip's creation time may be off a whole
+/// offset: the phone names the file a moment before the recorder starts or stops.
+const NAME_SLACK_S: i64 = 10;
+
+/// The widest offset a name and a creation time may be apart by (+14:00 is the widest
+/// on Earth, -12:00 the narrowest).
+const NAME_OFFSET_MAX_S: i64 = 14 * 3600;
+
+/// A clip's tags as a camera-style name dates them (section 4, Capture time). Android and
+/// Samsung phones write a clip's container `creation_time` as a moment in UTC and name the
+/// file after the phone's clock (`VID_20240630_223000`, `20240630_223000`), so the
+/// difference between the two is the offset where it was filmed. The moment is when the
+/// recording started or, as Android's recorder writes it, when it stopped (the clip's
+/// length later). When exactly one whole quarter hour within 14 hours of UTC makes the
+/// two agree, give or take ten seconds, the clip has the name's clock with that offset,
+/// so the clock and the exact moment are both known. Anything else stays as it is.
+pub fn with_name_clock(
+    recorded: Option<Recorded>,
+    name_clock: Option<DateTime>,
+    duration_s: Option<f64>,
+) -> Option<Recorded> {
+    match (recorded, name_clock) {
+        (Some(Recorded::Instant(moment)), Some(clock)) => {
+            clock_from_name(clock, moment, duration_s).or(recorded)
+        }
+        _ => recorded,
+    }
+}
+
+fn clock_from_name(clock: DateTime, moment: i64, duration_s: Option<f64>) -> Option<Recorded> {
+    let apart = at_offset(clock, 0)?.checked_sub(moment)?;
+    let length = duration_s
+        .filter(|d| d.is_finite() && *d >= 1.0 && *d < 86_400.0)
+        // Whole seconds of a clip under a day long.
+        .map(|d| d.round() as i64);
+    let mut offsets: Vec<i64> = [Some(0), length]
+        .into_iter()
+        .flatten()
+        .filter_map(|lag| {
+            let seconds = apart + lag;
+            let offset = (seconds + 450).div_euclid(900) * 900;
+            ((seconds - offset).abs() <= NAME_SLACK_S && offset.abs() <= NAME_OFFSET_MAX_S)
+                .then_some(offset)
+        })
+        .collect();
+    offsets.dedup();
+    match offsets.as_slice() {
+        [offset] => Some(Recorded::Clock {
+            local: clock,
+            offset: Some(i32::try_from(offset / 60).ok()?),
+        }),
+        _ => None,
+    }
+}
+
 /// The first source that gives a capture time, in order of trust.
 pub fn first_of<I>(sources: I, zone: &TimeZone) -> Option<CaptureTime>
 where
@@ -368,6 +423,63 @@ mod tests {
             .unwrap();
         assert_eq!(utc.local_text(), "2024-06-30T22:30:00");
         assert_eq!(utc.at, 1_719_786_600);
+    }
+
+    /// Android and Samsung clips: a UTC creation time and the phone's clock in the name.
+    #[test]
+    fn a_name_clock_and_a_utc_moment_give_the_offset() {
+        // 2024-07-01T02:30:00Z, named 22:30 on June 30: filmed at -04:00.
+        const MOMENT: i64 = 1_719_801_000;
+        let name: DateTime = "2024-06-30T22:30:00".parse().unwrap();
+        let paired = |moment: i64, length: Option<f64>| {
+            with_name_clock(Some(Recorded::Instant(moment)), Some(name), length)
+        };
+        let filmed = clock("2024-06-30T22:30:00", Some(-240));
+        let expected = Some(filmed);
+        assert_eq!(paired(MOMENT, None), expected);
+        for server in ["UTC", "America/New_York", "Asia/Tokyo"] {
+            let t = filmed.resolve(&zone(server)).unwrap();
+            assert_eq!(
+                (t.at, t.local_text().as_str(), t.offset),
+                (MOMENT, "2024-06-30T22:30:00", Some(-240)),
+                "{server}"
+            );
+        }
+        // A few seconds either way, and a moment written when a 95 second clip stopped.
+        assert_eq!(paired(MOMENT + 2, None), expected);
+        assert_eq!(paired(MOMENT - 3, Some(4.2)), expected);
+        assert_eq!(paired(MOMENT + 95, Some(95.4)), expected);
+        // Half and quarter hours exist: India, Nepal, the Chatham Islands.
+        let kathmandu: DateTime = "2024-07-01T08:15:00".parse().unwrap();
+        assert_eq!(
+            with_name_clock(Some(Recorded::Instant(MOMENT)), Some(kathmandu), None),
+            Some(Recorded::Clock {
+                local: kathmandu,
+                offset: Some(345)
+            })
+        );
+        // Nothing fits: the moment stays as it was.
+        for (moment, length) in [
+            (MOMENT + 7 * 60, None),
+            (MOMENT + 95, None),
+            (MOMENT + 95, Some(30.0)),
+            (MOMENT - 19 * 3600, None),
+            (MOMENT + 15 * 3600, None),
+            // Started and stopped a quarter hour apart: either offset would do.
+            (MOMENT + 900, Some(900.0)),
+        ] {
+            assert_eq!(
+                paired(moment, length),
+                Some(Recorded::Instant(moment)),
+                "{moment} {length:?}"
+            );
+        }
+        // A clock from the tags, no name clock, or no moment: unchanged.
+        let tagged = Some(clock("2024-06-30T22:30:00", Some(-240)));
+        assert_eq!(with_name_clock(tagged, Some(name), None), tagged);
+        let instant = Some(Recorded::Instant(MOMENT));
+        assert_eq!(with_name_clock(instant, None, None), instant);
+        assert_eq!(with_name_clock(None, Some(name), None), None);
     }
 
     #[test]

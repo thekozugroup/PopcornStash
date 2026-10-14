@@ -9,6 +9,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use jiff::civil::DateTime;
+
 use crate::capture::Recorded;
 
 /// What a file name says about itself.
@@ -30,6 +32,10 @@ pub struct ParsedName {
     /// time), or a moment for names that carry one (`PXL_` names are UTC, `RPReplay_Final`
     /// names a unix time).
     pub date: Option<Recorded>,
+    /// The camera's clock to the second, when a camera-style name writes the date and time
+    /// as the phone showed them (`VID_20240630_223000`, `20240630_223000`): not a `PXL_`
+    /// name (UTC), an `RPReplay_Final` one (a unix time) or a name with a date alone.
+    pub camera_clock: Option<DateTime>,
 }
 
 macro_rules! re {
@@ -48,12 +54,13 @@ pub fn parse_name(stem: &str) -> ParsedName {
         ..ParsedName::default()
     };
 
-    if let Some(camera_date) = camera_name(stem) {
+    if let Some(named) = camera_name(stem) {
         out.camera_style = true;
         out.title = stem.to_string();
-        if camera_date.is_some() {
-            out.date = camera_date;
+        if named.date.is_some() {
+            out.date = named.date;
         }
+        out.camera_clock = named.clock;
         return out;
     }
 
@@ -129,8 +136,34 @@ pub fn season_folder(name: &str) -> Option<i64> {
 // ---------------------------------------------------------------------------
 // Camera names and dates
 
-/// `Some(date)` when the stem looks like a phone or camera file name.
-fn camera_name(stem: &str) -> Option<Option<Recorded>> {
+/// What a camera-style name says about when it was taken.
+struct CameraName {
+    date: Option<Recorded>,
+    /// The phone's clock to the second, as the name writes it.
+    clock: Option<DateTime>,
+}
+
+impl CameraName {
+    /// A name with no date, a date alone, or a moment.
+    fn dated(date: Option<Recorded>) -> Self {
+        Self { date, clock: None }
+    }
+
+    /// A name that writes the phone's clock to the second.
+    fn clocked(date: Option<Recorded>) -> Self {
+        let clock = match date {
+            Some(Recorded::Clock {
+                local,
+                offset: None,
+            }) => Some(local),
+            _ => None,
+        };
+        Self { date, clock }
+    }
+}
+
+/// `Some(..)` when the stem looks like a phone or camera file name.
+fn camera_name(stem: &str) -> Option<CameraName> {
     // Names that carry a date and time. Pixel phones write theirs in UTC; the others
     // write the phone's clock.
     if let Some(c) =
@@ -138,18 +171,18 @@ fn camera_name(stem: &str) -> Option<Option<Recorded>> {
     {
         let date = compact_datetime(&c[2], Some(&c[3]));
         if c[1].eq_ignore_ascii_case("PXL") {
-            return Some(date.and_then(Recorded::in_utc));
+            return Some(CameraName::dated(date.and_then(Recorded::in_utc)));
         }
-        return Some(date);
+        return Some(CameraName::clocked(date));
     }
     if let Some(c) = re!(r"(?i)^Screenshot_(\d{8})-(\d{6})").captures(stem) {
-        return Some(compact_datetime(&c[1], Some(&c[2])));
+        return Some(CameraName::clocked(compact_datetime(&c[1], Some(&c[2]))));
     }
     if let Some(c) = re!(r"(?i)^(?:IMG|VID)-(\d{8})-WA\d+").captures(stem) {
-        return Some(compact_datetime(&c[1], None));
+        return Some(CameraName::dated(compact_datetime(&c[1], None)));
     }
     if let Some(c) = re!(r"^(\d{8})_(\d{6})").captures(stem) {
-        return Some(compact_datetime(&c[1], Some(&c[2])));
+        return Some(CameraName::clocked(compact_datetime(&c[1], Some(&c[2]))));
     }
     if let Some(c) = re!(
         r"(?i)^(?:Screen Recording|Screenshot|Screen Shot|WhatsApp (?:Video|Image)) (\d{4})-(\d{2})-(\d{2})(?: at (\d{1,2})[.:](\d{2})[.:](\d{2})(?:\s?([AP])\.?M\.?)?)?"
@@ -167,31 +200,38 @@ fn camera_name(stem: &str) -> Option<Option<Recorded>> {
             };
         }
         let num = |i: usize| c.get(i).and_then(|m| m.as_str().parse::<i64>().ok()).unwrap_or(0);
-        return Some(clock_from_parts(num(1), num(2), num(3), hour, num(5), num(6)));
+        let date = clock_from_parts(num(1), num(2), num(3), hour, num(5), num(6));
+        return Some(if c.get(4).is_some() {
+            CameraName::clocked(date)
+        } else {
+            CameraName::dated(date)
+        });
     }
     if let Some(c) = re!(r"^(\d{4})-(\d{2})-(\d{2}) (\d{2})\.(\d{2})\.(\d{2})").captures(stem) {
         let num = |i: usize| c[i].parse::<i64>().unwrap_or(0);
-        return Some(clock_from_parts(
+        return Some(CameraName::clocked(clock_from_parts(
             num(1),
             num(2),
             num(3),
             num(4),
             num(5),
             num(6),
-        ));
+        )));
     }
     if let Some(c) = re!(r"(?i)^RPReplay_Final(\d{9,10})").captures(stem) {
         let ts: i64 = c[1].parse().unwrap_or(0);
-        return Some((ts > 946_684_800).then(|| Recorded::instant(ts)).flatten());
+        return Some(CameraName::dated(
+            (ts > 946_684_800).then(|| Recorded::instant(ts)).flatten(),
+        ));
     }
     if let Some(c) = re!(r"(?i)^DJI_(\d{8})(\d{6})").captures(stem) {
-        return Some(compact_datetime(&c[1], Some(&c[2])));
+        return Some(CameraName::clocked(compact_datetime(&c[1], Some(&c[2]))));
     }
     // Names without a date.
     let undated = re!(
         r"(?i)^(?:IMG_E?\d{4}|VID_\d{4}|MVI_\d{4}|MOV_\d{4}|DSC[FN_]?\d{4,5}|GOPR\d{4}|GP\d{6}|G[HXL]\d{6}|DJI_\d{4}|PXL_\d+|RPReplay|Screen Recording|C\d{4}$|P\d{7}$)"
     );
-    undated.is_match(stem).then_some(None)
+    undated.is_match(stem).then_some(CameraName::dated(None))
 }
 
 /// `YYYYMMDD` (+ optional `HHMMSS`) → the clock it names.
@@ -699,6 +739,39 @@ mod tests {
             assert_eq!(p.title, input);
             assert!(!p.has_release_tags);
             assert_eq!(p.episode, None);
+        }
+    }
+
+    /// Names that write the phone's clock to the second offer it beside the date, so a
+    /// clip's UTC creation time can be paired with it (`capture::clock_from_name`).
+    #[test]
+    fn camera_clocks_in_names() {
+        let clock = |input: &str| parse_name(input).camera_clock.map(|c| c.to_string());
+        for input in [
+            "VID_20240630_223000",
+            "IMG_20240630_223000",
+            "20240630_223000",
+            "Screenshot_20240630-223000",
+            "Screen Recording 2024-06-30 at 10.30.00 PM",
+            "2024-06-30 22.30.00",
+            "DJI_20240630223000_0001_D",
+        ] {
+            assert_eq!(
+                clock(input).as_deref(),
+                Some("2024-06-30T22:30:00"),
+                "{input}"
+            );
+        }
+        for input in [
+            "PXL_20240630_223000123",
+            "RPReplay_Final1690000000",
+            "VID-20240630-WA0001",
+            "Screen Recording 2024-06-30",
+            "IMG_1234",
+            "party 2023.12.31 22.05.10",
+            "Heat.1995.1080p",
+        ] {
+            assert_eq!(clock(input), None, "{input}");
         }
     }
 

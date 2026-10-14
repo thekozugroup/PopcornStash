@@ -233,9 +233,15 @@ fn home_video(
         Some(h) => h.reason.clone(),
         None => "The name looks like a phone or camera file".to_string(),
     };
+    // A UTC creation time beside the phone's clock in the name gives both (Android).
+    let tagged = capture::with_name_clock(
+        probe.and_then(creation_time),
+        parsed.camera_clock,
+        probe.and_then(|p| p.duration_s),
+    );
     let taken = capture::first_of(
         [
-            probe.and_then(creation_time),
+            tagged,
             exif.and_then(|e| e.taken),
             parsed.date,
             Recorded::instant(mtime),
@@ -697,6 +703,64 @@ mod tests {
 
     /// 2024-07-01T02:30:00Z: the evening of June 30 in New York, July 1 in UTC and Tokyo.
     const MONTH_EDGE: i64 = 1_719_801_000;
+
+    /// Android and Samsung clips: a UTC `creation_time` and the phone's clock in the name
+    /// give the clock and the offset, so the month does not follow the server's zone.
+    #[test]
+    fn an_android_clip_keeps_the_clock_its_name_gives() {
+        let tags =
+            |created: &str| summary(&[("com.android.version", "14"), ("creation_time", created)]);
+        let at_start = tags("2024-07-01T02:30:00.000000Z");
+        // Android's recorder writes the time it stopped: 12 seconds later here.
+        let at_stop = MediaSummary {
+            duration_s: Some(12.4),
+            ..tags("2024-07-01T02:30:12.000000Z")
+        };
+        for server in ["UTC", "America/New_York", "Asia/Tokyo"] {
+            for name in ["VID_20240630_223000.mp4", "20240630_223000.mp4"] {
+                for (probe, when) in [(&at_start, "start"), (&at_stop, "stop")] {
+                    let c = classify_in(
+                        &format!("Inbox/{name}"),
+                        Some(probe),
+                        None,
+                        5,
+                        &zone(server),
+                    );
+                    let case = format!("{name} {when} on {server}");
+                    assert_eq!(c.category, Category::HomeVideo, "{case}");
+                    assert_eq!(
+                        c.taken_local.as_deref(),
+                        Some("2024-06-30T22:30:00"),
+                        "{case}"
+                    );
+                    assert_eq!(c.taken_offset, Some(-240), "{case}");
+                    assert_eq!(c.taken_at, Some(MONTH_EDGE), "{case}");
+                    assert_eq!(dest(&c), format!("Home Videos/2024/06/{name}"), "{case}");
+                }
+            }
+        }
+        // A Pixel names its files in UTC: nothing to pair, the server's zone gives the clock.
+        let pixel = classify_in(
+            "Inbox/PXL_20240701_023000123.mp4",
+            Some(&at_start),
+            None,
+            5,
+            &zone("UTC"),
+        );
+        assert_eq!(pixel.taken_local.as_deref(), Some("2024-07-01T02:30:00"));
+        assert_eq!(pixel.taken_offset, None);
+        // A creation time that is no whole offset from the name is used as before.
+        let off = tags("2024-07-01T02:37:00.000000Z");
+        let c = classify_in(
+            "Inbox/VID_20240630_223000.mp4",
+            Some(&off),
+            None,
+            5,
+            &zone("UTC"),
+        );
+        assert_eq!(c.taken_local.as_deref(), Some("2024-07-01T02:37:00"));
+        assert_eq!(c.taken_offset, None);
+    }
 
     /// Section 4, Capture time: what each kind of date becomes, wherever the server is.
     #[test]
