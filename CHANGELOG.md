@@ -20,6 +20,8 @@ Libraries the owner defines, each with its own icon and its own audience, and th
 - Photos and home videos show the time on the camera's clock where they were taken, the same for everyone in every time zone, and the Photos timeline and the `2024/06/` folders use that clock's month. A camera time with no time zone is no longer read as UTC, so it no longer shifts by a few hours, or into the next or previous month, for people west or east of UTC. Files that only say when they were taken in UTC (a file's own date, the UTC time most Android phones put in videos, Pixel file names) are placed in the server's time zone: set `TZ` (docs/deployment.md, Time zone; Unraid sets it for you).
 - The API sends the camera's clock (`taken_local`) and the offset it was written with (`taken_offset`) beside `taken_at`. Upgrading reads every photo and home video's date again once, in the background.
 - Home: a shelf for a library of series has a tile for every show (up to 12, the most recently added first) with its count of new episodes, so "3 shows, 18 episodes" shows three shows.
+- A photo or clip moved by hand between Home Videos and Photos (or restored from the trash into a library that now reads it as the other kind) keeps the date its camera wrote. It used to take the file's modification time, which put a 2024 clip under the month it was moved.
+- Videos from Android and Samsung phones named after the phone's clock (`VID_20240630_223000.mp4`, `20240630_223000.mp4`) show that clock and go to that month's folder whatever the server's time zone, because the name and the video's UTC time together say where it was filmed. Before, a server left on UTC showed 2:30 AM on July 1 for a clip filmed at 10:30 PM on June 30.
 
 ### Web app
 
@@ -29,9 +31,10 @@ Libraries the owner defines, each with its own icon and its own audience, and th
 - The web app has unit tests (vitest) for its library and VPN rules, run by `npm --prefix web run check`.
 - Photo months and capture times read the same wherever you are: west of UTC a month no longer showed as the one before it, and a camera's time no longer moved to your own time zone. The tests run the dates in eight time zones.
 - On a photo's, video's or file's page the sidebar and quick links show which library it is in (or Other files, or Inbox).
-- On phones, short folder names ("Grandma's Slides/") and dates ("Oct 14, 2026") keep to one line, and a shared link wraps after its slashes and hyphens instead of anywhere.
-- Switches are easy to see when they are off, in light and dark (a ring and knob with at least 3:1 contrast). In the library editor the checkboxes line up with the choices above them.
-- Settings, Devices starts with the Android app: what it does, where to get it, and how to sign in or pair it. Installing PopcornStash from Chrome stays as the way to share from a phone without the app.
+- On phones, short folder names ("Grandma's Slides/") and dates ("Oct 14, 2026") keep to one line, and a shared link wraps after its slashes and hyphens instead of anywhere. A long folder name in Settings, Libraries wraps at its spaces instead of being cut off (a phone shows no tooltip), and on phones the folder's icon stays beside its name, with Make a library underneath.
+- Switches are easy to see when they are off, in light and dark (a ring and knob with at least 3:1 contrast). Unchecked checkboxes and radios now have the same edge, so every control that is off or not chosen reads alike and at 3:1 or more. In the library editor the checkboxes line up with the choices above them.
+- Settings, Devices starts with the Android app: what it does, where it comes from (for an owner, how to build it; for anyone else, from whoever runs the server), and how to get in: pair with a code, which always works, or a passkey once the server is set up for it. Installing PopcornStash from Chrome stays as the way to share from a phone without the app ("Share without the app").
+- The Photos timeline follows a photo whose date changes while it is open (the one-time redating after an upgrade, or a photo whose EXIF is read later): it moves to its month, in order, with both months' counts, without a reload. A grid sorted by date taken keeps its order the same way.
 
 ### Android app
 
@@ -41,7 +44,7 @@ Libraries the owner defines, each with its own icon and its own audience, and th
 - Downloads: live progress, the VPN line, pause, resume, remove and add a link; the files waiting to be imported with the library picker, edit, accept, ignore and accept all; finished downloads say where they went. Links, photos, videos and files shared from other apps are added or uploaded.
 - Settings: who you are, the server and sign out; owners manage the libraries here too. The other admin pages open the web settings.
 - Photos and home videos show the camera's clock in the app too, whatever time zone the phone is in, and a waiting photo previews the month folder of that clock. A series shelf on Home has a tile for every show.
-- Long words wrap where they should on narrow phones and with large text: a server address after its dots and hyphens (the sign-in page no longer squeezes "Version" into a column), a folder name in a sentence stays whole, "Accept all" and photo counts are never split, and dates never break inside. The chosen season or file kind carries a check, not only a faint tint.
+- Long words wrap where they should on narrow phones and with large text: a server address after its dots and hyphens (the sign-in page no longer squeezes "Version" into a column), a folder name in a sentence stays whole, a long folder name in Settings wraps instead of ending in "...", "Accept all" and photo counts are never split, and dates never break inside. The chosen season or file kind carries a check, not only a faint tint.
 - Not yet run on a phone or an emulator; docs/android.md lists what is not done.
 
 ### Tooling
