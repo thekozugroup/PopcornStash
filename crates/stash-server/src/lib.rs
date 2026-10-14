@@ -5,6 +5,7 @@ pub mod app;
 pub mod auth;
 pub mod downloads;
 pub mod error;
+pub mod live;
 pub mod nordvpn;
 pub mod security;
 pub mod state;

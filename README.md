@@ -2,13 +2,13 @@
 
 A private home for your family's videos, photos and downloaded media. Part of the Popcorn series of open source video projects.
 
-PopcornStash points at one folder on your NAS, Unraid share or home server and keeps it organized. Family members sign in with passkeys, browse Movies, Shows, Home Videos and Photos, and watch in any browser. New files arrive from torrents, web links, the Chrome extension, links, photos and videos shared from Android, browser uploads, or by copying them into the Inbox folder, and are sorted automatically.
+PopcornStash points at one folder on your NAS, Unraid share or home server and keeps it organized. Family members sign in with passkeys, browse the libraries the owner shares with them (a new stash starts with Movies, Shows, Home Videos and Photos; the owner can rename them, add more with their own icons and choose who sees each), and watch in any browser. New files arrive from torrents, web links, the Chrome extension, links, photos and videos shared from Android, browser uploads, or by copying them into the Inbox folder, and are sorted automatically.
 
 ## What it does
 
 - **Passkeys only.** No passwords. The owner invites family members, and each person adds passkeys for their own phone and laptop.
 - **Torrents that only use your VPN.** Paste a NordVPN access token (or upload any WireGuard or OpenVPN file). Only the torrent engine's traffic enters the tunnel; a kill switch stops it if the tunnel drops. The rest of the app stays on your normal network.
-- **Every way in leads to the same place.** Torrents, links, uploads and drops all go through `Downloads/In Progress` and `Downloads/Completed`, then get sorted into `Movies`, `Shows`, `Home Videos`, `Photos` or `Other`. Anything uncertain waits in Inbox for one tap of review.
+- **Every way in leads to the same place.** Torrents, links, uploads and drops all go through `Downloads/In Progress` and `Downloads/Completed`, then get sorted into the library that takes that kind of file, or `Other`. Anything uncertain, or a kind no library takes, waits in Inbox for one tap of review.
 - **Your folders stay yours.** Files outside `Inbox/` and `Downloads/` are indexed where they are and never moved unless you ask.
 - **Plays everywhere.** Videos play directly when the browser can, and are transcoded on the fly (HLS, with optional Intel/AMD/NVIDIA hardware encoding) when it cannot. Photos from phones, including HEIC, show in a timeline.
 - **Nothing leaves the server.** No metadata scraping, no accounts, no telemetry.

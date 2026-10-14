@@ -72,7 +72,10 @@ pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
         tracing::error!("{e}");
         anyhow::bail!("PopcornStash cannot start until its library folder is fixed.");
     }
+    // Folders of empty libraries; one that cannot be made shows as missing (section 3.1).
+    stash_core::library::defs::ensure_folders(&db, &layout).await?;
     let events = EventBus::new();
+    let live = crate::live::LiveBus::start(db.clone(), &events);
     let jobs = JobQueue::new(db.clone(), events.clone());
     let settings = SettingsStore::load(db.clone(), config.hwaccel).await?;
     let media = Arc::new(MediaService::new(
@@ -120,6 +123,7 @@ pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
         db,
         layout,
         events,
+        live,
         jobs,
         settings,
         media,
@@ -419,33 +423,53 @@ mod tests {
         }
     }
 
-    /// A library folder PopcornStash cannot prepare stops the start with a log line
-    /// that names the folder, not a bare "Permission denied (os error 13)".
+    /// A fixed folder PopcornStash cannot prepare stops the start with a log line that
+    /// names the folder, not a bare "Permission denied (os error 13)". A library's folder
+    /// that cannot be made is named in the log too, but never stops the server: the
+    /// library shows its folder as missing (section 3.1).
     #[tokio::test]
-    async fn a_library_folder_that_cannot_be_prepared_is_named_in_the_log() {
-        let dir = tempfile::tempdir().unwrap();
-        let stash = dir.path().join("stash");
-        std::fs::create_dir_all(&stash).unwrap();
-        std::fs::write(stash.join("Movies"), b"a file where a folder belongs").unwrap();
-        let captured = Captured::default();
-        let writer = captured.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_writer(move || writer.clone())
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
+    async fn folders_that_cannot_be_prepared_are_named_in_the_log() {
+        for (blocked, stops) in [("Inbox", true), ("Movies", false)] {
+            let dir = tempfile::tempdir().unwrap();
+            let stash = dir.path().join("stash");
+            std::fs::create_dir_all(&stash).unwrap();
+            std::fs::write(stash.join(blocked), b"a file where a folder belongs").unwrap();
+            let captured = Captured::default();
+            let writer = captured.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .with_writer(move || writer.clone())
+                .finish();
+            let _guard = tracing::subscriber::set_default(subscriber);
 
-        let err = super::test_state(dir.path())
-            .await
-            .err()
-            .expect("start fails");
-        let logs = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
-        let sentence = format!("Cannot create {}: ", stash.join("Movies").display());
-        assert!(logs.contains("ERROR") && logs.contains(&sentence), "{logs}");
-        assert_eq!(
-            format!("{err:#}"),
-            "PopcornStash cannot start until its library folder is fixed."
-        );
+            let started = super::test_state(dir.path()).await;
+            let logs = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+            let sentence = format!("Cannot create {}: ", stash.join(blocked).display());
+            assert!(logs.contains("ERROR") && logs.contains(&sentence), "{logs}");
+            match started {
+                Err(err) => {
+                    assert!(stops, "{blocked}: {err:#}");
+                    assert_eq!(
+                        format!("{err:#}"),
+                        "PopcornStash cannot start until its library folder is fixed."
+                    );
+                }
+                Ok(state) => {
+                    assert!(!stops, "{blocked} should stop the start");
+                    let defs = stash_core::library::defs::load_all(&state.db)
+                        .await
+                        .unwrap();
+                    let states =
+                        stash_core::library::defs::folder_states(&state.db, &state.layout, &defs)
+                            .await
+                            .unwrap();
+                    assert_eq!(
+                        states[stash_core::library::defs::STARTING_MOVIES],
+                        stash_core::models::FolderState::Missing
+                    );
+                }
+            }
+        }
     }
 
     /// Conversions a crash or a cancelled photo view left half done are removed on

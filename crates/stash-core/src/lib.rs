@@ -14,7 +14,7 @@ pub mod models;
 pub mod paths;
 pub mod settings;
 
-pub use error::{CoreError, Result};
+pub use error::{CoreError, Rejection, Result};
 
 /// Current unix time in seconds.
 pub fn now() -> i64 {

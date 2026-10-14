@@ -1,28 +1,21 @@
-//! /api routes: health, library summary, shows, photo timeline and rescan
-//! (see docs/architecture.md section 8).
+//! /api routes: health and rescan (see docs/architecture.md section 8). Libraries,
+//! Home, shows and the photo timeline are in `api::libraries`.
 
-use axum::extract::{Path, State};
-use axum::http::{StatusCode, Uri};
+use axum::extract::State;
+use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use stash_core::CoreError;
 use stash_core::jobs::JobKind;
-use stash_core::library::repo::{self, LibrarySummary, PhotoTimeline, ShowDetail, ShowSummary};
 
-use super::items::parse_query;
 use crate::auth::{AuthUser, Scope};
-use crate::error::{ApiError, ApiResult};
+use crate::error::ApiResult;
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/health", get(health))
-        .route("/api/library/summary", get(summary))
         .route("/api/library/rescan", post(rescan))
-        .route("/api/shows", get(shows))
-        .route("/api/shows/{name}", get(show))
-        .route("/api/photos/timeline", get(timeline))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -40,69 +33,6 @@ async fn health() -> Json<Health> {
         version: stash_core::VERSION.into(),
         source: super::system::source_url(),
     })
-}
-
-async fn summary(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<LibrarySummary>> {
-    user.require(Scope::LibraryRead)?;
-    Ok(Json(repo::summary(&state.db, &user.user_id).await?))
-}
-
-async fn shows(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<Vec<ShowSummary>>> {
-    user.require(Scope::LibraryRead)?;
-    Ok(Json(repo::shows(&state.db).await?))
-}
-
-async fn show(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path(name): Path<String>,
-) -> ApiResult<Json<ShowDetail>> {
-    user.require(Scope::LibraryRead)?;
-    // `Path` has already percent-decoded the segment, so "Doctor%20Who" arrives as "Doctor Who".
-    let not_found = || ApiError::not_found("That show is not in the library.");
-    if name.trim().is_empty() || name.chars().count() > 500 {
-        return Err(not_found());
-    }
-    // The exact name first: links are built from `/api/shows`, and a stored name can
-    // carry spaces (a "Bluey " folder). Then the trimmed form, for typed addresses.
-    let mut candidates = vec![name.as_str()];
-    if name.trim() != name {
-        candidates.push(name.trim());
-    }
-    for candidate in candidates {
-        match repo::show(&state.db, candidate, &user.user_id).await {
-            Ok(detail) if detail.seasons.iter().any(|s| !s.episodes.is_empty()) => {
-                return Ok(Json(detail));
-            }
-            Ok(_) | Err(CoreError::NotFound) => {}
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Err(not_found())
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-struct TimelineQuery {
-    cursor: Option<String>,
-    limit: Option<u32>,
-}
-
-async fn timeline(
-    State(state): State<AppState>,
-    user: AuthUser,
-    uri: Uri,
-) -> ApiResult<Json<PhotoTimeline>> {
-    user.require(Scope::LibraryRead)?;
-    let query: TimelineQuery = parse_query(&uri)?;
-    // Section 11: 200 photos per page unless the client asks, never more than 500.
-    let limit = query
-        .limit
-        .unwrap_or(repo::DEFAULT_TIMELINE_LIMIT)
-        .clamp(1, repo::MAX_TIMELINE_LIMIT);
-    Ok(Json(
-        repo::photo_timeline(&state.db, query.cursor.as_deref(), limit, &user.user_id).await?,
-    ))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -180,6 +110,33 @@ pub(crate) mod testing {
             (
                 status,
                 serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null),
+            )
+        }
+
+        /// Record `user_id` as the person who added the item.
+        pub async fn added_by(&self, item_id: &str, user_id: &str) {
+            sqlx::query("UPDATE items SET added_by = ? WHERE id = ?")
+                .bind(user_id)
+                .bind(item_id)
+                .execute(&self.state.db)
+                .await
+                .expect("set added_by");
+        }
+
+        /// Send a JSON request with a bearer token and read the JSON answer.
+        pub async fn send_json(
+            &self,
+            method: &str,
+            uri: &str,
+            token: &str,
+            body: serde_json::Value,
+        ) -> (StatusCode, serde_json::Value) {
+            let (status, _, bytes) = self
+                .send(request(method, uri, Some(token), Some(body)))
+                .await;
+            (
+                status,
+                serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
             )
         }
 
@@ -305,7 +262,6 @@ pub(crate) mod testing {
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
-    use stash_core::models::{Category, ItemStatus, MediaKind};
 
     use super::testing::{TestApp, request};
 
@@ -334,112 +290,16 @@ mod tests {
     #[tokio::test]
     async fn library_needs_sign_in() {
         let app = TestApp::new().await;
-        let (status, _, body) = app.get("/api/library/summary", None).await;
+        let (status, _, body) = app.get("/api/home", None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "unauthorized");
     }
 
-    #[tokio::test]
-    async fn summary_shows_and_timeline() {
-        let app = TestApp::new().await;
-        let (_, token) = app.user("member").await;
-        app.item(
-            "Shows/Bluey/Season 01/Bluey - S01E01.mkv",
-            MediaKind::Video,
-            Category::Episode,
-            ItemStatus::Ready,
-            None,
-        )
-        .await;
-        sqlx::query("UPDATE items SET show_name = 'Bluey', season = 1, episode = 1")
-            .execute(&app.state.db)
-            .await
-            .unwrap();
-        let (status, json) = app.json("/api/library/summary", &token).await;
-        assert_eq!(status, StatusCode::OK, "{json}");
-        assert!(json["counts"].is_object());
-        let (status, json) = app.json("/api/shows", &token).await;
-        assert_eq!(status, StatusCode::OK, "{json}");
-        assert_eq!(json[0]["show_name"], "Bluey");
-        let (status, json) = app.json("/api/shows/Bluey", &token).await;
-        assert_eq!(status, StatusCode::OK, "{json}");
-        assert_eq!(json["seasons"][0]["season"], 1);
-        let (status, json) = app.json("/api/shows/Nope%20Show", &token).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(json["error"]["message"], "That show is not in the library.");
-        let (status, json) = app.json("/api/photos/timeline?limit=10", &token).await;
-        assert_eq!(status, StatusCode::OK, "{json}");
-        assert!(json["months"].is_array());
-    }
-
     /// A client that does not send `limit` gets the documented 200 photos per page, and
     /// no page holds more than 500 whatever it asks for.
-    #[tokio::test]
-    async fn timeline_pages_hold_200_photos_by_default_and_500_at_most() {
-        let app = TestApp::new().await;
-        let (_, token) = app.user("member").await;
-        let now = stash_core::now();
-        sqlx::query(
-            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 600)
-             INSERT INTO items (id, rel_path, kind, category, status, title, sort_title, size, mtime,
-                                thumb_state, taken_at, added_at, updated_at)
-             SELECT printf('photo-%04d', i), printf('Photos/2024/06/IMG_%04d.jpg', i), 'photo', 'photo',
-                    'ready', printf('IMG_%04d', i), printf('img_%04d', i), 10, ?, 'pending',
-                    1718236800 + i, ?, ? FROM n",
-        )
-        .bind(now)
-        .bind(now)
-        .bind(now)
-        .execute(&app.state.db)
-        .await
-        .unwrap();
-        let photos = |json: &serde_json::Value| -> usize {
-            json["months"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|m| m["items"].as_array().unwrap().len())
-                .sum()
-        };
-        let (status, json) = app.json("/api/photos/timeline", &token).await;
-        assert_eq!(status, StatusCode::OK, "{json}");
-        assert_eq!(photos(&json), 200);
-        assert_eq!(json["months"][0]["count"], 600);
-        assert!(json["next_cursor"].is_string());
-        let (status, json) = app.json("/api/photos/timeline?limit=1000", &token).await;
-        assert_eq!(status, StatusCode::OK, "{json}");
-        assert_eq!(photos(&json), 500);
-    }
-
     /// The web links to `/api/shows/<show_name>` exactly as `/api/shows` lists it, so a
     /// name with surrounding spaces (a folder named "Bluey " on a Linux share) must work.
-    #[tokio::test]
-    async fn show_names_are_matched_exactly() {
-        let app = TestApp::new().await;
-        let (_, token) = app.user("member").await;
-        app.item(
-            "Shows/Bluey /Season 01/Bluey - S01E01.mkv",
-            MediaKind::Video,
-            Category::Episode,
-            ItemStatus::Ready,
-            None,
-        )
-        .await;
-        sqlx::query("UPDATE items SET show_name = 'Bluey ', season = 1, episode = 1")
-            .execute(&app.state.db)
-            .await
-            .unwrap();
-        let (status, json) = app.json("/api/shows", &token).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(json[0]["show_name"], "Bluey ");
-        let (status, json) = app.json("/api/shows/Bluey%20", &token).await;
-        assert_eq!(status, StatusCode::OK, "{json}");
-        assert_eq!(json["show_name"], "Bluey ");
-        let (status, _) = app.json("/api/shows/%20%20", &token).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-    }
-
     #[tokio::test]
     async fn rescan_requires_full_scope() {
         let app = TestApp::new().await;

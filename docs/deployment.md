@@ -187,7 +187,7 @@ The setup code is valid for 24 hours and changes every time the container restar
 2. Send the link. It works once and expires after the time you choose (1, 3 or 7 days; 3 days by default).
 3. The person opens the link, enters their name and creates a passkey on their device.
 
-Everyone can add more passkeys later (for example a phone and a laptop) under **Settings**, then **Security**. Members can watch, browse, upload, add downloads and review the Inbox. Only owners can change the VPN and settings, manage people, delete items and empty the trash.
+Everyone can add more passkeys later (for example a phone and a laptop) under **Settings**, then **Security**. Members can watch and browse the libraries you share with them, upload, add downloads and review the Inbox. Only owners can manage libraries, change the VPN and settings, manage people, delete items and empty the trash.
 
 ### On Android
 
@@ -205,7 +205,7 @@ It prints a one-time link, valid for 30 minutes, that lets the owner add a new p
 
 ## Your folders
 
-PopcornStash creates these folders inside the library folder on its first start:
+PopcornStash creates these folders inside the library folder on its first start. `Movies/`, `Shows/`, `Home Videos/` and `Photos/` are the folders of the four libraries every stash starts with; owners can rename those libraries, add more (each with a new folder or a top-level folder you already have) and choose who sees each one. A library's folder never changes, and making, renaming or deleting a library never moves, renames or deletes a file. The layouts below are how each kind of file is laid out inside whichever library takes it:
 
 | Folder | What goes there |
 |---|---|
@@ -223,7 +223,8 @@ How files move:
 
 - PopcornStash only moves files by itself out of `Inbox/` and `Downloads/Completed/`.
 - Anything else in `Downloads/` (for example another download client's folders) is never moved or listed, so other apps can share it.
-- Everything else is shown where it is. Files you already keep in `Movies/`, `Shows/` and the other folders are never moved or renamed unless you choose **Organize** on that item.
+- Everything else is shown where it is. Files you already keep in a library's folder are never moved or renamed unless you choose **Organize** on that item. Your own top-level folders that are not a library are indexed where they are and seen by owners only, until you make one a library.
+- Who sees a library is decided in PopcornStash, not on the share: anyone who can open the share reads every folder. Give family members no share access, or write access to `Inbox/` only.
 - When PopcornStash is not sure where a file belongs, it leaves the file in place and asks you in the Inbox page.
 - Nothing is overwritten. If a name is taken, the new file gets ` (2)`, ` (3)` and so on.
 - Subtitles and other files with the same name (`.srt`, `.ass`, `.nfo`, `.xmp` and similar) move together with their video or photo.

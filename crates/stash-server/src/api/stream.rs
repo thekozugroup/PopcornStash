@@ -56,6 +56,30 @@ fn segment_type(name: &str) -> Option<&'static str> {
     }
 }
 
+/// The session when it belongs to the caller and the caller still sees its item. A
+/// session of someone else answers 404; one whose item the caller can no longer see
+/// answers 404 and is stopped (section 7, HLS).
+async fn own_session<'a>(
+    state: &AppState,
+    user: &AuthUser,
+    session: &'a str,
+) -> ApiResult<&'a str> {
+    let Some((owner, item_id)) = state.transcoder.session_owner(session) else {
+        return Err(stream_gone());
+    };
+    if owner != user.user_id {
+        return Err(stream_gone());
+    }
+    let visible = stash_core::library::access::visible_row(&state.db, &user.viewer(), &item_id)
+        .await?
+        .is_some_and(|row| row.status != stash_core::models::ItemStatus::Trashed);
+    if !visible {
+        state.transcoder.stop(session).await;
+        return Err(stream_gone());
+    }
+    Ok(session)
+}
+
 fn map_stream_error(e: CoreError) -> ApiError {
     match e {
         CoreError::NotFound => stream_gone(),
@@ -70,6 +94,7 @@ async fn playlist(
 ) -> ApiResult<Response> {
     user.require(Scope::LibraryRead)?;
     let session = valid_session(&session)?;
+    let session = own_session(&state, &user, session).await?;
     let body = state
         .transcoder
         .playlist(session)
@@ -93,6 +118,7 @@ async fn segment(
     user.require(Scope::LibraryRead)?;
     let session = valid_session(&session)?;
     let content_type = segment_type(&name).ok_or_else(stream_gone)?;
+    let session = own_session(&state, &user, session).await?;
     let path = state
         .transcoder
         .segment(session, &name)
@@ -122,6 +148,7 @@ async fn stop(
 ) -> ApiResult<StatusCode> {
     user.require(Scope::LibraryRead)?;
     let session = valid_session(&session)?;
+    let session = own_session(&state, &user, session).await?;
     state.transcoder.stop(session).await;
     Ok(StatusCode::NO_CONTENT)
 }

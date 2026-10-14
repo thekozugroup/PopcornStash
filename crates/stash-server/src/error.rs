@@ -65,6 +65,8 @@ pub struct ApiError {
     pub message: String,
     /// Optional extra fields merged into the error body (e.g. `received` for upload offset conflicts).
     pub extra: Option<serde_json::Value>,
+    /// The request field at fault, as the request spells it (`name`, `folder.name`).
+    pub field: Option<String>,
 }
 
 pub type ApiResult<T> = Result<T, ApiError>;
@@ -75,7 +77,16 @@ impl ApiError {
             code,
             message: message.into(),
             extra: None,
+            field: None,
         }
+    }
+    /// The same 404 as for a library that never existed.
+    pub fn library_not_found() -> Self {
+        Self::not_found(stash_core::library::defs::LIBRARY_NOT_FOUND)
+    }
+    pub fn with_field(mut self, field: impl Into<String>) -> Self {
+        self.field = Some(field.into());
+        self
     }
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::BadRequest, message)
@@ -124,6 +135,9 @@ impl std::error::Error for ApiError {}
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let mut error = serde_json::json!({ "code": self.code.as_str(), "message": self.message });
+        if let (Some(field), serde_json::Value::Object(map)) = (self.field, &mut error) {
+            map.insert("field".into(), serde_json::Value::String(field));
+        }
         if let (Some(serde_json::Value::Object(extra)), serde_json::Value::Object(map)) =
             (self.extra, &mut error)
         {
@@ -144,6 +158,23 @@ impl From<CoreError> for ApiError {
             CoreError::Invalid(msg) => ApiError::bad_request(msg),
             CoreError::Conflict(msg) => ApiError::conflict(msg),
             CoreError::PathEscape(_) => ApiError::bad_request("That path is outside the stash."),
+            CoreError::Rejected {
+                kind,
+                field,
+                message,
+            } => {
+                let code = match kind {
+                    stash_core::Rejection::BadRequest => ErrorCode::BadRequest,
+                    stash_core::Rejection::NotFound => ErrorCode::NotFound,
+                    stash_core::Rejection::Conflict => ErrorCode::Conflict,
+                };
+                ApiError {
+                    code,
+                    message,
+                    extra: None,
+                    field,
+                }
+            }
             other => {
                 tracing::error!(error = %other, "internal error");
                 ApiError::internal()

@@ -123,6 +123,23 @@ impl AuthUser {
         self.role == Role::Owner && self.has(Scope::Full)
     }
 
+    /// The caller as the library access rule sees them (section 7).
+    pub fn viewer(&self) -> stash_core::library::access::Viewer {
+        stash_core::library::access::Viewer {
+            user_id: self.user_id.clone(),
+            role: self.role,
+            full: self.scopes.contains(&Scope::Full),
+        }
+    }
+
+    /// The caller with the library rows that decide what they see.
+    pub async fn access(
+        &self,
+        db: &stash_core::db::Db,
+    ) -> ApiResult<stash_core::library::access::Access> {
+        Ok(stash_core::library::access::Access::load(db, &self.viewer()).await?)
+    }
+
     pub fn require_owner(&self) -> ApiResult<()> {
         if self.is_owner() {
             Ok(())

@@ -1,16 +1,20 @@
-//! /api routes: inbox review (see docs/architecture.md sections 4 and 8).
+//! /api routes: inbox review (see docs/architecture.md sections 4, 7 and 8).
 
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
-use stash_core::library::repo;
+use serde::Deserialize;
+use stash_core::CoreError;
+use stash_core::library::access::Access;
+use stash_core::library::defs;
+use stash_core::library::organizer::ALREADY_SORTED;
+use stash_core::library::repo::{self, InboxList};
 use stash_core::library::{OrganizeRequest, ReviewAction};
-use stash_core::models::{Category, ItemDetail};
+use stash_core::models::{Category, ItemDetail, ItemRow, Place};
 
-use super::items::{JsonBody, check_organize, visible_detail, visible_item};
+use super::items::{JsonBody, check_organize, item_not_found, visible_detail, visible_item};
 use crate::auth::{AuthUser, Scope};
-use crate::error::ApiResult;
+use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -19,16 +23,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/inbox/{id}", post(decide))
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct InboxList {
-    pub items: Vec<ItemDetail>,
-}
-
 async fn list(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<InboxList>> {
     user.require(Scope::LibraryRead)?;
-    Ok(Json(InboxList {
-        items: repo::inbox(&state.db, &user.user_id).await?,
-    }))
+    let access = user.access(&state.db).await?;
+    Ok(Json(repo::inbox(&state.db, &state.layout, &access).await?))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -43,6 +41,10 @@ enum Decision {
 #[derive(Debug, Clone, Deserialize)]
 struct DecisionBody {
     action: Decision,
+    #[serde(default)]
+    place: Option<Place>,
+    #[serde(default)]
+    library_id: Option<String>,
     #[serde(default)]
     category: Option<Category>,
     #[serde(default)]
@@ -63,6 +65,8 @@ impl DecisionBody {
         match self.action {
             Decision::Ignore => ReviewAction::Ignore,
             Decision::Accept => ReviewAction::Accept(OrganizeRequest {
+                place: self.place,
+                library_id: self.library_id,
                 category: self.category,
                 title: text(self.title),
                 year: self.year,
@@ -74,6 +78,74 @@ impl DecisionBody {
     }
 }
 
+const ONLY_THE_ADDER: &str = "Only the person who added this file can send it somewhere else.";
+const TARGET_CHANGED: &str = "Where this file goes changed. Check it and accept again.";
+
+/// Where an accept may send the item, for this caller (section 8, Inbox accept and
+/// Organize: the target). Fills in `place` and `library_id` so the library acts on
+/// exactly the target checked here.
+async fn resolve_target(
+    state: &AppState,
+    access: &Access,
+    item: &ItemRow,
+    request: &mut OrganizeRequest,
+) -> ApiResult<()> {
+    let kind = item.suggestion().map_or(item.category, |s| s.category);
+    let adder =
+        access.full_owner() || item.added_by.as_deref() == Some(access.viewer.user_id.as_str());
+    let claimer = access.visible_claimer(kind).map(str::to_string);
+    let choose_library =
+        || ApiError::bad_request("Choose a library for this file.").with_field("library_id");
+    let (place, library_id) = match request.place {
+        Some(Place::OtherFiles) => (Place::OtherFiles, None),
+        Some(Place::Library) => match request.library_id.clone().or(claimer.clone()) {
+            Some(id) => (Place::Library, Some(id)),
+            None => return Err(choose_library()),
+        },
+        Some(_) => {
+            return Err(
+                ApiError::bad_request("Choose a library or Other files.").with_field("place")
+            );
+        }
+        // The suggestion decides as the caller reads it now.
+        None => match (request.library_id.clone(), request.category.unwrap_or(kind)) {
+            (Some(id), _) => (Place::Library, Some(id)),
+            (None, Category::Other) => (Place::OtherFiles, None),
+            (None, category) => match access.visible_claimer(category) {
+                Some(id) => (Place::Library, Some(id.to_string())),
+                None => return Err(choose_library()),
+            },
+        },
+    };
+    if let Some(id) = &library_id
+        && !access.sees_library(id)
+    {
+        return Err(ApiError::library_not_found().with_field("library_id"));
+    }
+    if !adder {
+        // Seen only because a library the caller sees claims its kind: only that
+        // library, as it is now.
+        match (&place, &library_id, &claimer) {
+            (Place::Library, Some(id), Some(claimer)) if id == claimer => {}
+            (Place::Library, Some(id), _) => {
+                let fits = defs::load_one(&state.db, id)
+                    .await?
+                    .is_some_and(|d| d.shape().fits(kind));
+                return Err(if fits {
+                    ApiError::conflict(TARGET_CHANGED)
+                } else {
+                    ApiError::bad_request(ONLY_THE_ADDER)
+                }
+                .with_field("library_id"));
+            }
+            _ => return Err(ApiError::bad_request(ONLY_THE_ADDER).with_field("library_id")),
+        }
+    }
+    request.place = Some(place);
+    request.library_id = library_id;
+    Ok(())
+}
+
 async fn decide(
     State(state): State<AppState>,
     user: AuthUser,
@@ -81,13 +153,27 @@ async fn decide(
     JsonBody(body): JsonBody<DecisionBody>,
 ) -> ApiResult<Json<ItemDetail>> {
     user.require(Scope::Full)?;
-    let action = body.into_action();
+    let mut action = body.into_action();
     if let ReviewAction::Accept(request) = &action {
         check_organize(request)?;
     }
-    visible_item(&state, &id).await?;
-    state.library.review(&id, action).await?;
-    Ok(Json(visible_detail(&state, &id, &user.user_id).await?))
+    // The item first: one the caller cannot see is not found (section 7).
+    let item = visible_item(&state, &user, &id).await?;
+    if let ReviewAction::Accept(request) = &mut action {
+        let access = user.access(&state.db).await?;
+        resolve_target(&state, &access, &item, request).await?;
+    }
+    match state.library.review(&id, action).await {
+        Ok(_) => {}
+        // "Already sorted" only while the caller still sees the item.
+        Err(CoreError::Conflict(message)) if message == ALREADY_SORTED => {
+            visible_item(&state, &user, &id).await?;
+            return Err(ApiError::conflict(message));
+        }
+        Err(CoreError::NotFound) => return Err(item_not_found()),
+        Err(e) => return Err(e.into()),
+    }
+    Ok(Json(visible_detail(&state, &user, &id).await?))
 }
 
 #[cfg(test)]
@@ -126,7 +212,7 @@ mod tests {
         use crate::api::library::testing::{TestApp, request};
 
         let app = TestApp::new().await;
-        let (_, token) = app.user("member").await;
+        let (user_id, token) = app.user("member").await;
         let id = app
             .item(
                 "Downloads/Completed/show.mkv",
@@ -136,6 +222,8 @@ mod tests {
                 Some(b"show"),
             )
             .await;
+        // The member added it, so they see it (section 7).
+        app.added_by(&id, &user_id).await;
         let long = "x".repeat(501);
         for body in [
             serde_json::json!({"action": "accept", "category": "movie", "title": long}),
@@ -189,6 +277,8 @@ mod tests {
                 Some(b"other"),
             )
             .await;
+        app.added_by(&accept, &user_id).await;
+        app.added_by(&ignore, &user_id).await;
 
         let (status, json) = app.json("/api/inbox", &token).await;
         assert_eq!(status, StatusCode::OK, "{json}");

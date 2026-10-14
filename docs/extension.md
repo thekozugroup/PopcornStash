@@ -33,7 +33,7 @@ npm --prefix extension run zip     # builds extension/dist and extension/popcorn
 
 The device appears in PopcornStash as "Chrome on macOS" (or Windows, Linux, ChromeOS). A pairing code works for 10 minutes. The extension checks for approval every 3 seconds, or less often when the server asks it to (the real server suggests 6 seconds to stay inside its pairing rate limit, and the extension backs off further if it is ever rate limited).
 
-The key the extension receives can only **add downloads** and **see their progress** (scopes `downloads:create` and `downloads:read`). It cannot browse the library, change settings or see other people.
+The key the extension receives can only **add downloads** and **see their progress** (scopes `downloads:create` and `downloads:read`). It cannot browse the library, change settings or see other people. It lists the downloads you sent, and other people's only once they are sorted into a library you can see; what you send is private to you and the owners until then.
 
 ## Send things to PopcornStash
 

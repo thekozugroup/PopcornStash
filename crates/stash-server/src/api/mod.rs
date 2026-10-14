@@ -1,9 +1,12 @@
 //! JSON API route groups. Auth/account routes live in `crate::auth`.
 
+#[cfg(test)]
+mod access_tests;
 pub mod downloads;
 pub mod events;
 pub mod inbox;
 pub mod items;
+pub mod libraries;
 pub mod library;
 pub mod settings;
 pub mod stream;
@@ -20,6 +23,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(crate::auth::routes())
         .merge(library::routes())
+        .merge(libraries::routes())
         .merge(items::routes())
         .merge(stream::routes())
         .merge(inbox::routes())

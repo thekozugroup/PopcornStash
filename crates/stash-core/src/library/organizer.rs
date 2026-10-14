@@ -5,11 +5,16 @@ use std::time::Duration;
 
 use walkdir::WalkDir;
 
+use std::collections::HashMap;
+
+use super::access::Access;
 use super::classify::{camera_from_tags, classify, media_kind};
+use super::defs::{self, LibraryDef, Shape};
 use super::parse::parse_name;
 use super::scanner::{
-    Meta, enqueue_media_jobs, find_moved, is_extras_dir, is_junk_name, is_sample, mtime_secs,
-    new_row, normalize_rel, overwrite_row, publish, quick_hash_async,
+    Meta, enqueue_media_jobs, find_moved, in_place_category, is_extras_dir, is_junk_name,
+    is_sample, library_metadata, mtime_secs, new_row, normalize_rel, overwrite_row, publish,
+    publish_moved, quick_hash_async,
 };
 use super::{Library, OrganizeRequest, ReviewAction, repo};
 use crate::events::{Event, LibraryChange};
@@ -17,7 +22,8 @@ use crate::jobs::JobKind;
 use crate::media::ThumbSize;
 use crate::media::exif::ExifInfo;
 use crate::models::{
-    Category, Classification, Confidence, DownloadRow, ItemRow, ItemStatus, MediaKind, MediaSummary,
+    Category, Classification, Confidence, DownloadRow, FolderState, ItemRow, ItemStatus, MediaKind,
+    MediaSummary, Place, Suggestion, Waiting,
 };
 use crate::paths::{self, StashLayout, Zone};
 use crate::{CoreError, Result, now};
@@ -26,8 +32,10 @@ use crate::{CoreError, Result, now};
 const PROBE_TIMEOUT: Duration = Duration::from_secs(90);
 const UNKNOWN_SHOW: &str = "Unknown Show";
 
-/// Relative destination path for a classification and original file name.
-pub fn destination_for(classification: &Classification, file_name: &str) -> String {
+/// Where a file of this classification sits inside a library folder (section 4, claims):
+/// `Title (Year)/Title (Year).ext`, `Show/Season 01/Show - S01E02.ext` or `YYYY/MM/name`;
+/// for `other`, the file's own (safe) name.
+pub fn layout_for(classification: &Classification, file_name: &str) -> String {
     let c = classification;
     let name = paths::sanitize_filename(file_name);
     let path = Path::new(&name);
@@ -51,7 +59,7 @@ pub fn destination_for(classification: &Classification, file_name: &str) -> Stri
                 None => title.to_string(),
             };
             let folder = component(&label);
-            format!("{}/{folder}/{folder}{ext}", paths::MOVIES)
+            format!("{folder}/{folder}{ext}")
         }
         Category::Episode => {
             let show = component(
@@ -75,28 +83,34 @@ pub fn destination_for(classification: &Classification, file_name: &str) -> Stri
                         Some(end) => format!("S{season:02}E{episode:02}-E{end:02}"),
                         None => format!("S{season:02}E{episode:02}"),
                     };
-                    format!(
-                        "{}/{show}/Season {season:02}/{show} - {marker}{ext}",
-                        paths::SHOWS
-                    )
+                    format!("{show}/Season {season:02}/{show} - {marker}{ext}")
                 }
-                (Some(season), None) => {
-                    format!("{}/{show}/Season {season:02}/{name}", paths::SHOWS)
-                }
-                (None, None) => format!("{}/{show}/{name}", paths::SHOWS),
+                (Some(season), None) => format!("{show}/Season {season:02}/{name}"),
+                (None, None) => format!("{show}/{name}"),
             }
         }
-        Category::HomeVideo | Category::Photo => {
-            let root = paths::category_folder(c.category);
-            match c
-                .taken_at
-                .and_then(|t| time::OffsetDateTime::from_unix_timestamp(t).ok())
-            {
-                Some(dt) => format!("{root}/{:04}/{:02}/{name}", dt.year(), u8::from(dt.month())),
-                None => format!("{root}/Undated/{name}"),
-            }
-        }
-        Category::Other => format!("{}/{name}", paths::OTHER),
+        Category::HomeVideo | Category::Photo => match c
+            .taken_at
+            .and_then(|t| time::OffsetDateTime::from_unix_timestamp(t).ok())
+        {
+            Some(dt) => format!("{:04}/{:02}/{name}", dt.year(), u8::from(dt.month())),
+            None => format!("Undated/{name}"),
+        },
+        Category::Other => name,
+    }
+}
+
+/// The relative path a file gets: `<library folder>/<layout>`, or `Other/<name>` when
+/// `folder` is None (Other files).
+pub fn destination_in(
+    folder: Option<&str>,
+    classification: &Classification,
+    file_name: &str,
+) -> String {
+    let layout = layout_for(classification, file_name);
+    match folder {
+        Some(folder) => format!("{folder}/{layout}"),
+        None => format!("{}/{}", paths::OTHER, paths::sanitize_filename(file_name)),
     }
 }
 
@@ -185,6 +199,16 @@ pub async fn sort_path(
     rel_path: &str,
     download_id: Option<&str>,
 ) -> Result<Vec<String>> {
+    sort_path_as_of(lib, rel_path, download_id, lib.claims_generation()).await
+}
+
+/// [`sort_path`] for a job that started when the claims generation was `generation`.
+pub(crate) async fn sort_path_as_of(
+    lib: &Library,
+    rel_path: &str,
+    download_id: Option<&str>,
+    generation: u64,
+) -> Result<Vec<String>> {
     let rel = normalize_rel(rel_path)?;
     if !StashLayout::zone(&rel).auto_sorts() {
         return Err(CoreError::invalid(
@@ -239,10 +263,21 @@ pub async fn sort_path(
         .map_err(|e| CoreError::Other(e.into()))?
     };
     let auto_sort = lib.settings.get().await.auto_sort;
+    // One sort job, one set of claims (section 4): when a library write changes where
+    // files go while this job runs, the rest of its files wait in Inbox.
+    let job = SortJob {
+        download_id: download_id.clone(),
+        added_by: match &download_id {
+            Some(id) => download_row(lib, id).await?.and_then(|d| d.created_by),
+            None => None,
+        },
+        auto_sort,
+        generation,
+    };
     let mut changed = Vec::new();
     let mut linked = Vec::new();
     for (file, role) in files {
-        match sort_file(lib, &file, role, download_id.as_deref(), auto_sort).await {
+        match sort_file(lib, &file, role, &job).await {
             Ok(Sorted::Changed(id)) => {
                 linked.push(id.clone());
                 changed.push(id);
@@ -409,7 +444,7 @@ const ARTWORK_SUFFIXES: &[&str] = &[
 ];
 
 /// Whether a picture at `path` inside the download `root` is the release's artwork.
-fn is_artwork(root: &Path, path: &Path) -> bool {
+pub(crate) fn is_artwork(root: &Path, path: &Path) -> bool {
     let in_artwork_dir = path
         .strip_prefix(root)
         .ok()
@@ -569,8 +604,18 @@ fn possible_artwork(mut c: Classification, file_name: &str) -> Classification {
     c.category = Category::Other;
     c.confidence = Confidence::Low;
     c.reason = "This picture may be artwork from a movie, show or album".into();
-    c.destination = destination_for(&c, file_name);
+    c.layout = layout_for(&c, file_name);
     c
+}
+
+/// What one sort job keeps for all of its files.
+struct SortJob {
+    download_id: Option<String>,
+    /// Who brought the files in (the download's creator).
+    added_by: Option<String>,
+    auto_sort: bool,
+    /// The claims generation when the job started.
+    generation: u64,
 }
 
 /// ffprobe for videos and EXIF for photos. Failures (including a crash in the probe) are
@@ -623,13 +668,7 @@ async fn analyze(
     }
 }
 
-async fn sort_file(
-    lib: &Library,
-    abs: &Path,
-    role: Role,
-    download_id: Option<&str>,
-    auto_sort: bool,
-) -> Result<Sorted> {
+async fn sort_file(lib: &Library, abs: &Path, role: Role, job: &SortJob) -> Result<Sorted> {
     let Some(rel) = lib.layout.rel(abs) else {
         return Ok(Sorted::Skipped);
     };
@@ -658,9 +697,6 @@ async fn sort_file(
     if role == Role::MaybeArtwork {
         c = possible_artwork(c, &file_name(abs));
     }
-    if c.category == Category::Episode {
-        canonicalize_show(lib, &mut c, &file_name(abs)).await?;
-    }
     let camera = exif
         .as_ref()
         .and_then(|e| e.camera.clone())
@@ -676,7 +712,8 @@ async fn sort_file(
         mtime,
         hash,
     );
-    row.source_download_id = download_id.map(str::to_string);
+    row.source_download_id = job.download_id.clone();
+    row.added_by = job.added_by.clone();
     row.camera = camera;
     fill_media(&mut row, probe.as_ref(), exif.as_ref());
 
@@ -704,8 +741,40 @@ async fn sort_file(
     };
     let own_id = target.as_ref().map(|t| t.id.clone());
 
-    if c.confidence == Confidence::High && auto_sort {
-        match move_into_library(lib, abs, &c.destination, own_id.as_deref()).await {
+    // Where it goes, from the claims as they are now (section 4, claims).
+    let library_defs = defs::load_all(&lib.db).await?;
+    let claimer = (c.category != Category::Other)
+        .then(|| library_defs.iter().find(|d| d.claims(c.category)))
+        .flatten();
+    if let Some(def) = claimer
+        && c.category == Category::Episode
+    {
+        canonicalize_show(lib, &mut c, def).await?;
+        row.show_name.clone_from(&c.show_name);
+        row.title.clone_from(&c.title);
+        row.sort_title = repo::sort_title(&row.title);
+    }
+    let claims_changed = lib.claims_generation() != job.generation;
+    let destination = if claims_changed || !job.auto_sort || c.confidence != Confidence::High {
+        None
+    } else if c.category == Category::Other {
+        Some(destination_in(None, &c, &file_name(abs)))
+    } else {
+        match claimer {
+            // A kind no library claims waits for a person to pick a library.
+            None => None,
+            Some(def) => match defs::ready_folder(lib, def).await {
+                Ok(()) => Some(show_destination(lib, def, &c, &file_name(abs)).await?),
+                // A missing or read-only folder: the file waits until it is back.
+                Err(_) => None,
+            },
+        }
+    };
+    if claims_changed {
+        tracing::info!(path = %rel, "the libraries changed while this download was sorted; leaving the rest in Inbox");
+    }
+    if let Some(dest) = destination {
+        match move_into_library(lib, abs, &dest, own_id.as_deref()).await {
             Ok(new_rel) => {
                 row.rel_path = new_rel;
                 row.status = ItemStatus::Ready;
@@ -753,7 +822,9 @@ async fn record(lib: &Library, target: Option<ItemRow>, row: ItemRow) -> Result<
     let (id, change) = match target {
         Some(item) => {
             overwrite_row(lib, &item.id, &row).await?;
-            (item.id, LibraryChange::Updated)
+            enqueue_media_jobs(lib, &item.id).await?;
+            publish_moved(lib, LibraryChange::Updated, &item.id, item.facts());
+            return Ok(item.id);
         }
         None => {
             if repo::insert_item(&lib.db, &row).await? {
@@ -764,7 +835,9 @@ async fn record(lib: &Library, target: Option<ItemRow>, row: ItemRow) -> Result<
                     .await?
                     .ok_or(CoreError::NotFound)?;
                 overwrite_row(lib, &current.id, &row).await?;
-                (current.id, LibraryChange::Updated)
+                enqueue_media_jobs(lib, &current.id).await?;
+                publish_moved(lib, LibraryChange::Updated, &current.id, current.facts());
+                return Ok(current.id);
             }
         }
     };
@@ -773,40 +846,67 @@ async fn record(lib: &Library, target: Option<ItemRow>, row: ItemRow) -> Result<
     Ok(id)
 }
 
-/// Reuse the spelling and folder of a show that is already in the library.
-async fn canonicalize_show(lib: &Library, c: &mut Classification, file_name: &str) -> Result<()> {
+/// Reuse the spelling of a show that is already in the library `def`.
+async fn canonicalize_show(lib: &Library, c: &mut Classification, def: &LibraryDef) -> Result<()> {
     let Some(show) = c.show_name.clone().filter(|s| !s.trim().is_empty()) else {
         return Ok(());
     };
-    let existing: Option<(String, String)> = sqlx::query_as(
-        "SELECT show_name, rel_path FROM items
-         WHERE category = 'episode' AND status IN ('ready', 'missing') AND show_name = ? COLLATE NOCASE
+    let existing: Option<String> = sqlx::query_scalar(
+        "SELECT show_name FROM items
+         WHERE library_id = ? AND category = 'episode' AND status IN ('ready', 'missing')
+           AND show_name = ? COLLATE NOCASE
          ORDER BY added_at, id LIMIT 1",
     )
+    .bind(def.id())
     .bind(&show)
     .fetch_optional(&lib.db)
     .await?;
-    let Some((name, rel_path)) = existing else {
-        return Ok(());
-    };
-    c.show_name = Some(name.clone());
-    if let Some((s, e)) = c.season.zip(c.episode) {
-        c.title = format!("{name} S{s:02}E{e:02}");
-    }
-    c.destination = destination_for(c, file_name);
-    // Keep using the show's existing folder under Shows/ (it may be named differently).
-    let mut parts = rel_path.split('/');
-    if let (Some(paths::SHOWS), Some(folder), Some(_)) = (parts.next(), parts.next(), parts.next())
-    {
-        let ours = component(&name);
-        let prefix = format!("{}/{ours}/", paths::SHOWS);
-        if folder != ours
-            && let Some(rest) = c.destination.strip_prefix(&prefix)
-        {
-            c.destination = format!("{}/{folder}/{rest}", paths::SHOWS);
+    if let Some(name) = existing {
+        if let Some((s, e)) = c.season.zip(c.episode) {
+            c.title = format!("{name} S{s:02}E{e:02}");
         }
+        c.show_name = Some(name);
     }
     Ok(())
+}
+
+/// The destination in `def` for `c`, keeping an episode in its show's existing folder
+/// (which may be named differently from the show).
+async fn show_destination(
+    lib: &Library,
+    def: &LibraryDef,
+    c: &Classification,
+    file_name: &str,
+) -> Result<String> {
+    let mut dest = destination_in(Some(def.folder()), c, file_name);
+    if c.category != Category::Episode {
+        return Ok(dest);
+    }
+    let Some(show) = c.show_name.clone().filter(|s| !s.trim().is_empty()) else {
+        return Ok(dest);
+    };
+    let existing: Option<String> = sqlx::query_scalar(
+        "SELECT rel_path FROM items
+         WHERE library_id = ? AND category = 'episode' AND status IN ('ready', 'missing') AND show_name = ?
+         ORDER BY added_at, id LIMIT 1",
+    )
+    .bind(def.id())
+    .bind(&show)
+    .fetch_optional(&lib.db)
+    .await?;
+    if let Some(rel_path) = existing {
+        let mut parts = rel_path.split('/');
+        if let (Some(_), Some(folder), Some(_)) = (parts.next(), parts.next(), parts.next()) {
+            let ours = component(&show);
+            let prefix = format!("{}/{ours}/", def.folder());
+            if folder != ours
+                && let Some(rest) = dest.strip_prefix(&prefix)
+            {
+                dest = format!("{}/{folder}/{rest}", def.folder());
+            }
+        }
+    }
+    Ok(dest)
 }
 
 /// `Movies/X/X (2).mkv` is already where `Movies/X/X.mkv` would land after a name collision.
@@ -882,9 +982,12 @@ async fn move_into_library(
     own_id: Option<&str>,
 ) -> Result<String> {
     let dest_rel = normalize_rel(dest_rel)?;
-    if !matches!(StashLayout::zone(&dest_rel), Zone::Library(_)) {
+    let library_defs = defs::load_all(&lib.db).await?;
+    if StashLayout::zone(&dest_rel) != Zone::Other
+        && defs::library_for_path(&library_defs, &dest_rel).is_none()
+    {
         return Err(CoreError::invalid(
-            "Files can only be organized into the library folders.",
+            "Files can only be organized into a library or Other files.",
         ));
     }
     let dest_abs = lib.layout.abs(&dest_rel)?;
@@ -1171,6 +1274,70 @@ pub async fn organize(lib: &Library, item_id: &str, request: OrganizeRequest) ->
     organize_item(lib, item, request, false).await
 }
 
+/// Where an organize or accept sends a file.
+enum Target {
+    Library(LibraryDef),
+    OtherFiles,
+}
+
+/// The target named by `request` (section 8, Inbox accept and Organize): `place` and
+/// `library_id` when sent; otherwise the suggestion as it reads now (Other files for
+/// `other`, else the library that claims the kind), else the item's own library.
+fn resolve_target(
+    item: &ItemRow,
+    request: &OrganizeRequest,
+    defs: &[LibraryDef],
+) -> Result<Target> {
+    let find = |id: &str| {
+        defs.iter()
+            .find(|d| d.id() == id)
+            .cloned()
+            .map(Target::Library)
+            .ok_or_else(|| CoreError::library_not_found(Some("library_id")))
+    };
+    let claimer = |category: Category| defs.iter().find(|d| d.claims(category));
+    let suggested = item.suggestion().map(|s| s.category);
+    match request.place {
+        Some(Place::OtherFiles) => Ok(Target::OtherFiles),
+        Some(Place::Library) => match request.library_id.as_deref() {
+            Some(id) => find(id),
+            None => request
+                .category
+                .or(suggested)
+                .and_then(claimer)
+                .map(|d| Target::Library(d.clone()))
+                .ok_or_else(choose_library),
+        },
+        Some(_) => Err(CoreError::bad_field(
+            "place",
+            "Choose a library or Other files.",
+        )),
+        None => {
+            if let Some(id) = request.library_id.as_deref() {
+                return find(id);
+            }
+            match request.category.or(suggested) {
+                Some(Category::Other) => return Ok(Target::OtherFiles),
+                Some(category) => {
+                    if let Some(def) = claimer(category) {
+                        return Ok(Target::Library(def.clone()));
+                    }
+                }
+                None => {}
+            }
+            match (item.place, item.library_id.as_deref()) {
+                (Place::Library, Some(id)) => find(id),
+                (Place::OtherFiles, _) => Ok(Target::OtherFiles),
+                _ => Err(choose_library()),
+            }
+        }
+    }
+}
+
+fn choose_library() -> CoreError {
+    CoreError::bad_field("library_id", "Choose a library for this file.")
+}
+
 /// Build the target classification. Explicit request fields win; the rest come from the
 /// item's metadata then its suggestion (or the other way round when accepting a review).
 fn organize_target(
@@ -1241,12 +1408,47 @@ fn organize_target(
             .or(Some(item.mtime)),
         confidence: Confidence::High,
         reason: "Organized by hand".to_string(),
-        destination: String::new(),
+        layout: String::new(),
     }
 }
 
 /// Longest title or show name accepted by organize and review (as for metadata edits).
 const MAX_NAME_CHARS: usize = 500;
+
+/// What the file becomes in `def` (section 8, Inbox accept and Organize: the file must
+/// fit the library).
+fn fit_category(
+    def: &LibraryDef,
+    item: &ItemRow,
+    request: &OrganizeRequest,
+    file_name: &str,
+) -> Result<Category> {
+    defs::accepts(def.shape(), item.kind)?;
+    Ok(match def.shape() {
+        Shape::Photos => Category::Photo,
+        Shape::Episodes => Category::Episode,
+        Shape::OneOffs => {
+            let one_off = |c: Category| matches!(c, Category::Movie | Category::HomeVideo);
+            request
+                .category
+                .filter(|c| one_off(*c))
+                .or_else(|| {
+                    item.suggestion()
+                        .map(|s| s.category)
+                        .filter(|c| one_off(*c))
+                })
+                .or_else(|| {
+                    in_place_category(
+                        def,
+                        &format!("{}/{file_name}", def.folder()),
+                        item.kind,
+                        u64::try_from(item.size).unwrap_or(0),
+                    )
+                })
+                .unwrap_or(Category::Movie)
+        }
+    })
+}
 
 /// The caller holds the move lock.
 async fn organize_item(
@@ -1283,8 +1485,18 @@ async fn organize_item(
             "Files that are still downloading or in the trash cannot be organized.",
         ));
     }
-    let mut target = organize_target(&item, &request, prefer_suggestion);
-    if target
+    let library_defs = defs::load_all(&lib.db).await?;
+    let target = resolve_target(&item, &request, &library_defs)?;
+    let abs = lib.layout.abs(&item.rel_path)?;
+    let name = file_name(&abs);
+    let mut target_class = organize_target(&item, &request, prefer_suggestion);
+    match &target {
+        Target::OtherFiles => target_class.category = Category::Other,
+        Target::Library(def) => {
+            target_class.category = fit_category(def, &item, &request, &name)?;
+        }
+    }
+    if target_class
         .year
         .is_some_and(|year| !(1800..=2200).contains(&year))
     {
@@ -1292,53 +1504,71 @@ async fn organize_item(
             "The year must be between 1800 and 2200.",
         ));
     }
-    if target.season.is_some_and(|s| s < 0) || target.episode.is_some_and(|e| e < 0) {
+    if target_class.season.is_some_and(|s| s < 0) || target_class.episode.is_some_and(|e| e < 0) {
         return Err(CoreError::invalid(
             "Season and episode numbers cannot be negative.",
         ));
     }
-    match target.category {
-        Category::Movie if target.title.trim().is_empty() => {
-            return Err(CoreError::invalid("Add a title to file this as a movie."));
+    match target_class.category {
+        Category::Movie if target_class.title.trim().is_empty() => {
+            return Err(CoreError::bad_field(
+                "title",
+                "Add a title to file this as a movie.",
+            ));
         }
         Category::Episode
-            if target
+            if target_class
                 .show_name
                 .as_deref()
                 .is_none_or(|s| s.trim().is_empty()) =>
         {
-            return Err(CoreError::invalid(
+            return Err(CoreError::bad_field(
+                "show_name",
                 "Add the show name to file this as an episode.",
+            ));
+        }
+        Category::Episode if target_class.episode.is_none() => {
+            return Err(CoreError::bad_field(
+                "episode",
+                "Add the episode number to file this as an episode.",
             ));
         }
         _ => {}
     }
-    if target.category == Category::Episode
-        && let (Some(show), Some(s), Some(e)) = (&target.show_name, target.season, target.episode)
-    {
-        target.title = format!("{show} S{s:02}E{e:02}");
+    if target_class.category == Category::Episode {
+        target_class.season = Some(target_class.season.unwrap_or(1));
+        if let (Some(show), Some(s), Some(e)) = (
+            &target_class.show_name,
+            target_class.season,
+            target_class.episode,
+        ) {
+            target_class.title = format!("{show} S{s:02}E{e:02}");
+        }
     }
-
-    let abs = lib.layout.abs(&item.rel_path)?;
     if tokio::fs::symlink_metadata(&abs).await.is_err() {
         return Err(CoreError::invalid(
             "The file is no longer where PopcornStash expected it. Try a rescan.",
         ));
     }
-    let name = file_name(&abs);
-    target.destination = destination_for(&target, &name);
-    if target.category == Category::Episode {
-        canonicalize_show(lib, &mut target, &name).await?;
-    }
+    let destination = match &target {
+        Target::OtherFiles => destination_in(None, &target_class, &name),
+        Target::Library(def) => {
+            defs::ready_folder(lib, def).await?;
+            if target_class.category == Category::Episode {
+                canonicalize_show(lib, &mut target_class, def).await?;
+            }
+            show_destination(lib, def, &target_class, &name).await?
+        }
+    };
 
     let review_before = repo::needs_review_count(&lib.db).await?;
-    let new_rel = if target.destination == item.rel_path
-        || is_numbered_variant(&item.rel_path, &target.destination)
-    {
-        item.rel_path.clone()
-    } else {
-        move_into_library(lib, &abs, &target.destination, Some(&item.id)).await?
-    };
+    let new_rel =
+        if destination == item.rel_path || is_numbered_variant(&item.rel_path, &destination) {
+            item.rel_path.clone()
+        } else {
+            move_into_library(lib, &abs, &destination, Some(&item.id)).await?
+        };
+    let target = target_class;
     sqlx::query(
         "UPDATE items SET rel_path = ?, category = ?, title = ?, sort_title = ?, year = ?, show_name = ?, season = ?,
             episode = ?, episode_title = ?, taken_at = ?, status = 'ready', suggestion_json = NULL, missing_since = NULL,
@@ -1368,24 +1598,36 @@ async fn organize_item(
         remove_empty_dirs(&lib.layout, parent).await;
     }
     tracing::info!(item = %item.id, from = %item.rel_path, to = %new_rel, "organized an item");
-    publish(lib, LibraryChange::Updated, &item.id);
+    publish_moved(lib, LibraryChange::Updated, &item.id, item.facts());
     publish_inbox_if_changed(lib, review_before).await?;
     repo::get(&lib.db, &item.id)
         .await?
         .ok_or(CoreError::NotFound)
 }
 
+/// The sentence for an Inbox decision on an item that is no longer waiting.
+pub const ALREADY_SORTED: &str = "That file was already sorted.";
+
 pub async fn review(lib: &Library, item_id: &str, action: ReviewAction) -> Result<ItemRow> {
     let _moves = lib.lock_moves().await;
     let item = repo::get(&lib.db, item_id)
         .await?
         .ok_or(CoreError::NotFound)?;
-    if item.status != ItemStatus::NeedsReview {
-        return Err(CoreError::conflict("This item is not waiting for review."));
-    }
     match action {
-        ReviewAction::Accept(request) => organize_item(lib, item, request, true).await,
+        ReviewAction::Accept(request) => {
+            // The target is checked before the item's state (section 8).
+            let library_defs = defs::load_all(&lib.db).await?;
+            resolve_target(&item, &request, &library_defs)?;
+            let ignored = item.status == ItemStatus::Ready && item.place == Place::Incoming;
+            if item.status != ItemStatus::NeedsReview && !ignored {
+                return Err(CoreError::conflict(ALREADY_SORTED));
+            }
+            organize_item(lib, item, request, true).await
+        }
         ReviewAction::Ignore => {
+            if item.status != ItemStatus::NeedsReview {
+                return Err(CoreError::conflict(ALREADY_SORTED));
+            }
             let review_before = repo::needs_review_count(&lib.db).await?;
             let category = item.suggestion().map_or(item.category, |s| s.category);
             sqlx::query(
@@ -1396,13 +1638,71 @@ pub async fn review(lib: &Library, item_id: &str, action: ReviewAction) -> Resul
             .bind(&item.id)
             .execute(&lib.db)
             .await?;
-            publish(lib, LibraryChange::Updated, &item.id);
+            publish_moved(lib, LibraryChange::Updated, &item.id, item.facts());
             publish_inbox_if_changed(lib, review_before).await?;
             repo::get(&lib.db, &item.id)
                 .await?
                 .ok_or(CoreError::NotFound)
         }
     }
+}
+
+/// A stored classification as `access` reads it now (section 8, `Classification`):
+/// where it would go and why it waits, from the claims, the folder states and what the
+/// reader sees. Nothing about a library the reader cannot see is shown.
+pub fn suggestion_view(
+    row: &ItemRow,
+    access: &Access,
+    library_defs: &[LibraryDef],
+    states: &HashMap<String, FolderState>,
+) -> Option<Suggestion> {
+    let mut c = row.suggestion()?;
+    let name = row.rel_path.rsplit('/').next().unwrap_or(&row.rel_path);
+    c.layout = layout_for(&c, name);
+    let waiting_now = row.status == ItemStatus::NeedsReview;
+    let low = c.confidence == Confidence::Low;
+    let (place, library_id, destination, waiting) = if c.category == Category::Other {
+        let waiting = if low {
+            Waiting::LowConfidence
+        } else {
+            Waiting::Confirm
+        };
+        (
+            Some(Place::OtherFiles),
+            None,
+            Some(destination_in(None, &c, name)),
+            waiting,
+        )
+    } else {
+        match access
+            .visible_claimer(c.category)
+            .and_then(|id| library_defs.iter().find(|d| d.id() == id))
+        {
+            None => (None, None, None, Waiting::ChooseLibrary),
+            Some(def) => {
+                let waiting = match states.get(def.id()) {
+                    Some(FolderState::Missing | FolderState::ReadOnly) => {
+                        Waiting::FolderUnavailable
+                    }
+                    _ if low => Waiting::LowConfidence,
+                    _ => Waiting::Confirm,
+                };
+                (
+                    Some(Place::Library),
+                    Some(def.id().to_string()),
+                    Some(destination_in(Some(def.folder()), &c, name)),
+                    waiting,
+                )
+            }
+        }
+    };
+    Some(Suggestion {
+        classification: c,
+        place,
+        library_id,
+        destination,
+        waiting: waiting_now.then_some(waiting),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1448,7 +1748,7 @@ pub async fn trash_item(lib: &Library, item_id: &str, user_id: Option<&str>) -> 
         record_trash(lib, &item, &dest, user_id).await?;
     }
     tracing::info!(item = %item.id, path = %item.rel_path, "moved an item to the trash");
-    publish(lib, LibraryChange::Removed, &item.id);
+    publish_moved(lib, LibraryChange::Removed, &item.id, item.facts());
     publish_inbox_if_changed(lib, review_before).await
 }
 
@@ -1486,6 +1786,74 @@ async fn record_trash(
     Ok(())
 }
 
+/// Whether the library that now holds a trashed item's original path would show it, and
+/// what it would be there (section 11, Restore from Trash). `Err` carries the 409.
+async fn restore_plan(
+    lib: &Library,
+    item: &ItemRow,
+    original_rel: &str,
+    create_folder: bool,
+) -> Result<Option<(LibraryDef, Category)>> {
+    let library_defs = defs::load_all(&lib.db).await?;
+    let Some(def) = defs::library_for_path(&library_defs, original_rel) else {
+        return Ok(None);
+    };
+    let size = u64::try_from(item.size).unwrap_or(0);
+    // What the library there now shows (section 4, Files already in a library). A file
+    // keeps its category when that still fits the library.
+    let shown = in_place_category(def, original_rel, item.kind, size);
+    let category = shown.map(|c| {
+        if def.shape().fits(item.category) {
+            item.category
+        } else {
+            c
+        }
+    });
+    let Some(category) = category else {
+        return Err(CoreError::conflict(format!(
+            "{} does not show this kind of file any more, so it stays in the trash.",
+            def.row.name
+        )));
+    };
+    if create_folder {
+        defs::ready_folder(lib, def).await.map_err(|_| {
+            CoreError::conflict(
+                "This library's folder is missing or cannot be written, so nothing can move there now.",
+            )
+        })?;
+    } else {
+        let live: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM items WHERE library_id = ? AND status != 'missing'",
+        )
+        .bind(def.id())
+        .fetch_one(&lib.db)
+        .await?;
+        if defs::folder_state(&lib.layout, def.folder(), live > 0).await != FolderState::Ok {
+            return Err(CoreError::conflict(
+                "This library's folder is missing or cannot be written, so nothing can move there now.",
+            ));
+        }
+    }
+    Ok(Some((def.clone(), category)))
+}
+
+/// The 409 sentence a restore of this trashed item would get now, if any.
+pub async fn restore_refusal(lib: &Library, item_id: &str) -> Result<Option<String>> {
+    let original: Option<String> =
+        sqlx::query_scalar("SELECT original_rel_path FROM trash WHERE item_id = ?")
+            .bind(item_id)
+            .fetch_optional(&lib.db)
+            .await?;
+    let (Some(original), Some(item)) = (original, repo::get(&lib.db, item_id).await?) else {
+        return Ok(None);
+    };
+    match restore_plan(lib, &item, &original, false).await {
+        Ok(_) => Ok(None),
+        Err(CoreError::Conflict(message)) => Ok(Some(message)),
+        Err(e) => Err(e),
+    }
+}
+
 pub async fn restore_item(lib: &Library, item_id: &str) -> Result<ItemRow> {
     let _moves = lib.lock_moves().await;
     let row: Option<(String, String)> =
@@ -1505,6 +1873,8 @@ pub async fn restore_item(lib: &Library, item_id: &str) -> Result<ItemRow> {
             "The file is no longer in the trash, so it cannot be restored.",
         ));
     }
+    // Refused before anything moves when the library there now would not show it.
+    let plan = restore_plan(lib, &item, &original_rel, true).await?;
     let review_before = repo::needs_review_count(&lib.db).await?;
     let original_abs = lib.layout.abs(&original_rel)?;
     let dest = free_destination(lib, &original_abs, Some(item_id)).await?;
@@ -1533,13 +1903,35 @@ pub async fn restore_item(lib: &Library, item_id: &str) -> Result<ItemRow> {
         .bind(item_id)
         .execute(&mut *tx)
         .await?;
+    // Indexed under the rules of the library its path is in now.
+    if let Some((_, category)) = plan
+        && category != item.category
+    {
+        let meta = library_metadata(category, &new_rel, item.mtime);
+        sqlx::query(
+            "UPDATE items SET category = ?, title = ?, sort_title = ?, year = ?, show_name = ?, season = ?,
+                episode = ?, episode_title = ?, taken_at = COALESCE(?, taken_at) WHERE id = ?",
+        )
+        .bind(category.as_str())
+        .bind(&meta.title)
+        .bind(repo::sort_title(&meta.title))
+        .bind(meta.year)
+        .bind(&meta.show_name)
+        .bind(meta.season)
+        .bind(meta.episode)
+        .bind(&meta.episode_title)
+        .bind(meta.taken_at)
+        .bind(item_id)
+        .execute(&mut *tx)
+        .await?;
+    }
     sqlx::query("DELETE FROM trash WHERE item_id = ?")
         .bind(item_id)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
     tracing::info!(item = %item_id, path = %new_rel, "restored an item from the trash");
-    publish(lib, LibraryChange::Added, item_id);
+    publish_moved(lib, LibraryChange::Added, item_id, item.facts());
     publish_inbox_if_changed(lib, review_before).await?;
     repo::get(&lib.db, item_id)
         .await?
@@ -1641,8 +2033,20 @@ mod tests {
             taken_at: None,
             confidence: Confidence::High,
             reason: String::new(),
-            destination: String::new(),
+            layout: String::new(),
         }
+    }
+
+    /// The destination in the starting library for the kind (or Other files).
+    fn destination_for(c: &Classification, file_name: &str) -> String {
+        let folder = match c.category {
+            Category::Movie => Some("Movies"),
+            Category::Episode => Some("Shows"),
+            Category::HomeVideo => Some("Home Videos"),
+            Category::Photo => Some("Photos"),
+            Category::Other => None,
+        };
+        destination_in(folder, c, file_name)
     }
 
     #[test]

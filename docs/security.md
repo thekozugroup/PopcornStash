@@ -35,7 +35,9 @@ These are out of scope: someone with a shell on the host or access to Docker, ro
 
 ### People and devices
 
-- Members can watch, browse, upload, add downloads and review the Inbox.
+- Members can watch and browse the libraries the owner shares with them, upload, add downloads and review the Inbox items they can see. A library shown to selected people does not exist for anyone else: its items answer "not found" on every route, in search, on Home, in downloads and in live events (architecture section 7).
+- Other files (music, documents) are seen by the person who added them and the owners. Downloads, uploads and shares are seen by the person who added them and the owners until they are sorted into something others can see. Folders on the share that are not a library are seen by owners only.
+- A limited owner device (a TV with `library:read`, the Chrome extension) sees every library, and otherwise only what a member would.
 - Only owners can change the VPN or settings, manage people and invites, empty the trash, delete items and read the audit log.
 - Device tokens carry scopes. The Chrome extension can only add and list downloads. An owner can give someone else a device only with limited scopes, never full access.
 - Roles are read from the database on every request, so a demotion takes effect at once.
@@ -130,7 +132,9 @@ These are known and not fixed yet.
 - **The built-in web server has no connection limits.** Someone who opens many slow connections can tire it out. On the internet, put PopcornStash behind a reverse proxy, Tailscale or a tunnel that limits connections.
 - **Sign-in ceremonies share one pool of 10,000.** An attacker spread over many addresses can fill it for a few minutes and block sign-in until it drains.
 - **Device pairing can be phished.** Approving a code that someone else sent you gives them a device on your account. An Android device gets full access, including adding passkeys. Only approve codes shown on a device in your own hands. The approval page shows the device type and the address it asked from.
-- **Members are trusted family.** They see the whole library and every download. They can pause or remove anyone's download, and they can organize files in the owner's own folders.
+- **Library access lives in the app, not on the disk.** PopcornStash enforces who sees which library. Anyone who can open the stash share (SMB, NFS) or the server's disk reads every folder, hidden libraries, Other files and folders not in a library included. Give family members no share access, or write access to `Inbox/` only.
+- **Members are trusted with what they see.** They can pause or remove a download they can see (their own, or a sorted one that brought in something they see), and accept waiting files of a kind a library they see takes into that library. Organize, deleting items and the trash are for owners.
+- **A device keeps what it already loaded.** Hiding a library stops every new request at once (thumbnails, files, streams, progress), but pictures and video a browser or phone already cached stay there until that device clears them.
 - **Sessions outlive passkeys.** Removing a passkey, or recovering the owner account, does not end sessions that are already signed in. End them under Signed-in browsers in Settings → Security.
 - **`STASH_TRUST_PROXY=true` trusts `X-Forwarded-For`.** Turn it on only when the port can be reached only through your proxy. Otherwise an attacker can pick a fresh rate-limit budget for every request.
 - **Web downloads through the VPN pass through the engine.** While the VPN is connected, web downloads go through the engine's proxy by default (`http_via_vpn`). HTTPS is checked end to end, so a compromised engine sees only the host name. It can read and change a plain `http://` download and any cookies the extension forwards with it, as anyone else on that unencrypted path can.

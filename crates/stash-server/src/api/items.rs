@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use stash_core::CoreError;
 use stash_core::events::{Event, LibraryChange};
 use stash_core::library::OrganizeRequest;
+use stash_core::library::access::visible_row;
 use stash_core::library::repo::{self, ItemPatch, ItemQuery, Page};
 use stash_core::media::ThumbSize;
 use stash_core::media::playback::{self, ClientCaps, PlaybackMode};
@@ -138,21 +139,30 @@ pub(crate) fn item_not_found() -> ApiError {
     ApiError::not_found("That item no longer exists.")
 }
 
-/// Load an item that is visible in the library (anything but trashed).
-pub(crate) async fn visible_item(state: &AppState, id: &str) -> ApiResult<ItemRow> {
-    match repo::get(&state.db, id).await? {
+/// Load an item the caller may see (section 7), anything but trashed. Everything else,
+/// including an item in a library they cannot see, is the same 404 as a missing item.
+pub(crate) async fn visible_item(
+    state: &AppState,
+    user: &AuthUser,
+    id: &str,
+) -> ApiResult<ItemRow> {
+    match visible_row(&state.db, &user.viewer(), id).await? {
         Some(row) if row.status != ItemStatus::Trashed => Ok(row),
         _ => Err(item_not_found()),
     }
 }
 
-/// Item detail for the caller, hiding trashed items.
+/// Item detail for the caller, hiding trashed items and items they cannot see.
 pub(crate) async fn visible_detail(
     state: &AppState,
+    user: &AuthUser,
     id: &str,
-    user_id: &str,
 ) -> ApiResult<ItemDetail> {
-    let detail = repo::detail(&state.db, id, user_id).await?;
+    let access = user.access(&state.db).await?;
+    let detail = match repo::detail(&state.db, &state.layout, &access, id).await {
+        Err(CoreError::NotFound) => return Err(item_not_found()),
+        other => other?,
+    };
     if detail.item.status == ItemStatus::Trashed {
         return Err(item_not_found());
     }
@@ -197,7 +207,13 @@ async fn list(
         .map(|q| q.trim().chars().take(MAX_SEARCH_CHARS).collect::<String>())
         .filter(|q| !q.is_empty());
     query.limit = Some(query.limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE));
-    Ok(Json(repo::list(&state.db, &query, &user.user_id).await?))
+    if let Some(library_id) = &query.library_id {
+        let access = user.access(&state.db).await?;
+        if !access.sees_library(library_id) {
+            return Err(ApiError::library_not_found().with_field("library_id"));
+        }
+    }
+    Ok(Json(repo::list(&state.db, &query, &user.viewer()).await?))
 }
 
 async fn detail(
@@ -206,7 +222,7 @@ async fn detail(
     UrlPath(id): UrlPath<String>,
 ) -> ApiResult<Json<ItemDetail>> {
     user.require(Scope::LibraryRead)?;
-    Ok(Json(visible_detail(&state, &id, &user.user_id).await?))
+    Ok(Json(visible_detail(&state, &user, &id).await?))
 }
 
 /// Longest accepted text field in a metadata edit.
@@ -279,13 +295,14 @@ async fn update(
 ) -> ApiResult<Json<ItemDetail>> {
     user.require(Scope::Full)?;
     let patch = patch_from_json(body)?;
-    visible_item(&state, &id).await?;
+    visible_item(&state, &user, &id).await?;
     repo::update_metadata(&state.db, &id, &patch).await?;
     state.events.publish(Event::Library {
         r#type: LibraryChange::Updated,
         item_id: id.clone(),
+        before: None,
     });
-    Ok(Json(visible_detail(&state, &id, &user.user_id).await?))
+    Ok(Json(visible_detail(&state, &user, &id).await?))
 }
 
 /// Highest season or episode number accepted, the same bound metadata edits use.
@@ -321,11 +338,12 @@ async fn organize(
     UrlPath(id): UrlPath<String>,
     JsonBody(request): JsonBody<OrganizeRequest>,
 ) -> ApiResult<Json<ItemDetail>> {
-    user.require(Scope::Full)?;
+    // Organize is for full owners and works on any item, wherever it is (section 8).
+    user.require_owner()?;
     check_organize(&request)?;
-    visible_item(&state, &id).await?;
+    visible_item(&state, &user, &id).await?;
     state.library.organize(&id, request).await?;
-    Ok(Json(visible_detail(&state, &id, &user.user_id).await?))
+    Ok(Json(visible_detail(&state, &user, &id).await?))
 }
 
 async fn remove(
@@ -335,7 +353,7 @@ async fn remove(
     UrlPath(id): UrlPath<String>,
 ) -> ApiResult<StatusCode> {
     user.require_owner()?;
-    let item = visible_item(&state, &id).await?;
+    let item = visible_item(&state, &user, &id).await?;
     state.library.trash_item(&id, Some(&user.user_id)).await?;
     state
         .auth
@@ -370,9 +388,10 @@ async fn thumb(
     user.require(Scope::LibraryRead)?;
     let query: ThumbQuery = parse_query(req.uri())?;
     let size = query.size.unwrap_or(ThumbSize::Sm);
-    // Owners see trashed items in Settings, Library, Trash, so their pictures stay
-    // available to owners until the trash is emptied. Everyone else gets a 404.
-    let item = match repo::get(&state.db, &id).await? {
+    // Full owners see trashed items in Settings, Library, Trash, so their pictures stay
+    // available to them until the trash is emptied. Everyone else sees only what the
+    // access rule allows (section 7) and gets a 404 for the rest.
+    let item = match visible_row(&state.db, &user.viewer(), &id).await? {
         Some(row) if row.status != ItemStatus::Trashed || user.is_owner() => row,
         _ => return Err(item_not_found()),
     };
@@ -428,7 +447,7 @@ async fn file(
             .as_deref(),
         Some("1" | "true" | "yes")
     );
-    let item = visible_item(&state, &id).await?;
+    let item = visible_item(&state, &user, &id).await?;
     let abs = item_file(&state, &item).await?;
     let name = item
         .rel_path
@@ -486,7 +505,7 @@ async fn view(
     req: Request,
 ) -> ApiResult<Response> {
     user.require(Scope::LibraryRead)?;
-    let item = visible_item(&state, &id).await?;
+    let item = visible_item(&state, &user, &id).await?;
     if item.kind != MediaKind::Photo {
         return Err(ApiError::bad_request("Only photos can be viewed this way."));
     }
@@ -787,7 +806,7 @@ async fn start_playback(
     {
         *codec = codec.trim().to_ascii_lowercase();
     }
-    let item = visible_item(&state, &id).await?;
+    let item = visible_item(&state, &user, &id).await?;
     if item.kind != MediaKind::Video {
         return Err(ApiError::bad_request("Only videos can be played this way."));
     }
@@ -819,7 +838,7 @@ async fn start_playback(
             };
             let session = state
                 .transcoder
-                .start(&item.id, abs, &media, options)
+                .start_for(&user.user_id, &item.id, abs, &media, options)
                 .await?;
             PlaybackResponse::Hls {
                 url: session.url,
@@ -847,7 +866,8 @@ async fn save_progress(
     if !valid(body.position_s) || !valid(body.duration_s) {
         return Err(ApiError::bad_request("The playback position is not valid."));
     }
-    visible_item(&state, &id).await?;
+    // An item the caller cannot see answers 404 and nothing is saved (section 7).
+    visible_item(&state, &user, &id).await?;
     let position = if body.duration_s > 0.0 {
         body.position_s.min(body.duration_s)
     } else {
@@ -981,7 +1001,9 @@ mod tests {
         let (status, json) = app.json("/api/items", &token).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
         assert_eq!(json["error"]["code"], "forbidden");
-        let (status, _) = app.json("/api/library/summary", &token).await;
+        let (status, _) = app.json("/api/home", &token).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = app.json("/api/libraries", &token).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _, _) = app.get("/api/items", None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -1180,7 +1202,7 @@ mod tests {
     #[tokio::test]
     async fn organize_limits_text_and_numbers_like_edits() {
         let app = TestApp::new().await;
-        let (_, token) = app.user("member").await;
+        let (_, token) = app.user("owner").await;
         let id = app
             .item(
                 "Other/clip.mkv",
@@ -1409,7 +1431,8 @@ mod tests {
     #[tokio::test]
     async fn markup_from_the_library_is_never_rendered() {
         let app = TestApp::new().await;
-        let (_, token) = app.user("member").await;
+        // Other files are seen by the person who added them and full owners.
+        let (_, token) = app.user("owner").await;
         for (rel, body) in [
             ("Other/evil.html", "<script>alert(1)</script>"),
             ("Other/evil.svg", "<svg onload=alert(1)/>"),
@@ -1615,7 +1638,8 @@ mod tests {
     #[tokio::test]
     async fn edits_metadata_organizes_and_saves_progress() {
         let app = TestApp::new().await;
-        let (user_id, token) = app.user("member").await;
+        // Organize is for full owners (section 8).
+        let (user_id, token) = app.user("owner").await;
         let id = app
             .item(
                 "Other/heat.mkv",

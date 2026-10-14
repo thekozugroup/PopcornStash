@@ -36,6 +36,9 @@ async fn harness() -> Harness {
         .unwrap();
     let layout = Arc::new(StashLayout::new(&root));
     layout.ensure().await.unwrap();
+    crate::library::defs::ensure_folders(&db, &layout)
+        .await
+        .unwrap();
     let events = EventBus::new();
     let rx = events.subscribe();
     let media = Arc::new(MediaService::new(
@@ -89,6 +92,32 @@ impl Harness {
         rows.into_iter()
             .map(|(id, p)| (id, serde_json::from_str(&p).unwrap()))
             .collect()
+    }
+
+    /// A full owner of this stash.
+    fn owner(&self) -> crate::library::access::Viewer {
+        crate::library::access::Viewer {
+            user_id: "u".into(),
+            role: crate::models::Role::Owner,
+            full: true,
+        }
+    }
+
+    /// The item's suggestion as a full owner reads it now.
+    async fn suggestion(&self, item: &crate::models::ItemRow) -> crate::models::Suggestion {
+        let access = crate::library::access::Access::load(&self.lib.db, &self.owner())
+            .await
+            .unwrap();
+        let defs = crate::library::defs::load_all(&self.lib.db).await.unwrap();
+        let states = crate::library::defs::folder_states(&self.lib.db, &self.lib.layout, &defs)
+            .await
+            .unwrap();
+        crate::library::organizer::suggestion_view(item, &access, &defs, &states).unwrap()
+    }
+
+    /// Where the item's suggestion would put it now.
+    async fn destination(&self, item: &crate::models::ItemRow) -> String {
+        self.suggestion(item).await.destination.unwrap_or_default()
     }
 
     fn drain_events(&mut self) -> Vec<Event> {
@@ -152,7 +181,7 @@ async fn inbox_movie_is_sorted_with_its_sidecars() {
     assert_eq!(thumbs.len(), 1);
     assert_eq!(probes[0].0.as_deref(), Some(item.id.as_str()));
     let events = h.drain_events();
-    assert!(events.iter().any(|e| matches!(e, Event::Library { r#type: LibraryChange::Added, item_id } if *item_id == item.id)));
+    assert!(events.iter().any(|e| matches!(e, Event::Library { r#type: LibraryChange::Added, item_id, .. } if *item_id == item.id)));
     assert!(
         !events.iter().any(|e| matches!(e, Event::Inbox { .. })),
         "review count did not change"
@@ -192,18 +221,28 @@ async fn low_confidence_files_wait_for_review() {
         h.exists("Inbox/Our Wedding.mp4"),
         "low confidence files stay in place"
     );
-    let suggestion = item.suggestion().unwrap();
-    assert_eq!(suggestion.destination, "Other/Our Wedding.mp4");
+    assert_eq!(h.destination(&item).await, "Other/Our Wedding.mp4");
     let events = h.drain_events();
     assert!(
         events
             .iter()
             .any(|e| matches!(e, Event::Inbox { count: 1 }))
     );
-    let inbox = repo::inbox(&h.lib.db, "u").await.unwrap();
+    let access = crate::library::access::Access::load(&h.lib.db, &h.owner())
+        .await
+        .unwrap();
+    let inbox = repo::inbox(&h.lib.db, &h.lib.layout, &access)
+        .await
+        .unwrap()
+        .items;
     assert_eq!(inbox.len(), 1);
     assert_eq!(
-        inbox[0].suggestion.as_ref().unwrap().category,
+        inbox[0]
+            .suggestion
+            .as_ref()
+            .unwrap()
+            .classification
+            .category,
         Category::Other
     );
 
@@ -349,7 +388,7 @@ async fn auto_sort_off_sends_everything_to_review() {
     let item = h.item(&ids[0]).await;
     assert_eq!(item.status, ItemStatus::NeedsReview);
     assert_eq!(
-        item.suggestion().unwrap().destination,
+        h.destination(&item).await,
         "Movies/Heat (1995)/Heat (1995).mkv"
     );
     assert!(h.exists("Inbox/Heat.1995.mkv"));
@@ -431,7 +470,14 @@ async fn completed_download_folder_is_sorted_and_linked() {
         e3.rel_path,
         "Shows/The Office US/Season 02/The Office US - S02E03.mkv"
     );
-    let show = repo::show(&h.lib.db, "The Office US", "u").await.unwrap();
+    let show = repo::show(
+        &h.lib.db,
+        crate::library::defs::STARTING_SHOWS,
+        "The Office US",
+        "u",
+    )
+    .await
+    .unwrap();
     assert_eq!(show.seasons[0].episodes.len(), 3);
 }
 
@@ -567,7 +613,7 @@ async fn custom_folders_are_indexed_but_never_moved() {
     assert_eq!(custom.category, Category::Movie);
     assert_eq!(custom.status, ItemStatus::Ready);
     assert_eq!(
-        custom.suggestion().unwrap().destination,
+        h.destination(&custom).await,
         "Movies/Heat (1995)/Heat (1995).mkv"
     );
     assert!(
@@ -705,7 +751,7 @@ async fn moved_and_missing_files_are_reconciled() {
         .unwrap();
     assert_eq!(up.status, ItemStatus::Missing);
     assert!(up.missing_since.is_some());
-    let page = repo::list(&h.lib.db, &ItemQuery::default(), "u")
+    let page = repo::list(&h.lib.db, &ItemQuery::default(), &h.owner())
         .await
         .unwrap();
     assert_eq!(
@@ -1176,7 +1222,10 @@ async fn files_that_reappear_before_marking_are_not_marked_missing() {
     let marked = super::scanner::mark_vanished(&h.lib, &[(up.id.clone(), up.rel_path.clone())])
         .await
         .unwrap();
-    assert_eq!(marked, vec![up.id.clone()]);
+    assert_eq!(
+        marked.into_iter().map(|(id, _)| id).collect::<Vec<_>>(),
+        vec![up.id.clone()]
+    );
     assert_eq!(h.item(&up.id).await.status, ItemStatus::Missing);
 }
 
@@ -1575,7 +1624,7 @@ async fn files_that_are_not_media_wait_for_review_under_other() {
         let suggestion = item.suggestion().unwrap();
         assert_eq!(suggestion.confidence, crate::models::Confidence::Low);
         let name = rel.rsplit('/').next().unwrap();
-        assert_eq!(suggestion.destination, format!("Other/{name}"));
+        assert_eq!(h.destination(&item).await, format!("Other/{name}"));
         waiting.push(item);
     }
     assert!(
@@ -1783,7 +1832,10 @@ async fn artwork_in_downloads_is_not_filed_as_family_photos() {
     assert_eq!(items[0].category, Category::Other);
     let suggestion = items[0].suggestion().unwrap();
     assert_eq!(suggestion.confidence, crate::models::Confidence::Low);
-    assert_eq!(suggestion.destination, "Other/behind the scenes photo.jpg");
+    assert_eq!(
+        h.destination(&items[0]).await,
+        "Other/behind the scenes photo.jpg"
+    );
     assert_eq!(
         items[1].rel_path,
         "Movies/Some Movie (2019)/Some Movie (2019).mkv"
@@ -1876,7 +1928,7 @@ async fn artwork_in_downloads_is_not_filed_as_family_photos() {
         (poster.rel_path.as_str(), poster.status),
         ("Inbox/Up (2009)/poster.jpg", ItemStatus::NeedsReview)
     );
-    assert_eq!(poster.suggestion().unwrap().destination, "Other/poster.jpg");
+    assert_eq!(h.destination(&poster).await, "Other/poster.jpg");
     assert!(photos_is_empty());
 
     // The owner's own pictures next to a phone video are photos.
@@ -1936,4 +1988,520 @@ async fn links_in_place_of_items_count_as_gone() {
     std::fs::create_dir_all(h.root.join("Movies/C")).unwrap();
     std::fs::write(h.root.join("Movies/C/c.mkv"), b"x").unwrap();
     assert!(!super::scanner::is_gone(&h.lib, "Movies/C/c.mkv").await);
+}
+
+// ---------------------------------------------------------------------------
+// Libraries the owner defines (sections 3.1 and 4)
+
+mod libraries {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::CoreError;
+    use crate::library::defs::{
+        self, CreateLibrary, EditLibrary, FolderRequest, STARTING_HOME_VIDEOS, STARTING_MOVIES,
+        STARTING_SHOWS,
+    };
+    use crate::models::{Place, Waiting};
+
+    async fn add_owner(h: &Harness) {
+        sqlx::query("INSERT OR IGNORE INTO users (id, display_name, role, webauthn_id, created_at) VALUES ('u', 'Ana', 'owner', 'w-u', 0)")
+            .execute(&h.lib.db)
+            .await
+            .unwrap();
+    }
+
+    fn new_library(name: &str, structure: Option<&str>, claims: &[&str]) -> CreateLibrary {
+        CreateLibrary {
+            name: Some(name.into()),
+            icon: Some("baby".into()),
+            content_type: Some(
+                if structure.is_some() {
+                    "video"
+                } else {
+                    "photos"
+                }
+                .into(),
+            ),
+            structure: structure.map(str::to_string),
+            claims: Some(claims.iter().map(|c| c.to_string()).collect()),
+            folder: Some(FolderRequest {
+                mode: Some("new".into()),
+                name: Some(name.into()),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn claims(list: &[&str]) -> EditLibrary {
+        EditLibrary {
+            claims: Some(list.iter().map(|c| c.to_string()).collect()),
+            ..Default::default()
+        }
+    }
+
+    /// Every file under the stash (outside `.popcornstash`) with its bytes.
+    fn files(h: &Harness) -> BTreeMap<String, Vec<u8>> {
+        walkdir::WalkDir::new(&h.root)
+            .into_iter()
+            .flatten()
+            .filter(|e| e.file_type().is_file())
+            .filter_map(|e| {
+                let rel = h.lib.layout.rel(e.path())?;
+                (!rel.starts_with(".popcornstash")).then(|| (rel, std::fs::read(e.path()).unwrap()))
+            })
+            .collect()
+    }
+
+    fn field(err: &CoreError) -> Option<&str> {
+        match err {
+            CoreError::Rejected { field, .. } => field.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// A new library that claims camera videos takes them; Home Videos keeps its files.
+    #[tokio::test]
+    async fn sorting_follows_the_claims() {
+        let h = harness().await;
+        add_owner(&h).await;
+        h.write("Home Videos/2023/01/old.mp4", &bytes("old clip"));
+        h.lib.rescan().await.unwrap();
+        let kids = h
+            .lib
+            .create_library(new_library("Kids", Some("one_offs"), &["home_video"]), "u")
+            .await
+            .unwrap();
+        let all = defs::load_all(&h.lib.db).await.unwrap();
+        let home_videos = all.iter().find(|d| d.id() == STARTING_HOME_VIDEOS).unwrap();
+        assert!(home_videos.claims.is_empty(), "the claim moved to Kids");
+        assert!(h.exists("Kids"), "a new library's folder is made");
+
+        h.write("Inbox/VID_20240613_101500.mp4", &bytes("clip"));
+        let ids = h
+            .lib
+            .sort_path("Inbox/VID_20240613_101500.mp4", None)
+            .await
+            .unwrap();
+        let clip = h.item(&ids[0]).await;
+        assert_eq!(clip.rel_path, "Kids/2024/06/VID_20240613_101500.mp4");
+        assert_eq!(
+            (clip.place, clip.library_id.as_deref()),
+            (Place::Library, Some(kids.id.as_str()))
+        );
+        assert!(
+            h.exists("Home Videos/2023/01/old.mp4"),
+            "claims never move files"
+        );
+        let old = repo::get_by_path(&h.lib.db, "Home Videos/2023/01/old.mp4")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(old.library_id.as_deref(), Some(STARTING_HOME_VIDEOS));
+
+        // Movies still go where they went.
+        h.write("Inbox/Heat.1995.1080p.BluRay.x264-GRP.mkv", &bytes("heat"));
+        let ids = h
+            .lib
+            .sort_path("Inbox/Heat.1995.1080p.BluRay.x264-GRP.mkv", None)
+            .await
+            .unwrap();
+        let heat = h.item(&ids[0]).await;
+        assert_eq!(heat.rel_path, "Movies/Heat (1995)/Heat (1995).mkv");
+        assert_eq!(heat.library_id.as_deref(), Some(STARTING_MOVIES));
+    }
+
+    /// A kind no library claims waits in Inbox whatever its confidence, and a person
+    /// picks a library that fits.
+    #[tokio::test]
+    async fn unclaimed_kinds_wait_in_inbox() {
+        let h = harness().await;
+        add_owner(&h).await;
+        h.lib
+            .edit_library(STARTING_MOVIES, claims(&[]))
+            .await
+            .unwrap();
+        h.write("Inbox/Heat.1995.1080p.BluRay.x264-GRP.mkv", &bytes("heat"));
+        let ids = h
+            .lib
+            .sort_path("Inbox/Heat.1995.1080p.BluRay.x264-GRP.mkv", None)
+            .await
+            .unwrap();
+        let heat = h.item(&ids[0]).await;
+        assert_eq!(heat.status, ItemStatus::NeedsReview);
+        assert_eq!(heat.rel_path, "Inbox/Heat.1995.1080p.BluRay.x264-GRP.mkv");
+        assert_eq!(heat.place, Place::Incoming);
+        let suggestion = h.suggestion(&heat).await;
+        assert_eq!(
+            suggestion.classification.confidence,
+            crate::models::Confidence::High
+        );
+        assert_eq!(suggestion.place, None);
+        assert_eq!(suggestion.library_id, None);
+        assert_eq!(suggestion.destination, None);
+        assert_eq!(suggestion.waiting, Some(Waiting::ChooseLibrary));
+
+        // Accepting without a library is refused; naming one that fits moves the file.
+        let err = h
+            .lib
+            .review(&heat.id, ReviewAction::Accept(OrganizeRequest::default()))
+            .await
+            .unwrap_err();
+        assert_eq!(field(&err), Some("library_id"), "{err:?}");
+        let accepted = h
+            .lib
+            .review(
+                &heat.id,
+                ReviewAction::Accept(OrganizeRequest {
+                    place: Some(Place::Library),
+                    library_id: Some(STARTING_MOVIES.into()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted.rel_path, "Movies/Heat (1995)/Heat (1995).mkv");
+        assert_eq!(accepted.library_id.as_deref(), Some(STARTING_MOVIES));
+        assert_eq!(accepted.status, ItemStatus::Ready);
+
+        // Deleting the library that claims camera videos leaves them unclaimed too.
+        h.lib.delete_library(STARTING_HOME_VIDEOS).await.unwrap();
+        h.write("Inbox/VID_20240613_101500.mp4", &bytes("clip"));
+        let ids = h
+            .lib
+            .sort_path("Inbox/VID_20240613_101500.mp4", None)
+            .await
+            .unwrap();
+        let clip = h.item(&ids[0]).await;
+        assert_eq!(clip.status, ItemStatus::NeedsReview);
+        assert!(h.exists("Inbox/VID_20240613_101500.mp4"));
+    }
+
+    /// One sort job, one set of claims: when the claims change while a job runs, the
+    /// rest of its files wait in Inbox with their suggestion.
+    #[tokio::test]
+    async fn claims_that_change_during_a_sort_leave_the_rest_waiting() {
+        let h = harness().await;
+        add_owner(&h).await;
+        h.write(
+            "Downloads/Completed/pack/Heat.1995.1080p.mkv",
+            &bytes("heat"),
+        );
+        h.write("Downloads/Completed/pack/Up.2009.1080p.mkv", &bytes("up"));
+        let started = h.lib.claims_generation();
+        h.lib
+            .edit_library(STARTING_SHOWS, claims(&[]))
+            .await
+            .unwrap();
+        assert_ne!(h.lib.claims_generation(), started);
+        let ids = super::super::organizer::sort_path_as_of(
+            &h.lib,
+            "Downloads/Completed/pack",
+            None,
+            started,
+        )
+        .await
+        .unwrap();
+        assert_eq!(ids.len(), 2);
+        for id in &ids {
+            let item = h.item(id).await;
+            assert_eq!(item.status, ItemStatus::NeedsReview, "{}", item.rel_path);
+            assert!(item.rel_path.starts_with("Downloads/Completed/pack/"));
+            let suggestion = h.suggestion(&item).await;
+            assert_eq!(suggestion.library_id.as_deref(), Some(STARTING_MOVIES));
+            assert_eq!(suggestion.waiting, Some(Waiting::Confirm));
+        }
+    }
+
+    /// Creating, renaming, reordering, changing and deleting libraries never moves,
+    /// renames or deletes a file (section 3, Movement rules).
+    #[tokio::test]
+    async fn library_writes_never_move_files() {
+        let h = harness().await;
+        add_owner(&h).await;
+        h.write("Family 2019/Heat.1995.1080p.mkv", &bytes("heat"));
+        h.write("Family 2019/beach.jpg", &bytes("beach"));
+        h.write("Family 2019/notes.txt", b"notes");
+        h.write("Movies/Up (2009)/Up (2009).mkv", &bytes("up"));
+        h.write("Photos/2020/01/IMG_0001.jpg", &bytes("photo"));
+        h.lib.rescan().await.unwrap();
+        let before = files(&h);
+
+        let mut family = new_library("Family", Some("one_offs"), &[]);
+        family.folder = Some(FolderRequest {
+            mode: Some("existing".into()),
+            name: Some("Family 2019".into()),
+        });
+        family.visibility = Some("selected".into());
+        let family = h.lib.create_library(family, "u").await.unwrap();
+        h.lib
+            .edit_library(
+                &family.id,
+                EditLibrary {
+                    name: Some("Holidays".into()),
+                    icon: Some("plane".into()),
+                    claims: Some(vec!["movie".into()]),
+                    visibility: Some("everyone".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut order: Vec<String> = defs::load_all(&h.lib.db)
+            .await
+            .unwrap()
+            .iter()
+            .map(|d| d.id().to_string())
+            .collect();
+        order.reverse();
+        h.lib.reorder_libraries(&order).await.unwrap();
+        h.lib.delete_library(&family.id).await.unwrap();
+        h.lib.delete_library(STARTING_MOVIES).await.unwrap();
+        h.lib.rescan().await.unwrap();
+        assert_eq!(files(&h), before, "every file is where it was, unchanged");
+        // Deleted libraries' items are in folders that are not libraries now.
+        let up = repo::get_by_path(&h.lib.db, "Movies/Up (2009)/Up (2009).mkv")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((up.place, up.library_id), (Place::Folder, None));
+        assert_eq!(up.status, ItemStatus::Ready, "never marked missing");
+        // A folder is fixed: an edit naming it is refused.
+        let err = h
+            .lib
+            .edit_library(
+                STARTING_SHOWS,
+                EditLibrary {
+                    folder: Some(Some(serde_json::json!({"name": "TV"}))),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(field(&err), Some("folder"));
+    }
+
+    /// Making a library from an existing folder: what it indexes joins it (ids,
+    /// favourites and progress kept), the rest leaves the index, and the files stay.
+    #[tokio::test]
+    async fn a_library_made_from_a_folder_takes_in_its_items() {
+        let h = harness().await;
+        add_owner(&h).await;
+        h.write("Cartoons/Bluey/Season 01/Bluey - S01E01.mkv", &bytes("e1"));
+        h.write("Cartoons/Bluey/cover.jpg", &bytes("cover"));
+        h.lib.rescan().await.unwrap();
+        let episode = repo::get_by_path(&h.lib.db, "Cartoons/Bluey/Season 01/Bluey - S01E01.mkv")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(episode.place, Place::Folder);
+        sqlx::query("UPDATE items SET favorite = 1 WHERE id = ?")
+            .bind(&episode.id)
+            .execute(&h.lib.db)
+            .await
+            .unwrap();
+        repo::set_progress(&h.lib.db, "u", &episode.id, 100.0, 600.0)
+            .await
+            .unwrap();
+
+        let mut request = new_library("Cartoons", Some("episodes"), &[]);
+        request.folder = Some(FolderRequest {
+            mode: Some("existing".into()),
+            name: Some("Cartoons".into()),
+        });
+        // An existing folder never becomes visible to everyone by default.
+        let err = h
+            .lib
+            .create_library(request.clone(), "u")
+            .await
+            .unwrap_err();
+        assert_eq!(field(&err), Some("visibility"));
+        request.visibility = Some("selected".into());
+        let library = h.lib.create_library(request, "u").await.unwrap();
+
+        let joined = h.item(&episode.id).await;
+        assert_eq!(joined.library_id.as_deref(), Some(library.id.as_str()));
+        assert_eq!(joined.category, Category::Episode);
+        assert_eq!(joined.show_name.as_deref(), Some("Bluey"));
+        assert!(joined.favorite, "the favourite stays");
+        let progress: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM item_progress WHERE item_id = ?")
+                .bind(&episode.id)
+                .fetch_one(&h.lib.db)
+                .await
+                .unwrap();
+        assert_eq!(progress, 1, "the resume position stays");
+        assert!(
+            repo::get_by_path(&h.lib.db, "Cartoons/Bluey/cover.jpg")
+                .await
+                .unwrap()
+                .is_none(),
+            "an Episodes library does not show pictures"
+        );
+        assert!(h.exists("Cartoons/Bluey/cover.jpg"), "the file stays");
+        // The same folder cannot be a library twice, in any case.
+        let mut again = new_library("Again", Some("episodes"), &[]);
+        again.folder = Some(FolderRequest {
+            mode: Some("existing".into()),
+            name: Some("cartoons".into()),
+        });
+        again.visibility = Some("everyone".into());
+        let err = h.lib.create_library(again, "u").await.unwrap_err();
+        assert!(matches!(field(&err), Some("folder.name")), "{err:?}");
+    }
+
+    /// A library whose folder is gone (an unplugged disk) keeps its items, is not
+    /// recreated, and new files of its kinds wait in Inbox.
+    #[tokio::test]
+    async fn a_missing_library_folder_keeps_its_items_and_takes_nothing() {
+        let h = harness().await;
+        add_owner(&h).await;
+        h.write("Movies/Up (2009)/Up (2009).mkv", &bytes("up"));
+        h.write("Photos/2020/01/IMG_0001.jpg", &bytes("photo"));
+        h.lib.rescan().await.unwrap();
+        std::fs::remove_dir_all(h.root.join("Movies")).unwrap();
+        h.lib.rescan().await.unwrap();
+        let up = repo::get_by_path(&h.lib.db, "Movies/Up (2009)/Up (2009).mkv")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(up.status, ItemStatus::Ready, "nothing is marked missing");
+
+        h.write("Inbox/Heat.1995.1080p.BluRay.x264-GRP.mkv", &bytes("heat"));
+        let ids = h
+            .lib
+            .sort_path("Inbox/Heat.1995.1080p.BluRay.x264-GRP.mkv", None)
+            .await
+            .unwrap();
+        let heat = h.item(&ids[0]).await;
+        assert_eq!(heat.status, ItemStatus::NeedsReview);
+        assert!(!h.exists("Movies"), "the folder is not made again");
+        assert_eq!(
+            h.suggestion(&heat).await.waiting,
+            Some(Waiting::FolderUnavailable)
+        );
+        let err = h
+            .lib
+            .review(
+                &heat.id,
+                ReviewAction::Accept(OrganizeRequest {
+                    place: Some(Place::Library),
+                    library_id: Some(STARTING_MOVIES.into()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CoreError::Rejected {
+                    kind: crate::Rejection::Conflict,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+    }
+
+    /// Restoring a file its library would no longer show is refused before anything moves.
+    #[tokio::test]
+    async fn restore_is_refused_when_the_library_would_not_show_the_file() {
+        let h = harness().await;
+        add_owner(&h).await;
+        h.write("Home Videos/2024/06/IMG_1.jpg", &bytes("photo"));
+        h.write("Home Videos/2024/06/VID_1.mp4", &bytes("clip"));
+        h.lib.rescan().await.unwrap();
+        let photo = repo::get_by_path(&h.lib.db, "Home Videos/2024/06/IMG_1.jpg")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(photo.category, Category::HomeVideo);
+        h.lib.trash_item(&photo.id, Some("u")).await.unwrap();
+        assert_eq!(h.lib.restore_refusal(&photo.id).await.unwrap(), None);
+        h.lib
+            .edit_library(STARTING_HOME_VIDEOS, claims(&["movie"]))
+            .await
+            .unwrap();
+        let refusal = h.lib.restore_refusal(&photo.id).await.unwrap();
+        assert_eq!(
+            refusal.as_deref(),
+            Some("Home Videos does not show this kind of file any more, so it stays in the trash.")
+        );
+        let err = h.lib.restore_item(&photo.id).await.unwrap_err();
+        assert!(matches!(err, CoreError::Conflict(_)), "{err:?}");
+        assert_eq!(h.item(&photo.id).await.status, ItemStatus::Trashed);
+        assert!(!h.exists("Home Videos/2024/06/IMG_1.jpg"));
+    }
+
+    /// Accept and Organize: the file must fit the library it goes to.
+    #[tokio::test]
+    async fn targets_must_fit_the_file() {
+        let h = harness().await;
+        add_owner(&h).await;
+        h.write("Inbox/notes.pdf", b"notes");
+        h.write("Inbox/beach.jpg", &bytes("beach"));
+        h.lib
+            .settings
+            .update(serde_json::json!({"auto_sort": false}))
+            .await
+            .unwrap();
+        let notes = h.lib.sort_path("Inbox/notes.pdf", None).await.unwrap()[0].clone();
+        let beach = h.lib.sort_path("Inbox/beach.jpg", None).await.unwrap()[0].clone();
+        let into = |id: &str| OrganizeRequest {
+            place: Some(Place::Library),
+            library_id: Some(id.into()),
+            ..Default::default()
+        };
+        let err = h
+            .lib
+            .review(&notes, ReviewAction::Accept(into(STARTING_MOVIES)))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Only videos and photos go in a library. This file goes in Other files."
+        );
+        let err = h
+            .lib
+            .review(&beach, ReviewAction::Accept(into(STARTING_MOVIES)))
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "Photos go in a photos library.");
+        assert_eq!(field(&err), Some("library_id"));
+        let err = h
+            .lib
+            .review(&beach, ReviewAction::Accept(into("no-such-library")))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            CoreError::Rejected {
+                kind: crate::Rejection::NotFound,
+                ..
+            }
+        ));
+        let ok = h
+            .lib
+            .review(
+                &notes,
+                ReviewAction::Accept(OrganizeRequest {
+                    place: Some(Place::OtherFiles),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (ok.rel_path.as_str(), ok.place),
+            ("Other/notes.pdf", Place::OtherFiles)
+        );
+        // Accepting again: it is no longer waiting.
+        let err = h
+            .lib
+            .review(&notes, ReviewAction::Ignore)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "That file was already sorted.");
+    }
 }

@@ -14,6 +14,7 @@ use stash_core::settings::SettingsStore;
 
 use crate::auth::AuthService;
 use crate::downloads::DownloadManager;
+use crate::live::LiveBus;
 use crate::security::RateLimiter;
 use crate::torrentd_client::TorrentdClient;
 use crate::uploads::UploadService;
@@ -24,6 +25,8 @@ pub struct AppState {
     pub db: Db,
     pub layout: Arc<StashLayout>,
     pub events: EventBus,
+    /// The events with what decides who may see them, for the event streams.
+    pub live: LiveBus,
     pub jobs: JobQueue,
     pub settings: SettingsStore,
     pub media: Arc<MediaService>,

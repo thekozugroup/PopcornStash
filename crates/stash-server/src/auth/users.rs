@@ -264,6 +264,12 @@ pub async fn update_user(
         if done.rows_affected() == 0 {
             return Err(last_owner());
         }
+        // Open event streams of this person pick up the new role at once (section 7).
+        state
+            .events
+            .publish(stash_core::events::Event::AccessChanged {
+                user_id: id.clone(),
+            });
         state
             .auth
             .audit(
@@ -300,6 +306,11 @@ pub async fn delete_user(
     if done.rows_affected() == 0 {
         return Err(last_owner());
     }
+    state
+        .events
+        .publish(stash_core::events::Event::UserRemoved {
+            user_id: id.clone(),
+        });
     state
         .auth
         .audit(

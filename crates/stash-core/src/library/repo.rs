@@ -1,14 +1,19 @@
 //! Item queries used by the API (section 8). All functions take the requesting
 //! user's id where per-user playback progress is part of the result.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sqlx::{QueryBuilder, Sqlite};
 
+use super::access::{Access, Viewer, push_visible};
+use super::defs::{self, LibraryDef, LibraryView};
 use crate::db::Db;
-use crate::models::{Category, Item, ItemDetail, ItemRow, ItemStatus, Progress};
+use crate::models::{
+    Category, FolderState, Item, ItemDetail, ItemRow, ItemStatus, Place, Progress, Suggestion,
+};
+use crate::paths::StashLayout;
 use crate::{CoreError, Result};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +38,9 @@ pub enum SortOrder {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ItemQuery {
+    /// Items of one library (the caller must see it; the API checks).
+    pub library_id: Option<String>,
+    pub place: Option<Place>,
     pub category: Option<Category>,
     pub q: Option<String>,
     pub sort: ItemSort,
@@ -64,27 +72,33 @@ pub struct ItemPatch {
     pub episode_title: Option<Option<String>>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct LibraryCounts {
-    pub movies: i64,
-    pub shows: i64,
-    pub episodes: i64,
-    pub home_videos: i64,
-    pub photos: i64,
-    pub other: i64,
+/// One library on Home (`HomeLibrary`, section 8).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HomeLibrary {
+    pub library: LibraryView,
+    /// Up to [`HOME_ROW`] newest ready items, newest first.
+    pub recent: Vec<Item>,
+    /// Poster item id for each show with an episode in `recent`, from this library,
+    /// chosen the same way as in [`shows`] and [`show`].
+    pub show_posters: BTreeMap<String, String>,
 }
 
+/// `GET /api/home`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LibrarySummary {
-    pub counts: LibraryCounts,
-    pub total_bytes: i64,
-    pub needs_review: i64,
-    /// Up to [`RECENT_PER_CATEGORY`] newest items of each category, newest first.
-    pub recently_added: Vec<Item>,
-    /// Poster item id for each show with an episode in `recently_added`, chosen the
-    /// same way as in [`shows`] and [`show`].
-    pub show_posters: BTreeMap<String, String>,
+pub struct Home {
     pub continue_watching: Vec<Item>,
+    pub libraries: Vec<HomeLibrary>,
+    pub other_files_count: i64,
+    pub inbox_count: i64,
+    pub total_bytes: i64,
+}
+
+/// `GET /api/inbox`: waiting items (oldest first) and ignored ones still in Inbox or
+/// Downloads/Completed, visible ones only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboxList {
+    pub items: Vec<ItemDetail>,
+    pub ignored: Vec<ItemDetail>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,10 +153,8 @@ pub const MAX_LIMIT: u32 = 200;
 /// (architecture section 11).
 pub const DEFAULT_TIMELINE_LIMIT: u32 = 200;
 pub const MAX_TIMELINE_LIMIT: u32 = 500;
-const SUMMARY_ROW: i64 = 12;
-/// Newest items per category in the summary's `recently_added`, so a burst of one
-/// kind (a season of episodes, a phone's worth of photos) never pushes the others off Home.
-pub const RECENT_PER_CATEGORY: i64 = 12;
+/// Items in Continue watching and in each library's row on Home.
+pub const HOME_ROW: i64 = 12;
 const INBOX_MAX: i64 = 500;
 
 /// A show's poster, as one SQL subquery: its first episode in season and episode order
@@ -155,6 +167,32 @@ fn show_poster_subquery(matches: &str) -> String {
            WHERE j.category = 'episode' AND j.status = 'ready' AND {matches}
            ORDER BY (j.thumb_state = 'ready') DESC, j.season, j.episode, j.id LIMIT 1)"
     )
+}
+
+/// The suggestion of `row` as `access` reads it, loading the library rows and folder
+/// states only when the row has a suggestion.
+async fn suggestion_for(
+    db: &Db,
+    layout: &StashLayout,
+    access: &Access,
+    row: &ItemRow,
+    cache: &mut Option<(Vec<LibraryDef>, HashMap<String, FolderState>)>,
+) -> Result<Option<Suggestion>> {
+    if row.suggestion_json.is_none() {
+        return Ok(None);
+    }
+    if cache.is_none() {
+        let library_defs = defs::load_all(db).await?;
+        let states = defs::folder_states(db, layout, &library_defs).await?;
+        *cache = Some((library_defs, states));
+    }
+    let (library_defs, states) = cache.as_ref().expect("filled above");
+    Ok(super::organizer::suggestion_view(
+        row,
+        access,
+        library_defs,
+        states,
+    ))
 }
 
 /// Columns for an item joined with one user's progress. Bind the user id right after this.
@@ -189,6 +227,7 @@ impl ItemWithProgress {
 
     fn into_detail(
         self,
+        suggestion: Option<Suggestion>,
         next_episode_id: Option<String>,
         previous_episode_id: Option<String>,
     ) -> ItemDetail {
@@ -198,7 +237,7 @@ impl ItemWithProgress {
             item: row.to_item(progress),
             media: row.media(),
             mime: row.mime.clone(),
-            suggestion: row.suggestion(),
+            suggestion,
             source_download_id: row.source_download_id.clone(),
             next_episode_id,
             previous_episode_id,
@@ -255,8 +294,8 @@ pub async fn insert_item(db: &Db, row: &ItemRow) -> Result<bool> {
     let result = sqlx::query(
         "INSERT INTO items (id, rel_path, kind, category, status, title, sort_title, year, show_name, season, episode,
             episode_title, size, mtime, quick_hash, mime, duration_s, width, height, media_json, taken_at, camera,
-            thumb_state, suggestion_json, favorite, source_download_id, missing_since, added_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            thumb_state, suggestion_json, favorite, source_download_id, missing_since, added_at, updated_at, added_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(rel_path) DO NOTHING",
     )
     .bind(&row.id)
@@ -288,6 +327,7 @@ pub async fn insert_item(db: &Db, row: &ItemRow) -> Result<bool> {
     .bind(row.missing_since)
     .bind(row.added_at)
     .bind(row.updated_at)
+    .bind(&row.added_by)
     .execute(db)
     .await?;
     Ok(result.rows_affected() == 1)
@@ -367,7 +407,9 @@ fn push_key(qb: &mut QueryBuilder<'_, Sqlite>, key: &CursorKey) {
 // ---------------------------------------------------------------------------
 // Queries
 
-pub async fn list(db: &Db, query: &ItemQuery, user_id: &str) -> Result<Page<Item>> {
+/// A page of the items `viewer` sees.
+pub async fn list(db: &Db, query: &ItemQuery, viewer: &Viewer) -> Result<Page<Item>> {
+    let user_id = viewer.user_id.as_str();
     let limit = i64::from(query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT));
     let status = query.status.unwrap_or(ItemStatus::Ready);
     let key_expr = sort_key_expr(query.sort);
@@ -379,6 +421,14 @@ pub async fn list(db: &Db, query: &ItemQuery, user_id: &str) -> Result<Page<Item
     let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
     qb.push_bind(user_id.to_string());
     qb.push(" WHERE i.status = ").push_bind(status.as_str());
+    push_visible(&mut qb, viewer);
+    if let Some(library_id) = &query.library_id {
+        qb.push(" AND i.library_id = ")
+            .push_bind(library_id.clone());
+    }
+    if let Some(place) = query.place {
+        qb.push(" AND i.place = ").push_bind(place.as_str());
+    }
     if let Some(category) = query.category {
         qb.push(" AND i.category = ").push_bind(category.as_str());
     }
@@ -447,22 +497,33 @@ pub async fn list(db: &Db, query: &ItemQuery, user_id: &str) -> Result<Page<Item
     })
 }
 
-pub async fn detail(db: &Db, id: &str, user_id: &str) -> Result<ItemDetail> {
-    let row = get_with_progress(db, id, user_id)
+/// One item as `access` sees it (not found when they cannot). Next and previous episode
+/// come from the same library only.
+pub async fn detail(
+    db: &Db,
+    layout: &StashLayout,
+    access: &Access,
+    id: &str,
+) -> Result<ItemDetail> {
+    let row = get_with_progress(db, id, &access.viewer.user_id)
         .await?
+        .filter(|r| access.sees_row(&r.row))
         .ok_or(CoreError::NotFound)?;
     let (mut next, mut previous) = (None, None);
-    if let (Category::Episode, Some(show), Some(season), Some(episode)) = (
+    if let (Category::Episode, Some(library_id), Some(show), Some(season), Some(episode)) = (
         row.row.category,
+        row.row.library_id.as_deref(),
         row.row.show_name.as_deref(),
         row.row.season,
         row.row.episode,
     ) {
         next = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM items WHERE category = 'episode' AND status = 'ready' AND show_name = ? AND id != ?
+            "SELECT id FROM items WHERE library_id = ? AND category = 'episode' AND status = 'ready'
+               AND show_name = ? AND id != ?
                AND (season > ? OR (season = ? AND episode > ?))
              ORDER BY season, episode, id LIMIT 1",
         )
+        .bind(library_id)
         .bind(show)
         .bind(id)
         .bind(season)
@@ -471,10 +532,12 @@ pub async fn detail(db: &Db, id: &str, user_id: &str) -> Result<ItemDetail> {
         .fetch_optional(db)
         .await?;
         previous = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM items WHERE category = 'episode' AND status = 'ready' AND show_name = ? AND id != ?
+            "SELECT id FROM items WHERE library_id = ? AND category = 'episode' AND status = 'ready'
+               AND show_name = ? AND id != ?
                AND (season < ? OR (season = ? AND episode < ?))
              ORDER BY season DESC, episode DESC, id DESC LIMIT 1",
         )
+        .bind(library_id)
         .bind(show)
         .bind(id)
         .bind(season)
@@ -483,7 +546,8 @@ pub async fn detail(db: &Db, id: &str, user_id: &str) -> Result<ItemDetail> {
         .fetch_optional(db)
         .await?;
     }
-    Ok(row.into_detail(next, previous))
+    let suggestion = suggestion_for(db, layout, access, &row.row, &mut None).await?;
+    Ok(row.into_detail(suggestion, next, previous))
 }
 
 pub async fn update_metadata(db: &Db, id: &str, patch: &ItemPatch) -> Result<ItemRow> {
@@ -588,113 +652,97 @@ pub async fn set_progress(
     Ok(())
 }
 
-pub async fn summary(db: &Db, user_id: &str) -> Result<LibrarySummary> {
-    let mut counts = LibraryCounts::default();
-    let rows: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT category, count(*) FROM items WHERE status = 'ready' GROUP BY category",
-    )
-    .fetch_all(db)
-    .await?;
-    for (category, n) in rows {
-        match category.parse::<Category>() {
-            Ok(Category::Movie) => counts.movies = n,
-            Ok(Category::Episode) => counts.episodes = n,
-            Ok(Category::HomeVideo) => counts.home_videos = n,
-            Ok(Category::Photo) => counts.photos = n,
-            Ok(Category::Other) => counts.other = n,
-            Err(_) => {}
+/// `GET /api/home` for `access`.
+pub async fn home(db: &Db, layout: &StashLayout, access: &Access) -> Result<Home> {
+    let viewer = &access.viewer;
+    let user_id = viewer.user_id.clone();
+    let mut libraries = Vec::new();
+    for library in defs::views(db, layout, access).await? {
+        let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
+        qb.push_bind(user_id.clone())
+            .push(" WHERE i.library_id = ")
+            .push_bind(library.id.clone())
+            .push(" AND i.status = 'ready' ORDER BY i.added_at DESC, i.id DESC LIMIT ")
+            .push_bind(HOME_ROW);
+        let recent: Vec<ItemWithProgress> = qb.build_query_as().fetch_all(db).await?;
+        let mut names: Vec<String> = recent
+            .iter()
+            .filter(|r| r.row.category == Category::Episode)
+            .filter_map(|r| r.row.show_name.clone())
+            .filter(|name| !name.is_empty())
+            .collect();
+        names.sort();
+        names.dedup();
+        let mut show_posters = BTreeMap::new();
+        if !names.is_empty() {
+            let mut qb = QueryBuilder::<Sqlite>::new("SELECT s.show_name, ");
+            qb.push(show_poster_subquery(
+                "j.library_id = s.library_id AND j.show_name = s.show_name",
+            ))
+            .push(" FROM (SELECT DISTINCT library_id, show_name FROM items WHERE library_id = ")
+            .push_bind(library.id.clone())
+            .push(" AND show_name IN (");
+            let mut list = qb.separated(", ");
+            for name in &names {
+                list.push_bind(name.clone());
+            }
+            qb.push(")) s");
+            let rows: Vec<(String, Option<String>)> = qb.build_query_as().fetch_all(db).await?;
+            show_posters.extend(rows.into_iter().filter_map(|(name, id)| Some((name, id?))));
         }
-    }
-    counts.shows = sqlx::query_scalar(
-        "SELECT count(DISTINCT show_name) FROM items
-         WHERE status = 'ready' AND category = 'episode' AND show_name IS NOT NULL AND show_name != ''",
-    )
-    .fetch_one(db)
-    .await?;
-    let total_bytes: Option<i64> =
-        sqlx::query_scalar("SELECT sum(size) FROM items WHERE status = 'ready'")
-            .fetch_one(db)
-            .await?;
-
-    // The newest of each category, photos included. One LIMIT per category walks the
-    // (category, added_at) index instead of ranking every item in the library.
-    let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
-    qb.push_bind(user_id.to_string()).push(" WHERE i.id IN (");
-    for (n, category) in Category::ALL.iter().enumerate() {
-        if n > 0 {
-            qb.push(" UNION ALL ");
-        }
-        qb.push("SELECT id FROM (SELECT id FROM items WHERE status = 'ready' AND category = ")
-            .push_bind(category.as_str())
-            .push(" ORDER BY added_at DESC, id DESC LIMIT ")
-            .push_bind(RECENT_PER_CATEGORY)
-            .push(")");
-    }
-    qb.push(") ORDER BY i.added_at DESC, i.id DESC");
-    let recently_added = qb
-        .build_query_as::<ItemWithProgress>()
-        .fetch_all(db)
-        .await?;
-
-    let mut recent_shows: Vec<String> = recently_added
-        .iter()
-        .filter(|r| r.row.category == Category::Episode)
-        .filter_map(|r| r.row.show_name.clone())
-        .filter(|name| !name.is_empty())
-        .collect();
-    recent_shows.sort();
-    recent_shows.dedup();
-    let mut show_posters = BTreeMap::new();
-    if !recent_shows.is_empty() {
-        let mut qb = QueryBuilder::<Sqlite>::new("SELECT s.show_name, ");
-        qb.push(show_poster_subquery("j.show_name = s.show_name"))
-            .push(" FROM (SELECT DISTINCT show_name FROM items WHERE show_name IN (");
-        let mut names = qb.separated(", ");
-        for name in &recent_shows {
-            names.push_bind(name.clone());
-        }
-        qb.push(")) s");
-        let rows: Vec<(String, Option<String>)> = qb.build_query_as().fetch_all(db).await?;
-        show_posters.extend(rows.into_iter().filter_map(|(name, id)| Some((name, id?))));
+        libraries.push(HomeLibrary {
+            library,
+            recent: recent
+                .into_iter()
+                .map(ItemWithProgress::into_item)
+                .collect(),
+            show_posters,
+        });
     }
 
-    let continue_watching = sqlx::query_as::<_, ItemWithProgress>(
+    // Continue watching: visible items in a library, most recently watched first.
+    let mut qb = QueryBuilder::<Sqlite>::new(
         "SELECT i.*, p.position_s AS p_position_s, p.duration_s AS p_duration_s, p.finished AS p_finished
          FROM item_progress p JOIN items i ON i.id = p.item_id
-         WHERE p.user_id = ? AND p.finished = 0 AND p.position_s > 30 AND i.status = 'ready'
-         ORDER BY p.updated_at DESC, i.id DESC LIMIT ?",
-    )
-    .bind(user_id)
-    .bind(SUMMARY_ROW)
-    .fetch_all(db)
-    .await?;
+         WHERE p.user_id = ",
+    );
+    qb.push_bind(user_id.clone()).push(
+        " AND p.finished = 0 AND p.position_s > 30 AND i.status = 'ready' AND i.place = 'library'",
+    );
+    push_visible(&mut qb, viewer);
+    qb.push(" ORDER BY p.updated_at DESC, i.id DESC LIMIT ")
+        .push_bind(HOME_ROW);
+    let continue_watching: Vec<ItemWithProgress> = qb.build_query_as().fetch_all(db).await?;
 
-    Ok(LibrarySummary {
-        counts,
-        total_bytes: total_bytes.unwrap_or(0),
-        needs_review: needs_review_count(db).await?,
-        recently_added: recently_added
-            .into_iter()
-            .map(ItemWithProgress::into_item)
-            .collect(),
-        show_posters,
+    let mut qb = QueryBuilder::<Sqlite>::new(
+        "SELECT coalesce(sum(i.size), 0), coalesce(sum(i.place = 'other_files'), 0) FROM items i WHERE i.status = 'ready'",
+    );
+    push_visible(&mut qb, viewer);
+    let (total_bytes, other_files_count): (i64, i64) = qb.build_query_as().fetch_one(db).await?;
+    Ok(Home {
         continue_watching: continue_watching
             .into_iter()
             .map(ItemWithProgress::into_item)
             .collect(),
+        libraries,
+        other_files_count,
+        inbox_count: inbox_count(db, viewer).await?,
+        total_bytes,
     })
 }
 
-pub async fn shows(db: &Db) -> Result<Vec<ShowSummary>> {
+/// The shows of an Episodes library, by title.
+pub async fn shows(db: &Db, library_id: &str) -> Result<Vec<ShowSummary>> {
     let sql = format!(
         "SELECT i.show_name, count(*), count(DISTINCT i.season), max(i.added_at), {}
          FROM items i
-         WHERE i.category = 'episode' AND i.status = 'ready' AND i.show_name IS NOT NULL AND i.show_name != ''
+         WHERE i.library_id = ? AND i.category = 'episode' AND i.status = 'ready'
+           AND i.show_name IS NOT NULL AND i.show_name != ''
          GROUP BY i.show_name",
-        show_poster_subquery("j.show_name = i.show_name")
+        show_poster_subquery("j.library_id = i.library_id AND j.show_name = i.show_name")
     );
     let rows: Vec<(String, i64, i64, i64, Option<String>)> =
-        sqlx::query_as(&sql).fetch_all(db).await?;
+        sqlx::query_as(&sql).bind(library_id).fetch_all(db).await?;
     let mut shows: Vec<ShowSummary> = rows
         .into_iter()
         .map(
@@ -711,11 +759,14 @@ pub async fn shows(db: &Db) -> Result<Vec<ShowSummary>> {
     Ok(shows)
 }
 
-pub async fn show(db: &Db, show_name: &str, user_id: &str) -> Result<ShowDetail> {
+/// One show of an Episodes library: this library's episodes of it, by season.
+pub async fn show(db: &Db, library_id: &str, show_name: &str, user_id: &str) -> Result<ShowDetail> {
     let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
     qb.push_bind(user_id.to_string())
+        .push(" WHERE i.library_id = ")
+        .push_bind(library_id.to_string())
         // Names typed or stored with stray spaces still match.
-        .push(" WHERE i.category = 'episode' AND i.status = 'ready' AND TRIM(i.show_name) = ")
+        .push(" AND i.category = 'episode' AND i.status = 'ready' AND TRIM(i.show_name) = ")
         .push_bind(show_name.trim().to_string())
         .push(" ORDER BY COALESCE(i.season, 0), COALESCE(i.episode, 0), i.sort_title, i.id");
     let rows = qb
@@ -727,8 +778,9 @@ pub async fn show(db: &Db, show_name: &str, user_id: &str) -> Result<ShowDetail>
     }
     let poster_item_id: Option<String> = sqlx::query_scalar(&format!(
         "SELECT {}",
-        show_poster_subquery("TRIM(j.show_name) = ?")
+        show_poster_subquery("j.library_id = ? AND TRIM(j.show_name) = ?")
     ))
+    .bind(library_id)
     .bind(show_name.trim())
     .fetch_one(db)
     .await?;
@@ -762,6 +814,7 @@ const TIMELINE_MAX_KEY: i64 = 253_402_300_799;
 /// with the same `month`).
 pub async fn photo_timeline(
     db: &Db,
+    library_id: &str,
     cursor: Option<&str>,
     limit: u32,
     user_id: &str,
@@ -778,9 +831,9 @@ pub async fn photo_timeline(
     let key = "COALESCE(i.taken_at, i.added_at)";
     let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
     qb.push_bind(user_id.to_string())
-        .push(format!(
-            " WHERE i.category = 'photo' AND i.status = 'ready' AND {key} BETWEEN "
-        ))
+        .push(" WHERE i.library_id = ")
+        .push_bind(library_id.to_string())
+        .push(format!(" AND i.status = 'ready' AND {key} BETWEEN "))
         .push_bind(TIMELINE_MIN_KEY)
         .push(" AND ")
         .push_bind(TIMELINE_MAX_KEY);
@@ -839,10 +892,11 @@ pub async fn photo_timeline(
         let totals: Vec<(Option<String>, i64)> = sqlx::query_as(
             "SELECT strftime('%Y-%m', COALESCE(taken_at, added_at), 'unixepoch') AS month, count(*)
              FROM items
-             WHERE category = 'photo' AND status = 'ready'
+             WHERE library_id = ? AND status = 'ready'
                AND COALESCE(taken_at, added_at) >= ? AND COALESCE(taken_at, added_at) < ?
              GROUP BY month",
         )
+        .bind(library_id)
         .bind(start)
         .bind(end)
         .fetch_all(db)
@@ -884,27 +938,49 @@ fn month_bounds(month: &str) -> Option<(i64, i64)> {
     Some((ts(start), ts(end)))
 }
 
-pub async fn inbox(db: &Db, user_id: &str) -> Result<Vec<ItemDetail>> {
-    let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
-    qb.push_bind(user_id.to_string())
-        .push(" WHERE i.status = 'needs_review' ORDER BY i.added_at DESC, i.id DESC LIMIT ")
-        .push_bind(INBOX_MAX);
-    let rows = qb
-        .build_query_as::<ItemWithProgress>()
-        .fetch_all(db)
-        .await?;
-    Ok(rows
-        .into_iter()
-        .map(|r| r.into_detail(None, None))
-        .collect())
+/// The Inbox as `access` sees it.
+pub async fn inbox(db: &Db, layout: &StashLayout, access: &Access) -> Result<InboxList> {
+    let viewer = &access.viewer;
+    let mut cache = None;
+    let mut lists = Vec::new();
+    for (filter, order) in [
+        ("i.status = 'needs_review'", "ASC"),
+        ("i.status = 'ready' AND i.place = 'incoming'", "DESC"),
+    ] {
+        let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
+        qb.push_bind(viewer.user_id.clone())
+            .push(format!(" WHERE {filter}"));
+        push_visible(&mut qb, viewer);
+        qb.push(format!(" ORDER BY i.added_at {order}, i.id {order} LIMIT "))
+            .push_bind(INBOX_MAX);
+        let rows: Vec<ItemWithProgress> = qb.build_query_as().fetch_all(db).await?;
+        let mut details = Vec::with_capacity(rows.len());
+        for row in rows {
+            let suggestion = suggestion_for(db, layout, access, &row.row, &mut cache).await?;
+            details.push(row.into_detail(suggestion, None, None));
+        }
+        lists.push(details);
+    }
+    let ignored = lists.pop().unwrap_or_default();
+    let items = lists.pop().unwrap_or_default();
+    Ok(InboxList { items, ignored })
 }
 
+/// Waiting items in the whole stash (what the sorter compares to tell streams to recount).
 pub async fn needs_review_count(db: &Db) -> Result<i64> {
     Ok(
         sqlx::query_scalar("SELECT count(*) FROM items WHERE status = 'needs_review'")
             .fetch_one(db)
             .await?,
     )
+}
+
+/// Waiting items `viewer` sees.
+pub async fn inbox_count(db: &Db, viewer: &Viewer) -> Result<i64> {
+    let mut qb =
+        QueryBuilder::<Sqlite>::new("SELECT count(*) FROM items i WHERE i.status = 'needs_review'");
+    push_visible(&mut qb, viewer);
+    Ok(qb.build_query_scalar().fetch_one(db).await?)
 }
 
 #[derive(sqlx::FromRow)]
@@ -939,7 +1015,29 @@ pub async fn trash_list(db: &Db) -> Result<Vec<TrashEntry>> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::models::{MediaKind, ThumbState};
+    use crate::library::defs::{STARTING_PHOTOS, STARTING_SHOWS};
+    use crate::models::{MediaKind, Role, ThumbState};
+
+    /// A full owner: sees everything.
+    pub(crate) fn owner(id: &str) -> Viewer {
+        Viewer {
+            user_id: id.to_string(),
+            role: Role::Owner,
+            full: true,
+        }
+    }
+
+    async fn detail_as(db: &Db, id: &str, user: &str) -> Result<ItemDetail> {
+        let access = Access::load(db, &owner(user)).await?;
+        detail(db, &StashLayout::new("/nonexistent"), &access, id).await
+    }
+
+    async fn home_as(db: &Db, user: &str) -> Home {
+        let access = Access::load(db, &owner(user)).await.unwrap();
+        home(db, &StashLayout::new("/nonexistent"), &access)
+            .await
+            .unwrap()
+    }
 
     /// A ready movie row with sensible defaults, for tests.
     pub(crate) fn row(id: &str, title: &str) -> ItemRow {
@@ -973,6 +1071,9 @@ pub(crate) mod tests {
             missing_since: None,
             added_at: 1_700_000_000,
             updated_at: 1_700_000_000,
+            library_id: None,
+            place: crate::models::Place::Folder,
+            added_by: None,
         }
     }
 
@@ -1056,7 +1157,7 @@ pub(crate) mod tests {
                     limit: Some(3),
                     ..Default::default()
                 };
-                let page = list(&db, &q, "u").await.unwrap();
+                let page = list(&db, &q, &owner("u")).await.unwrap();
                 pages += 1;
                 seen.extend(page.items.iter().map(|i| i.id.clone()));
                 match page.next_cursor {
@@ -1078,7 +1179,7 @@ pub(crate) mod tests {
                     limit: Some(50),
                     ..Default::default()
                 },
-                "u",
+                &owner("u"),
             )
             .await
             .unwrap();
@@ -1096,7 +1197,7 @@ pub(crate) mod tests {
                 limit: Some(2),
                 ..Default::default()
             },
-            "u",
+            &owner("u"),
         )
         .await
         .unwrap();
@@ -1108,7 +1209,7 @@ pub(crate) mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            list(&db, &bad, "u").await,
+            list(&db, &bad, &owner("u")).await,
             Err(CoreError::Invalid(_))
         ));
         let bad = ItemQuery {
@@ -1116,7 +1217,7 @@ pub(crate) mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            list(&db, &bad, "u").await,
+            list(&db, &bad, &owner("u")).await,
             Err(CoreError::Invalid(_))
         ));
     }
@@ -1155,17 +1256,20 @@ pub(crate) mod tests {
             q: Some(s.into()),
             ..Default::default()
         };
-        assert_eq!(ids(list(&db, &q("100%"), "u").await.unwrap()), vec!["a"]);
         assert_eq!(
-            ids(list(&db, &q("snake_case"), "u").await.unwrap()),
+            ids(list(&db, &q("100%"), &owner("u")).await.unwrap()),
+            vec!["a"]
+        );
+        assert_eq!(
+            ids(list(&db, &q("snake_case"), &owner("u")).await.unwrap()),
             vec!["c"]
         );
         assert_eq!(
-            ids(list(&db, &q("WOLF"), "u").await.unwrap()),
+            ids(list(&db, &q("WOLF"), &owner("u")).await.unwrap()),
             vec!["a", "e"]
         );
         assert_eq!(
-            ids(list(&db, &q("Season 01"), "u").await.unwrap()),
+            ids(list(&db, &q("Season 01"), &owner("u")).await.unwrap()),
             vec!["e"],
             "rel_path is searched"
         );
@@ -1173,26 +1277,32 @@ pub(crate) mod tests {
             favorite: Some(true),
             ..Default::default()
         };
-        assert_eq!(ids(list(&db, &fav, "u").await.unwrap()), vec!["a"]);
+        assert_eq!(ids(list(&db, &fav, &owner("u")).await.unwrap()), vec!["a"]);
         let year = ItemQuery {
             year: Some(2019),
             ..Default::default()
         };
-        assert_eq!(ids(list(&db, &year, "u").await.unwrap()), vec!["b"]);
+        assert_eq!(ids(list(&db, &year, &owner("u")).await.unwrap()), vec!["b"]);
         let cat = ItemQuery {
             category: Some(Category::Other),
             ..Default::default()
         };
-        assert_eq!(ids(list(&db, &cat, "u").await.unwrap()), vec!["c", "d"]);
+        assert_eq!(
+            ids(list(&db, &cat, &owner("u")).await.unwrap()),
+            vec!["c", "d"]
+        );
         let review = ItemQuery {
             status: Some(ItemStatus::NeedsReview),
             ..Default::default()
         };
-        assert_eq!(ids(list(&db, &review, "u").await.unwrap()), vec!["h"]);
+        assert_eq!(
+            ids(list(&db, &review, &owner("u")).await.unwrap()),
+            vec!["h"]
+        );
     }
 
     #[tokio::test]
-    async fn progress_and_summary() {
+    async fn progress_and_home() {
         let db = crate::db::open_memory().await.unwrap();
         add_user(&db, "u1").await;
         add_user(&db, "u2").await;
@@ -1235,31 +1345,27 @@ pub(crate) mod tests {
         assert!(set_progress(&db, "u1", "m01", f64::NAN, 2.0).await.is_err());
         assert!(set_progress(&db, "u1", "m01", -1.0, 2.0).await.is_err());
 
-        let s = summary(&db, "u1").await.unwrap();
-        assert_eq!(s.counts.movies, 15);
-        assert_eq!(s.counts.episodes, 3);
-        assert_eq!(s.counts.shows, 2);
-        assert_eq!(s.counts.photos, 1);
-        assert_eq!(s.counts.home_videos, 0);
+        let s = home_as(&db, "u1").await;
+        let library = |id: &str| s.libraries.iter().find(|l| l.library.id == id).unwrap();
+        let movies = library(crate::library::defs::STARTING_MOVIES);
+        assert_eq!(movies.library.item_count, 15);
+        let shows_row = library(STARTING_SHOWS);
+        assert_eq!(shows_row.library.item_count, 3);
+        assert_eq!(shows_row.library.show_count, Some(2));
+        assert_eq!(library(STARTING_PHOTOS).library.item_count, 1);
         assert_eq!(s.total_bytes, 15 * 10 + 5 + 3 * 1000);
-        assert_eq!(s.needs_review, 1);
-        // Up to twelve per category, photos included, newest first.
-        assert_eq!(s.recently_added.len(), 12 + 1 + 3);
-        assert_eq!(s.recently_added[0].id, "p1");
-        assert_eq!(s.recently_added[1].id, "m14");
-        assert_eq!(
-            s.recently_added
-                .iter()
-                .filter(|i| i.category == Category::Movie)
-                .count(),
-            12
-        );
+        assert_eq!(s.inbox_count, 1);
+        assert_eq!(s.other_files_count, 0);
+        // Up to twelve per library, newest first.
+        assert_eq!(movies.recent.len(), 12);
+        assert_eq!(movies.recent[0].id, "m14");
         assert!(
-            !s.recently_added.iter().any(|i| i.id == "m02"),
+            !movies.recent.iter().any(|i| i.id == "m02"),
             "the oldest movies drop off"
         );
+        assert_eq!(library(STARTING_PHOTOS).recent[0].id, "p1");
         assert_eq!(
-            s.show_posters,
+            shows_row.show_posters,
             BTreeMap::from([
                 ("Severance".to_string(), "e3".to_string()),
                 ("The Office".to_string(), "e1".to_string()),
@@ -1284,10 +1390,10 @@ pub(crate) mod tests {
             }
         );
 
-        let d = detail(&db, "m02", "u1").await.unwrap();
+        let d = detail_as(&db, "m02", "u1").await.unwrap();
         assert!(d.item.progress.unwrap().finished);
         assert!(
-            detail(&db, "m02", "u2")
+            detail_as(&db, "m02", "u2")
                 .await
                 .unwrap()
                 .item
@@ -1300,7 +1406,7 @@ pub(crate) mod tests {
                 q: Some("Movie 04".into()),
                 ..Default::default()
             },
-            "u2",
+            &owner("u2"),
         )
         .await
         .unwrap();
@@ -1308,7 +1414,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn recently_added_keeps_every_category_and_one_poster_per_show() {
+    async fn home_rows_are_per_library_with_one_poster_per_show() {
         let db = crate::db::open_memory().await.unwrap();
         add_user(&db, "u").await;
         // A burst of new movies and photos, and older home videos and other files.
@@ -1350,36 +1456,52 @@ pub(crate) mod tests {
         gone.added_at = 2_000;
         insert(&db, &gone).await;
 
-        let s = summary(&db, "u").await.unwrap();
-        let count = |c: Category| s.recently_added.iter().filter(|i| i.category == c).count();
-        assert_eq!(count(Category::Movie), 12, "twelve newest movies");
-        assert_eq!(count(Category::Photo), 12, "photos are on Home too");
+        let s = home_as(&db, "u").await;
+        let recent = |id: &str| {
+            s.libraries
+                .iter()
+                .find(|l| l.library.id == id)
+                .unwrap()
+                .recent
+                .clone()
+        };
         assert_eq!(
-            count(Category::HomeVideo),
+            recent(crate::library::defs::STARTING_MOVIES).len(),
+            12,
+            "twelve newest movies"
+        );
+        assert_eq!(recent(STARTING_PHOTOS).len(), 12, "photos are on Home too");
+        assert_eq!(
+            recent(crate::library::defs::STARTING_HOME_VIDEOS).len(),
             2,
             "new movies do not push home videos off Home"
         );
-        assert_eq!(count(Category::Other), 1);
-        assert_eq!(count(Category::Episode), 3);
+        assert_eq!(s.other_files_count, 1, "Other files are not a library");
+        assert_eq!(recent(STARTING_SHOWS).len(), 3);
+        let movies = recent(crate::library::defs::STARTING_MOVIES);
         assert!(
-            s.recently_added
+            movies
                 .windows(2)
                 .all(|w| (w[0].added_at, &w[0].id) >= (w[1].added_at, &w[1].id)),
-            "newest first across categories"
+            "newest first"
         );
-        assert!(
-            !s.recently_added
-                .iter()
-                .any(|i| i.id == "hx" || i.id == "m00")
-        );
+        assert!(!movies.iter().any(|i| i.id == "hx" || i.id == "m00"));
+        let shows_row = s
+            .libraries
+            .iter()
+            .find(|l| l.library.id == STARTING_SHOWS)
+            .unwrap();
 
         // Home, Shows and the show's page agree on the poster.
-        let listed = shows(&db).await.unwrap();
+        let listed = shows(&db, STARTING_SHOWS).await.unwrap();
         assert_eq!(listed[0].poster_item_id.as_deref(), Some("a2"));
-        assert_eq!(s.show_posters.get("Andor").map(String::as_str), Some("a2"));
-        let detail = show(&db, "Andor", "u").await.unwrap();
+        assert_eq!(
+            shows_row.show_posters.get("Andor").map(String::as_str),
+            Some("a2")
+        );
+        let detail = show(&db, STARTING_SHOWS, "Andor", "u").await.unwrap();
         assert_eq!(detail.poster_item_id.as_deref(), Some("a2"));
-        let typed = show(&db, " Andor ", "u").await.unwrap();
+        let typed = show(&db, STARTING_SHOWS, " Andor ", "u").await.unwrap();
         assert_eq!(typed.poster_item_id.as_deref(), Some("a2"));
     }
 
@@ -1397,7 +1519,7 @@ pub(crate) mod tests {
         gone.status = ItemStatus::Missing;
         insert(&db, &gone).await;
 
-        let list = shows(&db).await.unwrap();
+        let list = shows(&db, STARTING_SHOWS).await.unwrap();
         assert_eq!(
             list.iter()
                 .map(|s| s.show_name.as_str())
@@ -1416,7 +1538,7 @@ pub(crate) mod tests {
         );
         assert_eq!(list[0].poster_item_id.as_deref(), Some("a1"));
 
-        let detail_show = show(&db, "The Office", "u").await.unwrap();
+        let detail_show = show(&db, STARTING_SHOWS, "The Office", "u").await.unwrap();
         assert_eq!(
             detail_show.poster_item_id, office.poster_item_id,
             "the show's page uses the poster the Shows grid uses"
@@ -1439,19 +1561,19 @@ pub(crate) mod tests {
             vec!["o3", "o4"]
         );
         assert!(matches!(
-            show(&db, "Nope", "u").await,
+            show(&db, STARTING_SHOWS, "Nope", "u").await,
             Err(CoreError::NotFound)
         ));
 
-        let d = detail(&db, "o2", "u").await.unwrap();
+        let d = detail_as(&db, "o2", "u").await.unwrap();
         assert_eq!(d.next_episode_id.as_deref(), Some("o3"));
         assert_eq!(d.previous_episode_id.as_deref(), Some("o1"));
-        let d = detail(&db, "o1", "u").await.unwrap();
+        let d = detail_as(&db, "o1", "u").await.unwrap();
         assert_eq!(d.previous_episode_id, None);
-        let d = detail(&db, "o4", "u").await.unwrap();
+        let d = detail_as(&db, "o4", "u").await.unwrap();
         assert_eq!(d.next_episode_id, None, "missing episodes are skipped");
         assert!(matches!(
-            detail(&db, "zzz", "u").await,
+            detail_as(&db, "zzz", "u").await,
             Err(CoreError::NotFound)
         ));
     }
@@ -1485,7 +1607,9 @@ pub(crate) mod tests {
         for r in &rows {
             insert(&db, r).await;
         }
-        let page = photo_timeline(&db, None, 3, "u").await.unwrap();
+        let page = photo_timeline(&db, STARTING_PHOTOS, None, 3, "u")
+            .await
+            .unwrap();
         assert_eq!(page.months.len(), 1);
         assert_eq!(page.months[0].month, "2024-06");
         assert_eq!(page.months[0].count, 3);
@@ -1497,7 +1621,7 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>(),
             vec!["p03", "p02", "p01"]
         );
-        let page2 = photo_timeline(&db, page.next_cursor.as_deref(), 3, "u")
+        let page2 = photo_timeline(&db, STARTING_PHOTOS, page.next_cursor.as_deref(), 3, "u")
             .await
             .unwrap();
         assert_eq!(
@@ -1509,16 +1633,22 @@ pub(crate) mod tests {
             vec!["2024-05", "2023-12"]
         );
         assert_eq!(page2.months[0].items.len(), 2);
-        let page3 = photo_timeline(&db, page2.next_cursor.as_deref(), 3, "u")
+        let page3 = photo_timeline(&db, STARTING_PHOTOS, page2.next_cursor.as_deref(), 3, "u")
             .await
             .unwrap();
         assert_eq!(page3.months.len(), 1);
         assert_eq!(page3.months[0].month, "2023-11");
         assert!(page3.next_cursor.is_none());
-        let everything = photo_timeline(&db, None, 0, "u").await.unwrap();
+        let everything = photo_timeline(&db, STARTING_PHOTOS, None, 0, "u")
+            .await
+            .unwrap();
         assert_eq!(everything.months.len(), 4);
         assert!(everything.next_cursor.is_none());
-        assert!(photo_timeline(&db, Some("garbage"), 3, "u").await.is_err());
+        assert!(
+            photo_timeline(&db, STARTING_PHOTOS, Some("garbage"), 3, "u")
+                .await
+                .is_err()
+        );
         assert_eq!(
             month_bounds("2024-12"),
             Some((1_733_011_200, 1_735_689_600))
@@ -1549,7 +1679,7 @@ pub(crate) mod tests {
         let mut cursor: Option<String> = None;
         let mut pages = Vec::new();
         loop {
-            let page = photo_timeline(&db, cursor.as_deref(), 2, "u")
+            let page = photo_timeline(&db, STARTING_PHOTOS, cursor.as_deref(), 2, "u")
                 .await
                 .unwrap();
             let n: usize = page.months.iter().map(|m| m.items.len()).sum();
@@ -1665,17 +1795,27 @@ pub(crate) mod tests {
         r2.status = ItemStatus::NeedsReview;
         r2.added_at = 20;
         insert(&db, &r2).await;
-        let inbox_items = inbox(&db, "owner").await.unwrap();
+        let access = Access::load(&db, &owner("owner")).await.unwrap();
+        let inbox_items = inbox(&db, &StashLayout::new("/nonexistent"), &access)
+            .await
+            .unwrap()
+            .items;
         assert_eq!(
             inbox_items
                 .iter()
                 .map(|d| d.item.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["r2", "r1"]
+            vec!["r1", "r2"],
+            "oldest first"
         );
         assert_eq!(
-            inbox_items[1].suggestion.as_ref().unwrap().destination,
-            "Movies/Some Movie/Some Movie.mkv"
+            inbox_items[0]
+                .suggestion
+                .as_ref()
+                .unwrap()
+                .destination
+                .as_deref(),
+            Some("Movies/Some Movie/Some Movie.mkv")
         );
         assert_eq!(needs_review_count(&db).await.unwrap(), 2);
 

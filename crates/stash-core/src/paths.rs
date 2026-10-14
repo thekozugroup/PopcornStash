@@ -2,13 +2,9 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use crate::models::Category;
 use crate::{CoreError, Result};
 
-pub const MOVIES: &str = "Movies";
-pub const SHOWS: &str = "Shows";
-pub const HOME_VIDEOS: &str = "Home Videos";
-pub const PHOTOS: &str = "Photos";
+/// Other files: the built-in place for music, documents and everything else. Not a library.
 pub const OTHER: &str = "Other";
 pub const INBOX: &str = "Inbox";
 pub const DOWNLOADS: &str = "Downloads";
@@ -26,8 +22,8 @@ pub const MARKER: &str = ".popcornstash/stash.id";
 /// Which part of the stash a relative path lives in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Zone {
-    /// One of the five library folders.
-    Library(Category),
+    /// `Other/`: Other files, the built-in place that is not a library.
+    Other,
     /// `Inbox/`: sorted automatically.
     Inbox,
     /// `Downloads/In Progress/`: ignored by the indexer.
@@ -36,7 +32,9 @@ pub enum Zone {
     Completed,
     /// `.popcornstash/`: never indexed.
     Internal,
-    /// Anything else: the owner's own folders. Indexed in place, never moved.
+    /// Any other top-level folder (a library's folder or a folder not in a library) and
+    /// loose files in the stash root. Indexed in place, never moved automatically. Which
+    /// library a path belongs to comes from the library rows (`library::defs`).
     Custom,
     /// Anything else under `Downloads/` (and the `Downloads/` folder itself). It may be
     /// another download client's folder, still seeding or waiting for an import, so it
@@ -75,19 +73,10 @@ impl StashLayout {
     }
 
     /// Create every fixed folder and the marker file. Idempotent. A failure says which
-    /// folder and what to do about it (see [`layout_error`]).
+    /// folder and what to do about it (see [`layout_error`]). Library folders are not
+    /// fixed: `library::defs::ensure_folders` creates those of empty libraries.
     pub async fn ensure(&self) -> Result<()> {
-        for dir in [
-            MOVIES,
-            SHOWS,
-            HOME_VIDEOS,
-            PHOTOS,
-            OTHER,
-            INBOX,
-            IN_PROGRESS,
-            COMPLETED,
-            TRASH,
-        ] {
+        for dir in [OTHER, INBOX, IN_PROGRESS, COMPLETED, TRASH] {
             let path = self.root.join(dir);
             tokio::fs::create_dir_all(&path)
                 .await
@@ -103,9 +92,6 @@ impl StashLayout {
         Ok(())
     }
 
-    pub fn category_dir(&self, category: Category) -> PathBuf {
-        self.root.join(category_folder(category))
-    }
     pub fn inbox(&self) -> PathBuf {
         self.root.join(INBOX)
     }
@@ -208,27 +194,28 @@ impl StashLayout {
             Zone::OtherDownloads
         } else if starts(INBOX) {
             Zone::Inbox
-        } else if starts(MOVIES) {
-            Zone::Library(Category::Movie)
-        } else if starts(SHOWS) {
-            Zone::Library(Category::Episode)
-        } else if starts(HOME_VIDEOS) {
-            Zone::Library(Category::HomeVideo)
-        } else if starts(PHOTOS) {
-            Zone::Library(Category::Photo)
         } else if starts(OTHER) {
-            Zone::Library(Category::Other)
+            Zone::Other
         } else {
             Zone::Custom
         }
     }
 }
 
+/// The first component of a relative path when the path lies below it (a top-level
+/// folder), None for a loose file in the root.
+pub fn top_folder(rel: &str) -> Option<&str> {
+    rel.trim_start_matches('/')
+        .split_once('/')
+        .map(|(first, _)| first)
+        .filter(|first| !first.is_empty())
+}
+
 /// A layout step that failed, as one sentence that names the path and the fix. The
 /// usual cause is a library folder made with `sudo mkdir`: the web server runs as
 /// PUID:PGID and cannot write there, and a bare "Permission denied (os error 13)"
 /// in a restart loop does not tell the owner which folder to fix.
-fn layout_error(action: &str, path: &Path, err: &std::io::Error) -> CoreError {
+pub(crate) fn layout_error(action: &str, path: &Path, err: &std::io::Error) -> CoreError {
     let (uid, gid) = (
         nix::unistd::getuid().as_raw(),
         nix::unistd::getgid().as_raw(),
@@ -269,16 +256,6 @@ fn describe_layout_error(
             "Cannot {action} {shown}: a file with that name is in the way. Move it aside so PopcornStash can create the folder."
         ),
         _ => format!("Cannot {action} {shown}: {err}."),
-    }
-}
-
-pub fn category_folder(category: Category) -> &'static str {
-    match category {
-        Category::Movie => MOVIES,
-        Category::Episode => SHOWS,
-        Category::HomeVideo => HOME_VIDEOS,
-        Category::Photo => PHOTOS,
-        Category::Other => OTHER,
     }
 }
 
@@ -462,14 +439,14 @@ mod tests {
 
     #[test]
     fn zones() {
+        // Library folders are not fixed: they are ordinary top-level folders here.
         assert_eq!(
             StashLayout::zone("Movies/Heat (1995)/Heat (1995).mkv"),
-            Zone::Library(Category::Movie)
+            Zone::Custom
         );
-        assert_eq!(
-            StashLayout::zone("Home Videos/2024/06/IMG_1.MOV"),
-            Zone::Library(Category::HomeVideo)
-        );
+        assert_eq!(StashLayout::zone("Other/song.mp3"), Zone::Other);
+        assert_eq!(top_folder("Movies/Heat/Heat.mkv"), Some("Movies"));
+        assert_eq!(top_folder("loose.mkv"), None);
         assert_eq!(StashLayout::zone("Inbox/a.mp4"), Zone::Inbox);
         assert_eq!(
             StashLayout::zone("Downloads/In Progress/x/a.mkv"),
@@ -581,18 +558,18 @@ mod tests {
     #[tokio::test]
     async fn ensure_names_the_folder_it_cannot_create() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("Movies"), b"a file where a folder belongs").unwrap();
+        std::fs::write(dir.path().join("Inbox"), b"a file where a folder belongs").unwrap();
         let err = StashLayout::new(dir.path())
             .ensure()
             .await
             .unwrap_err()
             .to_string();
-        let movies = dir.path().join("Movies");
+        let inbox = dir.path().join("Inbox");
         assert_eq!(
             err,
             format!(
                 "Cannot create {}: a file with that name is in the way. Move it aside so PopcornStash can create the folder.",
-                movies.display()
+                inbox.display()
             )
         );
     }

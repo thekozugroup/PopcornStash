@@ -7,11 +7,14 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use super::classify::{classify, media_kind};
+use super::defs::{self, LibraryDef, Shape};
 use super::parse::{parse_name, season_folder};
 use super::{Library, ScanReport, organizer, repo};
 use crate::events::{Event, LibraryChange};
 use crate::jobs::JobKind;
-use crate::models::{Category, Classification, ItemRow, ItemStatus, MediaKind, ThumbState};
+use crate::models::{
+    Category, Classification, ItemFacts, ItemRow, ItemStatus, MediaKind, Place, ThumbState,
+};
 use crate::paths::{self, StashLayout, Zone};
 use crate::{CoreError, Result, new_id, now};
 
@@ -161,42 +164,108 @@ pub(crate) fn is_sample(name: &str, size: u64) -> bool {
     size < SAMPLE_MAX_BYTES && name.to_ascii_lowercase().contains("sample")
 }
 
-/// Whether a file in `zone` becomes an item at all.
-fn indexable(zone: Zone, rel: &str, kind: MediaKind, size: u64) -> bool {
+/// Whether a new file in `zone` (inside `library`, when its top folder is a library's
+/// folder) becomes an item at all.
+fn indexable(
+    zone: Zone,
+    library: Option<&LibraryDef>,
+    rel: &str,
+    kind: MediaKind,
+    size: u64,
+) -> bool {
     // In Inbox and Completed the sorter decides what becomes an item (documents too, see
     // `organizer::plan_sort`); indexing only refreshes the items it made.
     if zone.auto_sorts() {
         return true;
     }
+    if is_sidecar(Path::new(rel)) {
+        return false;
+    }
+    match (zone, library) {
+        (Zone::Custom, Some(def)) => in_place_category(def, rel, kind, size).is_some(),
+        (Zone::Custom, None) => kind != MediaKind::Other,
+        (Zone::Other, _) => true,
+        (Zone::Inbox | Zone::Completed, _) => true,
+        (Zone::InProgress | Zone::Internal | Zone::OtherDownloads, _) => false,
+    }
+}
+
+/// What a file already in a library's folder is, by the library's type, structure and
+/// claims (section 4, Files already in a library); None for files the library does not
+/// index (they are left alone and stay out of the index).
+pub(crate) fn in_place_category(
+    def: &LibraryDef,
+    rel: &str,
+    kind: MediaKind,
+    size: u64,
+) -> Option<Category> {
     let path = Path::new(rel);
     if is_sidecar(path) {
-        return false;
+        return None;
     }
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let dirs: Vec<&str> = rel.split('/').collect();
-    // Folders inside a movie or show folder (not the category folder, and not the title
-    // folder itself: "Shows/Extras/" is a TV show).
-    let in_extras = dirs
-        .iter()
-        .take(dirs.len().saturating_sub(1))
-        .skip(2)
-        .any(|d| is_extras_dir(d));
-    match zone {
-        // Artwork, theme songs, samples and extras next to movies and shows are not episodes or movies.
-        Zone::Library(Category::Movie | Category::Episode) => {
-            kind == MediaKind::Video && !in_extras && !is_sample(&name, size)
+    let parts: Vec<&str> = rel.split('/').collect();
+    // Folders between the library folder and the file.
+    let dirs: &[&str] = if parts.len() > 2 {
+        &parts[1..parts.len() - 1]
+    } else {
+        &[]
+    };
+    // Extras count inside a show or title folder, not as that folder itself ("Shows/Extras/"
+    // is a TV show).
+    let in_extras = dirs.iter().skip(1).any(|d| is_extras_dir(d));
+    let feature = kind == MediaKind::Video && !in_extras && !is_sample(&name, size);
+    match def.shape() {
+        Shape::Episodes => feature.then_some(Category::Episode),
+        Shape::Photos => {
+            matches!(kind, MediaKind::Video | MediaKind::Photo).then_some(Category::Photo)
         }
-        Zone::Library(Category::HomeVideo | Category::Photo) => {
-            matches!(kind, MediaKind::Video | MediaKind::Photo)
-        }
-        Zone::Library(Category::Other) => true,
-        Zone::Custom => kind != MediaKind::Other,
-        Zone::Inbox | Zone::Completed => true,
-        Zone::InProgress | Zone::Internal | Zone::OtherDownloads => false,
+        Shape::OneOffs => match (def.claims(Category::Movie), def.claims(Category::HomeVideo)) {
+            (false, true) => {
+                matches!(kind, MediaKind::Video | MediaKind::Photo).then_some(Category::HomeVideo)
+            }
+            (true, false) => feature.then_some(Category::Movie),
+            _ => match kind {
+                MediaKind::Video => {
+                    let stem = path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    if parse_name(&stem).camera_style || under_year_month(dirs) {
+                        Some(Category::HomeVideo)
+                    } else {
+                        feature.then_some(Category::Movie)
+                    }
+                }
+                MediaKind::Photo => (!organizer::is_artwork(Path::new(def.folder()), path)
+                    && !dirs.iter().any(|d| is_title_folder(d)))
+                .then_some(Category::HomeVideo),
+                MediaKind::Audio | MediaKind::Other => None,
+            },
+        },
     }
+}
+
+/// A `YYYY/MM` pair among the folders.
+fn under_year_month(dirs: &[&str]) -> bool {
+    dirs.windows(2).any(|pair| {
+        let year = pair[0].len() == 4
+            && pair[0]
+                .parse::<u32>()
+                .is_ok_and(|y| (1900..=2099).contains(&y));
+        let month =
+            pair[1].len() == 2 && pair[1].parse::<u32>().is_ok_and(|m| (1..=12).contains(&m));
+        year && month
+    })
+}
+
+/// A movie's `Title (Year)` folder.
+fn is_title_folder(dir: &str) -> bool {
+    let parsed = parse_name(dir);
+    parsed.year.is_some() && !parsed.title.is_empty() && dir.trim_end().ends_with(')')
 }
 
 /// Metadata for a file inside one of the library folders, from its path.
@@ -319,18 +388,23 @@ pub(crate) fn new_row(
         missing_since: None,
         added_at: t,
         updated_at: t,
+        // Worked out by the database from the path (migration 0002's triggers).
+        library_id: None,
+        place: Place::Folder,
+        added_by: None,
     }
 }
 
 /// Overwrite an existing row's content with `row` (keeps id, favorite, added_at and,
-/// when `row` has none, the source download).
+/// when `row` has none, the source download and who added it). The database works out
+/// `library_id` and `place` from the new path in the same write.
 pub(crate) async fn overwrite_row(lib: &Library, id: &str, row: &ItemRow) -> Result<()> {
     sqlx::query(
         "UPDATE items SET rel_path = ?, kind = ?, category = ?, status = ?, title = ?, sort_title = ?, year = ?,
             show_name = ?, season = ?, episode = ?, episode_title = ?, size = ?, mtime = ?, quick_hash = ?, mime = ?,
             duration_s = ?, width = ?, height = ?, media_json = ?, taken_at = ?, camera = ?, thumb_state = ?,
             suggestion_json = ?, source_download_id = COALESCE(?, source_download_id), missing_since = NULL,
-            updated_at = ?
+            added_by = COALESCE(?, added_by), updated_at = ?
          WHERE id = ?",
     )
     .bind(&row.rel_path)
@@ -357,6 +431,7 @@ pub(crate) async fn overwrite_row(lib: &Library, id: &str, row: &ItemRow) -> Res
     .bind(row.thumb_state.as_str())
     .bind(&row.suggestion_json)
     .bind(&row.source_download_id)
+    .bind(&row.added_by)
     .bind(now())
     .bind(id)
     .execute(&lib.db)
@@ -392,10 +467,26 @@ pub(crate) async fn enqueue_media_jobs(lib: &Library, item_id: &str) -> Result<(
     Ok(())
 }
 
+/// Publish a change that did not move the item between places (who sees it is the same).
 pub(crate) fn publish(lib: &Library, change: LibraryChange, item_id: &str) {
     lib.events.publish(Event::Library {
         r#type: change,
         item_id: item_id.to_string(),
+        before: None,
+    });
+}
+
+/// Publish a change that may have moved the item, with what decided who saw it before.
+pub(crate) fn publish_moved(
+    lib: &Library,
+    change: LibraryChange,
+    item_id: &str,
+    before: ItemFacts,
+) {
+    lib.events.publish(Event::Library {
+        r#type: change,
+        item_id: item_id.to_string(),
+        before: Some(before),
     });
 }
 
@@ -416,12 +507,12 @@ pub async fn mark_missing(lib: &Library, rel: &str) -> Result<u64> {
         return Ok(0);
     }
     let review_before = repo::needs_review_count(&lib.db).await?;
-    let ids = mark_vanished(lib, &candidates).await?;
-    for id in &ids {
-        publish(lib, LibraryChange::Updated, id);
+    let marked = mark_vanished(lib, &candidates).await?;
+    for (id, before) in &marked {
+        publish_moved(lib, LibraryChange::Updated, id, before.clone());
     }
     organizer::publish_inbox_if_changed(lib, review_before).await?;
-    Ok(ids.len() as u64)
+    Ok(marked.len() as u64)
 }
 
 /// Whether a stored path is gone right now: not found, or no longer a regular file.
@@ -446,17 +537,29 @@ pub(crate) fn is_not_found(e: &std::io::Error) -> bool {
 
 /// Mark `(id, rel_path)` items missing, re-checking each under the move lock: a file that
 /// is back on disk, or a row that points somewhere else since the caller looked (the
-/// sorter or an API action moved it), is left alone. Returns the ids marked missing.
+/// sorter or an API action moved it), is left alone, and so is anything in a library
+/// whose folder is missing (an unmounted disk never empties a library). Returns the ids
+/// marked missing with what decided who saw them before.
 pub(crate) async fn mark_vanished(
     lib: &Library,
     items: &[(String, String)],
-) -> Result<Vec<String>> {
+) -> Result<Vec<(String, ItemFacts)>> {
     let mut marked = Vec::new();
+    if items.is_empty() {
+        return Ok(marked);
+    }
+    let frozen = defs::missing_folders(lib).await?;
     for (id, rel) in items {
+        if paths::top_folder(rel).is_some_and(|top| frozen.contains(top)) {
+            continue;
+        }
         let _moves = lib.lock_moves().await;
         if !is_gone(lib, rel).await {
             continue;
         }
+        let Some(before) = repo::get(&lib.db, id).await? else {
+            continue;
+        };
         let t = now();
         let done = sqlx::query(
             "UPDATE items SET status = 'missing', missing_since = ?, updated_at = ?
@@ -469,7 +572,7 @@ pub(crate) async fn mark_vanished(
         .execute(&lib.db)
         .await?;
         if done.rows_affected() == 1 {
-            marked.push(id.clone());
+            marked.push((id.clone(), before.facts()));
         }
     }
     Ok(marked)
@@ -489,23 +592,47 @@ pub(crate) async fn index_inner(
 }
 
 /// Mark items at `rel` (or below it) missing without re-checking the disk. The caller holds
-/// the move lock and has just seen the path vanish.
-async fn mark_missing_now(lib: &Library, rel: &str) -> Result<()> {
-    let t = now();
-    let ids: Vec<String> = sqlx::query_scalar(
-        "UPDATE items SET status = 'missing', missing_since = ?, updated_at = ?
-         WHERE status IN ('ready', 'needs_review') AND (rel_path = ? OR substr(rel_path, 1, ?) = ?)
-         RETURNING id",
+/// the move lock and has just seen the path vanish. Nothing is marked inside a library
+/// whose folder is missing.
+async fn mark_missing_now(lib: &Library, rel: &str, defs: &[LibraryDef]) -> Result<()> {
+    if let Some(def) =
+        defs::library_for_path(defs, rel).or_else(|| defs.iter().find(|d| d.folder() == rel))
+    {
+        let live: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM items WHERE library_id = ? AND status != 'missing'",
+        )
+        .bind(def.id())
+        .fetch_one(&lib.db)
+        .await?;
+        if defs::folder_state(&lib.layout, def.folder(), live > 0).await
+            == crate::models::FolderState::Missing
+        {
+            return Ok(());
+        }
+    }
+    let befores: Vec<ItemRow> = sqlx::query_as(
+        "SELECT * FROM items
+         WHERE status IN ('ready', 'needs_review') AND (rel_path = ? OR substr(rel_path, 1, ?) = ?)",
     )
-    .bind(t)
-    .bind(t)
     .bind(rel)
     .bind(i64::try_from(rel.chars().count() + 1).unwrap_or(i64::MAX))
     .bind(format!("{rel}/"))
     .fetch_all(&lib.db)
     .await?;
-    for id in &ids {
-        publish(lib, LibraryChange::Updated, id);
+    let t = now();
+    for before in befores {
+        let done = sqlx::query(
+            "UPDATE items SET status = 'missing', missing_since = ?, updated_at = ?
+             WHERE id = ? AND status IN ('ready', 'needs_review')",
+        )
+        .bind(t)
+        .bind(t)
+        .bind(&before.id)
+        .execute(&lib.db)
+        .await?;
+        if done.rows_affected() == 1 {
+            publish_moved(lib, LibraryChange::Updated, &before.id, before.facts());
+        }
     }
     Ok(())
 }
@@ -520,11 +647,16 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
     if !zone.indexed() {
         return Ok(None);
     }
+    let defs = defs::load_all(&lib.db).await?;
+    let library = match zone {
+        Zone::Custom => defs::library_for_path(&defs, &rel),
+        _ => None,
+    };
     let abs = lib.layout.abs(&rel)?;
     let meta = match tokio::fs::symlink_metadata(&abs).await {
         Ok(meta) => meta,
         Err(e) if is_not_found(&e) => {
-            mark_missing_now(lib, &rel).await?;
+            mark_missing_now(lib, &rel, &defs).await?;
             return Ok(None);
         }
         Err(e) => return Err(e.into()),
@@ -533,12 +665,14 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
         return Ok(None);
     }
     let kind = media_kind(&abs);
-    if !indexable(zone, &rel, kind, meta.len()) {
+    let existing = repo::get_by_path(&lib.db, &rel).await?;
+    // Items already indexed stay (a file keeps the category it was first given); only new
+    // files must be ones the place indexes.
+    if existing.is_none() && !indexable(zone, library, &rel, kind, meta.len()) {
         return Ok(None);
     }
     let size = i64::try_from(meta.len()).unwrap_or(i64::MAX);
     let mtime = mtime_secs(&meta);
-    let existing = repo::get_by_path(&lib.db, &rel).await?;
 
     // Inbox and Completed belong to the sorter; only refresh items it already left there.
     if zone.auto_sorts() && existing.is_none() {
@@ -564,7 +698,7 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
                     .bind(&item.id)
                     .execute(&lib.db)
                     .await?;
-                publish(lib, LibraryChange::Updated, &item.id);
+                publish_moved(lib, LibraryChange::Updated, &item.id, item.facts());
                 if restored_status == ItemStatus::NeedsReview {
                     lib.events.publish(Event::Inbox {
                         count: repo::needs_review_count(&lib.db).await?,
@@ -590,7 +724,7 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
         }
         // The file changed in place: keep the user's metadata, refresh the file facts.
         let hash = quick_hash_async(&abs).await;
-        let suggestion = if zone == Zone::Custom {
+        let suggestion = if zone == Zone::Custom && library.is_none() {
             Some(serde_json::to_string(&classify(&rel, None, None, mtime))?)
         } else {
             item.suggestion_json.clone()
@@ -610,7 +744,7 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
         .execute(&lib.db)
         .await?;
         enqueue_media_jobs(lib, &item.id).await?;
-        publish(lib, LibraryChange::Updated, &item.id);
+        publish_moved(lib, LibraryChange::Updated, &item.id, item.facts());
         let row = repo::get(&lib.db, &item.id)
             .await?
             .ok_or(CoreError::NotFound)?;
@@ -618,9 +752,16 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
     }
 
     let hash = quick_hash_async(&abs).await;
-    let (category, meta, suggestion) = match zone {
-        Zone::Library(category) => (category, library_metadata(category, &rel, mtime), None),
-        _ => {
+    // In a library folder the library's rules say what the file is; in `Other/` it is
+    // `other`; elsewhere the classifier's guess is kept as the suggestion for Organize.
+    let fixed = match (zone, library) {
+        (Zone::Custom, Some(def)) => in_place_category(def, &rel, kind, meta.len()),
+        (Zone::Other, _) => Some(Category::Other),
+        _ => None,
+    };
+    let (category, meta, suggestion) = match fixed {
+        Some(category) => (category, library_metadata(category, &rel, mtime), None),
+        None => {
             let c = classify(&rel, None, None, mtime);
             (c.category, Meta::from_classification(&c), Some(c))
         }
@@ -628,7 +769,7 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
 
     // Same bytes as a missing item: it was moved or renamed outside PopcornStash.
     if let Some(old) = find_moved(lib, size, hash.as_deref()).await? {
-        let category_changed = matches!(zone, Zone::Library(c) if c != old.category);
+        let category_changed = fixed.is_some_and(|c| c != old.category);
         let mut row = old.clone();
         row.rel_path = rel.clone();
         row.mtime = mtime;
@@ -647,7 +788,7 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
         }
         row.source_download_id = None;
         overwrite_row(lib, &old.id, &row).await?;
-        publish(lib, LibraryChange::Updated, &old.id);
+        publish_moved(lib, LibraryChange::Updated, &old.id, old.facts());
         tracing::info!(item = %old.id, from = %old.rel_path, to = %rel, "found a moved file");
         let row = repo::get(&lib.db, &old.id)
             .await?
@@ -794,6 +935,7 @@ pub async fn rescan(lib: &Library) -> Result<ScanReport> {
         .await
         .map_err(|e| CoreError::Other(e.into()))?;
     let mut report = ScanReport::default();
+    let library_defs = defs::load_all(&lib.db).await?;
 
     let known: Vec<KnownItem> = sqlx::query_as::<_, (String, String, i64, i64, ItemStatus, Option<i64>)>(
         "SELECT id, rel_path, size, mtime, status, missing_since FROM items WHERE status != 'trashed'",
@@ -858,6 +1000,7 @@ pub async fn rescan(lib: &Library) -> Result<ScanReport> {
             None if zone.auto_sorts() => continue,
             None if !indexable(
                 zone,
+                defs::library_for_path(&library_defs, rel),
                 rel,
                 media_kind(Path::new(rel)),
                 u64::try_from(file.size).unwrap_or(0),
@@ -879,7 +1022,7 @@ pub async fn rescan(lib: &Library) -> Result<ScanReport> {
     }
 
     // 3. Report what is still missing, and forget long-missing items.
-    for id in &newly_missing {
+    for (id, before) in &newly_missing {
         let status: Option<ItemStatus> =
             sqlx::query_scalar("SELECT status FROM items WHERE id = ?")
                 .bind(id)
@@ -887,25 +1030,37 @@ pub async fn rescan(lib: &Library) -> Result<ScanReport> {
                 .await?;
         if status == Some(ItemStatus::Missing) {
             report.missing += 1;
-            publish(lib, LibraryChange::Updated, id);
+            publish_moved(lib, LibraryChange::Updated, id, before.clone());
         }
     }
+    let frozen = defs::missing_folders(lib).await?;
     for item in &stale {
-        let deleted = {
+        if paths::top_folder(&item.rel_path).is_some_and(|top| frozen.contains(top)) {
+            continue;
+        }
+        let (deleted, before) = {
             let _moves = lib.lock_moves().await;
             if !is_gone(lib, &item.rel_path).await {
                 continue;
             }
-            sqlx::query("DELETE FROM items WHERE id = ? AND rel_path = ? AND status = 'missing'")
-                .bind(&item.id)
-                .bind(&item.rel_path)
-                .execute(&lib.db)
-                .await?
+            let before = repo::get(&lib.db, &item.id).await?.map(|r| r.facts());
+            let deleted = sqlx::query(
+                "DELETE FROM items WHERE id = ? AND rel_path = ? AND status = 'missing'",
+            )
+            .bind(&item.id)
+            .bind(&item.rel_path)
+            .execute(&lib.db)
+            .await?;
+            (deleted, before)
         };
         if deleted.rows_affected() == 1 {
             report.removed += 1;
             organizer::remove_cached_media(lib, &item.id).await;
-            publish(lib, LibraryChange::Removed, &item.id);
+            lib.events.publish(Event::Library {
+                r#type: LibraryChange::Removed,
+                item_id: item.id.clone(),
+                before,
+            });
         }
     }
 
@@ -938,6 +1093,16 @@ pub async fn rescan(lib: &Library) -> Result<ScanReport> {
             "deleted items past the trash retention"
         ),
         Err(e) => tracing::warn!(error = %e, "could not apply the trash retention"),
+    }
+
+    // 6. Library and place follow the path; repair any row that went stale.
+    {
+        let _moves = lib.lock_moves().await;
+        let mut conn = lib.db.acquire().await?;
+        let fixed = defs::rederive_all(&mut conn).await?;
+        if fixed > 0 {
+            tracing::info!(count = fixed, "worked out the library of items again");
+        }
     }
     organizer::publish_inbox_if_changed(lib, review_before).await?;
     Ok(report)
@@ -1035,76 +1200,190 @@ mod tests {
         assert_eq!(p.taken_at, Some(5));
     }
 
+    fn def(shape: Shape, claims: &[Category]) -> LibraryDef {
+        use crate::models::{ContentType, Structure, Visibility};
+        let (content_type, structure) = match shape {
+            Shape::Episodes => (ContentType::Video, Some(Structure::Episodes)),
+            Shape::OneOffs => (ContentType::Video, Some(Structure::OneOffs)),
+            Shape::Photos => (ContentType::Photos, None),
+        };
+        LibraryDef {
+            row: defs::LibraryRow {
+                id: "lib".into(),
+                name: "Lib".into(),
+                icon: "film".into(),
+                content_type,
+                structure,
+                folder: "Lib".into(),
+                visibility: Visibility::Everyone,
+                position: 0,
+                created_by: None,
+                created_at: 0,
+                updated_at: 0,
+            },
+            claims: claims.to_vec(),
+            members: Vec::new(),
+        }
+    }
+
     #[test]
     fn indexable_rules() {
-        let movie = Zone::Library(Category::Movie);
+        let movies = def(Shape::OneOffs, &[Category::Movie]);
+        let lib = Some(&movies);
+        let custom = Zone::Custom;
         assert!(indexable(
-            movie,
-            "Movies/Heat (1995)/Heat (1995).mkv",
+            custom,
+            lib,
+            "Lib/Heat (1995)/Heat (1995).mkv",
             MediaKind::Video,
             1 << 30
         ));
         assert!(!indexable(
-            movie,
-            "Movies/Heat (1995)/poster.jpg",
+            custom,
+            lib,
+            "Lib/Heat (1995)/poster.jpg",
             MediaKind::Photo,
             10
         ));
         assert!(!indexable(
-            movie,
-            "Movies/Heat (1995)/Heat (1995).srt",
+            custom,
+            lib,
+            "Lib/Heat (1995)/Heat (1995).srt",
             MediaKind::Other,
             10
         ));
         assert!(!indexable(
-            movie,
-            "Movies/Heat (1995)/extras/Interview.mkv",
+            custom,
+            lib,
+            "Lib/Heat (1995)/extras/Interview.mkv",
             MediaKind::Video,
             1 << 30
         ));
         assert!(!indexable(
-            movie,
-            "Movies/Heat (1995)/heat-sample.mkv",
+            custom,
+            lib,
+            "Lib/Heat (1995)/heat-sample.mkv",
             MediaKind::Video,
             1 << 20
         ));
         // Extras folders count inside a title folder, not as the title itself
         // ("Extras" is also a TV show).
+        let shows = def(Shape::Episodes, &[Category::Episode]);
         assert!(indexable(
-            Zone::Library(Category::Episode),
-            "Shows/Extras/Season 01/Extras - S01E01.mkv",
+            custom,
+            Some(&shows),
+            "Lib/Extras/Season 01/Extras - S01E01.mkv",
             MediaKind::Video,
             1 << 30
         ));
         assert!(!indexable(
-            Zone::Library(Category::Episode),
-            "Shows/Andor/Season 01/Extras/Making of.mkv",
+            custom,
+            Some(&shows),
+            "Lib/Andor/Season 01/Extras/Making of.mkv",
             MediaKind::Video,
             1 << 30
         ));
         assert!(indexable(
-            Zone::Library(Category::Other),
+            Zone::Other,
+            None,
             "Other/manual.pdf",
             MediaKind::Other,
             10
         ));
         assert!(!indexable(
-            Zone::Custom,
+            custom,
+            None,
             "Family/notes.txt",
             MediaKind::Other,
             10
         ));
         assert!(indexable(
-            Zone::Custom,
+            custom,
+            None,
             "Family/beach.mp4",
             MediaKind::Video,
             10
         ));
         assert!(!indexable(
             Zone::InProgress,
+            None,
             "Downloads/In Progress/a.mkv",
             MediaKind::Video,
             10
         ));
+    }
+
+    /// Section 4, Files already in a library: what each kind of library indexes, and as what.
+    #[test]
+    fn in_place_categories() {
+        let video = MediaKind::Video;
+        let photo = MediaKind::Photo;
+        let big = 1 << 30;
+        let photos = def(Shape::Photos, &[Category::Photo]);
+        assert_eq!(
+            in_place_category(&photos, "Lib/2024/a.jpg", photo, 1),
+            Some(Category::Photo)
+        );
+        assert_eq!(
+            in_place_category(&photos, "Lib/2024/a.mov", video, 1),
+            Some(Category::Photo)
+        );
+        assert_eq!(
+            in_place_category(&photos, "Lib/a.pdf", MediaKind::Other, 1),
+            None
+        );
+        let homes = def(Shape::OneOffs, &[Category::HomeVideo]);
+        assert_eq!(
+            in_place_category(&homes, "Lib/a.jpg", photo, 1),
+            Some(Category::HomeVideo)
+        );
+        assert_eq!(
+            in_place_category(&homes, "Lib/a.mp4", video, 1),
+            Some(Category::HomeVideo)
+        );
+        assert_eq!(
+            in_place_category(&homes, "Lib/a.mp3", MediaKind::Audio, 1),
+            None
+        );
+        let movies = def(Shape::OneOffs, &[Category::Movie]);
+        assert_eq!(in_place_category(&movies, "Lib/a.jpg", photo, 1), None);
+        assert_eq!(
+            in_place_category(&movies, "Lib/A (2001)/A (2001).mkv", video, big),
+            Some(Category::Movie)
+        );
+        // Claims both or neither: the path decides.
+        for claims in [&[][..], &[Category::Movie, Category::HomeVideo][..]] {
+            let both = def(Shape::OneOffs, claims);
+            assert_eq!(
+                in_place_category(&both, "Lib/A (2001)/A (2001).mkv", video, big),
+                Some(Category::Movie)
+            );
+            assert_eq!(
+                in_place_category(&both, "Lib/2019/07/beach.mp4", video, big),
+                Some(Category::HomeVideo)
+            );
+            assert_eq!(
+                in_place_category(&both, "Lib/VID_20190704_101010.mp4", video, big),
+                Some(Category::HomeVideo)
+            );
+            assert_eq!(
+                in_place_category(&both, "Lib/2019/07/beach.jpg", photo, 1),
+                Some(Category::HomeVideo)
+            );
+            assert_eq!(
+                in_place_category(&both, "Lib/A (2001)/still.jpg", photo, 1),
+                None
+            );
+            assert_eq!(in_place_category(&both, "Lib/poster.jpg", photo, 1), None);
+        }
+        let shows = def(Shape::Episodes, &[]);
+        assert_eq!(
+            in_place_category(&shows, "Lib/Bluey/S01E01.mkv", video, big),
+            Some(Category::Episode)
+        );
+        assert_eq!(
+            in_place_category(&shows, "Lib/Bluey/cover.jpg", photo, 1),
+            None
+        );
     }
 }

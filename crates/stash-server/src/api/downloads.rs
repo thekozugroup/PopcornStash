@@ -109,10 +109,14 @@ async fn list(
     ApiQuery(query): ApiQuery<ListQuery>,
 ) -> ApiResult<Json<DownloadList>> {
     user.require(Scope::DownloadsRead)?;
-    let items = state
-        .downloads
-        .list(query.state.unwrap_or_default(), query.limit.unwrap_or(100))
-        .await?;
+    let access = user.access(&state.db).await?;
+    let items = crate::live::visible_downloads(
+        &state.db,
+        &access,
+        query.state.unwrap_or_default(),
+        query.limit.unwrap_or(100),
+    )
+    .await?;
     Ok(Json(DownloadList { items }))
 }
 
@@ -163,13 +167,32 @@ async fn add_torrent(
     Err(ApiError::bad_request("Choose a .torrent file to upload."))
 }
 
+/// A download the caller cannot see answers 404, as one that never existed (section 7).
+async fn require_visible(state: &AppState, user: &AuthUser, id: &str) -> ApiResult<()> {
+    let access = user.access(&state.db).await?;
+    match crate::live::visible_download(&state.db, &access, id).await? {
+        Some(_) => Ok(()),
+        None => Err(ApiError::not_found("That download no longer exists.")),
+    }
+}
+
+/// The download as the caller sees it after a change.
+async fn as_seen(state: &AppState, user: &AuthUser, id: &str) -> ApiResult<Download> {
+    let access = user.access(&state.db).await?;
+    crate::live::visible_download(&state.db, &access, id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("That download no longer exists."))
+}
+
 async fn pause(
     State(state): State<AppState>,
     user: AuthUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Download>> {
     user.require(Scope::Full)?;
-    Ok(Json(state.downloads.pause(&id).await?))
+    require_visible(&state, &user, &id).await?;
+    state.downloads.pause(&id).await?;
+    Ok(Json(as_seen(&state, &user, &id).await?))
 }
 
 async fn resume(
@@ -178,7 +201,9 @@ async fn resume(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Download>> {
     user.require(Scope::Full)?;
-    Ok(Json(state.downloads.resume(&id).await?))
+    require_visible(&state, &user, &id).await?;
+    state.downloads.resume(&id).await?;
+    Ok(Json(as_seen(&state, &user, &id).await?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -193,6 +218,7 @@ async fn remove(
     ApiQuery(query): ApiQuery<RemoveQuery>,
 ) -> ApiResult<StatusCode> {
     user.require(Scope::Full)?;
+    require_visible(&state, &user, &id).await?;
     state
         .downloads
         .remove(&id, query.delete_files.unwrap_or(false))

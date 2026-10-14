@@ -66,6 +66,44 @@ text_enum!(DownloadState {
     Cancelled => "cancelled",
 });
 text_enum!(Confidence { High => "high", Low => "low" });
+text_enum!(
+    /// Which kind of place holds an item (section 6): a library folder, `Other/`, `Inbox/`
+    /// or `Downloads/Completed/`, a top-level folder that is not a library, or the trash.
+    Place { Library => "library", OtherFiles => "other_files", Incoming => "incoming", Folder => "folder", Trash => "trash" }
+);
+text_enum!(
+    /// Why a waiting Inbox item waits, worked out when it is read (section 8).
+    Waiting { ChooseLibrary => "choose_library", FolderUnavailable => "folder_unavailable", LowConfidence => "low_confidence", Confirm => "confirm" }
+);
+
+text_enum!(
+    /// What a library holds (section 3.1).
+    ContentType { Video => "video", Photos => "photos" }
+);
+text_enum!(
+    /// How a video library is arranged: series with seasons and episodes, or one-offs.
+    Structure { Episodes => "episodes", OneOffs => "one_offs" }
+);
+text_enum!(Visibility { Everyone => "everyone", Selected => "selected" });
+text_enum!(
+    /// How clients draw a library (section 8, Layout), worked out by the server.
+    Layout { Posters => "posters", Frames => "frames", Series => "series", Timeline => "timeline" }
+);
+text_enum!(
+    /// Whether a library's folder can be used right now (section 3.1).
+    FolderState { Ok => "ok", Missing => "missing", ReadOnly => "read_only" }
+);
+
+/// What decides who may see an item (section 7): kept with every item event so each
+/// event stream can check it against its caller without reading the database.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemFacts {
+    pub library_id: Option<String>,
+    pub place: Place,
+    pub added_by: Option<String>,
+    pub status: ItemStatus,
+    pub category: Category,
+}
 
 impl DownloadState {
     /// Still moving bytes or waiting to.
@@ -109,9 +147,24 @@ pub struct ItemRow {
     pub missing_since: Option<i64>,
     pub added_at: i64,
     pub updated_at: i64,
+    /// The library whose folder holds the file (section 3.1), kept by the database.
+    pub library_id: Option<String>,
+    pub place: Place,
+    /// The person whose download, upload or share brought the file in.
+    pub added_by: Option<String>,
 }
 
 impl ItemRow {
+    pub fn facts(&self) -> ItemFacts {
+        ItemFacts {
+            library_id: self.library_id.clone(),
+            place: self.place,
+            added_by: self.added_by.clone(),
+            status: self.status,
+            category: self.category,
+        }
+    }
+
     pub fn media(&self) -> Option<MediaSummary> {
         self.media_json
             .as_deref()
@@ -149,6 +202,8 @@ impl ItemRow {
             favorite: self.favorite,
             added_at: self.added_at,
             progress,
+            library_id: self.library_id.clone(),
+            place: self.place,
         }
     }
 }
@@ -184,6 +239,8 @@ pub struct Item {
     pub favorite: bool,
     pub added_at: i64,
     pub progress: Option<Progress>,
+    pub library_id: Option<String>,
+    pub place: Place,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,7 +249,7 @@ pub struct ItemDetail {
     pub item: Item,
     pub media: Option<MediaSummary>,
     pub mime: Option<String>,
-    pub suggestion: Option<Classification>,
+    pub suggestion: Option<Suggestion>,
     pub source_download_id: Option<String>,
     pub next_episode_id: Option<String>,
     pub previous_episode_id: Option<String>,
@@ -210,10 +267,37 @@ pub struct Classification {
     pub episode_title: Option<String>,
     pub taken_at: Option<i64>,
     pub confidence: Confidence,
-    /// Short human-readable explanation, e.g. "Found S01E02 in the name".
+    /// Short human-readable explanation about the file itself, e.g. "Found S01E02 in the name".
     pub reason: String,
-    /// Suggested destination, relative to the stash root.
-    pub destination: String,
+    /// Where the file would sit inside a library folder of its kind (`Title (Year)/Title
+    /// (Year).mkv`, `2024/06/IMG_1.jpg`), or its name for `other`. Worked out by the
+    /// classifier and never stored: where a file goes depends on the claims when it is read.
+    #[serde(skip)]
+    pub layout: String,
+}
+
+/// A stored classification as a reader sees it (`ItemDetail.suggestion`, section 8): the
+/// classification plus where it would go and why it waits, worked out at read time from
+/// the claims, the library folders and the reader's access.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Suggestion {
+    #[serde(flatten)]
+    pub classification: Classification,
+    /// `library` or `other_files`; None when no library the reader can see claims the kind.
+    pub place: Option<Place>,
+    pub library_id: Option<String>,
+    /// The relative path the file would get; None when `place` is None.
+    pub destination: Option<String>,
+    /// Why a `needs_review` item waits; None for other items.
+    pub waiting: Option<Waiting>,
+}
+
+/// Where a download's visible items are now (section 8, `Download.destinations`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Destination {
+    pub place: Place,
+    pub library_id: Option<String>,
+    pub count: i64,
 }
 
 /// ffprobe summary stored in `items.media_json`.
@@ -309,6 +393,8 @@ impl DownloadRow {
             created_at: self.created_at,
             completed_at: self.completed_at,
             item_ids,
+            destinations: Vec::new(),
+            created_by: self.created_by.clone(),
         }
     }
 }
@@ -330,7 +416,14 @@ pub struct Download {
     pub error: Option<String>,
     pub created_at: i64,
     pub completed_at: Option<i64>,
+    /// Linked items the reader can see.
     pub item_ids: Vec<String>,
+    /// Where those items are now, grouped by place and library in first-seen order.
+    #[serde(default)]
+    pub destinations: Vec<Destination>,
+    /// Who added it. Server side only: decides who sees it (section 7), never sent.
+    #[serde(skip)]
+    pub created_by: Option<String>,
 }
 
 /// VPN state as shown to the UI (section 8).

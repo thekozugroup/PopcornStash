@@ -19,10 +19,27 @@ pub fn routes() -> Router<AppState> {
         .route("/api/trash/{id}/restore", post(restore))
 }
 
+/// One entry of `GET /api/trash`, with the sentence a restore would get now.
+#[derive(Debug, Clone, Serialize)]
+pub struct TrashView {
+    #[serde(flatten)]
+    pub entry: TrashEntry,
+    /// Why a restore would be refused now (section 11, Restore from Trash), else None.
+    pub restore_refusal: Option<String>,
+}
+
 /// `GET /api/trash`: newest first, as returned by the library.
-async fn list(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<Vec<TrashEntry>>> {
+async fn list(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<Vec<TrashView>>> {
     user.require_owner()?;
-    Ok(Json(repo::trash_list(&state.db).await?))
+    let mut out = Vec::new();
+    for entry in repo::trash_list(&state.db).await? {
+        let restore_refusal = state.library.restore_refusal(&entry.item.id).await?;
+        out.push(TrashView {
+            entry,
+            restore_refusal,
+        });
+    }
+    Ok(Json(out))
 }
 
 async fn restore(
@@ -37,6 +54,7 @@ async fn restore(
         _ => return Err(item_not_found()),
     }
     let row = state.library.restore_item(&id).await?;
+    let access = user.access(&state.db).await?;
     state
         .auth
         .audit(
@@ -46,7 +64,9 @@ async fn restore(
             ip.as_string().as_deref(),
         )
         .await;
-    Ok(Json(repo::detail(&state.db, &id, &user.user_id).await?))
+    Ok(Json(
+        repo::detail(&state.db, &state.layout, &access, &id).await?,
+    ))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

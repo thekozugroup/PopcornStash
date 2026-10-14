@@ -5,7 +5,7 @@ use std::path::Path;
 use crate::media::exif::ExifInfo;
 use crate::models::{Category, Classification, Confidence, MediaKind, MediaSummary};
 
-use super::organizer::destination_for;
+use super::organizer::layout_for;
 use super::parse::{ParsedName, parse_name, season_folder, unix_from_parts};
 
 const VIDEO_EXTS: &[&str] = &[
@@ -38,7 +38,7 @@ pub fn media_kind(path: &Path) -> MediaKind {
 }
 
 /// Classify a file. `rel_path` is relative to the stash root; `mtime` is unix seconds.
-/// The returned `destination` is a relative path inside the library folders.
+/// The returned `layout` is where the file would sit inside a library folder of its kind.
 pub fn classify(
     rel_path: &str,
     probe: Option<&MediaSummary>,
@@ -72,7 +72,7 @@ pub fn classify(
         },
         MediaKind::Other => other(&stem, "This is not a video or photo"),
     };
-    c.destination = destination_for(&c, &file_name);
+    c.layout = layout_for(&c, &file_name);
     c
 }
 
@@ -93,7 +93,7 @@ fn base(
         taken_at: None,
         confidence,
         reason,
-        destination: String::new(),
+        layout: String::new(),
     }
 }
 
@@ -387,6 +387,17 @@ pub(crate) fn parse_timestamp(value: &str) -> Option<i64> {
 mod tests {
     use super::*;
 
+    /// Where the file goes in the starting libraries (or Other files).
+    fn dest(c: &Classification) -> String {
+        match c.category {
+            Category::Movie => format!("Movies/{}", c.layout),
+            Category::Episode => format!("Shows/{}", c.layout),
+            Category::HomeVideo => format!("Home Videos/{}", c.layout),
+            Category::Photo => format!("Photos/{}", c.layout),
+            Category::Other => format!("Other/{}", c.layout),
+        }
+    }
+
     fn summary(tags: &[(&str, &str)]) -> MediaSummary {
         MediaSummary {
             tags: tags
@@ -421,19 +432,19 @@ mod tests {
         assert_eq!(c.category, Category::Photo);
         assert_eq!(c.confidence, Confidence::High);
         assert_eq!(c.taken_at, Some(1_718_273_700));
-        assert_eq!(c.destination, "Photos/2024/06/IMG_1234.HEIC");
+        assert_eq!(dest(&c), "Photos/2024/06/IMG_1234.HEIC");
         assert_eq!(
             c.reason,
             "Photo from Apple iPhone 15 Pro, dated from its EXIF data"
         );
 
         let c = classify("Inbox/PXL_20230102_030405678.jpg", None, None, MTIME);
-        assert_eq!(c.destination, "Photos/2023/01/PXL_20230102_030405678.jpg");
+        assert_eq!(dest(&c), "Photos/2023/01/PXL_20230102_030405678.jpg");
         assert_eq!(c.reason, "Photo, dated from its file name");
 
         let c = classify("Inbox/scan.png", None, None, MTIME);
         assert_eq!(c.taken_at, Some(MTIME));
-        assert_eq!(c.destination, "Photos/2023/11/scan.png");
+        assert_eq!(dest(&c), "Photos/2023/11/scan.png");
         assert!(c.reason.contains("last changed"));
 
         // A photo with an episode-like name is still a photo (rule 1 wins).
@@ -455,13 +466,13 @@ mod tests {
         assert_eq!((c.season, c.episode), (Some(2), Some(3)));
         assert_eq!(c.reason, "Found S02E03 in the name");
         assert_eq!(
-            c.destination,
+            dest(&c),
             "Shows/The Office US/Season 02/The Office US - S02E03.mkv"
         );
 
         let c = classify("Inbox/Show.Name.S01E02E03.mkv", None, None, MTIME);
         assert_eq!(
-            c.destination,
+            dest(&c),
             "Shows/Show Name/Season 01/Show Name - S01E02-E03.mkv"
         );
         assert_eq!(c.reason, "Found S01E02-E03 in the name");
@@ -497,7 +508,7 @@ mod tests {
         assert_eq!(c.confidence, Confidence::High);
         assert_eq!(c.reason, "Phone video from Apple iPhone 15 Pro");
         assert_eq!(c.taken_at, parse_timestamp("2024-06-13T10:21:00Z"));
-        assert_eq!(c.destination, "Home Videos/2024/06/Beach day.mov");
+        assert_eq!(dest(&c), "Home Videos/2024/06/Beach day.mov");
         assert_eq!(
             camera_from_tags(&probe).as_deref(),
             Some("Apple iPhone 15 Pro")
@@ -509,7 +520,7 @@ mod tests {
         ]);
         let c = classify("Inbox/clip.mp4", Some(&probe), None, MTIME);
         assert_eq!(c.category, Category::HomeVideo);
-        assert_eq!(c.destination, "Home Videos/2023/02/clip.mp4");
+        assert_eq!(dest(&c), "Home Videos/2023/02/clip.mp4");
 
         let probe = summary(&[
             ("handler_name", "\tGoPro AVC  "),
@@ -547,11 +558,11 @@ mod tests {
     fn home_videos_from_names() {
         let c = classify("Inbox/VID_20240613_101500.mp4", None, None, MTIME);
         assert_eq!(c.category, Category::HomeVideo);
-        assert_eq!(c.destination, "Home Videos/2024/06/VID_20240613_101500.mp4");
+        assert_eq!(dest(&c), "Home Videos/2024/06/VID_20240613_101500.mp4");
         assert_eq!(c.reason, "The name looks like a phone or camera file");
 
         let c = classify("Inbox/IMG_1234.MOV", None, None, MTIME);
-        assert_eq!(c.destination, "Home Videos/2023/11/IMG_1234.MOV");
+        assert_eq!(dest(&c), "Home Videos/2023/11/IMG_1234.MOV");
 
         for name in [
             "GOPR0123.MP4",
@@ -571,7 +582,7 @@ mod tests {
             MTIME,
         );
         assert_eq!(
-            c.destination,
+            dest(&c),
             "Home Videos/2024/06/Screen Recording 2024-06-13 at 10.15.00.mov"
         );
     }
@@ -588,18 +599,18 @@ mod tests {
         assert_eq!(c.confidence, Confidence::High);
         assert_eq!((c.title.as_str(), c.year), ("Heat", Some(1995)));
         assert_eq!(c.reason, "Found the year 1995 in the name");
-        assert_eq!(c.destination, "Movies/Heat (1995)/Heat (1995).mkv");
+        assert_eq!(dest(&c), "Movies/Heat (1995)/Heat (1995).mkv");
 
         let c = classify("Inbox/Blade Runner 2049 (2017).MP4", None, None, MTIME);
         assert_eq!(
-            c.destination,
+            dest(&c),
             "Movies/Blade Runner 2049 (2017)/Blade Runner 2049 (2017).mp4"
         );
 
         let c = classify("Inbox/Some.Movie.1080p.BluRay.x264.mkv", None, None, MTIME);
         assert_eq!(c.category, Category::Movie);
         assert_eq!(c.confidence, Confidence::Low);
-        assert_eq!(c.destination, "Movies/Some Movie/Some Movie.mkv");
+        assert_eq!(dest(&c), "Movies/Some Movie/Some Movie.mkv");
     }
 
     #[test]
@@ -615,7 +626,7 @@ mod tests {
             (Category::Movie, Confidence::High)
         );
         assert_eq!(c.reason, "Found the year 1995 in the folder name");
-        assert_eq!(c.destination, "Movies/Heat (1995)/Heat (1995).mkv");
+        assert_eq!(dest(&c), "Movies/Heat (1995)/Heat (1995).mkv");
 
         let c = classify(
             "Downloads/Completed/Show.Name.S01E05.720p.WEB/abc.mkv",
@@ -628,10 +639,7 @@ mod tests {
             (Category::Episode, Confidence::High)
         );
         assert_eq!(c.reason, "Found S01E05 in the folder name");
-        assert_eq!(
-            c.destination,
-            "Shows/Show Name/Season 01/Show Name - S01E05.mkv"
-        );
+        assert_eq!(dest(&c), "Shows/Show Name/Season 01/Show Name - S01E05.mkv");
 
         // A good file name still wins over the folder.
         let c = classify(
@@ -658,12 +666,12 @@ mod tests {
         let c = classify("Inbox/Our Wedding.mp4", None, None, MTIME);
         assert_eq!(c.category, Category::Other);
         assert_eq!(c.confidence, Confidence::Low);
-        assert_eq!(c.destination, "Other/Our Wedding.mp4");
+        assert_eq!(dest(&c), "Other/Our Wedding.mp4");
 
         let c = classify("Inbox/song.mp3", None, None, MTIME);
         assert_eq!(c.category, Category::Other);
         assert_eq!(c.confidence, Confidence::High);
-        assert_eq!(c.destination, "Other/song.mp3");
+        assert_eq!(dest(&c), "Other/song.mp3");
 
         let c = classify("Inbox/notes.pdf", None, None, MTIME);
         assert_eq!(c.category, Category::Other);

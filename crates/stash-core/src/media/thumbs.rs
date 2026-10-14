@@ -48,6 +48,7 @@ fn publish_updated(media: &MediaService, item_id: &str) {
     media.events.publish(Event::Library {
         r#type: LibraryChange::Updated,
         item_id: item_id.to_string(),
+        before: None,
     });
 }
 
@@ -965,7 +966,9 @@ mod tests {
             "location must not be stored"
         );
         match events.try_recv().unwrap() {
-            Event::Library { r#type, item_id } => {
+            Event::Library {
+                r#type, item_id, ..
+            } => {
                 assert_eq!(r#type, LibraryChange::Updated);
                 assert_eq!(item_id, id);
             }

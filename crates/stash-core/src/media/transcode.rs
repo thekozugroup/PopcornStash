@@ -114,9 +114,22 @@ impl TranscodeManager {
         }
     }
 
-    /// Start a session for `item_id` whose original is `source`.
+    /// Start a session for `item_id` whose original is `source`, belonging to nobody.
     pub async fn start(
         &self,
+        item_id: &str,
+        source: PathBuf,
+        media: &MediaSummary,
+        options: StreamOptions,
+    ) -> Result<SessionInfo> {
+        self.start_for("", item_id, source, media, options).await
+    }
+
+    /// Start a session for `item_id` that belongs to the person `user_id`: only they may
+    /// request its playlist and segments (section 7).
+    pub async fn start_for(
+        &self,
+        user_id: &str,
         item_id: &str,
         source: PathBuf,
         media: &MediaSummary,
@@ -158,6 +171,7 @@ impl TranscodeManager {
         let dir = self.config.transcode_dir().join(&id);
         let session = Arc::new(Session {
             id: id.clone(),
+            user_id: user_id.to_string(),
             item_id: item_id.to_string(),
             source,
             dir,
@@ -290,6 +304,13 @@ impl TranscodeManager {
         self.lock_sessions()
             .get(session_id)
             .map(|s| s.item_id.clone())
+    }
+
+    /// The person a session belongs to and the item it plays.
+    pub fn session_owner(&self, session_id: &str) -> Option<(String, String)> {
+        self.lock_sessions()
+            .get(session_id)
+            .map(|s| (s.user_id.clone(), s.item_id.clone()))
     }
 
     /// Kill sessions idle for 60s and delete their folders.
@@ -430,6 +451,8 @@ impl VideoEncoder {
 
 struct Session {
     id: String,
+    /// The person who started it.
+    user_id: String,
     item_id: String,
     source: PathBuf,
     dir: PathBuf,
