@@ -1,53 +1,87 @@
 package com.thekozugroup.popcornstash.feature.settings
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.size
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import com.thekozugroup.popcornstash.data.api.ApiClient
 import com.thekozugroup.popcornstash.data.api.Role
 import com.thekozugroup.popcornstash.data.api.User
+import com.thekozugroup.popcornstash.data.repo.StashData
+import com.thekozugroup.popcornstash.data.session.Session
+import com.thekozugroup.popcornstash.navigation.PageStackHost
 import com.thekozugroup.popcornstash.navigation.TabPage
-import com.thekozugroup.popcornstash.ui.components.ListRow
-import com.thekozugroup.popcornstash.ui.components.QuietButton
-import com.thekozugroup.popcornstash.ui.components.RowDivider
-import com.thekozugroup.popcornstash.ui.components.SectionHeading
-import com.thekozugroup.popcornstash.ui.components.TabRootScaffold
-import com.thekozugroup.popcornstash.ui.icons.LucideIcon
-import com.thekozugroup.popcornstash.ui.icons.PopcornIcons
-import com.thekozugroup.popcornstash.ui.theme.Popcorn
+import com.thekozugroup.popcornstash.navigation.ViewModelStores
+import com.thekozugroup.popcornstash.navigation.rememberPageStack
+import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 
-/** A web settings page the app opens in a Custom Tab for now (docs/architecture.md section 10, Settings). */
-data class WebSettingsPage(val label: String, val path: String)
+/** The pages of the Settings tab: the first page, and the library editor pushed on top of it. */
+@Serializable
+sealed interface SettingsRoute {
+    @Serializable
+    @SerialName("settings")
+    data object Root : SettingsRoute
 
-/** The web settings pages a person can open from the app: every area for owners, their own devices and passkeys for members. */
-fun webSettingsPages(role: Role): List<WebSettingsPage> = if (role == Role.Owner) {
-    listOf(
-        WebSettingsPage("Libraries", "settings/libraries"),
-        WebSettingsPage("VPN", "settings/vpn"),
-        WebSettingsPage("People", "settings/people"),
-        WebSettingsPage("Devices", "settings/devices"),
-        WebSettingsPage("Security", "settings/security"),
-        WebSettingsPage("System", "settings/system"),
-    )
-} else {
-    listOf(WebSettingsPage("Devices", "settings/devices"), WebSettingsPage("Security", "settings/security"))
+    /** Editing one library. */
+    @Serializable
+    @SerialName("edit-library")
+    data class EditLibrary(val id: String) : SettingsRoute
+
+    /** Making a library; [folder] when it is made from a folder that is already there. */
+    @Serializable
+    @SerialName("new-library")
+    data class NewLibrary(val folder: String? = null) : SettingsRoute
+}
+
+/** What Settings needs from the signed-in session to manage libraries. */
+class SettingsServices(val api: ApiClient, val data: StashData, val pages: ViewModelStores)
+
+/**
+ * Keeps the Settings pages' view models for one session in the activity: they survive a tab
+ * switch and a rotation, end with their page, and all end with the person's session.
+ */
+class SettingsPagesHolder : ViewModel() {
+    val stores = ViewModelStores()
+
+    override fun onCleared() = stores.clearAll()
+}
+
+/** The Settings tab's services for [session]; its page view models end when the session does. */
+@Composable
+fun rememberSettingsServices(session: Session): SettingsServices {
+    val holder: SettingsPagesHolder = viewModel(key = "settings pages ${session.id}")
+    return remember(session, holder) {
+        session.scope.coroutineContext.job.invokeOnCompletion { holder.stores.clearAll() }
+        SettingsServices(session.api, session.data, holder.stores)
+    }
 }
 
 /**
- * Settings, the right tab (android/DESIGN.md, Settings): the signed-in person, this server,
- * the web settings pages, and sign out.
+ * Settings, the right tab (android/DESIGN.md, Settings and Library editor). Its first page shows
+ * the person, this server, the owner's libraries and folders, the web settings pages and sign
+ * out; the library editor opens on top of it and closes back to it. Without [services] (the
+ * shell's sample pages) the libraries are left out.
  */
 @Composable
 fun SettingsTab(
@@ -57,79 +91,124 @@ fun SettingsTab(
     serverVersion: String?,
     onOpenWeb: (WebSettingsPage) -> Unit,
     onSignOut: () -> Unit,
+    services: SettingsServices? = null,
 ) {
-    var confirmSignOut by rememberSaveable { mutableStateOf(false) }
-    TabRootScaffold(page = page, title = "Settings") {
-        item(key = "you") {
-            SectionHeading("You")
-            ListRow(
-                title = user.displayName.ifBlank { "Signed in" },
-                supporting = if (user.role == Role.Owner) "Owner" else "Member",
-                leading = { Avatar(user.displayName) },
-            )
-        }
-        item(key = "server") {
-            SectionHeading("This server")
-            ListRow(
-                title = serverDisplay,
-                supporting = serverVersion?.let { "Version $it" },
-                leading = { LucideIcon(PopcornIcons.Server, contentDescription = null, tint = Popcorn.colors.textMuted) },
-            )
-        }
-        item(key = "web heading") { SectionHeading("On the web") }
-        val pages = webSettingsPages(user.role)
-        pages.forEachIndexed { index, web ->
-            item(key = "web ${web.path}") {
-                ListRow(
-                    title = web.label,
-                    onClick = { onOpenWeb(web) },
-                    onClickLabel = "Open ${web.label} settings on the web",
-                    trailing = { LucideIcon(PopcornIcons.OpenOnWeb, contentDescription = null, tint = Popcorn.colors.textMuted, size = 20.dp) },
-                )
-                if (index < pages.lastIndex) RowDivider(inset = false)
-            }
-        }
-        item(key = "sign out") {
-            Spacer(Modifier.height(Popcorn.spacing.xl))
-            RowDivider(inset = false)
-            ListRow(
-                title = "Sign out",
-                titleColor = Popcorn.colors.textMuted,
-                onClick = { confirmSignOut = true },
-                leading = { LucideIcon(PopcornIcons.SignOut, contentDescription = null, tint = Popcorn.colors.textMuted) },
-            )
+    val stack = rememberPageStack<SettingsRoute>(SettingsRoute.Root, SettingsRoute.serializer())
+    val stores = services?.pages ?: remember { ViewModelStores() }
+    val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    val owner = user.role == Role.Owner && services != null
+    val show: (String) -> Unit = { message -> scope.launch { snackbar.showSnackbar(message) } }
+
+    // Tapping Settings again closes the editor (the first page then scrolls itself to the top).
+    var handledReselections by rememberSaveable { mutableIntStateOf(page.reselections) }
+    LaunchedEffect(page.reselections) {
+        if (page.reselections != handledReselections) {
+            handledReselections = page.reselections
+            stack.popToRoot()
         }
     }
-    if (confirmSignOut) {
-        AlertDialog(
-            onDismissRequest = { confirmSignOut = false },
-            title = { Text("Sign out on this phone?") },
-            text = { Text("PopcornStash forgets your sign-in and everything it kept on this phone.") },
-            confirmButton = {
-                QuietButton("Sign out", onClick = {
-                    confirmSignOut = false
-                    onSignOut()
-                })
-            },
-            dismissButton = { QuietButton("Cancel", onClick = { confirmSignOut = false }) },
-            containerColor = Popcorn.colors.surface,
-            titleContentColor = Popcorn.colors.text,
-            textContentColor = Popcorn.colors.textMuted,
-        )
+    // Someone who stops being an owner leaves the editor.
+    LaunchedEffect(owner) { if (!owner) stack.popToRoot() }
+
+    Box(Modifier.fillMaxSize()) {
+        PageStackHost(stack, stores, name = "settings") { entry ->
+            when (val route = entry.route) {
+                SettingsRoute.Root -> SettingsFirstPage(
+                    page = page,
+                    user = user,
+                    serverDisplay = serverDisplay,
+                    serverVersion = serverVersion,
+                    services = services?.takeIf { owner },
+                    onOpenWeb = onOpenWeb,
+                    onSignOut = onSignOut,
+                    onOpenEditor = { stack.push(it) },
+                    onNotice = show,
+                )
+                is SettingsRoute.EditLibrary, is SettingsRoute.NewLibrary -> if (services != null) {
+                    LibraryEditorRoute(
+                        route = route,
+                        services = services,
+                        page = page,
+                        onBack = { stack.pop() },
+                        onFinished = { message ->
+                            stack.pop()
+                            message?.let(show)
+                        },
+                    )
+                }
+            }
+        }
+        SnackbarHost(
+            snackbar,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = page.bottomClearance - 8.dp),
+        ) { PopcornSnackbar(it) }
     }
 }
 
-/** The person's initials on a circle, 48dp. */
 @Composable
-private fun Avatar(name: String) {
-    val initials = name.split(' ').filter { it.isNotBlank() }.take(2).joinToString("") { it.first().uppercase() }
-    Box(
-        Modifier
-            .size(48.dp)
-            .background(Popcorn.colors.subtle, Popcorn.shapes.avatar)
-            .clearAndSetSemantics { },
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(initials.ifEmpty { "?" }, style = Popcorn.type.section, color = Popcorn.colors.text)
+private fun SettingsFirstPage(
+    page: TabPage,
+    user: User,
+    serverDisplay: String,
+    serverVersion: String?,
+    services: SettingsServices?,
+    onOpenWeb: (WebSettingsPage) -> Unit,
+    onSignOut: () -> Unit,
+    onOpenEditor: (SettingsRoute) -> Unit,
+    onNotice: (String) -> Unit,
+) {
+    val listState = rememberLazyListState()
+    if (services == null) {
+        SettingsRootPage(page, user, serverDisplay, serverVersion, libraries = null, onOpenWeb = onOpenWeb, onSignOut = onSignOut, listState = listState)
+        return
     }
+    val model: LibrarySettingsViewModel = viewModel(
+        key = "library settings",
+        factory = viewModelFactory { initializer { LibrarySettingsViewModel(services.api, services.data) } },
+    )
+    val controller = model.controller
+    val state by controller.state.collectAsStateWithLifecycle()
+    // Fresh each time the page shows: another device may have changed the libraries.
+    LaunchedEffect(controller) { controller.refresh() }
+    LaunchedEffect(controller) { controller.notices.collect(onNotice) }
+    SettingsRootPage(
+        page = page,
+        user = user,
+        serverDisplay = serverDisplay,
+        serverVersion = serverVersion,
+        libraries = state,
+        onOpenWeb = onOpenWeb,
+        onSignOut = onSignOut,
+        listState = listState,
+        actions = LibrarySettingsActions(
+            onRetry = controller::refresh,
+            onOpen = { onOpenEditor(SettingsRoute.EditLibrary(it.id)) },
+            onNew = { folder -> onOpenEditor(SettingsRoute.NewLibrary(folder)) },
+            onMove = { library, step -> controller.move(library.id, step) },
+            onDelete = controller::delete,
+        ),
+    )
+}
+
+@Composable
+private fun LibraryEditorRoute(
+    route: SettingsRoute,
+    services: SettingsServices,
+    page: TabPage,
+    onBack: () -> Unit,
+    onFinished: (String?) -> Unit,
+) {
+    val id = (route as? SettingsRoute.EditLibrary)?.id
+    val folder = (route as? SettingsRoute.NewLibrary)?.folder
+    val model: LibraryEditorViewModel = viewModel(
+        key = "library editor",
+        factory = viewModelFactory { initializer { LibraryEditorViewModel(services.api, services.data, id, folder) } },
+    )
+    val controller = model.controller
+    val state by controller.state.collectAsStateWithLifecycle()
+    LaunchedEffect(state.finished) { state.finished?.let { onFinished(it.message) } }
+    LibraryEditorPage(state = state, actions = controller, onBack = onBack, bottomClearance = page.bottomClearance)
 }

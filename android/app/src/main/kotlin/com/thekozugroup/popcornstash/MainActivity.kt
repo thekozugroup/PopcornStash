@@ -32,6 +32,7 @@ import com.thekozugroup.popcornstash.data.session.SessionState
 import com.thekozugroup.popcornstash.feature.downloads.DownloadsTab
 import com.thekozugroup.popcornstash.feature.home.HomeTab
 import com.thekozugroup.popcornstash.feature.settings.SettingsTab
+import com.thekozugroup.popcornstash.feature.settings.rememberSettingsServices
 import com.thekozugroup.popcornstash.feature.signin.SignInFlow
 import com.thekozugroup.popcornstash.feature.signin.SignInViewModel
 import com.thekozugroup.popcornstash.navigation.AppShell
@@ -85,6 +86,7 @@ fun PopcornStashApp(container: AppContainer, activity: Activity) {
 fun SignedInApp(session: Session, openUrl: (String) -> Unit, onSignOut: () -> Unit) {
     val user by session.user.collectAsStateWithLifecycle()
     val readyToImport by session.data.readyToImport.collectAsStateWithLifecycle()
+    val settings = rememberSettingsServices(session)
     var version by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(session) {
         session.data.refreshHome()
@@ -105,6 +107,7 @@ fun SignedInApp(session: Session, openUrl: (String) -> Unit, onSignOut: () -> Un
                 serverVersion = version,
                 onOpenWeb = { web -> openUrl(session.api.url("/${web.path}").toString()) },
                 onSignOut = onSignOut,
+                services = settings,
             )
         }
     }

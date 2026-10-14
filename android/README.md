@@ -29,10 +29,10 @@ Debug builds accept `http://` for `localhost`, `127.0.0.1` and `10.0.2.2` (the e
 app/src/main/kotlin/com/thekozugroup/popcornstash/
   MainActivity.kt          sign-in while nobody is signed in, the three tabs once someone is
   AppContainer.kt          the process's services: the HTTP client, the session, sign-in
-  navigation/              Tab, AppShell (pages, toolbar, Back), PageTransitions
+  navigation/              Tab, AppShell (pages, toolbar, Back), PageTransitions, PageStack (a tab's own pages)
   ui/theme/                the Popcorn tokens: Color, Type, Shape, Tokens, Motion, Theme
   ui/icons/                LucideGlyphs (generated), PopcornIcons, LibraryIcons
-  ui/components/           FloatingNavToolbar, PageTopBar, TabRootScaffold, rows, buttons, EmptyState
+  ui/components/           FloatingNavToolbar, PageTopBar, TabRootScaffold, rows, buttons, EmptyState, IconPicker
   data/api/                ApiClient (every endpoint the app uses), ApiModels, ApiError, EventStream (SSE)
   data/auth/               ServerAddress, PairingFlow, PasskeySignIn, Credential Manager, the sealed token store
   data/session/            SessionRepository: who is signed in; ending a session forgets everything
@@ -41,13 +41,16 @@ app/src/main/kotlin/com/thekozugroup/popcornstash/
   feature/                 signin, home, downloads, settings
 ```
 
+Settings (`feature/settings/`) is a stack of two pages: the first page (`SettingsScreen.kt`: the person, this server, the owner's libraries and the folders that are not a library, the web settings pages, sign out) and the library editor pushed on top of it (`LibraryEditorScreen.kt`). `LibrarySettingsController` keeps the owner's list (order, delete, people, folders) and `LibraryEditorController` one editor's form; both talk only to `ApiClient` and the session's `StashData`, whose `libraries` events keep them current. `LibraryWords.kt` holds the owner's words for libraries, the same as the web's.
+
 The session's token is sealed with AES-GCM under a non-exportable Android Keystore key and kept in `noBackupFilesDir`; the app allows no backup or device transfer. There is no HTTP logging and no HTTP cache. Signing out, a 401 on any request, or signing in as someone else ends the session: the token file and its key are deleted, the session's work is cancelled and the tabs start again empty.
 
 ## Tests
 
 - JVM: `ApiClientTest` (every endpoint against MockWebServer: method, path, query, body, token, the error envelope), `PairingFlowTest` (the pairing state machine), `EventStreamTest`, `SessionRepositoryTest`, `SessionStoreTest`, `StashDataTest`, `ServerAddressTest`, `PlaybackCapabilitiesTest`, `SignInControllerTest`, `LibraryIconsTest` (the icon names match the server's list).
-- Robolectric: `AppShellTest` (the toolbar's selection, tooltips, descriptions, page changes, slide direction, reduce motion, kept state, Back), `SignInScreensTest`.
-- Roborazzi: `ShellScreenshotTest` and `SignInScreenshotTest`, light and dark, in `app/src/test/screenshots/`.
+- JVM, Settings: `LibraryWordsTest` (the owner's words), `LibrarySettingsControllerTest` (list, people, folders, a move shown at once and put back when it fails, delete, a library made elsewhere), `LibraryEditorControllerTest` (new, from a folder, type and claims rules, the lock on a library that holds files, the confirmation before taking a kind, validation, the server's field errors, edits that send only what changed, delete, a library gone while open), against a MockWebServer that answers by route (`Routes`).
+- Robolectric: `AppShellTest` (the toolbar's selection, tooltips, descriptions, page changes, slide direction, reduce motion, kept state, Back), `SignInScreensTest`, `SettingsTabTest` (the owner's list in order, the editor and Back, making a library end to end, a refused name under its field, move from the menu, TalkBack actions, delete with its confirmation, a folder made a library, tapping Settings again, members, the icon picker's semantics and tooltip).
+- Roborazzi: `ShellScreenshotTest`, `SignInScreenshotTest` and `SettingsScreenshotTest` (Settings and the library editor loading, failed, empty and with content, menus and dialogs; the whole form on a tall phone), light and dark, in `app/src/test/screenshots/`.
 - `ServerIntegrationTest` runs the app's client against a real server: it builds a `scripts/dev-fixture.sh` stash, starts `popcornstash serve`, makes the owner with a software passkey and the setup code from the log (as tests/e2e does with Chrome's virtual authenticator), then pairs the app (the owner approves the code), signs in with a passkey from the app's `android:apk-key-hash:` origin (`STASH_ANDROID_ASSETLINKS` lists it), and reads the libraries, Home and live events with the app's token. It needs ffmpeg and the server binary, so it runs only when asked:
 
   ```sh
@@ -55,7 +58,7 @@ The session's token is sealed with AES-GCM under a non-exportable Android Keysto
   cd android && ./gradlew :app:testDebugUnitTest --tests '*ServerIntegrationTest*' -PpopcornstashServer=../target/debug/popcornstash
   ```
 
-  `scripts/check.sh --e2e` runs it. `POPCORNSTASH_KEEP=1` keeps its temporary stash and server log.
+  `SettingsServerIntegrationTest` does the same for library management, through the controllers Settings uses and an owner's `full` token: it makes a library from the fixture's `Family 2019/` folder (taking camera videos from Home Videos after the confirmation), renames it and shares it with everyone, moves it, gets a refused name under the name field, makes one with a new folder, and deletes both, with every file still on the disk. The same `--tests '*ServerIntegrationTest*'` pattern runs both, and `scripts/check.sh --e2e` runs them. `POPCORNSTASH_KEEP=1` keeps their temporary stash and server log.
 
 ## Icons
 
