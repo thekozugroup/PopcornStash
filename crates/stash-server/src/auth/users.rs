@@ -85,7 +85,7 @@ pub async fn ensure_setup_code(auth: &AuthService) -> ApiResult<Option<String>> 
     }
     let code = codes::new_setup_code();
     let now = now();
-    let mut tx = db.begin().await?;
+    let mut tx = stash_core::db::begin_write(db).await?;
     sqlx::query("DELETE FROM recovery_codes WHERE kind = 'setup' AND used_at IS NULL")
         .execute(&mut *tx)
         .await?;

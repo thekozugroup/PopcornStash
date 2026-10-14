@@ -314,7 +314,7 @@ pub async fn setup_finish(
     };
     let name = passkeys::passkey_name(body.passkey_name.as_deref(), user_agent(&headers))?;
     let now = now();
-    let mut tx = state.db.begin().await?;
+    let mut tx = stash_core::db::begin_write(&state.db).await?;
     // Claim the code first: this takes the write lock, so two finishes cannot both create an owner.
     let claimed = sqlx::query(
         "UPDATE recovery_codes SET used_at = ? WHERE code_hash = ? AND kind = 'setup' AND used_at IS NULL AND expires_at > ?",
@@ -619,7 +619,7 @@ pub async fn invite_finish(
     };
     let name = passkeys::passkey_name(body.passkey_name.as_deref(), user_agent(&headers))?;
     let now = now();
-    let mut tx = state.db.begin().await?;
+    let mut tx = stash_core::db::begin_write(&state.db).await?;
     let claimed = sqlx::query(
         "UPDATE invites SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?",
     )
@@ -738,7 +738,7 @@ pub async fn recover_finish(
     };
     let name = passkeys::passkey_name(body.passkey_name.as_deref(), user_agent(&headers))?;
     let now = now();
-    let mut tx = state.db.begin().await?;
+    let mut tx = stash_core::db::begin_write(&state.db).await?;
     let claimed = sqlx::query(
         "UPDATE recovery_codes SET used_at = ? WHERE id = ? AND kind = 'owner_reset' AND used_at IS NULL AND expires_at > ?",
     )

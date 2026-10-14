@@ -976,7 +976,7 @@ impl Library {
         };
 
         let _moves = self.lock_moves().await;
-        let mut tx = self.db.begin().await?;
+        let mut tx = crate::db::begin_write(&self.db).await?;
         check_name_free(&mut tx, &name, None).await?;
         let members =
             check_members(&mut tx, request.member_ids.as_deref().unwrap_or_default()).await?;
@@ -1183,7 +1183,7 @@ impl Library {
         } else {
             None
         };
-        let mut tx = self.db.begin().await?;
+        let mut tx = crate::db::begin_write(&self.db).await?;
         let defs = load_all_conn(&mut tx).await?;
         let current = defs
             .into_iter()
@@ -1307,7 +1307,7 @@ impl Library {
 
     /// `PUT /api/libraries/order`: `ids` lists every library exactly once.
     pub async fn reorder_libraries(&self, ids: &[String]) -> Result<()> {
-        let mut tx = self.db.begin().await?;
+        let mut tx = crate::db::begin_write(&self.db).await?;
         let current = ordered_ids(&mut tx).await?;
         let mut a: Vec<&String> = ids.iter().collect();
         let mut b: Vec<&String> = current.iter().collect();
@@ -1335,7 +1335,7 @@ impl Library {
     /// `DELETE /api/libraries/:id` (section 8, Delete). Files are never touched.
     pub async fn delete_library(&self, id: &str) -> Result<Written> {
         let _moves = self.lock_moves().await;
-        let mut tx = self.db.begin().await?;
+        let mut tx = crate::db::begin_write(&self.db).await?;
         let row: LibraryRow = sqlx::query_as("SELECT * FROM libraries WHERE id = ?")
             .bind(id)
             .fetch_optional(&mut *tx)

@@ -65,7 +65,7 @@ async fn cleanup(db: &Db) -> ApiResult<()> {
 /// An approved token nobody collected is revoked and its plaintext wiped. The row ends
 /// as `delivered` (nothing left to deliver), so later polls answer `expired`.
 async fn expire_undelivered(db: &Db, id: &str, token_id: Option<&str>) -> ApiResult<()> {
-    let mut tx = db.begin().await?;
+    let mut tx = stash_core::db::begin_write(db).await?;
     let done = sqlx::query(
         "UPDATE pairing_requests SET status = 'delivered', pending_token = NULL WHERE id = ? AND status = 'approved'",
     )
@@ -172,7 +172,7 @@ pub async fn request(
 
 /// Mark an approved request delivered and hand out its token plaintext, exactly once.
 async fn take_pending_token(db: &Db, pairing_id: &str) -> ApiResult<Option<String>> {
-    let mut tx = db.begin().await?;
+    let mut tx = stash_core::db::begin_write(db).await?;
     // Claim first: the write lock makes concurrent polls wait, and only one sees rows_affected = 1.
     let claimed = sqlx::query(
         "UPDATE pairing_requests SET status = 'delivered' WHERE id = ? AND status = 'approved'",
@@ -354,7 +354,7 @@ pub async fn approve(
     user.require(Scope::Full)?;
     let (pairing_id, client_name, client_kind) = find_pending(&state.db, &body.user_code).await?;
     let scopes = scopes_for(&client_kind);
-    let mut tx = state.db.begin().await?;
+    let mut tx = stash_core::db::begin_write(&state.db).await?;
     let created =
         tokens::insert_token(&mut tx, &user.user_id, &client_name, &scopes, &client_kind).await?;
     let done = sqlx::query(

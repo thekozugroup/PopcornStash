@@ -4,12 +4,23 @@ use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 
-use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use sqlx::{Sqlite, SqlitePool};
 
 use crate::Result;
 
 pub type Db = SqlitePool;
+
+/// A transaction that writes. `BEGIN IMMEDIATE` takes SQLite's write lock at the start, so
+/// another writer waits for it (and it for them) within the busy timeout. A plain deferred
+/// `BEGIN` that reads before it writes fails at once with SQLITE_BUSY_SNAPSHOT ("database is
+/// locked", code 517) when another connection commits in between, for example a sort or scan
+/// job while an owner makes a library; the busy timeout does not apply to that error.
+pub async fn begin_write(
+    db: &Db,
+) -> std::result::Result<sqlx::Transaction<'static, Sqlite>, sqlx::Error> {
+    db.begin_with("BEGIN IMMEDIATE").await
+}
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
@@ -118,6 +129,44 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         let db = super::open(&path).await.unwrap();
         assert_eq!(mode(&path), 0o600);
+        db.close().await;
+    }
+
+    /// A write transaction reads, another connection writes meanwhile, then the transaction
+    /// writes: the other writer waits for it instead of making it fail with
+    /// SQLITE_BUSY_SNAPSHOT (a deferred `BEGIN` here answers "database is locked", 517).
+    #[tokio::test]
+    async fn a_write_transaction_that_reads_first_survives_another_writer() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = super::open(&dir.path().join("popcornstash.db"))
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (n INTEGER)")
+            .execute(&db)
+            .await
+            .unwrap();
+        let mut tx = super::begin_write(&db).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM t")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        let other = {
+            let db = db.clone();
+            tokio::spawn(async move { sqlx::query("INSERT INTO t VALUES (1)").execute(&db).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        sqlx::query("INSERT INTO t VALUES (?)")
+            .bind(count + 10)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        other.await.unwrap().unwrap();
+        let rows: Vec<i64> = sqlx::query_scalar("SELECT n FROM t ORDER BY rowid")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+        assert_eq!(rows, vec![10, 1]);
         db.close().await;
     }
 

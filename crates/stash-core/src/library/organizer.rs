@@ -1189,7 +1189,7 @@ async fn finish_download(lib: &Library, id: &str, item_ids: &[String]) -> Result
         return Ok(());
     }
     let t = now();
-    let mut tx = lib.db.begin().await?;
+    let mut tx = crate::db::begin_write(&lib.db).await?;
     for item_id in item_ids {
         sqlx::query("INSERT OR IGNORE INTO download_items (download_id, item_id) VALUES (?, ?)")
             .bind(id)
@@ -1763,7 +1763,7 @@ async fn record_trash(
         .rel(trashed_abs)
         .ok_or_else(|| CoreError::invalid("The trash folder is outside the stash."))?;
     let t = now();
-    let mut tx = lib.db.begin().await?;
+    let mut tx = crate::db::begin_write(&lib.db).await?;
     sqlx::query(
         "INSERT INTO trash (item_id, original_rel_path, trashed_rel_path, trashed_at, trashed_by) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(item_id) DO UPDATE SET original_rel_path = excluded.original_rel_path,
@@ -1895,7 +1895,7 @@ pub async fn restore_item(lib: &Library, item_id: &str) -> Result<ItemRow> {
     } else {
         ItemStatus::Ready
     };
-    let mut tx = lib.db.begin().await?;
+    let mut tx = crate::db::begin_write(&lib.db).await?;
     sqlx::query("UPDATE items SET rel_path = ?, status = ?, missing_since = NULL, updated_at = ? WHERE id = ?")
         .bind(&new_rel)
         .bind(status.as_str())
