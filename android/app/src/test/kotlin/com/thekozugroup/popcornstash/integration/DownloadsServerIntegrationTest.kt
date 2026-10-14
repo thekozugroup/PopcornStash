@@ -4,6 +4,7 @@ import com.thekozugroup.popcornstash.data.api.ApiClient
 import com.thekozugroup.popcornstash.data.api.ApiException
 import com.thekozugroup.popcornstash.data.api.AuthInterceptor
 import com.thekozugroup.popcornstash.data.api.DownloadKind
+import com.thekozugroup.popcornstash.data.api.DownloadState
 import com.thekozugroup.popcornstash.data.api.EventStream
 import com.thekozugroup.popcornstash.data.api.ItemQuery
 import com.thekozugroup.popcornstash.data.api.Place
@@ -264,7 +265,19 @@ class DownloadsServerIntegrationTest {
             }
             assertEquals(listOf(ImportTarget.OtherFiles), row.choices)
             assertEquals(ImportTarget.OtherFiles, row.target)
-            val upload = controller.state.value.finished.first { it.download.kind == DownloadKind.Upload && it.download.name == "Lake packing list.txt" }
+            // The sort job indexes the file into Inbox before it links the upload and marks it
+            // sorted, and the downloads and the inbox load side by side, so the snapshot that
+            // first shows the row may still have the upload sorting. Its event would follow in
+            // the app; here the test loads again until the job has finished.
+            fun uploadRow() = controller.state.value.finished
+                .firstOrNull { it.download.kind == DownloadKind.Upload && it.download.name == "Lake packing list.txt" }
+            var loaded = uploadRow()
+            while (loaded == null || loaded.download.state in setOf(DownloadState.Completed, DownloadState.Sorting)) {
+                delay(300)
+                controller.refreshNow()
+                loaded = uploadRow()
+            }
+            val upload = loaded
             assertTrue("waiting: ${upload.outcome}", upload.outcome is FinishedOutcome.Waiting)
             controller.accept(row)
             assertEquals("Moved to Other files.", controller.messages.first())
