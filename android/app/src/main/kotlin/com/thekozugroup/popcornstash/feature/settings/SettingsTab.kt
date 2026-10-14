@@ -26,6 +26,7 @@ import com.thekozugroup.popcornstash.navigation.TabPage
 import com.thekozugroup.popcornstash.navigation.ViewModelStores
 import com.thekozugroup.popcornstash.navigation.rememberPageStack
 import com.thekozugroup.popcornstash.ui.components.TabSnackbarHost
+import com.thekozugroup.popcornstash.update.AppUpdates
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -61,6 +62,8 @@ class SettingsServices(val api: ApiClient, val data: StashData, val pages: ViewM
  * out; the library editor opens on top of it and closes back to it. Without [services] (the
  * shell's sample pages) the libraries are left out.
  *
+ * [updates] is the app's updater, shown as "This app" on the first page (left out without it).
+ *
  * [open] is an editor another tab asked for (Home's "Edit library" and "Make a library"): it
  * opens over the first page, once, and then [onOpened] clears the request. [uploadsRunning]
  * is how many share sheet uploads signing out would stop.
@@ -75,6 +78,7 @@ fun SettingsTab(
     onSignOut: () -> Unit,
     services: SettingsServices? = null,
     open: SettingsRoute? = null,
+    updates: AppUpdates? = null,
     onOpened: () -> Unit = {},
     uploadsRunning: Int = 0,
 ) {
@@ -117,6 +121,7 @@ fun SettingsTab(
                     onOpenWeb = onOpenWeb,
                     onSignOut = onSignOut,
                     uploadsRunning = uploadsRunning,
+                    updates = updates,
                     onOpenEditor = { stack.push(it) },
                     onNotice = show,
                 )
@@ -148,10 +153,12 @@ private fun SettingsFirstPage(
     onOpenWeb: (WebSettingsPage) -> Unit,
     onSignOut: () -> Unit,
     uploadsRunning: Int,
+    updates: AppUpdates?,
     onOpenEditor: (SettingsRoute) -> Unit,
     onNotice: (String) -> Unit,
 ) {
     val listState = rememberLazyListState()
+    val (appUpdates, updateActions) = updates?.let { rememberAppUpdateSection(it) } ?: (null to AppUpdateActions())
     if (services == null) {
         SettingsRootPage(
             page,
@@ -163,6 +170,8 @@ private fun SettingsFirstPage(
             onSignOut = onSignOut,
             listState = listState,
             uploadsRunning = uploadsRunning,
+            appUpdates = appUpdates,
+            updateActions = updateActions,
         )
         return
     }
@@ -185,6 +194,8 @@ private fun SettingsFirstPage(
         onSignOut = onSignOut,
         listState = listState,
         uploadsRunning = uploadsRunning,
+        appUpdates = appUpdates,
+        updateActions = updateActions,
         actions = LibrarySettingsActions(
             onRetry = controller::refresh,
             onOpen = { onOpenEditor(SettingsRoute.EditLibrary(it.id)) },

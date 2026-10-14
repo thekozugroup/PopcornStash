@@ -15,7 +15,7 @@ Three tabs sit in a floating bar on the right edge of the screen, low down where
 - **The player:** full screen, resumes where you stopped, saves your place as you watch, offers the next episode, and keeps playing in a small window (picture-in-picture) when you leave the app. It asks the server for a version this phone can decode.
 - **Downloads:** what is downloading, with live progress, the VPN line in the web app's words, pause, resume, remove and "Add a link" for a web link or a magnet; the files waiting to be imported, each with the server's suggestion, a library picker that lists only what fits, Edit (title, show, season, episode), Accept, Ignore and "Accept all"; finished downloads say which library they went into, and tapping that opens it.
 - **The share sheet:** share a link from another app to add it to Downloads, or share photos, videos and other files to upload them (a notification shows the upload, which carries on in the background and can be stopped).
-- **Settings:** who is signed in, this server, and sign out. Owners also manage the libraries here: make one (from a new folder or a folder already on the share), edit its name, icon, type, the kinds of new file it takes and who sees it, reorder and delete. VPN, people, devices, security and system open the web settings in the phone's browser for now.
+- **Settings:** who is signed in, this server, and sign out. Owners also manage the libraries here: make one (from a new folder or a folder already on the share), edit its name, icon, type, the kinds of new file it takes and who sees it, reorder and delete. VPN, people, devices, security and system open the web settings in the phone's browser for now. **This app** shows the app's version and build, checks for a newer build and installs it ([Updates](#updates)).
 
 Everything the app keeps (the sign-in, pictures it has loaded, files it opened) is deleted when you sign out, and none of it goes into the phone's backups.
 
@@ -94,6 +94,33 @@ The app can use the passkey you already sign in with on the web, once the server
 
 Android checks this file through Google's Digital Asset Links service, so passkeys in the app need an address that is reachable from the internet over https with a publicly trusted certificate (a Cloudflare Tunnel or a reverse proxy with Let's Encrypt works; an address only your home network or Tailscale can reach may not). Pairing works everywhere.
 
+## Updates
+
+The app updates itself from the project's GitHub releases. Each push to main that changes the app is built, signed with the project's release key and published as a release named "Android app, build N" (tag `android-N`), where N is the build number: it only ever grows. The server is not updated this way; you update the container yourself ([docs/deployment.md](deployment.md)).
+
+**Settings, This app** shows the version and build ("Version 0.1.0, build 412") and where updates stand:
+
+- **Check for updates** asks GitHub now: "Up to date, checked 2 minutes ago." or "Build 415 is available."
+- **Update** downloads that build (a notification shows the progress), checks it, then hands it to Android. The first time, Android asks you to let PopcornStash install apps (Settings, Apps, Special app access, Install unknown apps); allow it and come back, and the update carries on. Android may then show its own confirmation; if you leave it, **Install** in Settings shows it again, and if you close it the download is kept for **Install** later. On Android 12 and later the app asks Android to skip that confirmation for its own update, which Android allows under its own rules (not yet tried on a phone). **PopcornStash closes while it updates: open it again afterwards.** You stay signed in.
+- **Check for updates automatically** (on by default): the app asks GitHub once a day, on any network, and posts one notification when it finds a newer build it can install ("PopcornStash build 415 is ready to install"); tapping it opens Settings. On Android 13 and later the app asks for permission to post notifications when you turn the switch on, and the first time you check or update; while notifications are off the switch says so, and a new build shows only in Settings. Turn the switch off and the app never asks GitHub by itself.
+
+Before anything is installed, the download must match the SHA-256 published next to it, be this app at the build it claims, and be signed with the same key as the app on the phone. Android itself refuses an update signed with another key. A file that fails a check is deleted at once. On a copy installed from GitHub, a download signed with any other key is refused with "Build 415 was not signed by PopcornStash.": do not install it by hand; tell the owner. The download is deleted once it is installed or the install fails; a download larger than the release list said (or than 200 MB) is stopped.
+
+**What the app sends to GitHub:** once a day (unless turned off) and when you tap Check for updates, a request for the repository's public release list (`api.github.com/repos/thekozugroup/PopcornStash/releases`); when you tap Update, the download of the APK and its checksum. The requests carry the app's name and version (`PopcornStash-Android/0.1.0+412`) and nothing else: no account, no token, nothing about your server, your phone or what is in your libraries. GitHub sees your network's address, as for any web request. The app keeps the last answer's ETag, so an unchanged list comes back empty and saves the download; it still counts towards GitHub's limit of 60 such requests an hour from one network address, and the app says when that limit is reached.
+
+### Switching to the builds on GitHub
+
+**Owner, before anyone switches:** add the release key's fingerprint (the value in `android/release-cert.sha256`) to `STASH_ANDROID_ASSETLINKS`, next to the debug key's, and recreate the container ([Sign in with a passkey](#sign-in-with-a-passkey)). Until then the switched app signs in by pairing only.
+
+A copy that was not installed from GitHub (any debug build, or a release signed with your own key) cannot update itself from the builds there: Settings says "Build 415 needs a one-time reinstall." and offers **Open the release page**, and it gets no daily notification. Switch once, in this order:
+
+1. In the app, choose **Open the release page** (or open [github.com/thekozugroup/PopcornStash/releases](https://github.com/thekozugroup/PopcornStash/releases) and find the newest "Android app, build N"). Under **Assets**, download `popcornstash-android-N.apk`. The browser may warn that the file might be harmful; keep it.
+2. Uninstall PopcornStash (press and hold its icon, then Uninstall). This signs it out and removes what it kept on the phone. Android will not install the new copy over the old one, because they are signed with different keys.
+3. Open the downloaded file from the browser's downloads or the Files app. Android asks you to allow installing apps from that app ("Allow from this source"); allow it and install. Play Protect may ask too; choose to install anyway.
+4. Open PopcornStash and sign in again: with your passkey, or pair with a code that you approve on the web ([Pair with a code](#pair-with-a-code)).
+
+Then remove the old copy of this phone from **Settings, Devices** on the web. From now on the app updates itself.
+
 ## What is not done yet
 
 - **Not run on a phone or an emulator.** The build machine has no emulator, so gestures, the photo viewer's zoom, real video decoding, picture-in-picture, rotation, the share sheet's background uploads and the passkey prompt have only run under Robolectric and against a real server from the JVM.
@@ -102,4 +129,5 @@ Android checks this file through Google's Digital Asset Links service, so passke
 - **A shared `.torrent` file is uploaded as a file**, not added as a download.
 - **Admin pages on the web:** VPN, people, devices, security, system, sorting and the trash open in the phone's browser, which has its own sign-in.
 - **Imports for members:** the API does not say who added a waiting file, so a member's row whose suggestion names a library offers only that library, even for a file the member added (the web does the same).
-- **Not in a store** and not signed for release by default: install a debug build, or build a release with your own key.
+- **Not in a store.** Builds come from GitHub releases ([Updates](#updates)); a copy built on your own computer is signed with your key and cannot update itself from them.
+- **The updater has not run on a phone.** The check, the download, the checksum and signature checks and the install session are tested on the build machine (Robolectric, with a real signed APK from a mock GitHub), but Android's own install, its confirmation, the update without a confirmation on Android 12 and later and the notification permission have not been tried on a device. Robolectric cannot read an APK's certificates through PackageManager, so the tests read them with apksig instead; on a phone the app reads them through PackageManager, with GET_SIGNATURES as well on Android 9 and 10, which has not run either. Try one real update on an Android 9 phone or emulator before relying on it there.

@@ -11,7 +11,7 @@ PopcornStash points at one folder on your NAS, Unraid share or home server and k
 - **Every way in leads to the same place.** Torrents, links, uploads and drops all go through `Downloads/In Progress` and `Downloads/Completed`, then get sorted into the library that takes that kind of file, or `Other`. Anything uncertain, or a kind no library takes, waits in Inbox for one tap of review.
 - **Your folders stay yours.** Files outside `Inbox/` and `Downloads/` are indexed where they are and never moved unless you ask.
 - **Plays everywhere.** Videos play directly when the browser can, and are transcoded on the fly (HLS, with optional Intel/AMD/NVIDIA hardware encoding) when it cannot. Photos from phones, including HEIC, show in a timeline.
-- **Nothing leaves the server.** No metadata scraping, no accounts, no telemetry.
+- **Nothing leaves the server.** No metadata scraping, no accounts, no telemetry. The Android app talks only to your server, apart from one question a day to GitHub about a newer build of the app (its name and version only; it can be turned off) and the download of that build from GitHub when you tap Update.
 
 ## Quick start
 
@@ -41,7 +41,7 @@ On Unraid, use the template in [unraid/popcornstash.xml](unraid/popcornstash.xml
 - [Installing and running PopcornStash](docs/deployment.md): HTTPS options, Compose, Unraid, first run, recovery, folders, hardware acceleration, backups.
 - [Torrents and your VPN](docs/vpn.md): how torrent traffic is kept inside the tunnel, NordVPN and WireGuard/OpenVPN setup, checking that it works.
 - [Chrome extension](docs/extension.md): pairing, sending links and downloads, privacy.
-- [Android app](docs/android.md): what it does, building and installing it, signing in by pairing or with a passkey (`STASH_ANDROID_ASSETLINKS`), and what is not done yet.
+- [Android app](docs/android.md): what it does, building and installing it, signing in by pairing or with a passkey (`STASH_ANDROID_ASSETLINKS`), how it updates itself from GitHub, and what is not done yet.
 - [Security](docs/security.md): the threat model and what each layer protects.
 - [Architecture](docs/architecture.md): the API, database, folder layout and process model.
 
@@ -103,6 +103,41 @@ Each release:
 3. `read -rs GHCR_TOKEN && GHCR_TOKEN=$GHCR_TOKEN scripts/release.sh 0.2.0` releases. It runs `scripts/check.sh --quick --e2e --audit` and `scripts/notices.sh --check`, builds the amd64 and arm64 images from the commit (each must carry the license notices), runs the Docker smoke, VPN and full-stack tests on the image it will push, runs the Docker smoke test on the other architecture's image (arm64 on an amd64 machine) under QEMU, without the VPN and engine checks that emulation cannot run, and builds the extension zip from a clean install. Then it pushes the images to `ghcr.io/thekozugroup/popcornstash` as `0.2.0`, `0.2` and `latest`, pushes the tag `v0.2.0`, and creates the GitHub release with the CHANGELOG section and the zip. A pre-release, or a fix for an older line, leaves `latest` where it is. If a step after the first push fails, the script prints the commands that finish the release.
 
 After the first release only: ghcr.io creates the package as private, and the script reports that nobody else can pull it. Open the package from the Packages tab of the GitHub profile, then go to Package settings, Change visibility, Public. A public package cannot be made private again. [docs/deployment.md](docs/deployment.md#images-and-versions) explains the image tags.
+
+### The Android app
+
+The app updates itself from GitHub releases ([docs/android.md](docs/android.md#updates)). [scripts/android-release.sh](scripts/android-release.sh) publishes one: after main is pushed with a change under `android/`, it builds the release APK from that commit, signs it, checks it and creates the GitHub release `android-N`, where N is the number of commits on main (`git rev-list --count HEAD`, so it only grows). The APK's versionCode is N and its versionName the Cargo version with the build (`0.1.0+412`). The release is marked as a pre-release, so GitHub's "latest release" stays the server's, and carries `popcornstash-android-N.apk` and its `.sha256`. Every app checks those releases once a day and offers the newest build.
+
+```sh
+scripts/android-release.sh --dry-run   # build, sign and check; print what it would publish
+scripts/android-release.sh             # publish build N (skips when nothing under android/ changed)
+```
+
+It refuses a tree with uncommitted or untracked files, a branch other than main, or a main that is not pushed. A shallow clone (a cloud session's checkout often is one) is fetched whole first, because the build number counts every commit; it refuses when an `android-*` tag of the same or a higher build is on another commit, or when the tags cannot be fetched. It turns tracing (`bash -x`) off before it reads the secrets. When nothing under `android/` changed since the last `android-*` release it says so and stops; `--force` publishes anyway.
+
+It needs these secrets in the environment. In the cloud environment they live in the environment's settings (secrets), never in the repository:
+
+| Variable | |
+| --- | --- |
+| `POPCORNSTASH_KEYSTORE_B64` | the release keystore, base64 encoded (`base64 -w0 release.jks`); or `POPCORNSTASH_KEYSTORE` with its path |
+| `POPCORNSTASH_KEYSTORE_PASSWORD` | the keystore's password |
+| `POPCORNSTASH_KEY_ALIAS` | the key's alias |
+| `POPCORNSTASH_KEY_PASSWORD` | the key's password, when it differs from the keystore's |
+| `GITHUB_RELEASE_TOKEN` | a fine-grained token for this repository with Contents: read and write. Without it the script sends no Authorization header, for an environment whose network rule adds one |
+
+Make the key once, on any machine with Docker (or with a JDK's `keytool`):
+
+```sh
+docker run --rm -it -v "$PWD:/out" -w /out eclipse-temurin:21 \
+  keytool -genkeypair -keystore release.jks -alias popcornstash -keyalg RSA -keysize 4096 -validity 36500 \
+  -dname "CN=PopcornStash"
+docker run --rm -it -v "$PWD:/out" -w /out eclipse-temurin:21 \
+  keytool -list -v -keystore release.jks -alias popcornstash | grep 'SHA256:'
+```
+
+Put the SHA-256 line's value (colons are fine) in `android/release-cert.sha256` and commit it: it is public, the script refuses to publish an APK signed with any other key, and the app uses it to tell a copy signed with another key that it cannot update itself. Store `release.jks` and its password somewhere safe outside the repository as well as in the environment's secrets. **Losing the key means every phone has to uninstall the app and install it again** (and pair again): Android installs an update only when it is signed with the same key. Leaking it lets someone else sign updates the app would accept.
+
+After pushing to main a change under `android/`, run `scripts/android-release.sh`. Before the first build is published, every copy of the app is a debug build signed with its builder's own key; [docs/android.md](docs/android.md#switching-to-the-builds-on-github) says how to move a phone to the GitHub builds once.
 
 ## License
 

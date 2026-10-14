@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.thekozugroup.popcornstash"
+    android:versionCode="415"
+    android:versionName="0.1.0+415">
+    <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="36" />
+    <application android:label="PopcornStash" android:hasCode="false" />
+</manifest>

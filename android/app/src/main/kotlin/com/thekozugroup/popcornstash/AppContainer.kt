@@ -4,6 +4,8 @@ import android.content.Context
 import android.os.Build
 import android.provider.Settings
 import androidx.core.content.edit
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
 import coil3.ImageLoader
 import com.thekozugroup.popcornstash.data.api.ApiClient
 import com.thekozugroup.popcornstash.data.api.baseHttpClient
@@ -18,6 +20,14 @@ import com.thekozugroup.popcornstash.share.UploadBatchStore
 import com.thekozugroup.popcornstash.share.UploadQueue
 import com.thekozugroup.popcornstash.ui.media.imageCacheDir
 import com.thekozugroup.popcornstash.ui.media.sessionImageLoader
+import com.thekozugroup.popcornstash.update.AppUpdates
+import com.thekozugroup.popcornstash.update.PackageInstallerUpdates
+import com.thekozugroup.popcornstash.update.PackageManagerApks
+import com.thekozugroup.popcornstash.update.PreferencesUpdateMemory
+import com.thekozugroup.popcornstash.update.UpdateChecker
+import com.thekozugroup.popcornstash.update.UpdateFetcher
+import com.thekozugroup.popcornstash.update.UpdateNotifications
+import com.thekozugroup.popcornstash.update.WorkManagerUpdateJobs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -25,6 +35,7 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import okhttp3.HttpUrl
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /** The app's services, made once per process by [PopcornStashApplication]. */
 class AppContainer(context: Context) {
@@ -59,6 +70,40 @@ class AppContainer(context: Context) {
             { uploads.forget() },
         ),
         beforeSignOut = { session -> uploads.stopAll(session.api) },
+    )
+
+    /**
+     * The updater's own client: GitHub sees the app's name and version and nothing about the
+     * phone or the person, and a download may follow GitHub's redirect to its file host (https only).
+     */
+    private val updateHttp = baseHttpClient("PopcornStash-Android/${BuildConfig.VERSION_NAME}").newBuilder()
+        .followRedirects(true)
+        .followSslRedirects(false)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .build()
+
+    private val apks = PackageManagerApks(app)
+    private val updateMemory = PreferencesUpdateMemory(app)
+
+    /** Android's install sessions for updates; [com.thekozugroup.popcornstash.update.UpdateInstallReceiver] keeps Android's confirmation in it. */
+    val updateInstaller = PackageInstallerUpdates(app)
+
+    /** Updates of the app itself from GitHub releases (docs/android.md, Updates); they do not depend on who is signed in. */
+    val updates = AppUpdates(
+        versionName = BuildConfig.VERSION_NAME,
+        installedBuild = BuildConfig.VERSION_CODE,
+        memory = updateMemory,
+        checker = UpdateChecker(updateHttp, updateMemory),
+        fetcher = UpdateFetcher(updateHttp, File(app.cacheDir, "updates"), app.packageName, apks, apks::installedSigners),
+        installer = updateInstaller,
+        jobs = WorkManagerUpdateJobs(app),
+        notifier = UpdateNotifications(app),
+        scope = appScope,
+        installedSigners = apks::installedSigners,
+        releaseSigner = BuildConfig.RELEASE_CERT_SHA256.ifEmpty { null },
+        // A debug build is signed with its builder's debug key, never the release key.
+        debugBuild = BuildConfig.DEBUG,
+        inForeground = { ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) },
     )
 
     private var sessionUi: SessionUi? = null

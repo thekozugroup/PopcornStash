@@ -14,6 +14,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertTrue
 import kotlin.math.roundToInt
 
@@ -43,17 +45,24 @@ fun ComposeTestRule.captureToolbarCloseUp(name: String, options: RoborazziOption
 }
 
 /**
- * Fails when a control or a line of text on the page lies under the floating toolbar: what a
- * page scrolled to its end must show (android/DESIGN.md, Floating toolbar).
+ * Fails when a control, a progress bar or a line of text on the page lies under the floating
+ * toolbar, or within [clearance] above it: what a page scrolled to its end must show
+ * (android/DESIGN.md, Floating toolbar: its last row 16dp above the bar).
  */
-fun ComposeTestRule.assertNothingUnderTheToolbar() {
-    val bar = onNodeWithTag("toolbar").fetchSemanticsNode().boundsInRoot
-    val onPage = (hasClickAction() or SemanticsMatcher.keyIsDefined(SemanticsProperties.Text)) and
+fun ComposeTestRule.assertNothingUnderTheToolbar(clearance: Dp = 0.dp) {
+    val toolbar = onNodeWithTag("toolbar").fetchSemanticsNode().boundsInRoot
+    // With a clearance, half a pixel of slack for rounding: a row that ends exactly [clearance] above the bar passes.
+    val bar = if (clearance > 0.dp) toolbar.copy(top = toolbar.top - clearance.value * density.density + 0.5f) else toolbar
+    val onPage = (
+        hasClickAction() or
+            SemanticsMatcher.keyIsDefined(SemanticsProperties.Text) or
+            SemanticsMatcher.keyIsDefined(SemanticsProperties.ProgressBarRangeInfo)
+        ) and
         !hasAnyAncestor(hasTestTag("toolbar")) and !hasTestTag("toolbar")
     val under = onAllNodes(onPage).fetchSemanticsNodes()
         .filter { node -> node.boundsInRoot.let { it.width > 0f && it.height > 0f && it.overlaps(bar) } }
     assertTrue(
-        "Under the toolbar at $bar: " + under.joinToString { node ->
+        "Under the toolbar, or within $clearance above it, at $toolbar: " + under.joinToString { node ->
             (node.config.getOrElseNullable(SemanticsProperties.Text) { null }?.joinToString() ?: "a control") + " at ${node.boundsInRoot}"
         },
         under.isEmpty(),
