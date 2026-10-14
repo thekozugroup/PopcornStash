@@ -346,6 +346,8 @@
     --popcorn-status-warning: oklch(76.9% 0.188 70.08);
     --popcorn-status-error: oklch(63.7% 0.237 25.331);
     --popcorn-status-neutral: oklch(55.2% 0.016 285.938);
+    --popcorn-switch-off: light-dark(oklch(55.2% 0.016 285.938), oklch(70.5% 0.015 286.067));
+    --popcorn-switch-on-knob: light-dark(oklch(100% 0 0), oklch(21% 0.006 285.885));
   }
 
   :scope {
@@ -660,7 +662,12 @@
   }
 
   .astryx-switch {
-    --color-background-gray: var(--color-border-emphasized);
+    --color-background-gray: var(--color-background-muted);
+    box-shadow: inset 0 0 0 2px var(--popcorn-switch-off);
+  }
+
+  .astryx-switch[data-checked="checked"] {
+    box-shadow: none;
   }
 
   .astryx-progress-bar {
@@ -714,6 +721,14 @@
 
   .astryx-collapsible-trigger {
     min-height: var(--size-element-md);
+  }
+
+  .astryx-switch-thumb {
+    --color-background-surface: var(--popcorn-switch-off);
+  }
+
+  .astryx-switch-thumb[data-checked="checked"] {
+    --color-background-surface: var(--popcorn-switch-on-knob);
   }
 
   .astryx-progress-bar-track {

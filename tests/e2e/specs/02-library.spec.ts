@@ -256,6 +256,79 @@ test('Other files lists the audio file and the document, each with its own icon'
   await expect(grid.getByRole('link', {name: /^Morning Notes MP3/}).locator('svg.lucide-music')).toBeVisible();
 });
 
+test("an item's page marks its library in the sidebar, and a show's page marks the show's library", async ({page}) => {
+  const nav = page.getByRole('navigation', {name: 'Main navigation'});
+  await page.goto(libraryPath(LIBRARY.movies));
+  await page.getByRole('list', {name: 'Movies'}).getByRole('link', {name: /^Paper Boats 2011/}).click();
+  await expect(page.getByRole('heading', {level: 1, name: 'Paper Boats'})).toBeVisible();
+  // /item/:id is not under the library's address; the page names its library for the sidebar.
+  await expect(nav.getByRole('link', {name: 'Movies', exact: true})).toHaveAttribute('aria-current', 'page');
+  await expect(nav.locator('[aria-current="page"]')).toHaveCount(1);
+  // Leaving the item page follows the address again.
+  await page.goto(showPath(LIBRARY.shows, 'The Lantern Keepers'));
+  await expect(nav.getByRole('link', {name: 'Shows', exact: true})).toHaveAttribute('aria-current', 'page');
+  await expect(nav.locator('[aria-current="page"]')).toHaveCount(1);
+});
+
+test.describe('for a viewer west of UTC', () => {
+  test.use({timezoneId: 'America/Los_Angeles'});
+
+  test("months and capture times read as the camera's clock wrote them", async ({page}) => {
+    await page.goto(libraryPath(LIBRARY.photos));
+    // The server's month as written: "2022-05" is May, not April, in Los Angeles.
+    const month = page.getByRole('region', {name: 'May 2022'});
+    await expect(month.getByRole('heading', {name: 'May 2022'})).toBeVisible();
+    await expect(page.getByRole('heading', {name: 'April 2022'})).toHaveCount(0);
+    const tiles = month.getByRole('list', {name: 'May 2022'}).getByRole('link');
+    await expect(tiles.first()).toHaveAccessibleName('Photo from May 22, 2022, Fujifilm X-T30');
+    // The camera wrote 09:12:10 with no offset: that is the time shown, wherever the viewer is.
+    await tiles.first().click();
+    const viewer = page.getByRole('dialog');
+    await expect(viewer.getByText('May 22, 2022, 9:12 AM')).toBeVisible();
+  });
+});
+
+test('an off switch reads in light and dark: ring and knob 3:1 or more', async ({page}) => {
+  // Shown off without saving anything: this browser's settings answer says auto-sort is off.
+  await page.route('**/api/settings', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch();
+    await route.fulfill({response, json: {...(await response.json()), auto_sort: false}});
+  });
+  for (const colorScheme of ['light', 'dark'] as const) {
+    await page.emulateMedia({colorScheme});
+    await page.goto('/settings/libraries');
+    await expect(page.getByRole('switch', {name: /^Sort new files automatically/})).not.toBeChecked();
+    // The colours the browser paints, read back through a canvas (sRGB), against the page.
+    const ratios = await page.locator('.astryx-switch').first().evaluate(track => {
+      const ctx = document.createElement('canvas').getContext('2d', {willReadFrequently: true}) as CanvasRenderingContext2D;
+      const rgb = (color: string) => {
+        ctx.clearRect(0, 0, 1, 1);
+        ctx.fillStyle = color;
+        ctx.fillRect(0, 0, 1, 1);
+        return Array.from(ctx.getImageData(0, 0, 1, 1).data.slice(0, 3));
+      };
+      const lum = (c: number[]) =>
+        c.map(v => v / 255).map(v => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)).reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i]!, 0);
+      const ratio = (a: number[], b: number[]) => {
+        const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x) as [number, number];
+        return (hi + 0.05) / (lo + 0.05);
+      };
+      const style = getComputedStyle(track);
+      const fill = rgb(style.backgroundColor);
+      // The control's edge: its ring when it has one, else the track itself.
+      const ringColor = /(oklch|rgba?|color)\([^)]*\)/.exec(style.boxShadow)?.[0];
+      const ring = ringColor ? rgb(ringColor) : fill;
+      const knob = rgb(getComputedStyle(track.firstElementChild as Element).backgroundColor);
+      const page = rgb(getComputedStyle(document.body).backgroundColor);
+      return {ring: ratio(ring, page), knob: ratio(knob, fill), knobLighter: lum(knob) > lum(fill)};
+    });
+    expect(ratios.ring, `${colorScheme}: the edge against the page`).toBeGreaterThanOrEqual(3);
+    expect(ratios.knob, `${colorScheme}: knob against its track`).toBeGreaterThanOrEqual(3);
+    if (colorScheme === 'dark') expect(ratios.knobLighter, 'dark: the knob is lighter than its track').toBe(true);
+  }
+});
+
 test.describe('on a phone', () => {
   test.use({viewport: {width: 390, height: 844}, isMobile: true, hasTouch: true});
 
@@ -292,6 +365,28 @@ test.describe('on a phone', () => {
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       expect(overflow, `${path} scrolls sideways by ${overflow}px`).toBeLessThanOrEqual(0);
     }
+  });
+
+  test('a date stays whole in a sentence, and a folder name keeps one line', async ({page, baseURL}) => {
+    const origin = {Origin: baseURL ?? ''};
+    const created = (await (
+      await page.request.post('/api/tokens', {data: {name: 'Living room TV', scopes: ['library:read']}, headers: origin})
+    ).json()) as {id: string};
+    try {
+      await page.goto('/settings/devices');
+      const row = page.getByRole('listitem').filter({hasText: 'Living room TV'});
+      // "Added Oct 14, 2026." breaks before or after the date, never inside it.
+      const date = row.getByText(/^[A-Z][a-z]{2} \d{1,2}, \d{4}$/);
+      await expect(date).toBeVisible();
+      expect(await date.evaluate(el => el.getClientRects().length)).toBe(1);
+    } finally {
+      await page.request.delete(`/api/tokens/${created.id}`, {headers: origin});
+    }
+    await page.goto('/settings/libraries');
+    const folder = page.getByRole('region', {name: 'Folders not in a library'}).getByText('Family 2019/');
+    await expect(folder).toBeVisible();
+    const lines = await folder.evaluate(el => el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight));
+    expect(lines).toBeLessThan(1.5);
   });
 
   test('Settings offers every section without sideways scrolling, each at its own address', async ({page}) => {

@@ -47,6 +47,9 @@ const styles = stylex.create({
   wrap: {
     overflowWrap: 'anywhere',
   },
+  keep: {
+    whiteSpace: 'nowrap',
+  },
   quiet: {
     paddingBlock: 20,
     paddingInline: 20,
@@ -114,6 +117,14 @@ export function LoadError({title, error, onRetry}: {title: string; error: unknow
  */
 export function Wrap({children}: {children: ReactNode}) {
   return <span {...stylex.props(styles.wrap)}>{children}</span>;
+}
+
+/**
+ * A short run inside a wrapping description that must not split, such as a date:
+ * "Added Oct 14, 2026." wraps before the date or after it, never inside it.
+ */
+export function KeepTogether({children}: {children: ReactNode}) {
+  return <span {...stylex.props(styles.keep)}>{children}</span>;
 }
 
 /** A quiet sentence inside a panel when a list has nothing in it yet. */

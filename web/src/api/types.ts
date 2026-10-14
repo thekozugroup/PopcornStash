@@ -136,7 +136,12 @@ export interface Item {
   duration_s: number | null;
   width: number | null;
   height: number | null;
+  /** The capture moment: for ordering and "how long ago", never formatted (architecture section 4, Capture time). */
   taken_at: UnixSeconds | null;
+  /** "YYYY-MM-DDTHH:MM:SS": the camera's clock where it was taken, shown as written in every time zone. */
+  taken_local: string | null;
+  /** Minutes east of UTC that the file wrote beside the clock; null when it wrote none. */
+  taken_offset: number | null;
   camera: string | null;
   /** Thumbnail URL, or null when not ready. */
   thumb: string | null;
@@ -200,7 +205,10 @@ export interface Classification {
   season: number | null;
   episode: number | null;
   episode_title: string | null;
+  /** As on Item: where a photo or camera video would be filed (its `YYYY/MM/` folder comes from `taken_local`). */
   taken_at: UnixSeconds | null;
+  taken_local: string | null;
+  taken_offset: number | null;
   confidence: Confidence;
   /** The classifier's sentence about the file ("Not sure this is a movie."). */
   reason: string;
@@ -357,8 +365,28 @@ export interface HomeLibrary {
   library: Library;
   /** Up to 12 newest ready items, newest first. */
   recent: Item[];
-  /** For each show with an episode in `recent`, its poster item from this library. */
+  /** For each show with an episode in `recent`, its poster item from this library (kept for older clients). */
   show_posters: Record<string, Id>;
+  /**
+   * Layout "series" only, else empty: up to 12 of the library's shows, the one with the most
+   * recently added episode first. With 12 shows or fewer there is one per show, so the shelf
+   * agrees with the heading's counts. A series shelf is drawn from this.
+   */
+  shows: HomeShow[];
+}
+
+/** One show on a series library's Home shelf. */
+export interface HomeShow {
+  show_name: string;
+  /** The show's picture in this library, the same one its page uses. */
+  poster_item_id: Id | null;
+  /** The show's ready episodes in this library. */
+  item_count: number;
+  /** Of those, added in the last 30 days; 0 when none. */
+  new_count: number;
+  /** The show's most recently added episode ("New: S01E03" when new_count is 1). */
+  latest: Item;
+  last_added_at: UnixSeconds;
 }
 
 /** `GET /api/home`. */

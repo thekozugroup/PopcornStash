@@ -15,7 +15,7 @@ import {Button} from '@astryxdesign/core/Button';
 import {SideNav, SideNavItem, SideNavSection} from '@astryxdesign/core/SideNav';
 import {Text} from '@astryxdesign/core/Text';
 import type {LucideIcon} from 'lucide-react';
-import {useCallback, useEffect, useRef} from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
 import {Link, Outlet, useLocation, useNavigate} from 'react-router';
 import {useAuth} from '../auth/AuthProvider';
 import {Brand} from '../components/Brand';
@@ -24,6 +24,7 @@ import {VpnStatusTag} from '../components/VpnStatusTag';
 import {useFileDrop} from '../hooks/useFileDrop';
 import {useInboxCount} from '../hooks/useInboxCount';
 import {LibrariesProvider, useLibraries} from './LibrariesProvider';
+import {NavPlaceContext, navPath, type NavPlace} from './navPlace';
 import {NAV_ICON_SIZE, NAV_ICON_STROKE, isActive, navGroups, quickDestinations} from './navigation';
 
 const MAIN_ID = 'astryx-app-shell-main';
@@ -143,9 +144,9 @@ function NavIcon({icon: Icon}: {icon: LucideIcon}) {
   );
 }
 
-function QuickNav() {
+function QuickNav({place}: {place: NavPlace | null}) {
   const {isMobile} = useAppShellMobile();
-  const {pathname} = useLocation();
+  const pathname = navPath(useLocation().pathname, place);
   const {libraries} = useLibraries();
   if (!isMobile) return null;
   const destinations = quickDestinations(libraries ?? []);
@@ -169,8 +170,8 @@ function QuickNav() {
   );
 }
 
-function PopcornSideNav() {
-  const {pathname} = useLocation();
+function PopcornSideNav({place}: {place: NavPlace | null}) {
+  const pathname = navPath(useLocation().pathname, place);
   const {isMobile} = useAppShellMobile();
   const {user, signOut} = useAuth();
   const inboxCount = useInboxCount();
@@ -240,15 +241,19 @@ export function AppLayout() {
     [navigate],
   );
   const {isDragging} = useFileDrop({onFiles});
+  // The place a page names for itself (an item's library), for the sidebar and quick links.
+  const [place, setPlace] = useState<NavPlace | null>(null);
 
   return (
     <LibrariesProvider>
-      <AppShell height="auto" variant="section" sideNav={<PopcornSideNav />}>
-        <div {...stylex.props(styles.main)}>
-          <QuickNav />
-          <Outlet />
-        </div>
-      </AppShell>
+      <NavPlaceContext.Provider value={setPlace}>
+        <AppShell height="auto" variant="section" sideNav={<PopcornSideNav place={place} />}>
+          <div {...stylex.props(styles.main)}>
+            <QuickNav place={place} />
+            <Outlet />
+          </div>
+        </AppShell>
+      </NavPlaceContext.Provider>
       <FileDropOverlay isVisible={isDragging} />
     </LibrariesProvider>
   );

@@ -112,6 +112,13 @@ const styles = stylex.create({
   code: {
     fontFamily: typographyVars['--font-family-code'],
   },
+  // A CheckboxList row is a list item with an inline inset and a tinted fill when
+  // checked, where a RadioList row is bare. Bare here too: each checkbox sits in the
+  // radios' column, and a choice shows by its own mark, as a radio's does.
+  checkboxRow: {
+    paddingInline: 0,
+    backgroundColor: 'transparent',
+  },
   preview: {
     margin: 0,
     lineHeight: 1.55,
@@ -644,7 +651,13 @@ function LibraryEditor() {
                 isDisabled={isSaving}
                 status={status('claims')}>
                 {fitting.map(kind => (
-                  <CheckboxListItem key={kind} value={kind} label={CLAIM_LABELS[kind]} description={claimDescription(kind)} />
+                  <CheckboxListItem
+                    key={kind}
+                    value={kind}
+                    label={CLAIM_LABELS[kind]}
+                    description={claimDescription(kind)}
+                    xstyle={styles.checkboxRow}
+                  />
                 ))}
               </CheckboxList>
             </div>
@@ -759,7 +772,12 @@ function LibraryEditor() {
                     onChange={values => update({memberIds: values})}
                     isDisabled={isSaving}>
                     {members.map(member => (
-                      <CheckboxListItem key={member.id} value={member.id} label={member.display_name} />
+                      <CheckboxListItem
+                        key={member.id}
+                        value={member.id}
+                        label={member.display_name}
+                        xstyle={styles.checkboxRow}
+                      />
                     ))}
                   </CheckboxList>
                 )

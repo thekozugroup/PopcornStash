@@ -104,6 +104,12 @@ test('the owner makes a library with its own name, icon and type, and it joins t
 
   // Who sees it: only some people, nobody chosen yet, so only owners.
   await page.getByRole('radio', {name: /^Only some people/}).click();
+  // The checkbox lists sit in the radios' column (a checkbox row had 8px of extra inset).
+  const radioX = (await page.getByRole('radio', {name: /^Only some people/}).boundingBox())?.x ?? NaN;
+  for (const checkbox of [page.getByRole('checkbox', {name: /^TV episodes/}), page.getByRole('group', {name: 'People'}).getByRole('checkbox').first()]) {
+    if ((await checkbox.count()) === 0) continue;
+    expect(Math.abs(((await checkbox.boundingBox())?.x ?? NaN) - radioX)).toBeLessThanOrEqual(1);
+  }
 
   await page.getByRole('button', {name: 'Make library'}).click();
   // Taking TV episodes from Shows is confirmed first.

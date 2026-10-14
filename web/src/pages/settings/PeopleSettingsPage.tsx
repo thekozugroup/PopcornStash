@@ -12,7 +12,7 @@ import {invites, users} from '../../api/client';
 import type {Role, User} from '../../api/types';
 import {useAuth} from '../../auth/AuthProvider';
 import {OwnerOnly} from '../../components/settings/OwnerOnly';
-import {EmptyRows, LoadError, LoadingRows, PanelList, Wrap} from '../../components/settings/SectionStates';
+import {EmptyRows, KeepTogether, LoadError, LoadingRows, PanelList, Wrap} from '../../components/settings/SectionStates';
 import {SettingsGroup} from '../../components/settings/SettingsGroup';
 import {listOpenInvites, type InviteListEntry} from '../../components/settings/settingsApi';
 import {useConfirm} from '../../components/settings/useConfirm';
@@ -57,13 +57,12 @@ function PersonRow({
   onRemove: (person: User) => void;
 }) {
   const nextRole: Role = person.role === 'owner' ? 'member' : 'owner';
-  const joined = `${roleName(person.role)}, joined ${formatDate(person.created_at)}.`;
   return (
     <ListItem
       label={isMe ? `${person.display_name} (you)` : person.display_name}
       description={
         <Wrap>
-          {joined}
+          {roleName(person.role)}, joined <KeepTogether>{formatDate(person.created_at)}</KeepTogether>.
           {isLastOwner ? ` The only owner, so this role cannot change until someone else is an owner.` : null}
         </Wrap>
       }

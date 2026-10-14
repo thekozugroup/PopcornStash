@@ -222,7 +222,9 @@ export const popcornTheme = {
     "--popcorn-status-connected": "oklch(69.6% 0.17 162.48)",
     "--popcorn-status-warning": "oklch(76.9% 0.188 70.08)",
     "--popcorn-status-error": "oklch(63.7% 0.237 25.331)",
-    "--popcorn-status-neutral": "oklch(55.2% 0.016 285.938)"
+    "--popcorn-status-neutral": "oklch(55.2% 0.016 285.938)",
+    "--popcorn-switch-off": "light-dark(oklch(55.2% 0.016 285.938), oklch(70.5% 0.015 286.067))",
+    "--popcorn-switch-on-knob": "light-dark(oklch(100% 0 0), oklch(21% 0.006 285.885))"
   },
   __localTokenOwners: {
     "--astryx-theme-neutral-color-status-fill-accent": "neutral",
@@ -246,7 +248,9 @@ export const popcornTheme = {
     "--popcorn-status-connected": "popcorn",
     "--popcorn-status-warning": "popcorn",
     "--popcorn-status-error": "popcorn",
-    "--popcorn-status-neutral": "popcorn"
+    "--popcorn-status-neutral": "popcorn",
+    "--popcorn-switch-off": "popcorn",
+    "--popcorn-switch-on-knob": "popcorn"
   },
   __localTokenLineage: ["neutral","popcorn"],
   components: {
@@ -520,7 +524,11 @@ export const popcornTheme = {
     },
     "switch": {
       "base": {
-        "--color-background-gray": "var(--color-border-emphasized)"
+        "--color-background-gray": "var(--color-background-muted)",
+        "boxShadow": "inset 0 0 0 2px var(--popcorn-switch-off)"
+      },
+      "checked": {
+        "boxShadow": "none"
       }
     },
     "progress-bar": {
@@ -575,6 +583,14 @@ export const popcornTheme = {
     "collapsible-trigger": {
       "base": {
         "minHeight": "var(--size-element-md)"
+      }
+    },
+    "switch-thumb": {
+      "base": {
+        "--color-background-surface": "var(--popcorn-switch-off)"
+      },
+      "checked": {
+        "--color-background-surface": "var(--popcorn-switch-on-knob)"
       }
     },
     "progress-bar-track": {

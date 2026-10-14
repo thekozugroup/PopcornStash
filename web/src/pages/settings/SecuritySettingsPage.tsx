@@ -20,7 +20,7 @@ import {passkeyAvailability} from '../../auth/passkeyAvailability';
 import {PasskeyNotice} from '../../components/PasskeyNotice';
 import {CopyValue} from '../../components/settings/CopyValue';
 import {sessionName} from '../../components/settings/describe';
-import {EmptyRows, LoadError, LoadingRows, PanelList, Wrap} from '../../components/settings/SectionStates';
+import {EmptyRows, KeepTogether, LoadError, LoadingRows, PanelList, Wrap} from '../../components/settings/SectionStates';
 import {SettingsGroup} from '../../components/settings/SettingsGroup';
 import {revokeOtherSessions} from '../../components/settings/settingsApi';
 import {useConfirm} from '../../components/settings/useConfirm';
@@ -63,7 +63,11 @@ function PasskeyRow({
   return (
     <ListItem
       label={passkey.name}
-      description={<Wrap>{`Added ${formatDate(passkey.created_at)}, ${used}`}</Wrap>}
+      description={
+        <Wrap>
+          Added <KeepTogether>{formatDate(passkey.created_at)}</KeepTogether>, {used}
+        </Wrap>
+      }
       endContent={
         <MoreMenu
           label={`Options for ${passkey.name}`}
@@ -86,15 +90,20 @@ function PasskeyRow({
 
 function SessionRow({session, onRevoke}: {session: Session; onRevoke: (session: Session) => void}) {
   const name = sessionName(session.kind, session.user_agent);
-  const parts = [
+  const lead = [
     session.current ? 'This browser, active now' : `Last active ${formatRelative(session.last_seen_at).toLowerCase()}`,
     session.ip ? `from ${session.ip}` : null,
-    `signed in ${formatDate(session.created_at)}`,
-  ].filter(Boolean);
+  ]
+    .filter(Boolean)
+    .join(', ');
   return (
     <ListItem
       label={name}
-      description={<Wrap>{parts.join(', ')}</Wrap>}
+      description={
+        <Wrap>
+          {lead}, signed in <KeepTogether>{formatDate(session.created_at)}</KeepTogether>
+        </Wrap>
+      }
       endContent={
         session.current ? undefined : <Button label="Sign out" variant="secondary" onClick={() => onRevoke(session)} />
       }

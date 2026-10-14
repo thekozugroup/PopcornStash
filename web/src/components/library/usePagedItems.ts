@@ -7,6 +7,7 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {items as itemsApi} from '../../api/client';
 import type {Item, ItemPlace, ItemSort, SortOrder} from '../../api/types';
+import {newestAddedFirst, newestTakenFirst} from '../../lib/order';
 import {useLibraryEvents} from './useLibraryEvents';
 
 /** One library's items, or every item in one kind of place (Other files). */
@@ -127,13 +128,11 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
     // Only a list sorted newest-first (added or filmed) has an obvious place for new arrivals.
     if ((sort !== 'added' && sort !== 'taken') || order !== 'desc' || q || favorite) return;
     const requestKey = key;
-    const dateOf = (item: Item) => (sort === 'taken' ? (item.taken_at ?? item.added_at) : item.added_at);
+    const newestFirst = sort === 'taken' ? newestTakenFirst : newestAddedFirst;
     itemsApi.list({library_id: libraryId, place, sort, order, limit: 20}).then(
       page =>
         setState(s =>
-          s.key !== requestKey
-            ? s
-            : {...s, items: mergeUnique(page.items, s.items).sort((a, b) => dateOf(b) - dateOf(a))},
+          s.key !== requestKey ? s : {...s, items: mergeUnique(page.items, s.items).sort(newestFirst)},
         ),
       () => undefined,
     );
@@ -202,6 +201,8 @@ export function pickItem(detail: Item): Item {
     width: detail.width,
     height: detail.height,
     taken_at: detail.taken_at,
+    taken_local: detail.taken_local,
+    taken_offset: detail.taken_offset,
     camera: detail.camera,
     thumb: detail.thumb,
     favorite: detail.favorite,

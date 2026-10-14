@@ -103,6 +103,12 @@ const localTokens: Record<string, TokenValue> = {
   '--popcorn-status-warning': amber[500],
   '--popcorn-status-error': red[500],
   '--popcorn-status-neutral': zinc[500],
+  // An off switch: its 2px ring and its knob. At least 3:1 against the page, a panel and
+  // the track's own fill in both themes (WCAG 1.4.11), and in dark the knob is lighter
+  // than the track, so "off" reads without the blue of "on" to compare with.
+  '--popcorn-switch-off': [zinc[500], zinc[400]],
+  // The on knob keeps the surface colour (white, Zinc Ink in dark) on the blue track.
+  '--popcorn-switch-on-knob': [white, zinc[900]],
 };
 
 export const popcornTheme = defineTheme({
@@ -293,6 +299,22 @@ export const popcornTheme = defineTheme({
     // too: the whole row keeps the 44px control height, not just its text line.
     'collapsible-trigger': {
       base: {minHeight: 'var(--size-element-md)'},
+    },
+
+    // Switch: off is a Zinc Subtle track (Zinc Dark Divider in dark) inside a 2px ring with
+    // a knob in the same zinc as the ring; on is the Action Blue track with the surface knob.
+    // The ring is an inset shadow, so the track keeps its size and forced colors keeps
+    // Astryx's own system-colour border.
+    switch: {
+      base: {
+        '--color-background-gray': 'var(--color-background-muted)',
+        boxShadow: 'inset 0 0 0 2px var(--popcorn-switch-off)',
+      },
+      checked: {boxShadow: 'none'},
+    },
+    'switch-thumb': {
+      base: {'--color-background-surface': 'var(--popcorn-switch-off)'},
+      checked: {'--color-background-surface': 'var(--popcorn-switch-on-knob)'},
     },
 
     'status-dot': {
