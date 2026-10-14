@@ -15,6 +15,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -25,6 +27,7 @@ import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
@@ -39,12 +42,15 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.thekozugroup.popcornstash.ui.components.GlassTier
 import com.thekozugroup.popcornstash.ui.theme.PopcornTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import org.robolectric.annotation.Config
 
 @RunWith(AndroidJUnit4::class)
@@ -53,9 +59,9 @@ class AppShellTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
 
-    private fun showShell(reduceMotion: Boolean = false, readyToImport: Int = 0) {
+    private fun showShell(reduceMotion: Boolean = false, readyToImport: Int = 0, dark: Boolean = false) {
         compose.setContent {
-            PopcornTheme(darkTheme = false, reduceMotion = reduceMotion) {
+            PopcornTheme(darkTheme = dark, reduceMotion = reduceMotion) {
                 AppShell(readyToImport = readyToImport) { page -> TestPage(page) }
             }
         }
@@ -255,11 +261,17 @@ class AppShellTest {
     }
 
     @Test
-    fun theToolbarLeavesWhilePagesAskAndReturnsWhenTheLastIsGone() {
+    fun theToolbarLeavesWhilePagesAskAndReturnsWhenTheLastIsGone() = toolbarLeavesAndReturns(GlassTier.Captured)
+
+    /** With the platform blur (Android 17 QPR2) the bar fades without a layer of its own, and still leaves and comes back. */
+    @Test
+    fun withThePlatformBlurTheToolbarStillLeavesAndReturns() = toolbarLeavesAndReturns(GlassTier.Backdrop)
+
+    private fun toolbarLeavesAndReturns(tier: GlassTier) {
         var viewers by mutableIntStateOf(0)
         compose.setContent {
             PopcornTheme(darkTheme = false, reduceMotion = false) {
-                AppShell { page ->
+                AppShell(glassTier = tier) { page ->
                     TestPage(page)
                     // Stand-ins for the photo viewer, on Home: each one shown asks the toolbar to leave.
                     if (page.tab == Tab.Home) repeat(viewers) { HideToolbarWhileShown() }
@@ -291,6 +303,61 @@ class AppShellTest {
         compose.mainClock.autoAdvance = true
         compose.waitForIdle()
         assertEquals(to, bounds("toolbar indicator").left, 0.5f)
+    }
+
+    /**
+     * Mid-slide, the edge of the square crosses the Home icon: the part over the blue is white and
+     * the part beside it is the muted grey, and no icon is white on the glass or grey on the blue
+     * (dark theme, where the glass is dark and the unselected icons zinc-400).
+     */
+    @Test
+    fun eachIconIsWhiteExactlyWhereTheSquareIsUnderIt() {
+        showShell(dark = true)
+        val home = bounds("tab Home")
+        compose.mainClock.autoAdvance = false
+        tab(Tab.Settings).performClick()
+        var square = bounds("toolbar indicator")
+        var frames = 0
+        // Until the square's start edge is in the middle of Home's 24dp icon (14dp to 38dp in).
+        while (square.left < home.left + 20f && frames++ < 60) {
+            advanceFrames(1)
+            square = bounds("toolbar indicator")
+        }
+        assertTrue("The square's edge is across the Home icon, at ${square.left - home.left}dp", square.left < home.left + 32f)
+
+        val bar = bounds("toolbar")
+        val pixels = compose.onNodeWithTag("toolbar").captureToImage().toPixelMap()
+        val density = compose.density.density
+        fun Color.white() = red > 0.95f && green > 0.95f && blue > 0.95f
+        fun Color.muted() = abs(red - 0.62f) < 0.08f && abs(blue - 0.66f) < 0.08f
+        fun Color.greyish() = abs(red - blue) < 0.1f && red > 0.45f && red < 0.8f
+        var whiteOnSquare = 0
+        var mutedBeside = 0
+        for (name in listOf("tab Home", "tab Settings")) {
+            val target = bounds(name)
+            var x = target.left + 12f
+            while (x <= target.right - 12f) {
+                var y = target.top + 12f
+                while (y <= target.bottom - 12f) {
+                    val pixel = pixels[((x - bar.left) * density).roundToInt(), ((y - bar.top) * density).roundToInt()]
+                    when {
+                        // The clip's own edge is anti-aliased: leave the 1dp either side of it out.
+                        x > square.left + 1f && x < square.right - 1f -> {
+                            assertTrue("Over the square at ${x - target.left}dp in $name: not grey, but $pixel", !pixel.greyish())
+                            if (pixel.white()) whiteOnSquare++
+                        }
+                        x < square.left - 1f || x > square.right + 1f -> {
+                            assertTrue("Beside the square at ${x - target.left}dp in $name: not white, but $pixel", !pixel.white())
+                            if (pixel.muted()) mutedBeside++
+                        }
+                    }
+                    y += 0.5f
+                }
+                x += 0.5f
+            }
+        }
+        assertTrue("Part of the Home icon is white on the square ($whiteOnSquare samples)", whiteOnSquare > 10)
+        assertTrue("Part of the icons is muted beside it ($mutedBeside samples)", mutedBeside > 10)
     }
 
     @Test

@@ -10,10 +10,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -22,12 +24,14 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import com.thekozugroup.popcornstash.ui.icons.LucideGlyph
 import com.thekozugroup.popcornstash.ui.icons.LucideIcon
+import com.thekozugroup.popcornstash.ui.theme.OnAccentRipple
 import com.thekozugroup.popcornstash.ui.theme.Popcorn
 
 private val ButtonPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp)
 
 /**
- * The one primary action of a view: Action Blue with zinc-950 text, 48dp tall, 8dp corners.
+ * The one primary action of a view: Action Blue with white words, 48dp tall, 8dp corners.
+ * A press lightens it with an 8% white ripple ([OnAccentRipple]), so the words keep 4.5:1.
  * While [busy] it shows a small indicator beside its label and does not take another tap.
  */
 @Composable
@@ -40,22 +44,24 @@ fun PrimaryButton(
     glyph: LucideGlyph? = null,
 ) {
     val colors = Popcorn.colors
-    Button(
-        onClick = { if (!busy) onClick() },
-        enabled = enabled,
-        shape = Popcorn.shapes.control,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = colors.accent,
-            contentColor = colors.onAccent,
-            disabledContainerColor = colors.subtle,
-            disabledContentColor = colors.textMuted,
-        ),
-        contentPadding = ButtonPadding,
-        modifier = modifier
-            .defaultMinSize(minHeight = 48.dp)
-            .semantics { if (busy) stateDescription = "Working" },
-    ) {
-        ButtonContent(text, glyph, busy, colors.onAccent)
+    CompositionLocalProvider(LocalRippleConfiguration provides OnAccentRipple) {
+        Button(
+            onClick = { if (!busy) onClick() },
+            enabled = enabled,
+            shape = Popcorn.shapes.control,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = colors.accent,
+                contentColor = colors.onAccent,
+                disabledContainerColor = colors.subtle,
+                disabledContentColor = colors.textMuted,
+            ),
+            contentPadding = ButtonPadding,
+            modifier = modifier
+                .defaultMinSize(minHeight = 48.dp)
+                .semantics { if (busy) stateDescription = "Working" },
+        ) {
+            ButtonContent(text, glyph, busy, colors.onAccent)
+        }
     }
 }
 

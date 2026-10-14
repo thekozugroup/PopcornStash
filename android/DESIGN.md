@@ -11,21 +11,50 @@ Every value below is a token in `app/src/main/kotlin/com/thekozugroup/popcornsta
 | Token | Light | Dark | Used for |
 | --- | --- | --- | --- |
 | `page` | zinc-50 `#FAFAFA` | zinc-950 `#09090B` | the canvas behind every page, the top app bar |
-| `surface` | white `#FFFFFF` | zinc-900 `#18181B` | toolbar, sheet, panels |
-| `subtle` | zinc-100 `#F4F4F5` | zinc-800 `#27272A` | media placeholders, avatar, progress track |
+| `surface` | white `#FFFFFF` | zinc-900 `#18181B` | toolbar, sheet, panels, the ring around the toolbar's selected square and its badge |
+| `subtle` | zinc-100 `#F4F4F5` | zinc-800 `#27272A` | media placeholders, avatar |
 | `divider` | zinc-200 `#E4E4E7` | zinc-800 `#27272A` | panel borders, row dividers, the scrolled top bar's rule |
 | `fieldOutline` | zinc-500 `#71717B` | zinc-500 `#71717B` | the edge of a text field (3:1 or more on the page) |
 | `text` | zinc-900 `#18181B` | zinc-50 `#FAFAFA` | main text and icons |
 | `textMuted` | zinc-600 `#52525C` | zinc-400 `#9F9FA9` | metadata, unselected toolbar icons, ghost buttons |
-| `accent` (Action Blue) | blue-500 `#2B7FFF` | blue-500 `#2B7FFF` | the selected toolbar square, primary buttons, progress, focus |
-| `onAccent` | zinc-950 `#09090B` | zinc-950 `#09090B` | icons and text on Action Blue (5.4:1) |
+| `accent` (Action Blue) | blue-600 `#155DFC` | blue-600 `#155DFC` | the selected toolbar square, primary buttons, progress, the seek bar, the focused field edge, the pull-to-refresh arc: one blue for all of them |
+| `onAccent` | white `#FFFFFF` | white `#FFFFFF` | words, icons, the busy ring and press ripples on Action Blue (5.25:1) |
 | `link` | blue-600 `#155DFC` | blue-400 `#51A2FF` | inline links only |
+| `progressTrack` | zinc-100 `#F4F4F5` | zinc-900 `#18181B` | the track under a download's progress |
 | `mediaHairline` | zinc-950 at 8% | white at 8% | the 1dp inner edge on tiles |
+| `mediaProgressTrack` | zinc-950 at 90% | zinc-950 at 90% | the track under the watched bar on a picture |
+| `glass` | white at 80% | zinc-900 at 80% | the floating toolbar's tint over its blur |
+| `glassEdge` | zinc-950 at 10% | white at 10% | the glass toolbar's 1dp edge |
 | `stage` | black | black | photo viewer and player |
 | `mediaControl` | zinc-950 at 62% | zinc-950 at 62% | discs behind controls laid over a picture |
 | `connected` / `warning` / `error` | emerald-700, amber-700, red-700 | emerald-400, amber-400, red-400 | status words; the dot beside them uses the 500 shade |
 
-Material roles: `primary` = accent, `onPrimary` = onAccent, `background` and `surface` = page, every `surfaceContainer*` = surface, `onSurface` = text, `onSurfaceVariant` = textMuted, `outlineVariant` = divider, `outline` = zinc-300 / zinc-700, `secondaryContainer` = subtle, `inverseSurface` = zinc-900 / zinc-50 (tooltips), `error` = red-700 / red-400.
+Material roles: `primary` = accent, `onPrimary` = onAccent, `background` and `surface` = page, every `surfaceContainer*` = surface, `onSurface` = text, `onSurfaceVariant` = textMuted, `outlineVariant` = divider, `outline` = zinc-300 / zinc-700, `secondaryContainer` = subtle, `inverseSurface` = zinc-900 / zinc-50 (tooltips, snackbars), `inversePrimary` = blue-400 / blue-600 (blue words on the inverse surface, such as a snackbar action, take the link blue for that surface: 6.72:1 on zinc-900, 5.03:1 on zinc-50), `error` = red-700 / red-400.
+
+#### Action Blue, measured
+
+Action Blue is blue-600 in both themes so that everything on it can be white: white on blue-500 was 3.76:1, under the 4.5:1 a button's words need; on blue-600 it is 5.25:1. Each pairing below is the WCAG 2 contrast ratio, worked out from the token values with sRGB blending (as Skia draws), and the glass rows checked against the rendered screenshots.
+
+| Pairing | Light | Dark |
+| --- | --- | --- |
+| White on Action Blue: button words and icons, the busy ring, the toolbar's selected icon | 5.25:1 | 5.25:1 |
+| The same under a press, keyboard focus or drag (an 8% white ripple, `OnAccentRipple`) | 4.61:1 | 4.61:1 |
+| The same under a mouse hover (4% white) | 4.92:1 | 4.92:1 |
+| Action Blue on `page`: buttons, the focused field edge | 5.03:1 | 3.79:1 |
+| Action Blue on `surface`: buttons in sheets and dialogs, the pull-to-refresh arc on its disc | 5.25:1 | 3.38:1 |
+| Action Blue on `progressTrack`: a download's progress | 4.77:1 | 3.38:1 |
+| Action Blue on `mediaProgressTrack` over a picture: the watched bar | 3.04:1 over white, 3.81:1 over black | the same |
+| Action Blue on its `surface` ring: the toolbar's selected square, on glass or on the opaque bar | 5.25:1 | 3.38:1 |
+
+What changed to keep those numbers, and what is still short:
+
+- **Press ripples.** Material's ripple is 10%, which would leave white words at 4.45:1 while pressed; presses on Action Blue use 8% instead (4% for a mouse hover). There is no darker hover as on the web: on a phone the press is the state that shows. Material draws the hover or focus layer and the press together, so two moments fall short while a key or button is held: hovering with a mouse and clicking adds up to 11.7% white (4.33:1), and pressing a button that has keyboard or D-pad focus adds up to 15.4% white (4.06:1). Keeping every combination at 4.5:1 would need 9.4% white in total: next to an 8% press, focus would be about 1.5%, too faint to see, and an even split (about 5% and 4%) would make both the press and the focus hard to see on the blue. A visible focus matters more than the moment of the press.
+- **A download's progress (dark).** The track was `subtle` (zinc-800), where blue-600 is 2.84:1; it is now `progressTrack`, zinc-900 in dark (3.38:1). Light keeps zinc-100.
+- **The watched bar.** Its zinc-950 track was 40%, so over a bright picture the blue was 1.93:1 (blue-500 was 1.38:1); at 90% it is 3.04:1 over white and 3.81:1 over black.
+- **The player's seek bar** (always dark, on a `mediaControl` plate over the video). Over a white frame the plate turns mid grey and the blue thumb was 1.09:1 against it (blue-500 was 1.51:1), so the 16dp thumb now has a 2dp `onMedia` ring: 5.45:1 against the plate over a white frame, 19.45:1 over black. The played part against the unplayed track is 1.0 to 1.7:1 (1.64:1 over a white frame, 1.69:1 over black): the track is lighter than the blue over bright frames and darker over dark ones, so over a mid-grey frame the two match and the played part disappears into the track (blue-500 had the same problem, 1.0 to 2.4:1). A track that held 3:1 would have to be nearly opaque white or black and would hide the buffered part, so the position is carried by the ringed thumb, 5.45:1 or more against the plate over any frame, with the times beside the bar.
+- **The toolbar's selected square.** On glass the blue square's neighbour is whatever the glass shows: over a pure white picture the dark glass turns grey (`#464649`) and the square was 1.79:1 against it (blue-500 would have been 2.49:1, so the glass causes it, not the darker blue); over black the light glass is `#CCCCCC` and the square was 3.27:1. The square now has a 2dp `surface` ring outside its edge (`ToolbarTokens.indicatorRing`) that slides with it, as the badge has, so its neighbour is always white or zinc-900: 5.25:1 in light and 3.38:1 in dark, on any picture and on the opaque bar. Making the dark glass opaque enough to hold 3:1 instead (zinc-950 at 90%) would have cost most of the translucency.
+- The launcher icon is the white Lucide `popcorn` glyph on Action Blue (`res/values/colors.xml`, `ic_launcher_foreground.xml`), 5.25:1.
+- Links keep their own tokens (blue-600 in light, blue-400 in dark). Checkboxes, radios and the icon picker stay neutral (`text`), because a choice is not an action.
 
 ### Type (`Type.kt`)
 
@@ -54,7 +83,7 @@ One scale: tags 6dp, controls 8dp, media 10dp, toolbar squares 12dp, panels, she
 
 ### Elevation
 
-Flat. Pages, panels and tiles have no shadow; tiles get the 1dp `mediaHairline` instead. Only layers that float above the page cast one: the toolbar (8dp soft shadow plus a 1dp `divider` border so it holds its edge on a bright photo and on black) and Material's own sheet scrim and tooltip.
+Flat. Pages, panels and tiles have no shadow; tiles get the 1dp `mediaHairline` instead. Only layers that float above the page cast one: the toolbar and Material's own sheet scrim and tooltip. The toolbar casts the platform's 8dp elevation shadow (`toolbarShadow`), drawn outside the bar's shape only, so it never darkens the glass, and has a 1dp edge (`glassEdge` on glass, `divider` on the opaque bar) so it holds its edge on a bright photo and on black.
 
 ### Motion (`Motion.kt`)
 
@@ -62,7 +91,7 @@ Flat. Pages, panels and tiles have no shadow; tiles get the 1dp `mediaHairline` 
 | --- | --- | --- |
 | `pageSpring` | spring, no bounce, stiffness 500 (about 300 ms) | page slides |
 | `indicatorSpring` | spring, damping 0.85, stiffness 500 | the toolbar's selection square |
-| `fast` | 150 ms | icon tint, crossfades |
+| `fast` | 150 ms | crossfades |
 | `toolbarShowHide` | 200 ms | the toolbar leaving for the viewer and the player |
 | `push` | 30dp horizontal shift with a fade, `pageSpring` | opening and closing a page inside a tab (a library, a show, an item, the library editor) |
 
@@ -105,17 +134,52 @@ The app's navigation: one elongated rounded rectangle floating at the bottom cen
 
 - Three destinations in a row: Downloads on the left, Home in the centre, Settings on the right. Home is the start tab.
 - Each icon sits in its own square target: 52dp, 12dp corners. The squares touch, so together they make one bar; the bar adds 4dp of padding and a 16dp outer radius (12 + 4: the outer radius is always the inner radius plus the padding). On a screen narrower than the bar plus two 16dp margins, the squares shrink, never below 48dp.
-- Container: `surface`, 1dp `divider` border, 8dp soft shadow. 16dp above the gesture or navigation bar inset.
-- Unselected icons: `textMuted`. Selected: the square fills with Action Blue and the icon turns `onAccent`. This is the one place navigation uses blue, by the owner's direction; elsewhere navigation stays neutral as on the web.
-- The Downloads square carries the number of files ready to import (the `inbox` count) as a small `text`-coloured badge on its top-end corner (`tag` type on `page`, never a status colour); it disappears at zero.
+- Container: frosted glass where the phone can blur (Frosted glass, below), the opaque `surface` where it cannot; the 8dp shadow outside the bar only and a 1dp edge. 16dp above the gesture or navigation bar inset.
+- Unselected icons: `textMuted`. Selected: the square fills with Action Blue and the icon turns `onAccent` (white). This is the one place navigation uses blue, by the owner's direction; elsewhere navigation stays neutral as on the web. A press on the selected square uses the 8% white ripple.
+- The blue square has a 2dp `surface` ring outside its edge (`indicatorRing`, radius 14dp, concentric with the square and the bar), so its edge keeps 3:1 against whatever the glass shows (Colour, Action Blue measured). On the opaque bar the ring is the bar's own colour and does not show.
+- The Downloads square carries the number of files ready to import (the `inbox` count) as a small `text`-coloured badge on its top-end corner (`tag` type on `page`, never a status colour, with a 2dp `surface` ring that parts it from the icon and the glass); it disappears at zero.
 - Every square has a content description (its name, and for Downloads the count: "Downloads, 3 ready to import"), the tab role, its position ("1 of 3") and a ripple clipped to the square. A long press shows a plain tooltip with the name above the square.
 - It floats over the content: pages scroll under it and end with enough bottom padding (bar height + its margin + the inset + 16dp) that the last row clears it.
 - It leaves (slides down and fades, `toolbarShowHide`) for the photo viewer (which asks it to, `HideToolbarWhileShown`; it comes back when the last page asking is gone) and while the keyboard is open. The player is its own activity, so the toolbar is not on screen while a video plays.
 - In a right-to-left language the bar mirrors: Settings on the left, Downloads on the right.
 
+### Frosted glass (`ui/components/FrostedGlass.kt`)
+
+The pages scroll under the toolbar softened and tinted: what is behind it turns to its colours, so the bar shows where it is without competing with the pictures. One look, made three ways, chosen by `glassTierFor(SDK_INT, SDK_INT_FULL, moreContrast)` from the phone's release and its contrast setting (tested in `GlassTierTest`):
+
+| Tier | Android | How the blur is made |
+| --- | --- | --- |
+| Backdrop | 17 QPR2 (SDK 37.2) and later | The platform blurs what the window drew behind the bar: a render node the bar's size with `RenderNode.setBackdropRenderEffect` (blur, then saturation) and the tint drawn inside it. Nothing is recorded. The bar fades in and out with its alpha applied to each drawing operation (`CompositingStrategy.ModulateAlpha`), not through a layer of its own: inside such a layer the platform would blur the empty layer instead of the window, and the pages would show sharp under the tint for the 200 ms of the fade. |
+| Captured | 12 (API 31) to 17.1 | `AppShell` records the tab pages into one Compose `GraphicsLayer` each frame they draw (`glassSource`); the bar draws that layer moved to its own place, blurred (`BlurEffect`) and saturated, clipped to its shape, under the tint. Only the bar's part of the pages, and the blur's reach around it, is blurred. It follows scrolling, page slides and the bar's own slide in and out. |
+| Opaque | 9 to 11 (API 28 to 30), and any phone set to medium or high contrast | No RenderEffect, or the person asked for stronger edges: the opaque `surface` bar with its `divider` edge, as before. |
+
+Android 17 QPR2 reaches Pixels in December 2026, so the captured glass is what most phones show.
+
+- Blur radius 24dp (`ToolbarTokens.glassBlur`): text and edges behind the bar become soft colour; 16dp left the shapes of the pictures readable, 32dp looked the same as 24dp.
+- Saturation 1.8 (`glassSaturation`): the colours behind read through the tint instead of washing out to grey. It does not change white or black, so it does not change the contrast below.
+- Tint (`glass`): `surface` at 80% in both themes (white in light, zinc-900 in dark). The unselected icons need 64% or more in light and 76% or more in dark to stay at 3:1 over anything. The selected square does not depend on the tint: its `surface` ring is its neighbour.
+- Edge (`glassEdge`): zinc-950 at 10% in light, white at 10% in dark, drawn over the glass, so it reads as a hairline over any picture (it renders as `#E6E6E6` on white glass, `#58585B` on dark glass).
+- Shadow: the platform's 8dp elevation shadow, drawn with the bar's own area cut out, so it never shows through the glass.
+- The selected square, its slide (`indicatorSpring`) and its jump under reduce motion are the same on glass; reduce motion does not change the glass.
+- Android has no setting for reduced transparency (checked in the SDK 37.2 sources). The nearest is the colour contrast setting (Android 14 and later, `UiModeManager.getContrast`): at medium or high contrast the bar is the opaque one, and it follows a change of the setting while the app is open (`rememberGlassTier`, tested in `GlassTierTest` and `FrostedGlassTest`). High-contrast text is left out: its query (`AccessibilityManager.isHighContrastTextEnabled`) is behind a feature flag in the SDK, so a phone may not have it.
+
+Contrast on the glass, at its worst (the bar over a pure white and a pure black picture; `glass-white-black-light.png` and `-dark.png`):
+
+| | Light, over white | Light, over black | Dark, over white | Dark, over black |
+| --- | --- | --- | --- | --- |
+| The glass renders as | `#FFFFFF` | `#CCCCCC` | `#464649` | `#131316` |
+| Unselected icon (`textMuted`) | 7.72:1 | 4.81:1 | 3.59:1 | 7.07:1 |
+| The selected square (Action Blue) against its `surface` ring | 5.25:1 | 5.25:1 | 3.38:1 | 3.38:1 |
+| Action Blue against the bare glass, without the ring | 5.25:1 | 3.27:1 | 1.79:1 | 3.54:1 |
+| White icon on the selected square | 5.25:1 | 5.25:1 | 5.25:1 | 5.25:1 |
+
+The Downloads badge is opaque (`badge` with `onBadge` words, ringed in `surface`), so it reads the same on glass as on the opaque bar.
+
+Cost: on Android 12 to 17.1 the pages are recorded once per frame they draw and the bar reuses that recording; the blur runs over the bar's area only (about 260 by 160dp with its reach). On 17 QPR2 and later nothing is recorded.
+
 ### Selection indicator
 
-One Action Blue square that lives behind the icons and slides along the bar to the tapped square with `indicatorSpring`. The icon tints cross over during the slide (`fast`). Under reduce motion it jumps. Both are tested frame by frame (`AppShellTest`): a few frames after a tap the square is between the two squares; under reduce motion it is already under the tapped one.
+One Action Blue square that lives behind the icons and slides along the bar to the tapped square with `indicatorSpring`. The icons take their colour from the square itself, not from a timer: each icon is drawn twice, white clipped to the square's current bounds and `textMuted` clipped to the rest, so while the square slides the part of an icon over the blue is white and the part beside it is grey. No icon is ever white on the glass (where it would vanish in light) or grey on the blue. Under reduce motion the square and the colours jump together. Tested frame by frame (`AppShellTest`): a few frames after a tap the square is between the two squares, and with its edge across the Home icon the icon is white over the square and grey beside it; under reduce motion the square is already under the tapped one. `transition-1-light.png` to `transition-3-light.png` show it.
 
 ### Tab transitions (`navigation/PageTransitions.kt`)
 
@@ -138,7 +202,7 @@ One Action Blue square that lives behind the icons and slides along the bar to t
 
 ### Home
 
-1. **Continue watching** (only when there is something to resume; no empty state here). A horizontal pager of 16:9 frames, each card the gutter-to-gutter width minus a 32dp peek of the next card, 12dp apart, snapping one card at a time (`CarouselTokens`). Under each frame, 10dp down: the title in `item` (the show's name for an episode) and one `metadata` line ("S01E02 · 12 min left"); the More button takes no more height than these two lines, its 48dp target reaching past them. The frame carries the 4dp Action Blue progress bar over a zinc-950 40% track along its bottom. Tapping a card resumes it in the player at once; a 48dp More button beside the title offers "Details" and "Start from the beginning". Content description: "Resume Bluey S01E02, 12 minutes left". The pager has no dots: the peek shows there is more.
+1. **Continue watching** (only when there is something to resume; no empty state here). A horizontal pager of 16:9 frames, each card the gutter-to-gutter width minus a 32dp peek of the next card, 12dp apart, snapping one card at a time (`CarouselTokens`). Under each frame, 10dp down: the title in `item` (the show's name for an episode) and one `metadata` line ("S01E02 · 12 min left"); the More button takes no more height than these two lines, its 48dp target reaching past them. The frame carries the 4dp Action Blue progress bar over a `mediaProgressTrack` (zinc-950 90%) track along its bottom. Tapping a card resumes it in the player at once; a 48dp More button beside the title offers "Details" and "Start from the beginning". Content description: "Resume Bluey S01E02, 12 minutes left". The pager has no dots: the peek shows there is more.
 2. **Libraries**, every one the person can see, in the owner's order, 40dp apart. Each starts with a 56dp header row: the library icon at 24dp in `textMuted`, 12dp, the name in `section`, its count in `metadata` beside it ("214 videos", "12 shows", "3,214 photos"; the name gives way with an ellipsis first), and a trailing `chevron-right` on the gutter; the whole row opens the library. Under it, 4dp down (the row's own padding parts the name from the tiles), a shelf of up to twelve of its newest items in the library's shape: posters for `posters` and `series` (a series library has a tile for every show, up to twelve, the show with the newest episode first, from `HomeLibrary.shows`, so the tiles match the heading's "3 shows": each pictured by its poster, with "New: S01E03", "3 new episodes", or "12 episodes" when nothing is new), frames for `frames`, squares for `timeline` (a photo opens the viewer on that shelf's photos; a phone clip plays). A library with nothing yet keeps its header, without a count, with "Nothing here yet" in `metadata` under it.
 3. **Other files**, last, as a single 56dp row (`file-text`, "Other files", its count, chevron) when the person has any.
 
@@ -169,7 +233,7 @@ Its own activity (`PlayerActivity`), opened with `openPlayer(itemId)`, so it can
 - **Orientation:** landscape, either way round as the phone turns; a video taller than wide (a phone video held upright, its rotation applied) turns the player upright.
 - **Top row:** close (`x`, "Close player") on a 52dp disc at the top start, the title plate beside it (the show in `section`, then "S01E02 · Pilot" in `metadata`; a film or a phone video has one line), and at the top end the audio and quality menu (`ellipsis-vertical`, "Audio and quality", "Audio" or "Quality") when the video offers either. Discs and plates in the top and bottom rows are all 52dp tall (the toolbar's square), 8dp apart, 16dp inside the safe area (the cutout and the system bars, measured whether or not they show, so nothing moves when the bars come and go).
 - **Centre:** play or pause on a 72dp disc with a 32dp glyph. While the stream loads, buffers or switches, a 28dp ring turns inside the disc instead (the only spinner, inside a control); it stays even when the rest of the chrome has faded, so a stalled frame never looks frozen.
-- **Bottom row:** a plate across the width with the position, the seek bar and the length ("12:04", "52:16", tabular figures). The bar is 4dp: Action Blue for what played, `onMedia` at 50% for what loaded, at 28% for the rest, a 16dp Action Blue thumb, a 48dp touch height. TalkBack hears "Position, 12 minutes 4 seconds of 52 minutes 16 seconds". Beside it, when the episode has a next one in the same library, a "Next episode" plate.
+- **Bottom row:** a plate across the width with the position, the seek bar and the length ("12:04", "52:16", tabular figures). The bar is 4dp: Action Blue for what played, `onMedia` at 50% for what loaded, at 28% for the rest, a 16dp Action Blue thumb with a 2dp `onMedia` ring (so it holds 3:1 against the plate over a bright frame), a 48dp touch height. TalkBack hears "Position, 12 minutes 4 seconds of 52 minutes 16 seconds". Beside it, when the episode has a next one in the same library, a "Next episode" plate.
 - **Menu:** a Material dropdown on `surface` with 16dp corners: "Audio" (each track as the web names it, "English" or "Commentary (English)", with "Dolby Digital Plus 5.1" under it), a divider, "Quality" ("Original" with "1080p, converted only if needed", then the smaller steps the phone does not already get, "Smaller stream for slow connections"), the chosen line with `check`, and "Converted for this phone while you watch" at the end while the server converts. A choice asks the server for a new stream at the same place; the ring shows until it plays.
 - **Showing and hiding:** the chrome fades out (`fast`) 3 seconds after the last touch while playing (TalkBack's recommended timeout instead when it is on) and a tap on the picture brings it back. It never hides while paused, loading, at the end or after a failure, and pausing by any route (headphones unplugged) brings it back. The screen stays on while playing.
 - **The end:** the picture dims under a full-screen `mediaControl` scrim. With a next episode: "Next: S01E02 · The lantern keepers" in `section`, then "Play next episode" (primary, `play`) and "Back"; nothing starts on its own. Without: "Play again" (primary, `rotate-ccw`) and "Back".
@@ -181,7 +245,7 @@ Its own activity (`PlayerActivity`), opened with `openPlayer(itemId)`, so it can
 The tab where files come in: watch what is downloading, then put what finished into the right library.
 
 1. **The VPN line** under the top bar, one row in the web's words with the status dot (the 500 shade) beside the label in its status colour and one `metadata` sentence under it: "Protected · NordVPN · Netherlands" with "Torrents run only through the VPN. Public address 203.0.113.5.", "Torrents paused: VPN connecting", "No VPN: torrents use this network", "Torrents off" with the server's reason, the owner's and the member's sentences as on the web (`feature/downloads/VpnText.kt`). For the owner it opens the web VPN settings in a Custom Tab (trailing `external-link`); while the VPN connects there is nothing to open. While the live events are cut off, "Not connected to the server. Trying again." sits above it with the warning dot.
-2. **In progress** (when any), the count beside the heading: files shared from this phone first ("PXL_20261012_181502.mp4 and 2 more", "Uploading  41%  1 of 3 done", or "Waiting for a connection to upload."; More: "Stop uploading"), then downloads, newest first, with the name in `item` (two lines, breaking at dots, underscores and hyphens), a 4dp progress bar (Action Blue on `subtle` while it moves, the muted text colour when paused or waiting, an empty track while the size is not known; nothing loops), and a `metadata` strip of facts spaced 12dp apart ("64%  2.14 MB/s  12 min left", "Paused  31%  128 MB of 412 MB", "Looking for peers"), or the reason it waits as a sentence ("Waiting for the VPN to connect.", "Waiting for a free slot (5 at once)."). Trailing: a 48dp Pause or Resume icon button ("Pause Harbor.Lights…" for screen readers, a tooltip) and a More menu with "Remove" (confirmed: "Remove this download?", its name, "What was downloaded so far is deleted.").
+2. **In progress** (when any), the count beside the heading: files shared from this phone first ("PXL_20261012_181502.mp4 and 2 more", "Uploading  41%  1 of 3 done", or "Waiting for a connection to upload."; More: "Stop uploading"), then downloads, newest first, with the name in `item` (two lines, breaking at dots, underscores and hyphens), a 4dp progress bar (Action Blue on `progressTrack` while it moves, the muted text colour when paused or waiting, an empty track while the size is not known; nothing loops), and a `metadata` strip of facts spaced 12dp apart ("64%  2.14 MB/s  12 min left", "Paused  31%  128 MB of 412 MB", "Looking for peers"), or the reason it waits as a sentence ("Waiting for the VPN to connect.", "Waiting for a free slot (5 at once)."). Trailing: a 48dp Pause or Resume icon button ("Pause Harbor.Lights…" for screen readers, a tooltip) and a More menu with "Remove" (confirmed: "Remove this download?", its name, "What was downloaded so far is deleted.").
 3. **Ready to import** (when any), with its count and "Accept all" as a text button in the section header (from two files that are ready; confirmed: "Accept all 4 suggestions?", "Each file moves to the library shown in its row.", then "Moving 2 of 4."). Each row: a 64dp square tile (the server's thumbnail, else the file's glyph), the file name, the reason it waits in `metadata` from the server's `waiting`, in the web's words ("Not sure this is a movie."; "No library takes TV episodes yet." for the owner or "Choose a library for this file." for members; "The library's folder is not available."; no line when it only needs accepting), the size and length, then the library picker (an exposed dropdown, 48dp, showing the library's icon and name, or "Choose a library"; it lists only the libraries the person can see that fit the file, then Other files after a rule, the chosen one ticked; with one place to go it shows it without a chevron or menu, on a `divider` edge; for a file someone else added that the person sees only through the library that takes its kind, it lists that one library) and the actions: "Accept" (the primary button on the first row only, a tonal button on the others; disabled until a library is chosen; "Add details" opens Edit when the library is a series and the show or episode is missing; it sends the library the row shows), "Edit" and a More menu with "Ignore". Ignored files follow under a closed disclosure row, "Left where they are (3)", with the same row (no Ignore).
 4. **Finished:** the latest 20 downloads ("Show more" for the next 20) with "Finished 3 min ago" (or "Started 3 days ago" for one that failed) and the size, and where they went as a 48dp tappable line with the library's 16dp icon and a chevron: "In Kids" (opens the library), "In Other files", "2 waiting to import" (scrolls to Ready to import), or just "Sorted" with a check when nothing it brought in is visible to the person; "Failed. …" in the error colour, "Cancelled before it finished.", "Finished. Waiting to be sorted.", "Sorting into your library.". More: "Try again" for a failed link or magnet (resumed, or added again), "Remove" (a sorted download leaves the list and its files stay in the library). Members see their own downloads and someone else's only once sorted into something they can see; a row the server removes from view disappears without a message.
 
@@ -238,7 +302,7 @@ The upload notification (channel "Uploads", low importance, private on the lock 
 
 - The picture is the tile. Shapes follow the library's `layout`: posters 2:3 (`posters`, `series`), frames 16:9 (`frames`, continue watching), photos square (`timeline`). 10dp corners, the 1dp hairline inside the edge, `subtle` placeholder with the library's icon at 22dp when there is no picture or while it loads; the picture fades in over it (`fast`; none under reduce motion). Pictures come through Coil with the session's own client (`ui/media/StashImages.kt`): thumbnails `sm` (400 px) for photos and episode rows, `lg` (1280 px) for posters, frames, continue watching and the item page.
 - Under the picture, 10dp down: the title in `item` (two lines, then an ellipsis) and one `metadata` line. Photo tiles have no caption.
-- Partial watch progress: a 4dp Action Blue bar along the bottom of the picture over a zinc-950 40% track.
+- Partial watch progress: a 4dp Action Blue bar along the bottom of the picture over a `mediaProgressTrack` (zinc-950 90%) track, so the blue keeps 3:1 over any picture.
 - Shelves: a row that scrolls sideways with snapping, 12dp under their header. Tile widths: posters 132dp, frames 232dp, photos 112dp; 14dp between tiles.
 - Grids: posters at least 104dp wide (three columns on a phone), frames at least 160dp (two), photos at least 96dp (four, 3dp gaps, grouped under a month `title`).
 
@@ -282,4 +346,4 @@ Loading pages show placeholder tiles and rows in `subtle` at their final sizes (
 
 ## Owner's knobs
 
-The values most likely to change as the design is iterated, all in `ui/theme`: `ToolbarTokens` (square size, radius, padding, gap, elevation, selected colours, badge), `PopcornMotion.pageSpring`, `indicatorSpring` and `push`, `IconStroke`, the type table, the tile widths in `MediaTokens` (also the episode frame and the row glyph square), `CarouselTokens` (card peek, gap, frame ratio), and `PlayerTokens` (disc and plate size, play disc, seek bar, how soon the chrome hides).
+The values most likely to change as the design is iterated, all in `ui/theme`: `ToolbarTokens` (square size, radius, padding, gap, elevation, the glass's blur and saturation, badge), the `glass` and `glassEdge` colours, `PopcornMotion.pageSpring`, `indicatorSpring` and `push`, `IconStroke`, the type table, the tile widths in `MediaTokens` (also the episode frame and the row glyph square), `CarouselTokens` (card peek, gap, frame ratio), and `PlayerTokens` (disc and plate size, play disc, seek bar, how soon the chrome hides).

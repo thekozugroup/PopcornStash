@@ -26,7 +26,7 @@ object PopcornMotion {
     const val INDICATOR_DAMPING = 0.85f
     const val INDICATOR_STIFFNESS = 500f
 
-    /** Icon tints and crossfades. */
+    /** Crossfades and short fades. */
     const val FAST_MS = 150
 
     /** The toolbar leaving for the player and the photo viewer. */

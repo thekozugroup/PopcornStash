@@ -32,7 +32,12 @@ val serverBinary = providers.gradleProperty("popcornstashServer")
 
 android {
     namespace = "com.thekozugroup.popcornstash"
-    compileSdk = 37
+    // Android 17 QPR2 (SDK 37.2): the floating toolbar's glass uses the platform's backdrop
+    // blur there (RenderNode.setBackdropRenderEffect). It needs SDK Platform 37.2 installed:
+    // sdkmanager "platforms;android-37.2".
+    compileSdk {
+        version = release(37) { minorApiLevel = 2 }
+    }
 
     defaultConfig {
         applicationId = "com.thekozugroup.popcornstash"

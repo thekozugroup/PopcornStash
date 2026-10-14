@@ -33,6 +33,12 @@ data class ToolbarTokens(
     /** The squares shrink on narrow screens, never below this. */
     val minSquare: Dp = 48.dp,
     val squareRadius: Dp = 12.dp,
+    /**
+     * A `surface` ring around the selection square, outside its edge. Over a bright picture the
+     * dark glass turns grey and Action Blue alone is 1.79:1 against it; next to the ring it keeps
+     * 3.38:1 in dark and 5.25:1 in light, whatever the glass shows.
+     */
+    val indicatorRing: Dp = 2.dp,
     /** Space between the squares; 0 merges them into one bar. */
     val gap: Dp = 0.dp,
     /** Space between the squares and the bar's edge. */
@@ -40,6 +46,10 @@ data class ToolbarTokens(
     val icon: Dp = 24.dp,
     val elevation: Dp = 8.dp,
     val border: Dp = 1.dp,
+    /** The frosted glass's blur radius: text and edges behind the bar turn to soft colour. */
+    val glassBlur: Dp = 24.dp,
+    /** How much more saturated the colours behind the glass read through its tint. */
+    val glassSaturation: Float = 1.8f,
     /** Distance from the screen edges and from the navigation bar inset. */
     val margin: Dp = 16.dp,
     /** The ready-to-import count on the Downloads square. */
