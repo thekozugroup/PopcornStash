@@ -51,6 +51,7 @@ import kotlinx.serialization.json.Json
 import mockwebserver3.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -225,6 +226,21 @@ class SettingsTabTest {
         compose.onNode(hasText("Everyone") and isSelectable()).assertIsNotSelected()
         compose.onNode(hasText("Photos") and isSelectable()).assertIsSelected()
         compose.onNodeWithText("Only owners will see its 12 videos and 20 photos.").assertExists()
+    }
+
+    @Test
+    fun aLongFolderNameIsShownWholeNotCutOff() {
+        val long = "Grandma's Slides from the 1970s and 1980s"
+        val folders = """{"folders":[{"name":"$long","item_count":3,"video_count":0,"photo_count":3,"other_count":0,
+            "suggested":{"content_type":"photos","structure":null}}]}"""
+        show(F.ownerServer().only("GET", "/api/libraries/folders", folders))
+        waitFor("folder row $long")
+        val results = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        val node = compose.onNodeWithText("$long/", useUnmergedTree = true).fetchSemanticsNode()
+        check(node.config[SemanticsActions.GetTextLayoutResult].action?.invoke(results) == true)
+        val layout = results.first()
+        assertFalse("the name is cut off", layout.hasVisualOverflow)
+        assertTrue("a long name wraps (${layout.lineCount} lines)", layout.lineCount >= 2)
     }
 
     @Test

@@ -410,7 +410,9 @@ private fun FolderRow(folder: UnassignedFolder, onMake: () -> Unit) {
         GlyphSquare(PopcornIcons.Folder)
         Spacer(Modifier.width(Popcorn.spacing.m))
         Column(Modifier.weight(1f)) {
-            Text("${folder.name}/", style = FolderNameStyle, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // The whole name: a short one stays on one line, a long one wraps at its spaces
+            // (a phone shows no tooltip, so an ellipsis would hide the rest for good).
+            Text(folderInSentence(folder.name), style = FolderNameStyle, color = colors.text)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(Popcorn.spacing.s)) {
                 folderCounts(folder).forEach { Text(it, style = Popcorn.type.metadata, color = colors.textMuted) }
             }
