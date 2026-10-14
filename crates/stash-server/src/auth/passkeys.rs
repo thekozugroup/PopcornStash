@@ -109,6 +109,11 @@ fn build_webauthn(config: &Config) -> Option<Webauthn> {
     for extra in &config.extra_origins {
         builder = builder.append_allowed_origin(extra);
     }
+    if let Some(assetlinks) = &config.android_assetlinks {
+        for app in android_origins(assetlinks) {
+            builder = builder.append_allowed_origin(&app);
+        }
+    }
     match builder.build() {
         Ok(w) => Some(w),
         Err(e) => {
@@ -116,6 +121,61 @@ fn build_webauthn(config: &Config) -> Option<Webauthn> {
             None
         }
     }
+}
+
+/// The Android app whose passkey sign-ins the server accepts (section 7, Android passkeys).
+pub const ANDROID_PACKAGE: &str = "com.thekozugroup.popcornstash";
+
+/// The WebAuthn origins of the Android app that `assetlinks` (STASH_ANDROID_ASSETLINKS)
+/// lets use this site's passkeys: `android:apk-key-hash:<base64url of the SHA-256 signing
+/// certificate>` for each `sha256_cert_fingerprints` entry of a statement that grants
+/// [`ANDROID_PACKAGE`] `delegate_permission/common.get_login_creds`. Anything else in the
+/// file, and fingerprints that are not 32 hex bytes, are ignored.
+pub fn android_origins(assetlinks: &str) -> Vec<Url> {
+    let Ok(serde_json::Value::Array(statements)) =
+        serde_json::from_str::<serde_json::Value>(assetlinks)
+    else {
+        tracing::warn!(
+            "STASH_ANDROID_ASSETLINKS is not a JSON list; the Android app cannot use passkeys"
+        );
+        return Vec::new();
+    };
+    let mut origins = Vec::new();
+    for statement in &statements {
+        let grants = statement["relation"].as_array().is_some_and(|r| {
+            r.iter()
+                .any(|v| v == "delegate_permission/common.get_login_creds")
+        });
+        let target = &statement["target"];
+        if !grants
+            || target["namespace"] != "android_app"
+            || target["package_name"] != ANDROID_PACKAGE
+        {
+            continue;
+        }
+        for fingerprint in target["sha256_cert_fingerprints"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let Some(text) = fingerprint.as_str() else {
+                continue;
+            };
+            let Ok(bytes) = hex::decode(text.replace(':', "")) else {
+                continue;
+            };
+            if bytes.len() != 32 {
+                continue;
+            }
+            let hash = URL_SAFE_NO_PAD.encode(bytes);
+            if let Ok(url) = Url::parse(&format!("android:apk-key-hash:{hash}"))
+                && !origins.contains(&url)
+            {
+                origins.push(url);
+            }
+        }
+    }
+    origins
 }
 
 impl PasskeyState {
@@ -414,6 +474,43 @@ mod tests {
         assert_eq!(sel["residentKey"], "required");
         assert_eq!(sel["requireResidentKey"], true);
         assert_eq!(sel["userVerification"], "required");
+    }
+
+    const ASSETLINKS: &str = r#"[
+        {"relation": ["delegate_permission/common.handle_all_urls", "delegate_permission/common.get_login_creds"],
+         "target": {"namespace": "android_app", "package_name": "com.thekozugroup.popcornstash",
+                    "sha256_cert_fingerprints": ["14:6D:E9:83:C5:73:06:50:D8:EE:B9:95:2F:34:FC:64:16:A0:83:42:E6:1D:BE:A8:8A:04:96:B2:3F:CF:44:E5", "not hex"]}},
+        {"relation": ["delegate_permission/common.get_login_creds"],
+         "target": {"namespace": "android_app", "package_name": "com.example.other",
+                    "sha256_cert_fingerprints": ["00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00"]}},
+        {"relation": ["delegate_permission/common.handle_all_urls"],
+         "target": {"namespace": "android_app", "package_name": "com.thekozugroup.popcornstash",
+                    "sha256_cert_fingerprints": ["FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF:FF"]}}
+    ]"#;
+
+    #[test]
+    fn android_origins_come_from_the_apps_login_statement_only() {
+        let origins = android_origins(ASSETLINKS);
+        assert_eq!(
+            origins.iter().map(Url::as_str).collect::<Vec<_>>(),
+            ["android:apk-key-hash:FG3pg8VzBlDY7rmVLzT8ZBagg0LmHb6oigSWsj_PROU"]
+        );
+        assert!(android_origins("not json").is_empty());
+        assert!(android_origins("{}").is_empty());
+    }
+
+    #[test]
+    fn the_android_app_is_an_allowed_origin_once_listed() {
+        let mut c = config(Some("https://stash.example.com"));
+        assert_eq!(allowed_origins(&PasskeyState::new(&c).unwrap()).len(), 1);
+        c.android_assetlinks = Some(ASSETLINKS.to_string());
+        let state = PasskeyState::new(&c).unwrap();
+        let origins = allowed_origins(&state);
+        assert_eq!(origins.len(), 2);
+        assert!(
+            origins.iter().any(|o| o.as_str()
+                == "android:apk-key-hash:FG3pg8VzBlDY7rmVLzT8ZBagg0LmHb6oigSWsj_PROU")
+        );
     }
 
     #[test]

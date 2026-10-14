@@ -28,6 +28,7 @@ These are out of scope: someone with a shell on the host or access to Docker, ro
 ### Requests
 
 - Every unsafe request carrying the session cookie must come from PopcornStash's own origin. Its body must be JSON, a multipart form or raw bytes, so a form on another site cannot submit one.
+- The Android app is not a browser and sends no Origin. It may start and finish a passkey sign-in without one, always with a JSON body; a request that names another site is refused as before. The passkey itself still proves the app: the server accepts the app's `android:apk-key-hash:` origin only for the signing certificates `STASH_ANDROID_ASSETLINKS` lists.
 - Responses carry a strict Content-Security-Policy, `frame-ancestors 'none'`, `nosniff`, `no-referrer` and HSTS on HTTPS.
 - Library files are served with a sandbox policy. HTML, SVG, XML and scripts are always sent as downloads, so a hostile file cannot run as the signed-in person.
 - Responses carrying secrets are never cached.

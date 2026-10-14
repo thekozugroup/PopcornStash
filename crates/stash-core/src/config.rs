@@ -63,7 +63,8 @@ pub struct Config {
     /// STASH_HWACCEL when it is set (not empty). It overrides the hardware
     /// acceleration saved in Settings > System; unset, the saved choice applies.
     pub hwaccel: Option<HwAccel>,
-    /// Optional assetlinks.json body for future Android passkeys.
+    /// Optional assetlinks.json body (served at `/.well-known/assetlinks.json`); the Android
+    /// app's signing certificates listed in it may use passkeys (architecture section 7).
     pub android_assetlinks: Option<String>,
 }
 

@@ -332,6 +332,7 @@ Starting the container as a non-root user (`--user` or `user:` in Compose) has t
 | `STASH_HWACCEL` | empty | `none`, `vaapi`, `qsv` or `nvenc`. When set, it overrides **Settings > System > Streaming** |
 | `STASH_TORRENT_UID` | `6881` | User the torrent engine runs as |
 | `STASH_EXTRA_ORIGINS` | none | Extra allowed addresses on the same domain, comma separated |
+| `STASH_ANDROID_ASSETLINKS` | none | The Digital Asset Links statement (JSON) that lets the PopcornStash Android app use your passkeys. Without it the app signs in by pairing with a code |
 | `STASH_TLS_CERT`, `STASH_TLS_KEY` | none | Certificate and key for built-in HTTPS |
 | `STASH_LOG` | `info` | Log detail |
 | `STASH_ALLOW_NO_VPN` | `false` | See [Running without a VPN](vpn.md#running-without-a-vpn) |

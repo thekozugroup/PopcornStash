@@ -551,17 +551,18 @@ async fn cookie_post_without_origin_is_rejected() {
     let response = h.app.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Public endpoints are covered too.
-    let setup = h
+    // Public endpoints are covered too (passkey sign-in without any Origin is the one
+    // exception, for the Android app: the_android_app_starts_a_passkey_sign_in_without_an_origin).
+    let invite = h
         .send(
             Method::POST,
-            "/api/auth/login/start",
+            "/api/auth/invite/start",
             As::Nobody,
-            Some(json!({})),
+            Some(json!({"code": "x", "display_name": "A"})),
             false,
         )
         .await;
-    assert_eq!(setup.status, StatusCode::FORBIDDEN);
+    assert_eq!(invite.status, StatusCode::FORBIDDEN);
     // GET needs no Origin.
     assert_eq!(
         h.get("/api/me", As::Cookie(&cookie)).await.status,
@@ -1062,6 +1063,66 @@ async fn recovery_link_works_once() {
         .post("/api/auth/recover/start", As::Nobody, json!({"code": code}))
         .await;
     assert_eq!(again.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn the_android_app_starts_a_passkey_sign_in_without_an_origin() {
+    let h = harness().await;
+    let mut laptop = Device::new();
+    h.setup_owner(&mut laptop).await;
+    // The Android app is not a browser: no Origin, no Referer, a JSON body.
+    let native = h
+        .send(
+            Method::POST,
+            "/api/auth/login/start",
+            As::Nobody,
+            Some(json!({})),
+            false,
+        )
+        .await;
+    assert_eq!(native.status, StatusCode::OK, "{:?}", native.body);
+    assert!(native.body["options"]["publicKey"]["challenge"].is_string());
+    // A finish with a made-up credential is refused by the passkey check, not as cross-site.
+    let finish = h
+        .send(
+            Method::POST,
+            "/api/auth/login/finish",
+            As::Nobody,
+            Some(json!({"flow_id": native.body["flow_id"], "credential": {}, "want_token": true})),
+            false,
+        )
+        .await;
+    assert_ne!(finish.status, StatusCode::FORBIDDEN, "{:?}", finish.body);
+    // A browser on another site sends its Origin and is refused as before.
+    let forged = Request::builder()
+        .method(Method::POST)
+        .uri("/api/auth/login/start")
+        .header(header::ORIGIN, "https://evil.example")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let response = h.app.clone().oneshot(forged).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    // Without an Origin the body must still be JSON.
+    let text = Request::builder()
+        .method(Method::POST)
+        .uri("/api/auth/login/start")
+        .header(header::CONTENT_TYPE, "text/plain")
+        .body(Body::from("{}"))
+        .unwrap();
+    let response = h.app.clone().oneshot(text).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    // Setup, invites and recovery still need the origin.
+    let setup = h
+        .send(
+            Method::POST,
+            "/api/auth/setup/start",
+            As::Nobody,
+            Some(json!({"setup_code": "x", "display_name": "A"})),
+            false,
+        )
+        .await;
+    assert_eq!(setup.status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

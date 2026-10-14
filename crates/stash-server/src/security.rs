@@ -228,16 +228,34 @@ pub fn apply_security_headers(headers: &mut HeaderMap, https: bool) {
 /// cross-site request gains nothing; their own rate limits and secrets protect them.
 pub const CSRF_EXEMPT: [&str; 2] = ["/api/pairing/request", "/api/pairing/poll"];
 
+/// Passkey sign-in, which the Android app calls without any Origin or Referer (it is not a
+/// browser). A browser always sends `Origin` on a cross-site POST, and a JSON body from
+/// another site needs a CORS preflight this server never grants, so a request to these
+/// with neither header is not a forged browser request. With either header, the usual
+/// check applies; the body must still be JSON, and the WebAuthn origin inside the signed
+/// client data is checked as always (section 7, CSRF).
+pub const NATIVE_SIGN_IN: [&str; 2] = ["/api/auth/login/start", "/api/auth/login/finish"];
+
 /// True when an unsafe request to `path` must prove it comes from an allowed origin.
 pub fn needs_origin_check(method: &Method, path: &str, headers: &HeaderMap) -> bool {
     let unsafe_method = matches!(
         *method,
         Method::POST | Method::PUT | Method::PATCH | Method::DELETE
     );
+    let native_sign_in = NATIVE_SIGN_IN.contains(&path)
+        && !headers.contains_key(header::ORIGIN)
+        && !headers.contains_key(header::REFERER);
     unsafe_method
         && path.starts_with("/api")
         && !CSRF_EXEMPT.contains(&path)
+        && !native_sign_in
         && !has_bearer(headers)
+}
+
+/// True when a request without the origin check must still carry a JSON body: the
+/// native passkey sign-in ([`NATIVE_SIGN_IN`]).
+pub fn needs_json_body(method: &Method, path: &str) -> bool {
+    *method == Method::POST && NATIVE_SIGN_IN.contains(&path)
 }
 
 /// Rejects cookie-authenticated unsafe requests whose Origin/Referer is not allowed,
@@ -261,6 +279,23 @@ pub async fn csrf_guard(
         let has_body = request.body().size_hint().exact() != Some(0);
         if has_body && !body_type_allowed(request.headers()) {
             tracing::debug!(path = %request.uri().path(), "blocked a request body that is not JSON");
+            return Err(ApiError::bad_request("Send the request as JSON."));
+        }
+    } else if needs_json_body(request.method(), request.uri().path())
+        && !has_bearer(request.headers())
+    {
+        let json = request
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| {
+                v.split(';')
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .eq_ignore_ascii_case("application/json")
+            });
+        if !json {
             return Err(ApiError::bad_request("Send the request as JSON."));
         }
     }
@@ -405,11 +440,7 @@ mod tests {
     fn which_requests_need_an_origin() {
         let none = HeaderMap::new();
         let bearer = headers(&[("authorization", "Bearer pst_abc")]);
-        assert!(needs_origin_check(
-            &Method::POST,
-            "/api/auth/login/start",
-            &none
-        ));
+        assert!(needs_origin_check(&Method::POST, "/api/auth/logout", &none));
         assert!(needs_origin_check(
             &Method::DELETE,
             "/api/me/sessions/x",
@@ -438,6 +469,29 @@ mod tests {
             "/api/pairing/approve",
             &none
         ));
+    }
+
+    #[test]
+    fn the_android_app_signs_in_without_an_origin() {
+        let none = HeaderMap::new();
+        let foreign = headers(&[("origin", "https://evil.example")]);
+        let referer = headers(&[("referer", "https://evil.example/page")]);
+        for path in NATIVE_SIGN_IN {
+            assert!(!needs_origin_check(&Method::POST, path, &none), "{path}");
+            assert!(needs_origin_check(&Method::POST, path, &foreign), "{path}");
+            assert!(needs_origin_check(&Method::POST, path, &referer), "{path}");
+            assert!(needs_json_body(&Method::POST, path));
+        }
+        // Everything else that signs a person in or changes an account still needs the origin.
+        for path in [
+            "/api/auth/setup/start",
+            "/api/auth/setup/finish",
+            "/api/auth/invite/finish",
+            "/api/auth/recover/finish",
+            "/api/me/passkeys/finish",
+        ] {
+            assert!(needs_origin_check(&Method::POST, path, &none), "{path}");
+        }
     }
 
     #[test]
