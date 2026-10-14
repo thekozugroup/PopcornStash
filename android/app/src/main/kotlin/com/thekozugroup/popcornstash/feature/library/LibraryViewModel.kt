@@ -89,6 +89,7 @@ class LibraryViewModel(
     private var loadJob: Job? = null
     private var moreJob: Job? = null
     private var settleJob: Job? = null
+    private val pendingMore = PendingMore()
 
     init {
         reload(keepLoaded = false)
@@ -110,8 +111,13 @@ class LibraryViewModel(
 
     /** Loads the next page when the person nears the end of what is loaded. */
     fun loadMore() {
+        if (moreJob?.isActive == true) return
+        loadJob?.takeIf { it.isActive }?.let { load ->
+            pendingMore.after(load) { viewModelScope.launch { loadMore() } }
+            return
+        }
+        pendingMore.clear()
         val library = _ui.value.library ?: return
-        if (moreJob?.isActive == true || loadJob?.isActive == true) return
         when (val content = _ui.value.content) {
             is Content.Items -> {
                 val cursor = content.page.nextCursor ?: return

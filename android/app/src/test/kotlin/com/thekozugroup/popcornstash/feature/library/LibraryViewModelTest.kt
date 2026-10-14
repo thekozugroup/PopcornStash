@@ -22,6 +22,7 @@ import com.thekozugroup.popcornstash.testing.nextOrNull
 import com.thekozugroup.popcornstash.testing.respond
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.runTest
+import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -31,6 +32,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import java.util.concurrent.TimeUnit
 
 /** A library page: the library, then its content in its layout, kept current by live events. */
 class LibraryViewModelTest {
@@ -132,6 +134,27 @@ class LibraryViewModelTest {
         val ui = model.ui.awaitUntil { (it.content as? Content.Items)?.page?.items?.size == 6 }
         assertEquals("/api/items?library_id=lib-movies&sort=added&order=desc&cursor=c2&limit=60", server.next().target)
         assertFalse((ui.content as Content.Items).page.hasMore)
+    }
+
+    @Test
+    fun aNextPageAskedForWhileTheFirstLoadsComesOnceItHasLoaded() = runTest {
+        respondLibrary(SampleMedia.movies)
+        // The first page is slow, so the person reaches the end of the list before it comes.
+        server.enqueue(
+            MockResponse.Builder().code(200).addHeader("Content-Type", "application/json")
+                .body(json(ItemPage.serializer(), ItemPage(SampleMedia.recentMovies.take(3), "c2")))
+                .headersDelay(300, TimeUnit.MILLISECONDS)
+                .build(),
+        )
+        respondItems(SampleMedia.recentMovies.drop(3))
+        val model = model(SampleMedia.movies)
+        model.loadMore()
+        val ui = model.ui.awaitUntil { (it.content as? Content.Items)?.page?.items?.size == 6 }
+        assertEquals("/api/libraries/lib-movies", server.next().target)
+        assertEquals("/api/items?library_id=lib-movies&sort=added&order=desc&limit=60", server.next().target)
+        assertEquals("/api/items?library_id=lib-movies&sort=added&order=desc&cursor=c2&limit=60", server.next().target)
+        assertFalse((ui.content as Content.Items).page.hasMore)
+        assertNull(server.nextOrNull())
     }
 
     @Test

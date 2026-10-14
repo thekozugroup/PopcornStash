@@ -59,6 +59,7 @@ class OtherFilesViewModel(
     private var loadJob: Job? = null
     private var moreJob: Job? = null
     private var settleJob: Job? = null
+    private val pendingMore = PendingMore()
     private var openJob: Job? = null
 
     init {
@@ -81,9 +82,14 @@ class OtherFilesViewModel(
     }
 
     fun loadMore() {
+        if (moreJob?.isActive == true) return
+        loadJob?.takeIf { it.isActive }?.let { load ->
+            pendingMore.after(load) { viewModelScope.launch { loadMore() } }
+            return
+        }
+        pendingMore.clear()
         val page = (_ui.value.files as? Loadable.Ready)?.value ?: return
         val cursor = page.nextCursor ?: return
-        if (moreJob?.isActive == true || loadJob?.isActive == true) return
         update { it.copy(loadingMore = true, moreFailed = null) }
         moreJob = viewModelScope.launch {
             try {
