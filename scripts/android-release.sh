@@ -168,6 +168,11 @@ if git fetch --quiet "$REMOTE" main 2>"$work_dir/fetch.err"; then
 else
   problem "could not fetch main from $REMOTE: $(tail -n 1 "$work_dir/fetch.err")"
 fi
+# A tree that is not exactly the pushed main is refused before anything else is looked at,
+# even when there would be nothing to publish.
+if ((${#problems[@]} && !dry_run)); then
+  die "publish from a clean main that is pushed to $REMOTE; nothing was built or published"
+fi
 # The tags GitHub made for earlier builds; a failure here only means none are known.
 git fetch --quiet "$REMOTE" '+refs/tags/android-*:refs/tags/android-*' 2>/dev/null || true
 
