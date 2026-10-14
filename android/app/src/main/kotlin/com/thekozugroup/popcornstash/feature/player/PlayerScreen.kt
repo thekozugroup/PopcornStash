@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -418,7 +419,8 @@ private fun RowScope.SeekBar(
             Box(
                 Modifier
                     .size(tokens.seekThumb)
-                    .background(colors.accent, CircleShape),
+                    .background(colors.accent, CircleShape)
+                    .border(tokens.seekThumbRing, colors.onMedia, CircleShape),
             )
         },
         track = {

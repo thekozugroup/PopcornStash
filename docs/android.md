@@ -6,7 +6,7 @@ It is new. It has been tested on the build machine (unit tests, Compose UI tests
 
 ## What it does
 
-Three tabs sit in a floating bar at the bottom of the screen: Downloads on the left, Home in the centre (where the app opens) and Settings on the right. The bar shows icons only; hold one to see its name. The selected tab's square is blue, and the pages slide in from the side of the tab you tap (they fade instead when the phone's "Remove animations" setting is on).
+Three tabs sit in a floating bar at the bottom of the screen: Downloads on the left, Home in the centre (where the app opens) and Settings on the right. The bar shows icons only; hold one to see its name. The selected tab's square is blue with a white icon, and the pages slide in from the side of the tab you tap (they fade instead when the phone's "Remove animations" setting is on). On Android 12 and later the bar is frosted glass: the pages scroll under it blurred and tinted. On Android 9 to 11 it is a plain white bar (dark grey in dark mode).
 
 - **Sign in:** type your server's address, then sign in with your passkey or pair the phone with a code that someone approves on the web.
 - **Home:** what you were watching, to carry on with one tap, then every library you can see with its icon, its name and its newest items.
@@ -21,7 +21,13 @@ Everything the app keeps (the sign-in, pictures it has loaded, files it opened) 
 
 ## Build the app
 
-You need JDK 17 or later and the Android SDK with platform 37. Tell Gradle where the SDK is with `ANDROID_HOME`, or with `sdk.dir=/path/to/sdk` in `android/local.properties` (that file is not committed).
+You need JDK 17 or later and the Android SDK with SDK Platform 37.2 (Android 17 QPR2). The app compiles against it for the toolbar's frosted glass on Android 17 QPR2 phones. Install it with:
+
+```sh
+sdkmanager "platforms;android-37.2"
+```
+
+Tell Gradle where the SDK is with `ANDROID_HOME`, or with `sdk.dir=/path/to/sdk` in `android/local.properties` (that file is not committed).
 
 ```sh
 cd android
@@ -91,6 +97,7 @@ Android checks this file through Google's Digital Asset Links service, so passke
 ## What is not done yet
 
 - **Not run on a phone or an emulator.** The build machine has no emulator, so gestures, the photo viewer's zoom, real video decoding, picture-in-picture, rotation, the share sheet's background uploads and the passkey prompt have only run under Robolectric and against a real server from the JVM.
+- **The frosted toolbar on Android 17 QPR2 has not run.** From Android 17 QPR2 (SDK 37.2) the platform blurs the window behind the bar itself (`RenderNode.setBackdropRenderEffect`). That code compiles and passes lint, but there was no 37.2 phone or emulator image to run it on, and Robolectric runs Android 16, so it has never drawn. The glass on Android 12 to 17.1 (the app records the pages and blurs them; most phones show this until Android 17 QPR2 reaches Pixels in December 2026) is covered by screenshots and pixel checks, and the opaque bar on Android 9 to 11 by a screenshot.
 - **No lock screen or headset controls** (no media session), **no subtitles**, and no double tap to seek in the player.
 - **A shared `.torrent` file is uploaded as a file**, not added as a download.
 - **Admin pages on the web:** VPN, people, devices, security, system, sorting and the trash open in the phone's browser, which has its own sign-in.

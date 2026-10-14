@@ -83,7 +83,10 @@ fun MediaPicture(
     }
 }
 
-/** The watched part of a video: a 4dp Action Blue bar over a zinc-950 40% track. */
+/**
+ * The watched part of a video: a 4dp Action Blue bar over a zinc-950 90% track, dark enough
+ * that the blue keeps 3:1 over any picture (3.04:1 over white, 3.81:1 over black).
+ */
 @Composable
 fun WatchedBar(fraction: Float, modifier: Modifier = Modifier) {
     val colors = Popcorn.colors

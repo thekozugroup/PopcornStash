@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Popcorn page colour (zinc-50) and Action Blue (blue-500); Compose uses ui/theme/Color.kt. -->
+    <!-- Popcorn page colour (zinc-50) and Action Blue (blue-600, with the white glyph on it at
+         5.25:1); Compose uses ui/theme/Color.kt. -->
     <color name="page">#FFFAFAFA</color>
-    <color name="launcher_background">#FF2B7FFF</color>
+    <color name="launcher_background">#FF155DFC</color>
 </resources>

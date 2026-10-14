@@ -40,6 +40,10 @@ data class ToolbarTokens(
     val icon: Dp = 24.dp,
     val elevation: Dp = 8.dp,
     val border: Dp = 1.dp,
+    /** The frosted glass's blur radius: text and edges behind the bar turn to soft colour. */
+    val glassBlur: Dp = 24.dp,
+    /** How much more saturated the colours behind the glass read through its tint. */
+    val glassSaturation: Float = 1.8f,
     /** Distance from the screen edges and from the navigation bar inset. */
     val margin: Dp = 16.dp,
     /** The ready-to-import count on the Downloads square. */

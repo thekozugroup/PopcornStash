@@ -19,6 +19,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TooltipAnchorPosition
@@ -27,12 +28,12 @@ import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CollectionInfo
 import androidx.compose.ui.semantics.CollectionItemInfo
@@ -48,6 +49,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.thekozugroup.popcornstash.navigation.Tab
 import com.thekozugroup.popcornstash.ui.icons.LucideIcon
+import com.thekozugroup.popcornstash.ui.theme.OnAccentRipple
 import com.thekozugroup.popcornstash.ui.theme.Popcorn
 import com.thekozugroup.popcornstash.ui.theme.PopcornMotion
 
@@ -56,6 +58,11 @@ import com.thekozugroup.popcornstash.ui.theme.PopcornMotion
  * targets, icons only, with an Action Blue square behind the selected one that slides
  * to the tapped square. The bar's outer radius is the square radius plus its padding,
  * so the selected square sits concentric in the end squares.
+ *
+ * The bar is frosted glass where the phone can blur ([glass], see FrostedGlass.kt): the pages
+ * scroll under it softened and tinted with `surface`. [backdrop] is the recording the
+ * [GlassTier.Captured] glass draws from; without it, or on [GlassTier.Opaque], the bar is
+ * the opaque `surface`.
  *
  * [readyToImport] is the number of files waiting in the Inbox; it badges Downloads.
  */
@@ -67,12 +74,23 @@ fun FloatingNavToolbar(
     modifier: Modifier = Modifier,
     readyToImport: Int = 0,
     tabs: List<Tab> = Tab.entries,
+    glass: GlassTier = GlassTier.Opaque,
+    backdrop: GlassBackdrop? = null,
 ) {
     val tokens = Popcorn.toolbar
     val colors = Popcorn.colors
     val reduceMotion = Popcorn.reduceMotion
     val barShape = RoundedCornerShape(tokens.outerRadius)
     val squareShape = RoundedCornerShape(tokens.squareRadius)
+    val frosted = glass == GlassTier.Backdrop || (glass == GlassTier.Captured && backdrop != null)
+    val glassStyle = GlassStyle(
+        tint = colors.glass,
+        opaque = colors.surface,
+        blur = tokens.glassBlur,
+        saturation = tokens.glassSaturation,
+        elevation = tokens.elevation,
+        shadow = colors.toolbarShadow,
+    )
 
     BoxWithConstraints(modifier) {
         // Shrink the squares on a narrow screen, never below the 48dp touch minimum.
@@ -88,14 +106,8 @@ fun FloatingNavToolbar(
         Box(
             Modifier
                 .testTag("toolbar")
-                .shadow(
-                    elevation = tokens.elevation,
-                    shape = barShape,
-                    ambientColor = colors.toolbarShadow,
-                    spotColor = colors.toolbarShadow,
-                )
-                .background(colors.surface, barShape)
-                .border(tokens.border, colors.divider, barShape)
+                .frostedGlass(glass, backdrop, barShape, glassStyle)
+                .border(tokens.border, if (frosted) colors.glassEdge else colors.divider, barShape)
                 .padding(tokens.padding)
                 .semantics { collectionInfo = CollectionInfo(rowCount = 1, columnCount = tabs.size) }
                 .selectableGroup(),
@@ -147,36 +159,40 @@ private fun ToolbarSquare(
         tab == Tab.Downloads && badge > 0 -> "${tab.label}, $badge ready to import"
         else -> tab.label
     }
+    // A press on the blue square lightens it only as far as white keeps 4.5:1 (OnAccentRipple).
+    val ripples = if (selected) OnAccentRipple else LocalRippleConfiguration.current
     TooltipBox(
         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
         tooltip = { PlainTooltip { Text(tab.label) } },
         state = rememberTooltipState(),
     ) {
         Box(Modifier.size(size)) {
-            Box(
-                Modifier
-                    .testTag("tab ${tab.name}")
-                    .size(size)
-                    .clip(RoundedCornerShape(tokens.squareRadius))
-                    .selectable(
-                        selected = selected,
-                        onClick = onClick,
-                        role = Role.Tab,
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = ripple(color = if (selected) colors.onAccent else colors.text),
-                    )
-                    .semantics {
-                        contentDescription = description
-                        collectionItemInfo = CollectionItemInfo(
-                            rowIndex = 0,
-                            rowSpan = 1,
-                            columnIndex = index,
-                            columnSpan = 1,
+            CompositionLocalProvider(LocalRippleConfiguration provides ripples) {
+                Box(
+                    Modifier
+                        .testTag("tab ${tab.name}")
+                        .size(size)
+                        .clip(RoundedCornerShape(tokens.squareRadius))
+                        .selectable(
+                            selected = selected,
+                            onClick = onClick,
+                            role = Role.Tab,
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = ripple(color = if (selected) colors.onAccent else colors.text),
                         )
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                LucideIcon(tab.glyph, contentDescription = null, tint = tint, size = tokens.icon)
+                        .semantics {
+                            contentDescription = description
+                            collectionItemInfo = CollectionItemInfo(
+                                rowIndex = 0,
+                                rowSpan = 1,
+                                columnIndex = index,
+                                columnSpan = 1,
+                            )
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    LucideIcon(tab.glyph, contentDescription = null, tint = tint, size = tokens.icon)
+                }
             }
             if (badge > 0) {
                 ToolbarBadge(

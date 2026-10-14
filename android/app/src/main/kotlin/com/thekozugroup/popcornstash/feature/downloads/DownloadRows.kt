@@ -106,8 +106,9 @@ fun RowRule(start: androidx.compose.ui.unit.Dp = Popcorn.spacing.gutter) {
 }
 
 /**
- * A 4dp progress bar: Action Blue on `subtle` while it moves, the muted text colour while it
- * waits or is paused. [fraction] null draws the empty track (size not known yet); nothing loops.
+ * A 4dp progress bar: Action Blue on `progressTrack` while it moves (3:1 or more in both
+ * themes), the muted text colour while it waits or is paused. [fraction] null draws the empty
+ * track (size not known yet); nothing loops.
  */
 @Composable
 fun ThinProgress(fraction: Double?, moving: Boolean, label: String, modifier: Modifier = Modifier) {
@@ -117,7 +118,7 @@ fun ThinProgress(fraction: Double?, moving: Boolean, label: String, modifier: Mo
         modifier
             .fillMaxWidth()
             .height(Popcorn.media.progressHeight)
-            .background(colors.subtle, Popcorn.shapes.tag)
+            .background(colors.progressTrack, Popcorn.shapes.tag)
             .semantics {
                 contentDescription = label
                 progressBarRangeInfo = ProgressBarRangeInfo(value, 0f..1f)

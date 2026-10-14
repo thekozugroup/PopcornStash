@@ -34,6 +34,10 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import com.thekozugroup.popcornstash.ui.components.FloatingNavToolbar
+import com.thekozugroup.popcornstash.ui.components.GlassTier
+import com.thekozugroup.popcornstash.ui.components.deviceGlassTier
+import com.thekozugroup.popcornstash.ui.components.glassSource
+import com.thekozugroup.popcornstash.ui.components.rememberGlassBackdrop
 import com.thekozugroup.popcornstash.ui.theme.Popcorn
 import com.thekozugroup.popcornstash.ui.theme.PopcornMotion
 
@@ -58,6 +62,9 @@ data class TabPage(
  * - The toolbar floats over the pages and leaves while a page asks it to
  *   ([HideToolbarWhileShown]: the photo viewer) and while the keyboard is open. The player
  *   is its own activity, so the shell is not on screen while it plays.
+ * - The toolbar is frosted glass as [glassTier] allows (FrostedGlass.kt). On Android 12 to
+ *   17.1 the pages are recorded once per frame into one layer the toolbar draws blurred; on
+ *   Android 17 QPR2 and later the platform blurs the window itself, so nothing is recorded.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -68,6 +75,7 @@ fun AppShell(
     /** A tab asked for from outside (a notification, the share sheet): shown once, then [onOpenedTab]. */
     openTab: Tab? = null,
     onOpenedTab: () -> Unit = {},
+    glassTier: GlassTier = deviceGlassTier(),
     page: @Composable (TabPage) -> Unit,
 ) {
     var current by rememberSaveable { mutableStateOf(initialTab) }
@@ -85,6 +93,7 @@ fun AppShell(
     val toolbar = Popcorn.toolbar
     val navigationBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val clearance = toolbar.clearance + navigationBar
+    val backdrop = rememberGlassBackdrop(glassTier)
 
     BackHandler(enabled = current != Tab.Start) { current = Tab.Start }
 
@@ -94,7 +103,7 @@ fun AppShell(
                 targetState = current,
                 transitionSpec = { tabTransition(initialState, targetState, reduceMotion, layoutDirection) },
                 label = "tab pages",
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().glassSource(backdrop),
             ) { tab ->
                 holder.SaveableStateProvider(tab.name) {
                     Box(
@@ -124,6 +133,8 @@ fun AppShell(
                 FloatingNavToolbar(
                     selected = current,
                     readyToImport = readyToImport,
+                    glass = glassTier,
+                    backdrop = backdrop,
                     onSelect = { tab ->
                         if (tab == current) {
                             reselections.getValue(tab).intValue++

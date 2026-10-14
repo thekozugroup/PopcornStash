@@ -32,6 +32,11 @@ data class PlayerTokens(
     /** The seek bar: track height and thumb size; the touch target stays 48dp. */
     val seekTrack: Dp = 4.dp,
     val seekThumb: Dp = 16.dp,
+    /**
+     * The `onMedia` ring inside the thumb's edge. Over a bright frame the plate turns mid grey and
+     * Action Blue alone would be 1.09:1 against it; the ring keeps the thumb at 5.45:1 or more.
+     */
+    val seekThumbRing: Dp = 2.dp,
     /** Widest the end and error messages grow, so they stay a short column on a wide screen. */
     val messageWidth: Dp = 420.dp,
     /** Controls fade away this long after the last touch while playing (TalkBack keeps them). */

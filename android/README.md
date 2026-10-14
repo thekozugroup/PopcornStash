@@ -2,12 +2,12 @@
 
 The family's libraries, downloads and settings on an Android phone: Kotlin, Jetpack Compose and Material 3 themed with the Popcorn tokens. The design system is [DESIGN.md](DESIGN.md); the API it uses and how it signs in are in [docs/architecture.md](../docs/architecture.md) (section 10, Android app).
 
-- Package `com.thekozugroup.popcornstash`, minSdk 28 (Credential Manager passkeys), compile and target SDK 37.
+- Package `com.thekozugroup.popcornstash`, minSdk 28 (Credential Manager passkeys), target SDK 37, compile SDK 37.2 (Android 17 QPR2, for the toolbar's platform blur: `compileSdk { version = release(37) { minorApiLevel = 2 } }`).
 - Three tabs in a floating toolbar: Downloads (left), Home (centre, the start tab), Settings (right).
 
 ## Building
 
-Needs JDK 17 or later and the Android SDK (platform 37), named by `ANDROID_HOME` or `sdk.dir` in `android/local.properties` (git-ignored).
+Needs JDK 17 or later and the Android SDK with SDK Platform 37.2 (`sdkmanager "platforms;android-37.2"`), named by `ANDROID_HOME` or `sdk.dir` in `android/local.properties` (git-ignored).
 
 ```sh
 cd android
@@ -19,7 +19,7 @@ cd android
 ./gradlew checkLucideGlyphs        # the icons still match the web's lucide-react
 ```
 
-`scripts/check.sh` runs `./gradlew test lint assembleDebug verifyRoborazziDebug checkLucideGlyphs` when it finds an SDK and skips the app with a note otherwise. There is no emulator on the build machine: UI tests run on Robolectric and screenshots are drawn by Robolectric's native graphics (Roborazzi).
+`scripts/check.sh` runs `./gradlew test lint assembleDebug verifyRoborazziDebug checkLucideGlyphs` when it finds an SDK and skips the app with a note otherwise. There is no emulator on the build machine: UI tests run on Robolectric and screenshots are drawn by Robolectric's native graphics (Roborazzi). Robolectric runs Android 16, except one screenshot (`GlassScreenshotTest.photosAndroid11`) that runs Android 11 for the opaque toolbar; the first run downloads Robolectric's Android 11 jar (about 120 MB) from Maven Central into `~/.m2`. Maven Central sometimes answers Robolectric's parallel download with 429 (too many requests); fetching `org.robolectric:android-all-instrumented:11-robolectric-6757853-i7` (the jar, the pom and their `.sha512` files) into `~/.m2/repository` by hand gets past it.
 
 Debug builds accept `http://` for `localhost`, `127.0.0.1` and `10.0.2.2` (the emulator's view of the computer), so a development server (`popcornstash serve` with `STASH_PUBLIC_URL=http://localhost:8788`) works; release builds speak https only.
 
@@ -34,8 +34,9 @@ app/src/main/kotlin/com/thekozugroup/popcornstash/
                            own pages), ToolbarRequests (the viewer and player hide the toolbar)
   ui/theme/                the Popcorn tokens: Color, Type, Shape, Tokens, Motion, Theme
   ui/icons/                LucideGlyphs (generated), PopcornIcons, LibraryIcons
-  ui/components/           FloatingNavToolbar, PageTopBar, TabRootScaffold, rows, buttons, EmptyState,
-                           MediaTile, Shelf, PageStatus (load failed, not connected), IconPicker
+  ui/components/           FloatingNavToolbar, FrostedGlass (the toolbar's glass, three tiers), PageTopBar,
+                           TabRootScaffold, rows, buttons, EmptyState, MediaTile, Shelf, PageStatus
+                           (load failed, not connected), IconPicker
   ui/media/                StashImages: Coil over the session's client, Pictures (thumbnail and view addresses)
   data/api/                ApiClient (every endpoint the app uses), ApiModels, ApiError, EventStream (SSE)
   data/auth/               ServerAddress, PairingFlow, PasskeySignIn, Credential Manager, the sealed token store
@@ -75,8 +76,9 @@ The session's token is sealed with AES-GCM under a non-exportable Android Keysto
 - Share and uploads: `UploaderTest` (chunks at the server's size, `last_modified`, resuming from the server's count, 409 and retries, a refused file, stopping), `UploadRunnerTest` (nobody signed in sends nothing, done files skipped after a restart, a lost read grant, a batch removed while running), `UploadBatchStoreTest`, `ShareControllerTest`, `ShareRequestTest` (links in text, content URIs only, never the app's own, a real provider read through `ContentChunkSource`), `ShareSheetTest`.
 - JVM, Settings: `LibraryWordsTest` (the owner's words), `LibrarySettingsControllerTest` (list, people, folders, a move shown at once and put back when it fails, delete, a library made elsewhere), `LibraryEditorControllerTest` (new, from a folder, type and claims rules, the lock on a library that holds files, the confirmation before taking a kind, validation, the server's field errors, edits that send only what changed, delete, a library gone while open), against a MockWebServer that answers by route (`Routes`).
 - Between tabs: `TabRequestsTest` (Robolectric: a page asked for from another tab selects its tab and is handed over once; a tab asked for alone), `HomeTabTest` and `SettingsTabTest` (the page or editor another tab asks for, a member asked for an editor, the upload count in the sign-out confirmation).
+- The toolbar's glass: `GlassTierTest` (which Android release gets which glass, from `SDK_INT` and `SDK_INT_FULL`), `FrostedGlassTest` (Robolectric, pixels read from the bar: the glass takes the colour of the page under it, follows a scroll and a change of tab, and is the opaque `surface` without blur).
 - Robolectric: `AppShellTest` (the toolbar's selection, tooltips, descriptions, page changes, slide direction, the selection square caught mid-slide and jumping under reduce motion, a right-to-left layout mirroring the bar and the slides, the toolbar leaving while a page asks, kept state, Back), `PageStackHostTest` (a pushed page comes in from the end side), `PhotoViewerTest` (the viewer's controls on the player's disc and 16dp edge; the date on the plate is the camera's clock on a phone set to UTC+14), `SignInScreensTest`, `HomeTabTest` (Home against a server: opening a library and Back, tapping Home again, a tab keeping its pages, a show playing what comes next, continue watching and "Start from the beginning", the photo viewer hiding the toolbar, a library that goes away, "Edit library"), `SettingsTabTest` (the owner's list in order, the editor and Back, making a library end to end, a refused name under its field, move from the menu, TalkBack actions, delete with its confirmation, a folder made a library, tapping Settings again, members, the icon picker's semantics and tooltip).
-- Roborazzi: `ShellScreenshotTest`, `SignInScreenshotTest`, `HomeScreenshotTest`, `LibraryScreenshotTest` (Home, each library layout, a show, an item, the photo viewer and Other files, with their loading, empty and failed states), `PlayerScreenshotTest`, `DownloadsScreenshotTest`, `ShareScreenshotTest`, `SettingsScreenshotTest` (Settings and the library editor loading, failed, empty and with content, menus and dialogs; the whole form on a tall phone) and `LargeTextScreenshotTest` (a 360dp phone at the largest font: a long server address, a folder named in a sentence, a header with its action, a photo month with its count, a link), light and dark (the player is always dark; sheets and dialogs with `captureScreenRoboImage`), in `app/src/test/screenshots/`. The pictures in them are painted by the test (`testing/SampleImages.kt`) and served by Coil's fake engine; the titles and people are invented.
+- Roborazzi: `ShellScreenshotTest`, `GlassScreenshotTest` (the glass over a photo grid scrolled under it, light and dark; the opaque bar on Android 11; the glass over pure white and pure black), `SignInScreenshotTest`, `HomeScreenshotTest`, `LibraryScreenshotTest` (Home, each library layout, a show, an item, the photo viewer and Other files, with their loading, empty and failed states), `PlayerScreenshotTest`, `DownloadsScreenshotTest`, `ShareScreenshotTest`, `SettingsScreenshotTest` (Settings and the library editor loading, failed, empty and with content, menus and dialogs; the whole form on a tall phone) and `LargeTextScreenshotTest` (a 360dp phone at the largest font: a long server address, a folder named in a sentence, a header with its action, a photo month with its count, a link), light and dark (the player is always dark; sheets and dialogs with `captureScreenRoboImage`), in `app/src/test/screenshots/`. The pictures in them are painted by the test (`testing/SampleImages.kt`) and served by Coil's fake engine; the titles and people are invented.
 - `ServerIntegrationTest` runs the app's client against a real server: it builds a `scripts/dev-fixture.sh` stash, starts `popcornstash serve`, makes the owner with a software passkey and the setup code from the log (as tests/e2e does with Chrome's virtual authenticator), then pairs the app (the owner approves the code), signs in with a passkey from the app's `android:apk-key-hash:` origin (`STASH_ANDROID_ASSETLINKS` lists it), and reads the libraries, Home and live events with the app's token; then the Home view models read the real stash (Movies as posters, Shows with what plays next, the photo timeline, an item's favourite saved and put back), a thumbnail comes with the bearer client and an Other file is fetched into a private copy. It needs ffmpeg and the server binary, so it runs only when asked:
 
   ```sh
