@@ -66,7 +66,7 @@ STASH_ROOT=/tmp/stash STASH_CONFIG=/tmp/stash-config \
 Before you commit, run the checks on your own machine; there is no CI service:
 
 ```sh
-scripts/check.sh            # fmt, clippy, tests, web and extension, Docker image and smoke test
+scripts/check.sh            # fmt, clippy, tests, web, extension, Android app, Docker image and smoke test
 scripts/check.sh --quick    # the same without Docker
 scripts/check.sh --e2e      # also the Playwright suite (tests/e2e)
 scripts/check.sh --full     # also the VPN and full-stack tests in Docker

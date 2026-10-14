@@ -8,6 +8,7 @@
 **/node_modules
 web/dist
 extension
+android
 evidence
 test-results
 playwright-report
@@ -37,4 +38,6 @@ web/dist
 **/*.db-shm
 **/*.db-wal
 **/*.zip
+**/*.jks
+**/*.keystore
 **/.DS_Store

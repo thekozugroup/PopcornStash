@@ -2,7 +2,7 @@
 # Everything AGENTS.md asks for before shipping, in one command, on this machine.
 # There is no CI service; .githooks/pre-push can run this before every push to main.
 #
-#   scripts/check.sh            Rust, web UI, extension, Docker image and smoke test
+#   scripts/check.sh            Rust, web UI, extension, Android app, Docker image and smoke test
 #   scripts/check.sh --quick    the same without Docker
 #   scripts/check.sh --e2e      also the Playwright suite in tests/e2e
 #   scripts/check.sh --full     also tests/e2e, scripts/vpn-e2e.sh and scripts/fullstack-e2e.sh
@@ -18,6 +18,10 @@
 #   web/: npm ci (when node_modules is missing, or package.json or package-lock.json
 #         changed since the last install), npm run check, npm run build
 #   extension/: the same, then npm run zip (popcornstash-extension.zip)
+#   android/: ./gradlew test lint assembleDebug verifyRoborazziDebug checkLucideGlyphs
+#         (unit and Robolectric UI tests, lint, the debug APK, the committed
+#         screenshots and the Lucide glyphs); skipped with a note when no Android SDK
+#         is found (ANDROID_HOME, ANDROID_SDK_ROOT or android/local.properties)
 #   scripts/docker-smoke.sh, which builds IMAGE from the tree and tests it
 # It ends with a PASS/FAIL/SKIP line for every step and exits non-zero on failure.
 #
@@ -164,6 +168,21 @@ e2e_suite() {
   CI=1 npm --prefix tests/e2e test
 }
 
+# --------------------------------------------------------------- android ----
+# The Android app builds with the SDK named by ANDROID_HOME, ANDROID_SDK_ROOT or
+# android/local.properties (sdk.dir). Without one the Android steps are skipped.
+android_sdk() {
+  local dir="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+  if [[ -z "$dir" && -f android/local.properties ]]; then
+    dir="$(sed -n 's/^sdk\.dir=//p' android/local.properties | tail -n 1)"
+  fi
+  [[ -n "$dir" && -d "$dir/platforms" ]]
+}
+
+gradle() {
+  (cd android && ./gradlew --console=plain "$@")
+}
+
 # --------------------------------------------------------------- secrets ----
 # The names PopcornStash and VPN providers give to secrets (.dockerignore keeps the
 # same ones out of image builds) must be ignored by git, and none may be tracked.
@@ -171,6 +190,7 @@ SECRET_NAMES=(
   .env config/.env.local openvpn.auth config/torrent/vpn/openvpn.auth nord.ovpn.auth
   internal.token config/torrent/internal.token server.key tls/cert.pem
   wireguard.conf us1234.ovpn popcornstash.db
+  android/release.jks android/upload.keystore android/local.properties
 )
 secrets_ignored() {
   local listing status=0 not_ignored tracked
@@ -213,7 +233,7 @@ licenses_agree() {
 }
 
 # ----------------------------------------------------------------- steps ----
-mode="Rust, web UI, extension"
+mode="Rust, web UI, extension, Android app"
 ((audit)) && mode+=", cargo audit and npm audit"
 ((docker_checks)) && mode+=", Docker image ($IMAGE)"
 ((e2e)) && mode+=", tests/e2e"
@@ -244,6 +264,14 @@ step "extension: npm ci (if needed)" npm_install extension
 step "extension: npm run check" npm --prefix extension run check
 step "extension: npm run build" npm --prefix extension run build
 step "extension: npm run zip" npm --prefix extension run zip
+
+if android_sdk; then
+  step "android: test, lint, assembleDebug, screenshots, glyphs" \
+    gradle test lint assembleDebug verifyRoborazziDebug checkLucideGlyphs
+else
+  printf '\nNo Android SDK found (set ANDROID_HOME, or sdk.dir in android/local.properties): skipping the Android app.\n'
+  skip "android (no Android SDK)"
+fi
 
 if ((e2e)); then
   step "tests/e2e: npm ci (if needed)" npm_install tests/e2e

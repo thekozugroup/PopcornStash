@@ -43,7 +43,7 @@ The device's system sans (Roboto on most phones), in sp so it follows the font-s
 
 Sentence case everywhere, no em dashes, two facts join with a middle dot.
 
-### Spacing (`Spacing.kt`)
+### Spacing (`Tokens.kt`)
 
 `4 · 8 · 12 · 16 · 20 · 24 · 32 · 40` dp. The page gutter is 20dp (the web phone gutter). 8dp inside a group, 16dp between related items, 24dp under a section heading, 32dp between page blocks, 40dp between Home's sections. Shelves scroll edge to edge with the gutter kept as content padding.
 
@@ -69,7 +69,7 @@ When the system's "Remove animations" setting is on (`LocalReduceMotion`), tabs 
 
 ### Touch and icons
 
-Every target is at least 48dp. Icons are Lucide (the web's set, from the same Lucide release as the web's `lucide-react` 1.55.0) at 24dp with a 1.75 stroke (`IconStroke`); empty-state icons are 28dp at 1.5. Fixed glyphs live in `ui/icons/PopcornIcons.kt`; library icons in `ui/icons/LibraryIcons.kt`, one entry per name in the server's curated list (`GET /api/libraries/icons`, docs/architecture.md section 8), with `folder` for a name the app does not know.
+Every target is at least 48dp. Icons are Lucide (the web's set, from the same Lucide release as the web's `lucide-react` 1.55.0) at 24dp with a 1.75 stroke (`IconStroke`); empty-state icons are 28dp at 1.5. The glyphs are generated from the web's `lucide-react` into `ui/icons/LucideGlyphs.kt` (android/README.md, Icons) and drawn with round caps and joins at the stroke asked for. Fixed glyphs are named in `ui/icons/PopcornIcons.kt`; library icons in `ui/icons/LibraryIcons.kt` (with the plain name used for content descriptions and the picker's tooltips), one entry per name in the server's curated list (`GET /api/libraries/icons`, docs/architecture.md section 8), with `folder` for a name the app does not know.
 
 | Place or action | Lucide glyph |
 | --- | --- |

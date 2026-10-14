@@ -22,3 +22,13 @@ internal.token
 *.key
 .DS_Store
 .impeccable/live/
+# Android (android/): Gradle and build outputs, the machine's SDK path, signing keys
+/android/.gradle/
+/android/.kotlin/
+/android/build/
+/android/app/build/
+/android/local.properties
+/android/.idea/
+/android/captures/
+*.jks
+*.keystore
