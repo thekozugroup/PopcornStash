@@ -11,7 +11,7 @@ PopcornStash points at one folder on your NAS, Unraid share or home server and k
 - **Every way in leads to the same place.** Torrents, links, uploads and drops all go through `Downloads/In Progress` and `Downloads/Completed`, then get sorted into the library that takes that kind of file, or `Other`. Anything uncertain, or a kind no library takes, waits in Inbox for one tap of review.
 - **Your folders stay yours.** Files outside `Inbox/` and `Downloads/` are indexed where they are and never moved unless you ask.
 - **Plays everywhere.** Videos play directly when the browser can, and are transcoded on the fly (HLS, with optional Intel/AMD/NVIDIA hardware encoding) when it cannot. Photos from phones, including HEIC, show in a timeline.
-- **Nothing leaves the server.** No metadata scraping, no accounts, no telemetry. The Android app talks only to your server, apart from one question a day to GitHub about a newer build of the app (its name and version only; it can be turned off).
+- **Nothing leaves the server.** No metadata scraping, no accounts, no telemetry. The Android app talks only to your server, apart from one question a day to GitHub about a newer build of the app (its name and version only; it can be turned off) and the download of that build from GitHub when you tap Update.
 
 ## Quick start
 
@@ -113,7 +113,7 @@ scripts/android-release.sh --dry-run   # build, sign and check; print what it wo
 scripts/android-release.sh             # publish build N (skips when nothing under android/ changed)
 ```
 
-It refuses a tree with uncommitted or untracked files, a branch other than main, or a main that is not pushed. When nothing under `android/` changed since the last `android-*` release it says so and stops; `--force` publishes anyway.
+It refuses a tree with uncommitted or untracked files, a branch other than main, or a main that is not pushed. A shallow clone (a cloud session's checkout often is one) is fetched whole first, because the build number counts every commit; it refuses when an `android-*` tag of the same or a higher build is on another commit, or when the tags cannot be fetched. It turns tracing (`bash -x`) off before it reads the secrets. When nothing under `android/` changed since the last `android-*` release it says so and stops; `--force` publishes anyway.
 
 It needs these secrets in the environment. In the cloud environment they live in the environment's settings (secrets), never in the repository:
 
