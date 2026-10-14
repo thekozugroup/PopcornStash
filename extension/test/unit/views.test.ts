@@ -71,6 +71,10 @@ describe('describeVpn', () => {
     expect(describeVpn(vpn({state: 'not_configured', configured: false})).label).toBe('Torrents blocked: no VPN');
     expect(describeVpn(vpn({protected: false})).tone).toBe('error');
     expect(describeVpn(null, true).label).toBe('VPN status unavailable');
+    // Each state named once: the label says what is wrong, the detail what still works.
+    expect(describeVpn(null, true).detail).toBe('Web links and uploads still work.');
+    expect(describeVpn(null).label).toBe('Checking VPN');
+    expect(describeVpn(null).detail).toBe('');
   });
 
   it('names the VPN once, even when the server label already carries the country', () => {

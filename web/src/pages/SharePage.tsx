@@ -46,7 +46,8 @@ import {useAuth} from '../auth/AuthProvider';
 import {BreakableName} from '../components/BreakableName';
 import {findLink, isTorrentLink, type DetectedLink} from '../components/downloads/linkDetect';
 import {MediaThumb} from '../components/downloads/MediaThumb';
-import {torrentsAffected, torrentsOff, torrentsWait, VpnLine} from '../components/downloads/VpnLine';
+import {VpnLine} from '../components/downloads/VpnLine';
+import {isNoVpnMode, torrentsAffected, torrentsOff, torrentsWait} from '../lib/vpn';
 import {PageHeader} from '../components/PageHeader';
 import {
   deleteOldShares,
@@ -59,7 +60,6 @@ import {
 import {useVpnStatus} from '../hooks/useVpnStatus';
 import {errorMessage} from '../lib/errors';
 import {formatBytes, formatCount} from '../lib/format';
-import {isNoVpnMode} from '../lib/vpn';
 
 const styles = stylex.create({
   card: {

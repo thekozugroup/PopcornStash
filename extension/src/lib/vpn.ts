@@ -42,8 +42,8 @@ export function vpnName(status: VpnStatus): string | null {
 export function describeVpn(status: VpnStatus | null, unavailable = false): VpnSummary {
   if (!status) {
     return unavailable
-      ? {tone: 'neutral', label: 'VPN status unavailable', detail: 'PopcornStash could not read the VPN status.'}
-      : {tone: 'neutral', label: 'Checking VPN', detail: 'Checking the VPN connection.'};
+      ? {tone: 'neutral', label: 'VPN status unavailable', detail: 'Web links and uploads still work.'}
+      : {tone: 'neutral', label: 'Checking VPN', detail: ''};
   }
 
   // STASH_ALLOW_NO_VPN: torrents run on this network whatever VPN is saved, so this

@@ -39,7 +39,7 @@ export function vpnView(status: VpnStatus | null, isUnavailable: boolean): VpnVi
       ? {
           tone: 'neutral',
           title: 'VPN status unavailable',
-          detail: 'PopcornStash could not read the VPN status.',
+          detail: 'Web links and uploads still work.',
           isDegraded: false,
         }
       : {tone: 'neutral', title: 'Checking the VPN', detail: null, isDegraded: false};

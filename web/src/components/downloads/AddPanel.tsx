@@ -17,9 +17,9 @@ import {useState, type ChangeEvent, type FormEvent, type RefObject} from 'react'
 import {ApiError, downloads as downloadsApi} from '../../api/client';
 import type {Download, VpnStatus} from '../../api/types';
 import {errorMessage} from '../../lib/errors';
-import {isNoVpnMode} from '../../lib/vpn';
 import {checkLink, describeLink, isTorrentLink} from './linkDetect';
-import {torrentsAffected, torrentsOff, torrentsWait, VpnLine} from './VpnLine';
+import {isNoVpnMode, showsVpnLine, torrentsOff, torrentsWait} from '../../lib/vpn';
+import {VpnLine} from './VpnLine';
 
 const styles = stylex.create({
   panel: {
@@ -113,6 +113,8 @@ export interface AddPanelProps {
   isOwner: boolean;
   vpnStatus: VpnStatus | null;
   vpnUnavailable: boolean;
+  /** The downloads could not be loaded: the server is not answering. */
+  isServerQuiet?: boolean;
   uploadInputRef: RefObject<HTMLInputElement | null>;
   isAddingTorrents: boolean;
   onAdded: (download: Download) => void;
@@ -124,6 +126,7 @@ export function AddPanel({
   isOwner,
   vpnStatus,
   vpnUnavailable,
+  isServerQuiet = false,
   uploadInputRef,
   isAddingTorrents,
   onAdded,
@@ -291,7 +294,7 @@ export function AddPanel({
         </Text>
       </div>
 
-      {torrentsAffected(vpnStatus, vpnUnavailable) ? (
+      {showsVpnLine(vpnStatus, vpnUnavailable, isServerQuiet) ? (
         <div {...stylex.props(styles.vpn)}>
           <VpnLine status={vpnStatus} isUnavailable={vpnUnavailable} isOwner={isOwner} />
         </div>

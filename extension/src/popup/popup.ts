@@ -106,7 +106,7 @@ function vpnTag(status: VpnStatus | null, unavailable: boolean): HTMLElement {
     {class: 'vpn'},
     h(
       'span',
-      {class: 'tag', title: summary.detail},
+      summary.detail ? {class: 'tag', title: summary.detail} : {class: 'tag'},
       h('span', {class: `dot dot-${summary.tone}`, 'aria-hidden': 'true'}),
       h('span', {class: 'tag-label'}, summary.label),
     ),

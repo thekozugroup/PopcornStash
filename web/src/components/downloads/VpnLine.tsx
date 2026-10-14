@@ -8,7 +8,7 @@ import * as stylex from '@stylexjs/stylex';
 import {Button} from '@astryxdesign/core/Button';
 import {Text} from '@astryxdesign/core/Text';
 import type {VpnStatus} from '../../api/types';
-import {describeVpn, isNoVpnMode, torrentsOffReason} from '../../lib/vpn';
+import {describeVpn, isNoVpnMode, torrentsAffected, torrentsOff, torrentsOffReason} from '../../lib/vpn';
 import {StatusTag} from '../StatusTag';
 
 const styles = stylex.create({
@@ -33,38 +33,13 @@ const styles = stylex.create({
   },
 });
 
-/** True when torrents are off on this server by design, so nothing waits for the VPN. */
-export function torrentsOff(status: VpnStatus | null): boolean {
-  return status?.torrents_off === true;
-}
-
-/**
- * True when the VPN line belongs on screen: torrents cannot run right now (or
- * the state cannot be read), or they run without a VPN.
- */
-export function torrentsAffected(status: VpnStatus | null, isUnavailable: boolean): boolean {
-  if (isUnavailable) return true;
-  if (!status) return false;
-  if (isNoVpnMode(status)) return true;
-  return !(status.state === 'connected' && status.protected !== false);
-}
-
-/**
- * True when a new torrent waits for the VPN instead of starting. Never while
- * torrents are off (nothing waits) or allowed without a VPN (they start at once).
- */
-export function torrentsWait(status: VpnStatus | null, isUnavailable: boolean): boolean {
-  if (torrentsOff(status) || isNoVpnMode(status)) return false;
-  return torrentsAffected(status, isUnavailable);
-}
-
 /** Off on purpose: the tag already says "Torrents off", so only a real reason is added. */
 function offDetail(status: VpnStatus): string {
   return [torrentsOffReason(status), 'Web links and uploads still work.'].filter(Boolean).join(' ');
 }
 
 function memberDetail(status: VpnStatus | null, isUnavailable: boolean): string {
-  if (isUnavailable || !status) return 'The VPN status could not be read. Web links and uploads still work.';
+  if (isUnavailable || !status) return 'Web links and uploads still work.';
   if (torrentsOff(status)) return offDetail(status);
   if (isNoVpnMode(status)) {
     return 'The server is set up this way.';
@@ -81,7 +56,7 @@ function memberDetail(status: VpnStatus | null, isUnavailable: boolean): string 
 }
 
 function ownerDetail(status: VpnStatus | null, isUnavailable: boolean): string {
-  if (isUnavailable || !status) return 'The VPN status could not be read. Web links and uploads still work.';
+  if (isUnavailable || !status) return 'Web links and uploads still work.';
   if (torrentsOff(status)) return offDetail(status);
   if (isNoVpnMode(status)) {
     return 'STASH_ALLOW_NO_VPN is on. Your router must protect the traffic.';

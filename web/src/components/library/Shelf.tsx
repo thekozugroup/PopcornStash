@@ -11,12 +11,19 @@ import {IconButton} from '@astryxdesign/core/IconButton';
 import {Button} from '@astryxdesign/core/Button';
 import {Skeleton} from '@astryxdesign/core/Skeleton';
 import {Text} from '@astryxdesign/core/Text';
-import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
+import {colorVars, typeScaleVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {ChevronLeft, ChevronRight, type LucideIcon} from 'lucide-react';
 import {Children, isValidElement, useCallback, useEffect, useId, useState, type ReactNode} from 'react';
 import {MediaTileSkeleton, type MediaShape} from '../MediaTile';
 
 const styles = stylex.create({
+  // Every shelf heading is Section type (the theme's third-level heading), whatever its
+  // place in the outline: on Home the shelves are h2s (DESIGN.md, Library pages, On Home).
+  sectionType: {
+    fontSize: typeScaleVars['--text-heading-3-size'],
+    fontWeight: typeScaleVars['--text-heading-3-weight'],
+    lineHeight: typeScaleVars['--text-heading-3-leading'],
+  },
   section: {
     display: 'flex',
     flexDirection: 'column',
@@ -124,6 +131,10 @@ export interface ShelfProps {
   emptyText?: string;
   /** Quiet text after the title ("3 new"). */
   note?: string;
+  /**
+   * The heading's place in the page outline. It always looks like a Section heading
+   * (DESIGN.md, Library pages, On Home), whatever its level.
+   */
   headingLevel?: 2 | 3;
   /** "See all" destination. */
   href?: string;
@@ -181,12 +192,12 @@ export function Shelf({
           {Icon ? (
             <span {...stylex.props(styles.iconTitle)}>
               <Icon size={18} strokeWidth={1.5} aria-hidden="true" {...stylex.props(styles.titleIcon)} />
-              <Heading level={headingLevel} id={headingId}>
+              <Heading level={headingLevel} id={headingId} xstyle={styles.sectionType}>
                 {title}
               </Heading>
             </span>
           ) : (
-            <Heading level={headingLevel} id={headingId}>
+            <Heading level={headingLevel} id={headingId} xstyle={styles.sectionType}>
               {title}
             </Heading>
           )}

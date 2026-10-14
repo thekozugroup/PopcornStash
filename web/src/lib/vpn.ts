@@ -88,8 +88,8 @@ export function isNoVpnMode(status: VpnStatus | null | undefined): boolean {
 export function describeVpn(status: VpnStatus | null, options: {isUnavailable?: boolean} = {}): VpnSummary {
   if (!status) {
     return options.isUnavailable
-      ? {tone: 'neutral', label: 'VPN status unavailable', detail: 'PopcornStash could not read the VPN status.'}
-      : {tone: 'neutral', label: 'Checking VPN', detail: 'Checking the VPN connection.'};
+      ? {tone: 'neutral', label: 'VPN status unavailable', detail: 'Web links and uploads still work.'}
+      : {tone: 'neutral', label: 'Checking VPN', detail: ''};
   }
 
   if (isNoVpnMode(status)) {
@@ -156,4 +156,40 @@ export function describeVpn(status: VpnStatus | null, options: {isUnavailable?: 
         detail: 'Set up a VPN in Settings to start torrents. Web links and uploads still work.',
       };
   }
+}
+
+/** True when torrents are off on this server by design, so nothing waits for the VPN. */
+export function torrentsOff(status: VpnStatus | null): boolean {
+  return status?.torrents_off === true;
+}
+
+/**
+ * True when the VPN line belongs on screen: torrents cannot run right now (or
+ * the state cannot be read), or they run without a VPN.
+ */
+export function torrentsAffected(status: VpnStatus | null, isUnavailable: boolean): boolean {
+  if (isUnavailable) return true;
+  if (!status) return false;
+  if (isNoVpnMode(status)) return true;
+  return !(status.state === 'connected' && status.protected !== false);
+}
+
+/**
+ * Whether the Downloads page shows its VPN line. While the server does not answer
+ * (`isServerQuiet`: the downloads could not be loaded) and nothing is known about the
+ * VPN, the page already says so once; a line would repeat it, or claim that links and
+ * uploads still work when nothing does. A status read before stays.
+ */
+export function showsVpnLine(status: VpnStatus | null, isUnavailable: boolean, isServerQuiet: boolean): boolean {
+  if (!status && isServerQuiet) return false;
+  return torrentsAffected(status, isUnavailable);
+}
+
+/**
+ * True when a new torrent waits for the VPN instead of starting. Never while
+ * torrents are off (nothing waits) or allowed without a VPN (they start at once).
+ */
+export function torrentsWait(status: VpnStatus | null, isUnavailable: boolean): boolean {
+  if (torrentsOff(status) || isNoVpnMode(status)) return false;
+  return torrentsAffected(status, isUnavailable);
 }

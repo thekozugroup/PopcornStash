@@ -162,6 +162,44 @@ test('a kind the library takes is sorted into it, and its page shows it', async 
   // Shows took nothing new: its episodes stay where they were.
   const shows = await libraryNamed(page, 'Shows');
   expect(shows.item_count).toBe(4);
+
+  // Home: the shelf is a second-level heading in the outline, drawn in Section type (16px).
+  await page.goto('/');
+  const shelfHeading = page.getByRole('heading', {level: 2, name: 'Kids', exact: true});
+  await expect(shelfHeading).toBeVisible();
+  expect(await shelfHeading.evaluate(element => getComputedStyle(element).fontSize)).toBe('16px');
+
+  // Its editor says what it now holds as a fact anyone can read, not as greyed choices.
+  await page.goto(`/settings/libraries/${encodeURIComponent(kids.id)}`);
+  const holds = page.getByTestId('holds-fact');
+  await expect(holds).toHaveText(/Holds\s*Videos, arranged as series/);
+  await expect(page.getByText('The type can change only while the library is empty.')).toBeVisible();
+  await expect(page.getByRole('radio', {name: 'Series'})).toHaveCount(0);
+  const ratio = await holds.getByText('Videos, arranged as series', {exact: true}).evaluate(element => {
+    // Any CSS colour (the theme's are oklch) to linear sRGB through a canvas pixel.
+    const linear = (css: string) => {
+      const context = document.createElement('canvas').getContext('2d')!;
+      context.fillStyle = css;
+      context.fillRect(0, 0, 1, 1);
+      return [...context.getImageData(0, 0, 1, 1).data.slice(0, 3)].map(value => {
+        const c = value / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      });
+    };
+    const luminance = (css: string) => {
+      const [r = 0, g = 0, b = 0] = linear(css);
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    let node: Element | null = element;
+    let background = 'rgba(0, 0, 0, 0)';
+    while (node && background === 'rgba(0, 0, 0, 0)') {
+      background = getComputedStyle(node).backgroundColor;
+      node = node.parentElement;
+    }
+    const [light, dark] = [luminance(getComputedStyle(element).color), luminance(background)].sort((x, y) => y - x);
+    return ((light ?? 1) + 0.05) / ((dark ?? 0) + 0.05);
+  });
+  expect(ratio).toBeGreaterThanOrEqual(4.5);
 });
 
 test('a member without access learns nothing about the library, even by its address', async ({browser}) => {

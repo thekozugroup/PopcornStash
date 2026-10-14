@@ -267,6 +267,7 @@ export default function DownloadsPage() {
         isOwner={isOwner}
         vpnStatus={vpn.status}
         vpnUnavailable={vpn.isUnavailable}
+        isServerQuiet={data.status === 'error'}
         uploadInputRef={uploadInputRef}
         isAddingTorrents={isAddingTorrents}
         onAdded={download => {

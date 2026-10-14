@@ -16,6 +16,7 @@ import type {InboxDecision, ItemCategory, ItemDetail, Library} from '../../api/t
 import {libraryIcon} from '../../lib/libraryIcons';
 import {
   categoryAt,
+  hintBeside,
   previewMove,
   resolveTarget,
   targetName,
@@ -315,9 +316,11 @@ export function MoveFields({item, form, onChange, choices, libraries, errors, sh
           <Text type="label">{preview ? preview.title : 'Choose where it goes'}</Text>
           {preview?.folder ? <span {...stylex.props(styles.folder)}>{preview.folder}</span> : null}
           {preview?.hint ? (
-            <Text type="supporting" color="secondary">
-              {preview.hint}
-            </Text>
+            hintBeside(preview, errors) ? (
+              <Text type="supporting" color="secondary">
+                {hintBeside(preview, errors)}
+              </Text>
+            ) : null
           ) : preview?.fileName ? (
             <Text type="supporting" color="secondary">
               {`Renamed to ${preview.fileName}`}

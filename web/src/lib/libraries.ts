@@ -67,6 +67,12 @@ export function takesLine(claims: ClaimKind[]): string {
   return claims.length === 0 ? 'Takes nothing new' : `Takes ${joinWords(claims.map(kind => CLAIM_WORDS[kind]))}`;
 }
 
+/** "Videos, arranged as series": what a library holding files is, said as a fact (it cannot change). */
+export function holdsLine(contentType: Library['content_type'], structure: Library['structure']): string {
+  if (contentType === 'photos') return 'Photos';
+  return structure === 'episodes' ? 'Videos, arranged as series' : 'Videos, arranged as one-offs';
+}
+
 export function kindLine(library: Pick<Library, 'content_type' | 'structure'>): string {
   if (library.content_type === 'photos') return 'Photos';
   return library.structure === 'episodes' ? 'Series' : 'One-offs';

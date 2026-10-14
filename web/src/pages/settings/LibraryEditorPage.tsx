@@ -55,7 +55,7 @@ import {StatusTag} from '../../components/StatusTag';
 import {useConfirm} from '../../components/settings/useConfirm';
 import {errorMessage} from '../../lib/errors';
 import {formatCount} from '../../lib/format';
-import {CLAIM_LABELS, CLAIM_WORDS, claimFits, fittingClaims, joinWords} from '../../lib/libraries';
+import {CLAIM_LABELS, CLAIM_WORDS, claimFits, fittingClaims, holdsLine, joinWords} from '../../lib/libraries';
 import {KNOWN_LIBRARY_ICONS, LibraryGlyph, defaultIconFor} from '../../lib/libraryIcons';
 import {folderCounts} from './LibrariesSettingsPage';
 
@@ -600,31 +600,37 @@ function LibraryEditor() {
                 ? 'The type can change only while the library is empty.'
                 : 'Videos are shows with seasons and episodes, or films and clips that stand on their own.'
             }>
-            <div {...stylex.props(styles.field)} data-field="type">
-              <RadioList
-                label="Holds"
-                value={draft.contentType}
-                onChange={value =>
-                  setType(value as ContentType, value === 'video' ? (draft.structure ?? 'one_offs') : null)
-                }
-                isDisabled={isLocked || isSaving}
-                disabledMessage={isLocked ? 'The type can change only while the library is empty.' : undefined}
-                status={status('type')}>
-                <RadioListItem value="video" label="Videos" />
-                <RadioListItem value="photos" label="Photos" description="Photos and the short clips phones take with them" />
-              </RadioList>
-              {draft.contentType === 'video' ? (
+            {isLocked ? (
+              // Its files fix what it holds: a fact in the text colour, like the folder, not greyed choices.
+              <div {...stylex.props(styles.fact)} data-field="type" data-testid="holds-fact">
+                <Text type="label">Holds</Text>
+                <Text type="body">{holdsLine(draft.contentType, draft.structure)}</Text>
+              </div>
+            ) : (
+              <div {...stylex.props(styles.field)} data-field="type">
                 <RadioList
-                  label="Arranged as"
-                  value={draft.structure ?? 'one_offs'}
-                  onChange={value => setType('video', value as Structure)}
-                  isDisabled={isLocked || isSaving}
-                  disabledMessage={isLocked ? 'The type can change only while the library is empty.' : undefined}>
-                  <RadioListItem value="episodes" label="Series" description="Shows with seasons and episodes" />
-                  <RadioListItem value="one_offs" label="One-offs" description="Films and clips that stand on their own" />
+                  label="Holds"
+                  value={draft.contentType}
+                  onChange={value =>
+                    setType(value as ContentType, value === 'video' ? (draft.structure ?? 'one_offs') : null)
+                  }
+                  isDisabled={isSaving}
+                  status={status('type')}>
+                  <RadioListItem value="video" label="Videos" />
+                  <RadioListItem value="photos" label="Photos" description="Photos and the short clips phones take with them" />
                 </RadioList>
-              ) : null}
-            </div>
+                {draft.contentType === 'video' ? (
+                  <RadioList
+                    label="Arranged as"
+                    value={draft.structure ?? 'one_offs'}
+                    onChange={value => setType('video', value as Structure)}
+                    isDisabled={isSaving}>
+                    <RadioListItem value="episodes" label="Series" description="Shows with seasons and episodes" />
+                    <RadioListItem value="one_offs" label="One-offs" description="Films and clips that stand on their own" />
+                  </RadioList>
+                ) : null}
+              </div>
+            )}
           </SettingsGroup>
 
           <SettingsGroup

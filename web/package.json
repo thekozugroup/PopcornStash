@@ -9,10 +9,11 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && eslint . && npm run -s theme:check",
+    "check": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && eslint . && npm run -s theme:check && vitest run",
     "theme:build": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs theme build src/themes/popcorn/popcornTheme.ts",
     "theme:check": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs theme build src/themes/popcorn/popcornTheme.ts --check",
-    "astryx": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs"
+    "astryx": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs",
+    "test": "vitest run"
   },
   "browserslist": [
     "chrome >= 123",
@@ -45,6 +46,7 @@
     "globals": "^17.13.0",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.71.2",
-    "vite": "^8.3.4"
+    "vite": "^8.3.4",
+    "vitest": "^5.0.4"
   }
 }

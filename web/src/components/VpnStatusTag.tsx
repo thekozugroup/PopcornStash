@@ -14,7 +14,7 @@ export function VpnStatusTag() {
   const {status, isUnavailable} = useVpnStatus();
   const summary = describeVpn(status, {isUnavailable});
   return (
-    <StatusTag tone={summary.tone} live title={`${summary.label}. ${summary.detail}`}>
+    <StatusTag tone={summary.tone} live title={summary.detail ? `${summary.label}. ${summary.detail}` : summary.label}>
       {summary.label}
     </StatusTag>
   );

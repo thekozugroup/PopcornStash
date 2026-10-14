@@ -172,6 +172,14 @@ export interface MovePreview {
   fileName: string | null;
   /** What is still missing, when something is. */
   hint: string | null;
+  /** The form field `hint` asks for; while that field shows its own error, the hint is left out. */
+  asksFor?: 'title' | 'show' | 'episode';
+}
+
+/** The preview's hint, unless the field it asks for already says so under it (said once). */
+export function hintBeside(preview: MovePreview, errors: Partial<Record<string, string>>): string | null {
+  if (!preview.hint) return null;
+  return preview.asksFor && errors[preview.asksFor] ? null : preview.hint;
 }
 
 /** Live preview of where a file goes at a target with these details. */
@@ -187,15 +195,15 @@ export function previewMove(target: Target, draft: MoveDraft, item: ItemDetail, 
   switch (category) {
     case 'movie': {
       const clean = cleanName(draft.title);
-      if (!clean) return {title, folder: null, fileName: null, hint: 'Add a title to see where it goes.'};
+      if (!clean) return {title, folder: null, fileName: null, hint: 'Add a title to see where it goes.', asksFor: 'title'};
       const folder = draft.year ? `${clean} (${draft.year})` : clean;
       return {title, folder: folderOfParts([folder]), fileName: `${folder}${extension}`, hint: null};
     }
     case 'episode': {
       const show = cleanName(draft.showName);
-      if (!show) return {title, folder: null, fileName: null, hint: 'Add the show name to see where it goes.'};
+      if (!show) return {title, folder: null, fileName: null, hint: 'Add the show name to see where it goes.', asksFor: 'show'};
       if (draft.episode === null) {
-        return {title, folder: null, fileName: null, hint: 'Add the episode number.'};
+        return {title, folder: null, fileName: null, hint: 'Add the episode number to see where it goes.', asksFor: 'episode'};
       }
       const season = draft.season ?? 1;
       return {
