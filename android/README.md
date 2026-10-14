@@ -38,8 +38,10 @@ app/src/main/kotlin/com/thekozugroup/popcornstash/
   data/session/            SessionRepository: who is signed in; ending a session forgets everything
   data/repo/               StashData: Home, libraries, downloads, Inbox and the VPN line, kept current by events
   data/device/             PlaybackCapabilities: this phone's decoders for the playback decision
-  feature/                 signin, home, downloads, settings
+  feature/                 signin, home, downloads, settings, player
 ```
+
+The player (`feature/player/`) is its own activity, opened with `context.openPlayer(itemId, fromStart)`. `PlayerController` holds its rules apart from Android (the playback request from this phone's decoders, progress every 10 seconds and on pause, leaving and the end, the server's HLS session ended once it is no longer played, a forgotten session asked for again, the next episode); `ExoPlayerEngine` is Media3 ExoPlayer with HLS, every request through the signed-in session's OkHttp client so the token goes to the server only. Nothing it plays is cached on disk.
 
 The session's token is sealed with AES-GCM under a non-exportable Android Keystore key and kept in `noBackupFilesDir`; the app allows no backup or device transfer. There is no HTTP logging and no HTTP cache. Signing out, a 401 on any request, or signing in as someone else ends the session: the token file and its key are deleted, the session's work is cancelled and the tabs start again empty.
 
@@ -47,7 +49,8 @@ The session's token is sealed with AES-GCM under a non-exportable Android Keysto
 
 - JVM: `ApiClientTest` (every endpoint against MockWebServer: method, path, query, body, token, the error envelope), `PairingFlowTest` (the pairing state machine), `EventStreamTest`, `SessionRepositoryTest`, `SessionStoreTest`, `StashDataTest`, `ServerAddressTest`, `PlaybackCapabilitiesTest`, `SignInControllerTest`, `LibraryIconsTest` (the icon names match the server's list).
 - Robolectric: `AppShellTest` (the toolbar's selection, tooltips, descriptions, page changes, slide direction, reduce motion, kept state, Back), `SignInScreensTest`.
-- Roborazzi: `ShellScreenshotTest` and `SignInScreenshotTest`, light and dark, in `app/src/test/screenshots/`.
+- Player: `PlaybackRequestBuilderTest` (the playback request and its wire shape, quality and audio choices), `ProgressSaverTest`, `StreamSessionsTest`, `PlayerControllerTest` (open and resume, direct and HLS, progress every 10 s, pause, background, leaving and the end, quality and audio switches, late answers ended, a forgotten session asked for again, gone videos, retry, the safe-codec retry, the next episode), `PlayerFormatTest`, `ExoPlayerEngineTest` (Robolectric: the token and Range on the session's client, no token to another host, ExoPlayer's errors, HLS and file loads, the picture-in-picture shape), `PlayerScreenTest` (Robolectric: what each control says and does, the menu, the end, failures, hiding the chrome, picture-in-picture) and `PlayerLauncherTest`.
+- Roborazzi: `ShellScreenshotTest`, `SignInScreenshotTest` and `PlayerScreenshotTest`, in `app/src/test/screenshots/` (light and dark; the player is always dark).
 - `ServerIntegrationTest` runs the app's client against a real server: it builds a `scripts/dev-fixture.sh` stash, starts `popcornstash serve`, makes the owner with a software passkey and the setup code from the log (as tests/e2e does with Chrome's virtual authenticator), then pairs the app (the owner approves the code), signs in with a passkey from the app's `android:apk-key-hash:` origin (`STASH_ANDROID_ASSETLINKS` lists it), and reads the libraries, Home and live events with the app's token. It needs ffmpeg and the server binary, so it runs only when asked:
 
   ```sh
@@ -55,7 +58,7 @@ The session's token is sealed with AES-GCM under a non-exportable Android Keysto
   cd android && ./gradlew :app:testDebugUnitTest --tests '*ServerIntegrationTest*' -PpopcornstashServer=../target/debug/popcornstash
   ```
 
-  `scripts/check.sh --e2e` runs it. `POPCORNSTASH_KEEP=1` keeps its temporary stash and server log.
+  `scripts/check.sh --e2e` runs it. `POPCORNSTASH_KEEP=1` keeps its temporary stash and server log. `PlayerServerIntegrationTest` uses the same server: the player gets the fixture's H.264 MP4 directly (a Range request answers 206) and its HEVC MKV as a conversion (the playlist and the first segment answer the app's token), the place where it paused is saved, and leaving ends the conversion (the playlist then answers 404). The command above (and `check.sh --e2e`) runs both.
 
 ## Icons
 

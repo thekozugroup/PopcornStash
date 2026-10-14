@@ -25,5 +25,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          The player (feature/player): its own activity for picture-in-picture, landscape and
+          hidden system bars. singleTask, so playing something else while it is in
+          picture-in-picture replaces what plays. It handles size, orientation and theme
+          changes itself, so the video never stops for them.
+        -->
+        <activity
+            android:name=".feature.player.PlayerActivity"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboard|keyboardHidden|navigation|uiMode|density"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
+            android:theme="@style/Theme.PopcornStash.Player" />
     </application>
 </manifest>
