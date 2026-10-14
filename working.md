@@ -1,5 +1,13 @@
 # PopcornStash, iteration 1
 
+## Current repair: pending magnet pause and resume
+
+- Confirmed that pending magnets live outside librqbit's managed torrent list, so the old pause/resume lookup returns NotFound until metadata is fetched.
+- Persist the pending pause flag with a backward-compatible default; cancel individual lookups on pause/remove/session stop and retry on resume without bypassing VPN readiness.
+- Serialize the metadata handoff with controls and reject stale attempt results. Report paused file checks as paused.
+- Synthetic regression coverage uses isolated temporary directories with DHT, trackers and local discovery disabled; no real download details or credentials are used. No live application update is part of this change.
+- Validation: Linux `cargo test -p stash-torrentd --locked` passes all 86 tests (including four new regressions); `cargo clippy -p stash-torrentd --all-targets --locked -- -D warnings` and workspace formatting pass. Web check/build passes (55 tests); extension check/zip passes (77 tests). Android lint, assembleDebug and checkLucideGlyphs pass; its unit/screenshot run has 609 passes, four skips and one unchanged `GlassScreenshotTest.photosAndroid11` snapshot mismatch. Full Rust workspace tests/lint and Docker image smoke were not run; the patch remains a draft and is not deployed.
+
 ## Objective
 Ship the Docker server for PopcornStash: a passkey-gated, private family library for videos, photos and downloaded media, with built-in transcoding, torrents routed only through a VPN (NordVPN quick setup), a web download manager, resumable uploads, an Inbox folder, automatic sorting, a Chrome extension and a PWA share target for links, photos, videos and other files. The Android app is a later phase; the API and device pairing are ready for it.
 
