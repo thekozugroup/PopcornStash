@@ -304,7 +304,7 @@ docker run -d --name "$ECHO" --network "$NET" "$REGISTRY/busybox:1.37" sh -c '
   mkdir -p /www/cgi-bin
   printf "%s\n" "#!/bin/sh" "echo Content-Type: text/plain" "echo" "echo \$REMOTE_ADDR" > /www/cgi-bin/ip
   chmod 0755 /www/cgi-bin/ip
-  exec httpd -f -p 80 -h /www' >/dev/null
+  exec httpd -f -p 0.0.0.0:80 -h /www' >/dev/null
 ECHO_IP="$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$ECHO")"
 ECHO_URL="http://$ECHO_IP/cgi-bin/ip"
 
