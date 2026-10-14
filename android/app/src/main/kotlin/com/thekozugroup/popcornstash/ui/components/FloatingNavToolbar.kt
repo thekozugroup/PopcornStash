@@ -186,9 +186,14 @@ private fun ToolbarSquare(
     }
     // A press on the blue square lightens it only as far as white keeps 4.5:1 (OnAccentRipple).
     val ripples = if (selected) OnAccentRipple else LocalRippleConfiguration.current
-    // The name opens to the left, over the page: the bar is on the right edge.
+    // The name opens to the left, over the page (the bar is on the right edge; Left is the
+    // physical side in every layout direction), clear of the bar's edge: Material measures the
+    // space from the square, which sits the bar's padding inside that edge.
     TooltipBox(
-        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Left),
+        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(
+            TooltipAnchorPosition.Left,
+            spacingBetweenTooltipAndAnchor = tokens.padding + tokens.tooltipGap,
+        ),
         tooltip = { PlainTooltip { Text(tab.label) } },
         state = rememberTooltipState(),
     ) {

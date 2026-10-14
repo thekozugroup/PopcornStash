@@ -253,10 +253,11 @@ fun PhotoViewer(
             ) {
                 MediaDisc(PopcornIcons.Close, "Close", onClick = onClose)
             }
-            // A snackbar sits on top of the plate, never over it; light, the inverse of the stage.
+            // A snackbar sits on top of the plate, never over it, as wide as the plate and 8dp
+            // above it; light, the inverse of the stage.
             Column(Modifier.align(Alignment.BottomCenter), horizontalAlignment = Alignment.CenterHorizontally) {
                 SnackbarHost(snackbar, Modifier.testTag("viewer snackbars")) { data ->
-                    PopcornSnackbar(data, Modifier.padding(bottom = Popcorn.spacing.xs), light = true)
+                    PopcornSnackbar(data, Modifier.padding(bottom = Popcorn.spacing.xs).testTag("viewer snackbar"), light = true)
                 }
                 if (current != null) {
                     AnimatedVisibility(visible = controls, enter = fadeIn(fade), exit = fadeOut(fade)) {

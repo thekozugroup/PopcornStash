@@ -52,10 +52,13 @@ data class ToolbarTokens(
     val glassSaturation: Float = 1.8f,
     /**
      * Distance from the right edge of the screen and from the navigation bar inset under it, and
-     * between the bar and a snackbar beside it. It also keeps the bar clear of the system's
-     * back-gesture edge for swipes.
+     * between the bar and a snackbar beside it. With gesture navigation the system's back-swipe
+     * zone is usually wider than this, so the bar's outer part lies in it; that is fine, because
+     * the bar takes only taps and long presses, which the system passes on.
      */
     val margin: Dp = 16.dp,
+    /** Between the bar's edge and a square's tooltip, which opens to the left of the bar. */
+    val tooltipGap: Dp = 8.dp,
     /** Between the end of a page's content and the top of the bar, once the page is scrolled to its end. */
     val contentGap: Dp = 16.dp,
     /** The ready-to-import count on the Downloads square. */

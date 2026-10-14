@@ -16,6 +16,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -277,14 +278,26 @@ class AppShellTest {
     }
 
     @Test
-    fun longPressShowsTheTabNameToTheLeftOfTheBar() {
-        showShell()
+    fun longPressShowsTheTabNameToTheLeftOfTheBar() = tooltipToTheLeft(LayoutDirection.Ltr)
+
+    /** Left is the physical side: in a right-to-left layout the bar is still on the right, so the name still opens to its left. */
+    @Test
+    fun theTooltipStaysLeftOfTheBarInARightToLeftLayout() = tooltipToTheLeft(LayoutDirection.Rtl)
+
+    private fun tooltipToTheLeft(layoutDirection: LayoutDirection) {
+        showShell(layoutDirection = layoutDirection)
         compose.onAllNodesWithText("Downloads").assertCountEquals(0)
         tab(Tab.Downloads).performTouchInput { longClick() }
         compose.waitForIdle()
-        // The tooltip is a popup window of its own; compare on the screen.
+        // The tooltip is a popup window of its own; compare on the screen, in pixels.
         val square = onScreen(tab(Tab.Downloads).fetchSemanticsNode())
-        val name = onScreen(compose.onNodeWithText("Downloads").fetchSemanticsNode())
+        val bar = onScreen(compose.onNodeWithTag("toolbar").fetchSemanticsNode())
+        val text = compose.onNodeWithText("Downloads").fetchSemanticsNode()
+        val name = onScreen(text)
+        // The popup's root is the tooltip itself: its right edge is the gap left of the bar's edge.
+        val tooltip = onScreen(generateSequence(text) { it.parent }.last())
+        val gap = tokens.tooltipGap.value * compose.density.density
+        assertEquals("The tooltip ends ${tokens.tooltipGap} left of the bar", bar.left - gap, tooltip.right, 1f)
         assertTrue("The name ends left of the square, at ${name.right} for ${square.left}", name.right <= square.left)
         assertTrue("The name is level with the square", name.center.y > square.top && name.center.y < square.bottom)
         // A long press only names the tab; it does not switch to it.
@@ -359,7 +372,10 @@ class AppShellTest {
         assertEquals("The last row ends the gap above the bar", bar.top - tokens.contentGap.value, last.bottom, 0.5f)
     }
 
-    /** A snackbar sits at the bottom beside the bar: level with its bottom edge, the margin to its left, never under it. */
+    /**
+     * A snackbar sits at the bottom beside the bar: level with its bottom edge, the margin to its
+     * left, never under it. Measured on the snackbar's visible surface, not on its host.
+     */
     @Test
     fun aSnackbarSitsBesideTheBarNotUnderIt() {
         val snackbar = SnackbarHostState()
@@ -377,13 +393,57 @@ class AppShellTest {
             }
         }
         compose.waitForIdle()
-        val note = bounds("snackbars")
+        val note = bounds("snackbar")
         val bar = bounds("toolbar")
         val screen = screen()
         assertEquals("Level with the bar's bottom", bar.bottom, note.bottom, 0.5f)
         assertEquals("The margin left of the bar", bar.left - tokens.margin.value, note.right, 0.5f)
         assertEquals("The margin from the left edge", screen.left + tokens.margin.value, note.left, 0.5f)
         compose.onNodeWithText("Moved to Kids.").assertExists()
+        // Those bounds are the visible surface, not space around it: 2dp inside each edge is the
+        // snackbar's own zinc-900, where Material's 12dp of padding would show the page.
+        val pixels = compose.onRoot().captureToImage().toPixelMap()
+        val density = compose.density.density
+        val surface = Color(0xFF18181B)
+        listOf(
+            "left" to (note.left + 2f to note.center.y),
+            "right" to (note.right - 2f to note.center.y),
+            "top" to (note.center.x to note.top + 2f),
+            "bottom" to (note.center.x to note.bottom - 2f),
+        ).forEach { (edge, at) ->
+            val pixel = pixels[(at.first * density).roundToInt(), (at.second * density).roundToInt()]
+            val near = abs(pixel.red - surface.red) < 0.02f && abs(pixel.green - surface.green) < 0.02f && abs(pixel.blue - surface.blue) < 0.02f
+            assertTrue("Inside the $edge edge the snackbar is zinc-900, not $pixel", near)
+        }
+    }
+
+    /**
+     * While the photo viewer (or any page that sends the bar away) is up, the tab's snackbars
+     * wait: they would sit on the viewer's plate. The message shows once the viewer is gone.
+     */
+    @Test
+    fun aTabSnackbarWaitsWhileTheBarIsAway() {
+        val snackbar = SnackbarHostState()
+        var viewerOpen by mutableStateOf(true)
+        compose.setContent {
+            PopcornTheme(darkTheme = false, reduceMotion = true) {
+                AppShell { page ->
+                    Box(Modifier.fillMaxSize()) {
+                        TestPage(page)
+                        if (page.tab == Tab.Home && viewerOpen) HideToolbarWhileShown()
+                        TabSnackbarHost(snackbar, page)
+                    }
+                    if (page.tab == Tab.Home) {
+                        LaunchedEffect(Unit) { snackbar.showSnackbar("Kids is not available any more.", duration = SnackbarDuration.Indefinite) }
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("Kids is not available any more.").assertDoesNotExist()
+        viewerOpen = false
+        compose.waitForIdle()
+        compose.onNodeWithText("Kids is not available any more.").assertExists()
     }
 
     @Test

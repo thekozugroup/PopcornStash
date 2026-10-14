@@ -1,6 +1,7 @@
 package com.thekozugroup.popcornstash.screenshots
 
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
@@ -148,12 +149,20 @@ class LibraryScreenshotTest {
 
     // ---------------------------------------------------------------------- shows ----
 
-    private fun show(name: String, dark: Boolean, ui: ShowViewModel.Ui) = shoot(name, dark) { page ->
-        ShowScreen("The Lantern Keepers", "tv", ui, page.bottomClearance, ShowActions(), format = SampleFormat)
-    }
+    /** A show's page; [atTheEnd] opens it scrolled to its end and checks that nothing there lies under the toolbar. */
+    private fun show(name: String, dark: Boolean, ui: ShowViewModel.Ui, atTheEnd: Boolean = false) =
+        shoot(name, dark, before = { if (atTheEnd) compose.assertNothingUnderTheToolbar() }) { page ->
+            // Past the last index: the list settles at its end.
+            val list = remember { LazyListState(firstVisibleItemIndex = if (atTheEnd) 999 else 0) }
+            ShowScreen("The Lantern Keepers", "tv", ui, page.bottomClearance, ShowActions(), format = SampleFormat, listState = list)
+        }
 
     @Test
     fun showLight() = show("show-light", false, ShowViewModel.Ui(Loadable.Ready(SampleMedia.lanternShow), season = 1))
+
+    /** A pushed page scrolled to its end: the last episode, its name and its line sit above the bar. */
+    @Test
+    fun showAtTheEndLight() = show("show-end-light", false, ShowViewModel.Ui(Loadable.Ready(SampleMedia.lanternShow), season = 1), atTheEnd = true)
 
     @Test
     fun showDark() = show("show-dark", true, ShowViewModel.Ui(Loadable.Ready(SampleMedia.lanternShow), season = 1))
