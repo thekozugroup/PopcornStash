@@ -2,9 +2,6 @@ package com.thekozugroup.popcornstash.feature.home
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Snackbar
-import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -16,9 +13,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -35,7 +30,7 @@ import com.thekozugroup.popcornstash.feature.photos.PhotoViewerOverlay
 import com.thekozugroup.popcornstash.navigation.PageStackHost
 import com.thekozugroup.popcornstash.navigation.TabPage
 import com.thekozugroup.popcornstash.navigation.rememberPageStack
-import com.thekozugroup.popcornstash.ui.theme.Popcorn
+import com.thekozugroup.popcornstash.ui.components.TabSnackbarHost
 
 /**
  * Home, the start tab: Home itself, and the pages it opens (a library, a show, an item,
@@ -104,14 +99,7 @@ fun HomeTab(
                 HomeRoute.OtherFiles -> OtherFilesPage(page.bottomClearance, services, isOwner, nav)
             }
         }
-        SnackbarHost(
-            snackbar,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = page.bottomClearance - 8.dp),
-        ) { data ->
-            Snackbar(data, shape = Popcorn.shapes.control)
-        }
+        TabSnackbarHost(snackbar, page)
     }
 }
 
@@ -164,7 +152,6 @@ private fun HomeRootPage(page: TabPage, services: LibraryServices, isOwner: Bool
             onClose = { viewer = null },
             onDetails = { nav.open(HomeRoute.Item(it.id, format.displayTitle(it))) },
             onPlay = { nav.play(it.id, false) },
-            onMessage = nav::message,
         )
     }
 }

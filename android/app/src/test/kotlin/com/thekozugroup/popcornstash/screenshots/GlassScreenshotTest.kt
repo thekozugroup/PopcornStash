@@ -3,9 +3,10 @@ package com.thekozugroup.popcornstash.screenshots
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
@@ -26,6 +27,7 @@ import com.thekozugroup.popcornstash.testing.SampleMedia
 import com.thekozugroup.popcornstash.testing.WithSampleImages
 import com.thekozugroup.popcornstash.ui.components.GlassTier
 import com.thekozugroup.popcornstash.ui.components.deviceGlassTier
+import com.thekozugroup.popcornstash.ui.theme.Popcorn
 import com.thekozugroup.popcornstash.ui.theme.PopcornTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -74,14 +76,14 @@ class GlassScreenshotTest {
         assertEquals(GlassTier.Captured, deviceGlassTier())
         photosUnderTheToolbar(dark = false)
         compose.onRoot().captureRoboImage(screenshot("glass-photos-light"))
-        compose.onNodeWithTag("toolbar").captureRoboImage(screenshot("glass-toolbar-light"))
+        compose.captureToolbarCloseUp("glass-toolbar-light")
     }
 
     @Test
     fun photosDark() {
         photosUnderTheToolbar(dark = true)
         compose.onRoot().captureRoboImage(screenshot("glass-photos-dark"))
-        compose.onNodeWithTag("toolbar").captureRoboImage(screenshot("glass-toolbar-dark"))
+        compose.captureToolbarCloseUp("glass-toolbar-dark")
     }
 
     /** Android 11 has no RenderEffect: the same page with today's opaque bar. */
@@ -93,14 +95,18 @@ class GlassScreenshotTest {
         compose.onRoot().captureRoboImage(screenshot("glass-photos-android11-light"))
     }
 
-    /** Pure white under Downloads, pure black under Settings: the two cases the tint is chosen for. */
+    /**
+     * Pure white under Downloads, pure black under Settings: the two cases the tint is chosen for.
+     * The edge between them runs across the middle of the bar, through the selected Home square.
+     */
     private fun whiteAndBlack(dark: Boolean) {
         compose.setContent {
             PopcornTheme(darkTheme = dark, reduceMotion = true) {
                 AppShell(initialTab = Tab.Home, readyToImport = 3) {
-                    Row(Modifier.fillMaxSize()) {
-                        Box(Modifier.weight(1f).fillMaxHeight().background(Color.White))
-                        Box(Modifier.weight(1f).fillMaxHeight().background(Color.Black))
+                    val toolbar = Popcorn.toolbar
+                    BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
+                        val white = maxHeight - toolbar.margin - toolbar.length(Tab.entries.size) / 2
+                        Box(Modifier.fillMaxWidth().height(white).background(Color.White))
                     }
                 }
             }
@@ -111,12 +117,12 @@ class GlassScreenshotTest {
     @Test
     fun whiteAndBlackLight() {
         whiteAndBlack(dark = false)
-        compose.onNodeWithTag("toolbar").captureRoboImage(screenshot("glass-white-black-light"))
+        compose.captureToolbarCloseUp("glass-white-black-light")
     }
 
     @Test
     fun whiteAndBlackDark() {
         whiteAndBlack(dark = true)
-        compose.onNodeWithTag("toolbar").captureRoboImage(screenshot("glass-white-black-dark"))
+        compose.captureToolbarCloseUp("glass-white-black-dark")
     }
 }

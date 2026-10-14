@@ -31,6 +31,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TooltipAnchorPosition
 import androidx.compose.material3.TooltipBox
@@ -73,6 +75,7 @@ import com.thekozugroup.popcornstash.feature.library.OtherFilesViewModel
 import com.thekozugroup.popcornstash.feature.library.displayTitle
 import com.thekozugroup.popcornstash.navigation.HideToolbarWhileShown
 import com.thekozugroup.popcornstash.ui.components.MediaDisc
+import com.thekozugroup.popcornstash.ui.components.PopcornSnackbar
 import com.thekozugroup.popcornstash.ui.icons.LucideGlyph
 import com.thekozugroup.popcornstash.ui.icons.LucideIcon
 import com.thekozugroup.popcornstash.ui.icons.PopcornIcons
@@ -81,10 +84,12 @@ import com.thekozugroup.popcornstash.ui.media.StashImage
 import com.thekozugroup.popcornstash.ui.theme.LocalPlayerTokens
 import com.thekozugroup.popcornstash.ui.theme.Popcorn
 import com.thekozugroup.popcornstash.ui.theme.PopcornMotion
+import kotlinx.coroutines.launch
 
 /**
  * The photo viewer over a library page or Home, with everything it needs: it saves
- * originals through the system's "Save to" picker and says how that went with [onMessage].
+ * originals through the system's "Save to" picker and says how that went in a snackbar of
+ * its own, above its controls (the tab's snackbars sit at the bottom, where the controls are).
  */
 @Composable
 fun PhotoViewerOverlay(
@@ -94,7 +99,6 @@ fun PhotoViewerOverlay(
     onClose: () -> Unit,
     onDetails: (Item) -> Unit,
     onPlay: (Item) -> Unit,
-    onMessage: (String) -> Unit,
     onNearEnd: () -> Unit = {},
 ) {
     val context = LocalContext.current
@@ -106,8 +110,8 @@ fun PhotoViewerOverlay(
         },
     )
     val saving by saver.saving.collectAsStateWithLifecycle()
-    val message by rememberUpdatedState(onMessage)
-    LaunchedEffect(saver) { saver.messages.collect { message(it) } }
+    val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(saver) { saver.messages.collect { launch { snackbar.showSnackbar(it) } } }
     var pending by rememberSaveable { mutableStateOf<String?>(null) }
     val pendingItem = photos.firstOrNull { it.id == pending }
     val mime = remember(pendingItem) { pendingItem?.let { OtherFilesViewModel.mimeFor(MediaFormat.fileName(it.relPath)) } ?: "image/*" }
@@ -137,6 +141,7 @@ fun PhotoViewerOverlay(
         },
         onNearEnd = onNearEnd,
         format = services.format,
+        snackbar = snackbar,
     )
 }
 
@@ -161,6 +166,8 @@ fun PhotoViewer(
     onNearEnd: () -> Unit = {},
     format: MediaFormat = MediaFormat(),
     initialControls: Boolean = true,
+    /** What the viewer says about its own actions ("Original saved."), shown above its plate. */
+    snackbar: SnackbarHostState = remember { SnackbarHostState() },
 ) {
     HideToolbarWhileShown()
     BackHandler(onBack = onClose)
@@ -246,14 +253,16 @@ fun PhotoViewer(
             ) {
                 MediaDisc(PopcornIcons.Close, "Close", onClick = onClose)
             }
-            if (current != null) {
-                AnimatedVisibility(
-                    visible = controls,
-                    enter = fadeIn(fade),
-                    exit = fadeOut(fade),
-                    modifier = Modifier.align(Alignment.BottomCenter),
-                ) {
-                    Plate(current, saving = savingId == current.id, format, onSaveOriginal, onDetails)
+            // A snackbar sits on top of the plate, never over it, as wide as the plate and 8dp
+            // above it; light, the inverse of the stage.
+            Column(Modifier.align(Alignment.BottomCenter), horizontalAlignment = Alignment.CenterHorizontally) {
+                SnackbarHost(snackbar, Modifier.testTag("viewer snackbars")) { data ->
+                    PopcornSnackbar(data, Modifier.padding(bottom = Popcorn.spacing.xs).testTag("viewer snackbar"), light = true)
+                }
+                if (current != null) {
+                    AnimatedVisibility(visible = controls, enter = fadeIn(fade), exit = fadeOut(fade)) {
+                        Plate(current, saving = savingId == current.id, format, onSaveOriginal, onDetails)
+                    }
                 }
             }
         }

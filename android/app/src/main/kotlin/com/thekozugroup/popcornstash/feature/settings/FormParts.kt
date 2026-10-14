@@ -26,8 +26,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
-import androidx.compose.material3.Snackbar
-import androidx.compose.material3.SnackbarData
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -45,11 +43,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.thekozugroup.popcornstash.ui.theme.Popcorn
-import com.thekozugroup.popcornstash.ui.theme.PopcornPalette
 
 // The form parts of Settings and the library editor (android/DESIGN.md, Library editor):
-// grouped sections, radio and check rows, field labels and errors, a destructive button,
-// confirmations and the snackbar. Choices are drawn in the text colour, not Action Blue:
+// grouped sections, radio and check rows, field labels and errors, a destructive button
+// and confirmations. Choices are drawn in the text colour, not Action Blue:
 // a choice is not an action (the icon picker follows the same rule).
 
 /** Disabled controls and their words fade to this. */
@@ -269,17 +266,4 @@ fun StatusWords(text: String, modifier: Modifier = Modifier) {
 fun PlaceholderBlock(width: Dp?, height: Dp, modifier: Modifier = Modifier, corner: Dp = 6.dp) {
     val sized = if (width != null) modifier.size(width, height) else modifier.fillMaxWidth().height(height)
     Box(sized.background(Popcorn.colors.subtle, RoundedCornerShape(corner)))
-}
-
-/** Snackbars in the inverse surface with 8dp corners, just above the floating toolbar. */
-@Composable
-fun PopcornSnackbar(data: SnackbarData) {
-    val dark = Popcorn.colors.isDark
-    Snackbar(
-        snackbarData = data,
-        shape = Popcorn.shapes.control,
-        containerColor = if (dark) PopcornPalette.Zinc50 else PopcornPalette.Zinc900,
-        contentColor = if (dark) PopcornPalette.Zinc900 else PopcornPalette.Zinc50,
-        modifier = Modifier.padding(horizontal = Popcorn.spacing.m),
-    )
 }
