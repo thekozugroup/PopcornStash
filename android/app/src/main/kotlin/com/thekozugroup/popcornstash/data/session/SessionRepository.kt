@@ -85,6 +85,11 @@ class SessionRepository(
     private val appScope: CoroutineScope,
     private val sessionContext: CoroutineContext,
     private val cleaners: List<() -> Unit> = emptyList(),
+    /**
+     * Runs at sign-out while the session still works, before `POST /api/auth/logout`:
+     * the share sheet's uploads stop and the server deletes what arrived of them.
+     */
+    private val beforeSignOut: suspend (Session) -> Unit = {},
 ) {
     private val ids = AtomicLong()
     private val signOuts = AtomicLong()
@@ -138,6 +143,7 @@ class SessionRepository(
     suspend fun signOut() {
         val session = current ?: return
         withContext(NonCancellable) {
+            withTimeoutOrNull(5_000) { runCatching { beforeSignOut(session) } }
             withTimeoutOrNull(5_000) { runCatching { session.api.logout() } }
         }
         end(notice = null, onlyId = session.id)

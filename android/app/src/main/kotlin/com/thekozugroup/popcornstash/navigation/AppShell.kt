@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -62,9 +63,18 @@ fun AppShell(
     initialTab: Tab = Tab.Start,
     readyToImport: Int = 0,
     toolbarVisible: Boolean = true,
+    /** A tab asked for from outside (a notification, the share sheet): shown once, then [onOpenedTab]. */
+    openTab: Tab? = null,
+    onOpenedTab: () -> Unit = {},
     page: @Composable (TabPage) -> Unit,
 ) {
     var current by rememberSaveable { mutableStateOf(initialTab) }
+    LaunchedEffect(openTab) {
+        if (openTab != null) {
+            current = openTab
+            onOpenedTab()
+        }
+    }
     val reselections = remember { Tab.entries.associateWith { mutableIntStateOf(0) } }
     val holder = rememberSaveableStateHolder()
     val reduceMotion = Popcorn.reduceMotion

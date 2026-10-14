@@ -1,6 +1,7 @@
 package com.thekozugroup.popcornstash
 
 import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -35,27 +36,38 @@ import com.thekozugroup.popcornstash.feature.settings.SettingsTab
 import com.thekozugroup.popcornstash.feature.signin.SignInFlow
 import com.thekozugroup.popcornstash.feature.signin.SignInViewModel
 import com.thekozugroup.popcornstash.navigation.AppShell
+import com.thekozugroup.popcornstash.navigation.OpenTab
 import com.thekozugroup.popcornstash.navigation.Tab
+import com.thekozugroup.popcornstash.share.UploadQueue
 import com.thekozugroup.popcornstash.ui.theme.Popcorn
 import com.thekozugroup.popcornstash.ui.theme.PopcornTheme
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+    /** A tab asked for by a notification or the share sheet ([OpenTab]), until the shell shows it. */
+    private var requestedTab by mutableStateOf<Tab?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) requestedTab = OpenTab.from(intent)
         val container = (application as PopcornStashApplication).container
         setContent {
             PopcornTheme {
-                PopcornStashApp(container, this)
+                PopcornStashApp(container, this, requestedTab, onOpenedTab = { requestedTab = null })
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        OpenTab.from(intent)?.let { requestedTab = it }
     }
 }
 
 /** Sign-in while nobody is signed in; the three tabs once someone is. */
 @Composable
-fun PopcornStashApp(container: AppContainer, activity: Activity) {
+fun PopcornStashApp(container: AppContainer, activity: Activity, openTab: Tab? = null, onOpenedTab: () -> Unit = {}) {
     val state by container.sessions.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val openUrl: (String) -> Unit = { url ->
@@ -75,14 +87,28 @@ fun PopcornStashApp(container: AppContainer, activity: Activity) {
         }
         is SessionState.SignedIn -> key(current.session.id) {
             val scope = rememberCoroutineScope()
-            SignedInApp(current.session, openUrl, onSignOut = { scope.launch { container.sessions.signOut() } })
+            SignedInApp(
+                session = current.session,
+                uploads = container.uploads,
+                openUrl = openUrl,
+                onSignOut = { scope.launch { container.sessions.signOut() } },
+                openTab = openTab,
+                onOpenedTab = onOpenedTab,
+            )
         }
     }
 }
 
 /** The three tabs for [session]; everything here is made again for the next person. */
 @Composable
-fun SignedInApp(session: Session, openUrl: (String) -> Unit, onSignOut: () -> Unit) {
+fun SignedInApp(
+    session: Session,
+    uploads: UploadQueue,
+    openUrl: (String) -> Unit,
+    onSignOut: () -> Unit,
+    openTab: Tab? = null,
+    onOpenedTab: () -> Unit = {},
+) {
     val user by session.user.collectAsStateWithLifecycle()
     val readyToImport by session.data.readyToImport.collectAsStateWithLifecycle()
     var version by remember { mutableStateOf<String?>(null) }
@@ -94,9 +120,9 @@ fun SignedInApp(session: Session, openUrl: (String) -> Unit, onSignOut: () -> Un
             null
         }
     }
-    AppShell(readyToImport = readyToImport.toInt()) { page ->
+    AppShell(readyToImport = readyToImport.toInt(), openTab = openTab, onOpenedTab = onOpenedTab) { page ->
         when (page.tab) {
-            Tab.Downloads -> DownloadsTab(page)
+            Tab.Downloads -> DownloadsTab(page, session, uploads, openUrl)
             Tab.Home -> HomeTab(page)
             Tab.Settings -> SettingsTab(
                 page = page,
