@@ -2,6 +2,7 @@
 //! the stash folder layout, the library (indexing and sorting), media
 //! processing and the background job queue.
 
+pub mod capture;
 pub mod config;
 pub mod db;
 pub mod error;

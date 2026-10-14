@@ -84,9 +84,15 @@ impl MediaService {
             .map_err(|e| crate::CoreError::Other(e.into()))?
     }
 
-    /// Probe job handler: fill duration, dimensions, media_json, taken_at, camera, mime.
+    /// Probe job handler: fill duration, dimensions, media_json, the capture time, camera, mime.
     pub async fn process_item(&self, item_id: &str) -> Result<()> {
-        thumbs::process_item(self, item_id).await
+        thumbs::process_item(self, item_id, thumbs::Dating::Keep).await
+    }
+
+    /// The probe jobs migration 0003 queues (payload `{"redate": true}`): the same, with the
+    /// capture time read again under section 4's rules instead of kept.
+    pub async fn redate_item(&self, item_id: &str) -> Result<()> {
+        thumbs::process_item(self, item_id, thumbs::Dating::Redate).await
     }
 
     /// Thumb job handler: write `sm` and `lg` WebP thumbnails (and a rendition for HEIC/RAW/TIFF photos).

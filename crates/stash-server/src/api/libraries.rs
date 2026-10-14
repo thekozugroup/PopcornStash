@@ -826,6 +826,76 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
+    /// The JSON clients read (section 8): a series library's `shows` on Home, and the
+    /// capture time of a photo as the moment, the camera's clock and its offset, with the
+    /// timeline grouped by that clock's month.
+    #[tokio::test]
+    async fn home_shows_and_capture_times_in_the_json() {
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        let now = stash_core::now();
+        sqlx::query(
+            "INSERT INTO items (id, rel_path, kind, category, status, title, sort_title, show_name, season,
+                                episode, size, mtime, thumb_state, added_at, updated_at) VALUES
+                ('e1', 'Shows/Andor/Season 01/Andor - S01E01.mkv', 'video', 'episode', 'ready', 'Andor S01E01', 'andor', 'Andor', 1, 1, 1, 1, 'pending', ?, ?),
+                ('e2', 'Shows/Bluey/Season 01/Bluey - S01E01.mkv', 'video', 'episode', 'ready', 'Bluey S01E01', 'bluey', 'Bluey', 1, 1, 1, 1, 'pending', ?, ?)",
+        )
+        .bind(now - 10)
+        .bind(now)
+        .bind(now - 5)
+        .bind(now)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        // 20:00 on June 30 in Los Angeles, which is July 1 in UTC.
+        sqlx::query(
+            "INSERT INTO items (id, rel_path, kind, category, status, title, sort_title, size, mtime, thumb_state,
+                                taken_at, taken_local, taken_offset, added_at, updated_at)
+             VALUES ('p1', 'Photos/2024/06/IMG_1.jpg', 'photo', 'photo', 'ready', 'IMG_1', 'img_1', 1, 1, 'pending',
+                     1719802800, '2024-06-30T20:00:00', -420, ?, ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+
+        let (status, home) = app.json("/api/home", &token).await;
+        assert_eq!(status, StatusCode::OK, "{home}");
+        let library = |id: &str| {
+            home["libraries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|l| l["library"]["id"] == id)
+                .unwrap()
+                .clone()
+        };
+        let shows = library(STARTING_SHOWS);
+        assert_eq!(shows["shows"].as_array().unwrap().len(), 2, "{shows}");
+        let first = &shows["shows"][0];
+        assert_eq!(first["show_name"], "Bluey");
+        assert_eq!(first["item_count"], 1);
+        assert_eq!(first["new_count"], 1);
+        assert_eq!(first["poster_item_id"], "e2");
+        assert_eq!(first["latest"]["id"], "e2");
+        assert_eq!(first["last_added_at"], now - 5);
+        assert_eq!(library(STARTING_PHOTOS)["shows"], serde_json::json!([]));
+        let photo = &library(STARTING_PHOTOS)["recent"][0];
+        assert_eq!(photo["taken_at"], 1_719_802_800);
+        assert_eq!(photo["taken_local"], "2024-06-30T20:00:00");
+        assert_eq!(photo["taken_offset"], -420);
+
+        let (status, timeline) = app
+            .json(
+                &format!("/api/libraries/{STARTING_PHOTOS}/timeline"),
+                &token,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{timeline}");
+        assert_eq!(timeline["months"][0]["month"], "2024-06", "{timeline}");
+    }
+
     /// A client that does not send `limit` gets the documented 200 photos per page, and
     /// no page holds more than 500 whatever it asks for.
     #[tokio::test]
@@ -836,10 +906,10 @@ mod tests {
         sqlx::query(
             "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 600)
              INSERT INTO items (id, rel_path, kind, category, status, title, sort_title, size, mtime,
-                                thumb_state, taken_at, added_at, updated_at)
+                                thumb_state, taken_at, taken_local, added_at, updated_at)
              SELECT printf('photo-%04d', i), printf('Photos/2024/06/IMG_%04d.jpg', i), 'photo', 'photo',
                     'ready', printf('IMG_%04d', i), printf('img_%04d', i), 10, ?, 'pending',
-                    1718236800 + i, ?, ? FROM n",
+                    1718236800 + i, strftime('%Y-%m-%dT%H:%M:%S', 1718236800 + i, 'unixepoch'), ?, ? FROM n",
         )
         .bind(now)
         .bind(now)

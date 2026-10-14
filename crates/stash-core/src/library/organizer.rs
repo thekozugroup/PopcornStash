@@ -17,6 +17,7 @@ use super::scanner::{
     publish_moved, quick_hash_async,
 };
 use super::{Library, OrganizeRequest, ReviewAction, repo};
+use crate::capture::{self, CaptureTime, Recorded};
 use crate::events::{Event, LibraryChange};
 use crate::jobs::JobKind;
 use crate::media::ThumbSize;
@@ -89,11 +90,12 @@ pub fn layout_for(classification: &Classification, file_name: &str) -> String {
                 (None, None) => format!("{show}/{name}"),
             }
         }
-        Category::HomeVideo | Category::Photo => match c
-            .taken_at
-            .and_then(|t| time::OffsetDateTime::from_unix_timestamp(t).ok())
-        {
-            Some(dt) => format!("{:04}/{:02}/{name}", dt.year(), u8::from(dt.month())),
+        // The month on the camera's clock (section 4, Capture time).
+        Category::HomeVideo | Category::Photo => match c.taken() {
+            Some(taken) => {
+                let (year, month) = taken.year_month();
+                format!("{year:04}/{month:02}/{name}")
+            }
             None => format!("Undated/{name}"),
         },
         Category::Other => name,
@@ -1371,7 +1373,7 @@ fn organize_target(
         s.and_then(|s| non_empty(&s.title)),
     )
     .unwrap_or_default();
-    Classification {
+    let mut target = Classification {
         category,
         title,
         year: choose(
@@ -1402,14 +1404,19 @@ fn organize_target(
             .episode_title
             .clone()
             .or_else(|| s.and_then(|s| s.episode_title.clone())),
-        taken_at: item
-            .taken_at
-            .or_else(|| s.and_then(|s| s.taken_at))
-            .or(Some(item.mtime)),
+        taken_at: None,
+        taken_local: None,
+        taken_offset: None,
         confidence: Confidence::High,
         reason: "Organized by hand".to_string(),
         layout: String::new(),
-    }
+    };
+    target.set_taken(
+        item.taken()
+            .or_else(|| s.and_then(Classification::taken))
+            .or_else(|| Recorded::instant(item.mtime)?.resolve(&capture::server_zone())),
+    );
+    target
 }
 
 /// Longest title or show name accepted by organize and review (as for metadata edits).
@@ -1569,10 +1576,15 @@ async fn organize_item(
             move_into_library(lib, &abs, &destination, Some(&item.id)).await?
         };
     let target = target_class;
+    let taken = match target.category {
+        Category::HomeVideo | Category::Photo => target.taken(),
+        _ => item.taken(),
+    };
+    let (taken_at, taken_local, taken_offset) = CaptureTime::columns(taken.as_ref());
     sqlx::query(
         "UPDATE items SET rel_path = ?, category = ?, title = ?, sort_title = ?, year = ?, show_name = ?, season = ?,
-            episode = ?, episode_title = ?, taken_at = ?, status = 'ready', suggestion_json = NULL, missing_since = NULL,
-            updated_at = ?
+            episode = ?, episode_title = ?, taken_at = ?, taken_local = ?, taken_offset = ?, status = 'ready',
+            suggestion_json = NULL, missing_since = NULL, updated_at = ?
          WHERE id = ?",
     )
     .bind(&new_rel)
@@ -1584,10 +1596,9 @@ async fn organize_item(
     .bind(target.season)
     .bind(target.episode)
     .bind(&target.episode_title)
-    .bind(match target.category {
-        Category::HomeVideo | Category::Photo => target.taken_at,
-        _ => item.taken_at,
-    })
+    .bind(taken_at)
+    .bind(&taken_local)
+    .bind(taken_offset)
     .bind(now())
     .bind(&item.id)
     .execute(&lib.db)
@@ -1908,9 +1919,13 @@ pub async fn restore_item(lib: &Library, item_id: &str) -> Result<ItemRow> {
         && category != item.category
     {
         let meta = library_metadata(category, &new_rel, item.mtime);
+        let (taken_at, taken_local, taken_offset) = CaptureTime::columns(meta.taken.as_ref());
         sqlx::query(
             "UPDATE items SET category = ?, title = ?, sort_title = ?, year = ?, show_name = ?, season = ?,
-                episode = ?, episode_title = ?, taken_at = COALESCE(?, taken_at) WHERE id = ?",
+                episode = ?, episode_title = ?, taken_at = COALESCE(?, taken_at),
+                taken_local = COALESCE(?, taken_local),
+                taken_offset = CASE WHEN ? IS NULL THEN taken_offset ELSE ? END
+             WHERE id = ?",
         )
         .bind(category.as_str())
         .bind(&meta.title)
@@ -1920,7 +1935,10 @@ pub async fn restore_item(lib: &Library, item_id: &str) -> Result<ItemRow> {
         .bind(meta.season)
         .bind(meta.episode)
         .bind(&meta.episode_title)
-        .bind(meta.taken_at)
+        .bind(taken_at)
+        .bind(&taken_local)
+        .bind(taken_at)
+        .bind(taken_offset)
         .bind(item_id)
         .execute(&mut *tx)
         .await?;
@@ -2031,6 +2049,8 @@ mod tests {
             episode: None,
             episode_title: None,
             taken_at: None,
+            taken_local: None,
+            taken_offset: None,
             confidence: Confidence::High,
             reason: String::new(),
             layout: String::new(),
@@ -2114,19 +2134,25 @@ mod tests {
         );
 
         let mut h = class(Category::HomeVideo);
-        h.taken_at = Some(1_718_273_700);
+        // 23:30 on June 30 at -04:00 is July 1 in UTC: the folder follows the camera's clock.
+        h.set_taken(
+            Recorded::clock(2024, 6, 30, 23, 30, 0, Some(-240))
+                .and_then(|r| r.resolve(&jiff::tz::TimeZone::UTC)),
+        );
+        assert_eq!(h.taken_at, Some(1_719_804_600));
         assert_eq!(
             destination_for(&h, "IMG_1234.MOV"),
             "Home Videos/2024/06/IMG_1234.MOV"
         );
-        h.taken_at = None;
+        h.set_taken(None);
         assert_eq!(
             destination_for(&h, "IMG_1234.MOV"),
             "Home Videos/Undated/IMG_1234.MOV"
         );
+        // A suggestion stored before capture times had clocks: its moment read in UTC.
         let mut p = class(Category::Photo);
-        p.taken_at = Some(0);
-        assert_eq!(destination_for(&p, "a:b.jpg"), "Photos/1970/01/a_b.jpg");
+        p.taken_at = Some(86_400 * 40);
+        assert_eq!(destination_for(&p, "a:b.jpg"), "Photos/1970/02/a_b.jpg");
         assert_eq!(
             destination_for(&class(Category::Other), "notes.PDF"),
             "Other/notes.PDF"

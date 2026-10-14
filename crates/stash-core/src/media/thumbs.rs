@@ -4,8 +4,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use jiff::tz::TimeZone;
+
 use super::{MediaService, ThumbSize, exif, filters, probe, tools};
+use crate::capture::{self, CaptureTime, Recorded};
 use crate::events::{Event, LibraryChange};
+use crate::library::parse::parse_name;
 use crate::models::{Category, ItemRow, ItemStatus, MediaKind, MediaSummary, ThumbState};
 use crate::{CoreError, Result, now};
 
@@ -61,10 +65,60 @@ struct ProbeResult {
     height: Option<i64>,
     media_json: Option<String>,
     camera: Option<String>,
-    taken_at: Option<i64>,
+    /// The capture time the file's own metadata gives (EXIF, the clip's tags).
+    recorded: Option<Recorded>,
 }
 
-pub async fn process_item(media: &MediaService, item_id: &str) -> Result<()> {
+/// How the probe job settles the capture time (section 4, Capture time).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dating {
+    /// The file's metadata, else the time already stored (from the name or the file time
+    /// when the item was indexed), else the name, else the file time.
+    Keep,
+    /// Read everything again, once, for rows dated before migration 0003: the metadata,
+    /// else the name, else the stored moment (a file time) read in the server's zone.
+    Redate,
+}
+
+/// The capture time a probed item gets. Movies and episodes have none (their creation
+/// time is the encode date); other kinds keep a stored time unless the metadata has one.
+pub fn capture_time(
+    item: &ItemRow,
+    recorded: Option<Recorded>,
+    dating: Dating,
+    zone: &TimeZone,
+) -> Option<CaptureTime> {
+    let stored = item.taken();
+    match item.category {
+        Category::Movie | Category::Episode => stored,
+        Category::Other => recorded.and_then(|r| r.resolve(zone)).or(stored),
+        Category::Photo | Category::HomeVideo => {
+            let stem = std::path::Path::new(&item.rel_path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let named = parse_name(&stem).date;
+            let file_time = Recorded::instant(item.mtime);
+            match dating {
+                Dating::Keep => recorded
+                    .and_then(|r| r.resolve(zone))
+                    .or(stored)
+                    .or_else(|| capture::first_of([named, file_time], zone)),
+                Dating::Redate => capture::first_of(
+                    [
+                        recorded,
+                        named,
+                        stored.and_then(|t| Recorded::instant(t.at)),
+                        file_time,
+                    ],
+                    zone,
+                ),
+            }
+        }
+    }
+}
+
+pub async fn process_item(media: &MediaService, item_id: &str, dating: Dating) -> Result<()> {
     let Some(item) = load_item(media, item_id).await? else {
         tracing::debug!(item_id, "probe skipped: item no longer exists");
         return Ok(());
@@ -92,7 +146,7 @@ pub async fn process_item(media: &MediaService, item_id: &str) -> Result<()> {
             result.camera = camera_from_tags(&summary.tags);
             // Creation time of a movie or episode is the encode date, not when it was filmed.
             if !matches!(item.category, Category::Movie | Category::Episode) {
-                result.taken_at = taken_from_tags(&summary.tags);
+                result.recorded = taken_from_tags(&summary.tags);
             }
             result.media_json = Some(serde_json::to_string(&summary)?);
         }
@@ -120,17 +174,47 @@ pub async fn process_item(media: &MediaService, item_id: &str) -> Result<()> {
             result.width = width;
             result.height = height;
             result.camera = info.camera;
-            result.taken_at = info.taken_at;
+            result.recorded = info.taken;
         }
         MediaKind::Other => {}
     }
 
     // The capture date from EXIF or the clip's own tags beats whatever the scanner had
     // (a date in the name or the file's modification time), as section 4 orders them.
-    // Without one, the existing date stays.
+    let taken = capture_time(&item, result.recorded, dating, &capture::server_zone());
+    let camera = result.camera.clone().or_else(|| item.camera.clone());
+    // A waiting file's suggestion carries the same capture time, so where it would go
+    // (its `YYYY/MM/` folder) follows what the probe learned.
+    let suggestion = match item.suggestion() {
+        Some(mut c)
+            if matches!(c.category, Category::Photo | Category::HomeVideo)
+                && taken.is_some()
+                && c.taken() != taken =>
+        {
+            c.set_taken(taken);
+            Some(serde_json::to_string(&c)?)
+        }
+        _ => item.suggestion_json.clone(),
+    };
+    let unchanged = result.mime == item.mime
+        && result.duration_s == item.duration_s
+        && result.width == item.width
+        && result.height == item.height
+        && result.media_json == item.media_json
+        && camera == item.camera
+        && taken == item.taken()
+        && item.taken_local.is_some() == item.taken_at.is_some()
+        && suggestion == item.suggestion_json;
+    if unchanged {
+        // Nothing new (a second probe, or a capture time that was already right): no
+        // write, no event.
+        return Ok(());
+    }
+    let (taken_at, taken_local, taken_offset) = CaptureTime::columns(taken.as_ref());
     sqlx::query(
         "UPDATE items SET mime = ?, duration_s = ?, width = ?, height = ?, media_json = ?,
-                camera = COALESCE(?, camera), taken_at = COALESCE(?, taken_at), updated_at = ?
+                camera = ?, taken_at = ?, taken_local = ?, taken_offset = ?, suggestion_json = ?,
+                updated_at = ?
          WHERE id = ?",
     )
     .bind(&result.mime)
@@ -138,8 +222,11 @@ pub async fn process_item(media: &MediaService, item_id: &str) -> Result<()> {
     .bind(result.width)
     .bind(result.height)
     .bind(&result.media_json)
-    .bind(&result.camera)
-    .bind(result.taken_at)
+    .bind(&camera)
+    .bind(taken_at)
+    .bind(&taken_local)
+    .bind(taken_offset)
+    .bind(&suggestion)
     .bind(now())
     .bind(item_id)
     .execute(&media.db)
@@ -675,77 +762,14 @@ pub fn camera_from_tags(tags: &BTreeMap<String, String>) -> Option<String> {
     )
 }
 
-/// When the clip was recorded, from QuickTime/Matroska tags.
-pub fn taken_from_tags(tags: &BTreeMap<String, String>) -> Option<i64> {
+/// When the clip was recorded, from QuickTime/Matroska tags: the phone's clock with its
+/// offset (`com.apple.quicktime.creationdate`), else the container's creation time (a
+/// moment in UTC), else a `date` tag (section 4, Capture time).
+pub fn taken_from_tags(tags: &BTreeMap<String, String>) -> Option<Recorded> {
     ["com.apple.quicktime.creationdate", "creation_time", "date"]
         .iter()
         .filter_map(|k| tags.get(*k))
-        .find_map(|v| parse_tag_time(v))
-}
-
-/// `2024-06-13T10:21:00.000000Z`, `2024-06-13T12:21:00+0200`, `2024-06-13 10:21:00`,
-/// `2024:06:13 10:21:00` or `2024-06-13` → unix seconds (no offset means UTC).
-pub fn parse_tag_time(value: &str) -> Option<i64> {
-    let s = value.trim();
-    let num = |from: usize, to: usize| s.get(from..to).and_then(|t| t.parse::<u32>().ok());
-    let sep = s.as_bytes().get(4).copied()?;
-    if !matches!(sep, b'-' | b':') || s.as_bytes().get(7) != Some(&sep) {
-        return None;
-    }
-    let (year, month, day) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
-    let (mut hour, mut minute, mut second) = (0, 0, 0);
-    let mut rest = s.get(10..)?;
-    if let Some(clock) = rest.strip_prefix(['T', ' ']) {
-        let b = clock.as_bytes();
-        if b.len() < 5 || b[2] != b':' {
-            return None;
-        }
-        hour = clock.get(0..2)?.parse().ok()?;
-        minute = clock.get(3..5)?.parse().ok()?;
-        rest = clock.get(5..)?;
-        if let Some(sec) = rest.strip_prefix(':') {
-            second = sec.get(0..2)?.parse().ok()?;
-            rest = sec.get(2..)?;
-        }
-        if let Some(frac) = rest.strip_prefix(['.', ',']) {
-            rest = frac.trim_start_matches(|c: char| c.is_ascii_digit());
-        }
-    }
-    let offset = parse_offset(rest.trim())?;
-    exif::to_unix(
-        i32::try_from(year).ok()?,
-        u8::try_from(month).ok()?,
-        u8::try_from(day).ok()?,
-        u8::try_from(hour).ok()?,
-        u8::try_from(minute).ok()?,
-        u8::try_from(second).ok()?,
-        offset,
-    )
-}
-
-/// `Z`, `` (UTC), `+02:00`, `+0200`, `-05` → minutes east of UTC.
-fn parse_offset(s: &str) -> Option<i32> {
-    if s.is_empty() || s.eq_ignore_ascii_case("z") || s.eq_ignore_ascii_case("utc") {
-        return Some(0);
-    }
-    let sign = match s.as_bytes()[0] {
-        b'+' => 1,
-        b'-' => -1,
-        _ => return None,
-    };
-    let digits: String = s[1..].chars().filter(|c| *c != ':').collect();
-    if !digits.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    let (h, m) = match digits.len() {
-        2 => (digits.parse::<i32>().ok()?, 0),
-        4 => (
-            digits[..2].parse::<i32>().ok()?,
-            digits[2..].parse::<i32>().ok()?,
-        ),
-        _ => return None,
-    };
-    (h <= 14 && m < 60).then_some(sign * (h * 60 + m))
+        .find_map(|v| capture::parse_tag_time(v))
 }
 
 fn extension(path: &Path) -> String {
@@ -1610,34 +1634,114 @@ mod tests {
         assert_eq!(thumb_seek(Some(0.0)), 3.0);
     }
 
+    fn zone(name: &str) -> TimeZone {
+        TimeZone::get(name).unwrap()
+    }
+
+    fn probed_row(rel: &str, category: Category, mtime: i64) -> ItemRow {
+        crate::library::scanner::new_row(
+            rel,
+            category,
+            ItemStatus::Ready,
+            crate::library::scanner::Meta::default(),
+            1,
+            mtime,
+            None,
+        )
+    }
+
+    /// 2024-07-01T02:30:00Z: the evening of June 30 in New York, July 1 in UTC and Tokyo.
+    const MONTH_EDGE: i64 = 1_719_801_000;
+
     #[test]
-    fn tag_times() {
-        assert_eq!(
-            parse_tag_time("2024-06-13T10:21:00.000000Z"),
-            Some(1_718_274_060)
+    fn a_file_time_is_read_in_the_server_zone() {
+        let item = probed_row("Photos/scan.png", Category::Photo, MONTH_EDGE);
+        let read = |name: &str| capture_time(&item, None, Dating::Keep, &zone(name)).unwrap();
+        assert_eq!(read("America/New_York").local_text(), "2024-06-30T22:30:00");
+        assert_eq!(read("America/New_York").month(), "2024-06");
+        assert_eq!(read("UTC").local_text(), "2024-07-01T02:30:00");
+        assert_eq!(read("UTC").month(), "2024-07");
+        assert_eq!(read("Asia/Tokyo").local_text(), "2024-07-01T11:30:00");
+        for name in ["America/New_York", "UTC", "Asia/Tokyo"] {
+            assert_eq!(
+                read(name).at,
+                MONTH_EDGE,
+                "{name}: the moment is the file time"
+            );
+            assert_eq!(read(name).offset, None, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_probe_keeps_a_stored_time_unless_the_file_says_better() {
+        let ny = zone("America/New_York");
+        let mut item = probed_row("Photos/2024/06/beach.jpg", Category::Photo, MONTH_EDGE);
+        let stored = Recorded::clock(2024, 6, 2, 9, 0, 0, None)
+            .unwrap()
+            .resolve(&ny);
+        item.set_taken(stored);
+        assert_eq!(capture_time(&item, None, Dating::Keep, &ny), stored);
+        // EXIF with an offset wins and keeps the camera's clock.
+        let exif = Recorded::clock(2024, 6, 30, 23, 45, 0, Some(9 * 60));
+        let t = capture_time(&item, exif, Dating::Keep, &ny).unwrap();
+        assert_eq!(t.local_text(), "2024-06-30T23:45:00");
+        assert_eq!(t.offset, Some(540));
+        assert_eq!(t.at, 1_719_758_700);
+        // Movies and episodes never take a capture time from the file.
+        let movie = probed_row(
+            "Movies/Heat (1995)/Heat (1995).mkv",
+            Category::Movie,
+            MONTH_EDGE,
         );
+        assert_eq!(capture_time(&movie, exif, Dating::Keep, &ny), None);
+        // Other files take the metadata's, without a fallback.
+        let other = probed_row("Other/scan.jpg", Category::Other, MONTH_EDGE);
+        assert_eq!(capture_time(&other, None, Dating::Keep, &ny), None);
+        assert_eq!(capture_time(&other, exif, Dating::Keep, &ny), Some(t));
+    }
+
+    /// Rows dated before migration 0003: the migration stored each old moment's UTC reading
+    /// as the clock and queued a probe that dates the row again.
+    #[test]
+    fn redating_rows_from_before_capture_times() {
+        let ny = zone("America/New_York");
+        let legacy = |rel: &str, old_at: i64| {
+            let mut item = probed_row(rel, Category::Photo, MONTH_EDGE + 86_400);
+            item.taken_at = Some(old_at);
+            item.taken_local = Some(
+                CaptureTime::from_stored(Some(old_at), None, None)
+                    .unwrap()
+                    .local_text(),
+            );
+            item
+        };
+        // Dated by its modification time: the same moment, now read in the server's zone.
+        let item = legacy("Photos/2024/07/scan.png", MONTH_EDGE);
+        let t = capture_time(&item, None, Dating::Redate, &ny).unwrap();
         assert_eq!(
-            parse_tag_time("2024-06-13T12:21:00+0200"),
-            Some(1_718_274_060)
+            (t.at, t.local_text().as_str()),
+            (MONTH_EDGE, "2024-06-30T22:30:00")
         );
+        // Dated by its name, which the old code stored as if the clock were UTC: the clock
+        // stays, the moment moves to the server's zone.
+        let item = legacy("Photos/2024/06/IMG_20240630_223000.jpg", 1_719_786_600);
+        let t = capture_time(&item, None, Dating::Redate, &ny).unwrap();
         assert_eq!(
-            parse_tag_time("2024-06-13T12:21:00+02:00"),
-            Some(1_718_274_060)
+            (t.at, t.local_text().as_str()),
+            (MONTH_EDGE, "2024-06-30T22:30:00")
         );
+        // EXIF read again: the offset comes back.
+        let exif = Recorded::clock(2024, 6, 30, 22, 30, 0, Some(-240));
+        let t = capture_time(&item, exif, Dating::Redate, &zone("UTC")).unwrap();
+        assert_eq!((t.at, t.offset), (MONTH_EDGE, Some(-240)));
+        // Keep mode would have left the old reading alone.
+        let item = legacy("Photos/2024/07/scan.png", MONTH_EDGE);
         assert_eq!(
-            parse_tag_time("2024-06-13T05:21:00-05"),
-            Some(1_718_274_060)
+            capture_time(&item, None, Dating::Keep, &ny)
+                .unwrap()
+                .local_text(),
+            "2024-07-01T02:30:00"
         );
-        assert_eq!(parse_tag_time("2024-06-13 10:21:00"), Some(1_718_274_060));
-        assert_eq!(parse_tag_time("2024:06:13 10:21:00"), Some(1_718_274_060));
-        assert_eq!(parse_tag_time("2024-06-13"), Some(1_718_236_800));
-        assert_eq!(parse_tag_time("1970-01-01T00:00:00.000000Z"), None);
-        assert_eq!(parse_tag_time("1904-01-01T00:00:00Z"), None);
-        assert_eq!(parse_tag_time("2001"), None);
-        assert_eq!(parse_tag_time("June 13, 2024"), None);
-        assert_eq!(parse_tag_time("2024-06-13T10:21:00 nonsense"), None);
-        assert_eq!(parse_tag_time("2024-06-13T1"), None);
-        assert_eq!(parse_tag_time("２０２４-06-13"), None);
     }
 
     #[test]
@@ -1652,13 +1756,27 @@ mod tests {
             "2024-06-13T10:21:00.000000Z".to_string(),
         );
         assert_eq!(camera_from_tags(&tags).as_deref(), Some("Google Pixel 8"));
-        assert_eq!(taken_from_tags(&tags), Some(1_718_274_060));
-        // The Apple local date wins over the UTC creation_time when both exist.
+        // A container's creation time is a moment in UTC, with no clock of its own.
+        assert_eq!(
+            taken_from_tags(&tags),
+            Some(Recorded::Instant(1_718_274_060))
+        );
+        // The Apple local date (clock and offset) wins over it when both exist.
         tags.insert(
             "com.apple.quicktime.creationdate".to_string(),
             "2024-06-13T12:00:00+0200".to_string(),
         );
-        assert_eq!(taken_from_tags(&tags), Some(1_718_272_800));
+        assert_eq!(
+            taken_from_tags(&tags),
+            Recorded::clock(2024, 6, 13, 12, 0, 0, Some(120))
+        );
+        // A date tag without a zone is the camera's clock.
+        let mut tags = BTreeMap::new();
+        tags.insert("date".to_string(), "2024-06-13 12:00:00".to_string());
+        assert_eq!(
+            taken_from_tags(&tags),
+            Recorded::clock(2024, 6, 13, 12, 0, 0, None)
+        );
     }
 
     #[test]

@@ -24,6 +24,8 @@ services:
       # The Android app's passkeys (docs/android.md); empty: the app signs in by pairing.
       STASH_ANDROID_ASSETLINKS: "${STASH_ANDROID_ASSETLINKS:-}"
       STASH_LOG: "${STASH_LOG:-info}"
+      # Your time zone (docs/deployment.md, Time zone); empty means UTC.
+      TZ: "${TZ:-}"
     volumes:
       - type: bind
         source: "${APPDATA_PATH:?Set APPDATA_PATH in .env to an existing folder for the database and settings}"

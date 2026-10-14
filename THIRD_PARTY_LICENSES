@@ -2,7 +2,7 @@ Third-party software in PopcornStash: Rust crates
 ==================================================
 
 The popcornstash and boringtun-cli programs in the PopcornStash image are built
-from the 421 Rust crates below. Each section is one license text followed by
+from the 424 Rust crates below. Each section is one license text followed by
 the crates it covers. PopcornStash itself is licensed under the GNU Affero
 General Public License, version 3 or later (LICENSE and NOTICE).
 
@@ -15,7 +15,7 @@ Licenses:
   BSL-1.0: 1 crate
   CC0-1.0: 1 crate
   ISC: 8 crates
-  MIT: 355 crates
+  MIT: 358 crates
   MPL-2.0: 6 crates
   Unicode-3.0: 20 crates
   Zlib: 5 crates
@@ -2666,6 +2666,12 @@ Used by:
       https://github.com/BurntSushi/aho-corasick
   byteorder 1.5.0 (popcornstash), by Andrew Gallant
       https://github.com/BurntSushi/byteorder
+  jiff 0.2.38 (popcornstash), by Andrew Gallant
+      https://github.com/BurntSushi/jiff
+  jiff-core 0.1.1 (popcornstash), by Andrew Gallant
+      https://github.com/BurntSushi/jiff
+  jiff-tzdb 0.1.9 (popcornstash), by Andrew Gallant
+      https://github.com/BurntSushi/jiff
   memchr 2.8.3 (popcornstash), by Andrew Gallant, bluss
       https://github.com/BurntSushi/memchr
   walkdir 2.5.0 (popcornstash), by Andrew Gallant

@@ -15,6 +15,12 @@ Libraries the owner defines, each with its own icon and its own audience, and th
 - Other files are now private: each one is seen by the person who added it and the owners. Folders on the share that are not a library are seen by owners only, and Settings offers "Make a library" for each.
 - Settings has a Libraries section for owners, with an icon picker; Inbox lets you choose the library; owners can move any item into a library ("Organize into library"). Old addresses (`/movies`, `/shows`, `/home-videos`, `/photos`) go to the library that takes that kind.
 
+### Photos and home videos
+
+- Photos and home videos show the time on the camera's clock where they were taken, the same for everyone in every time zone, and the Photos timeline and the `2024/06/` folders use that clock's month. A camera time with no time zone is no longer read as UTC, so it no longer shifts by a few hours, or into the next or previous month, for people west or east of UTC. Files that only say when they were taken in UTC (a file's own date, the UTC time most Android phones put in videos, Pixel file names) are placed in the server's time zone: set `TZ` (docs/deployment.md, Time zone; Unraid sets it for you).
+- The API sends the camera's clock (`taken_local`) and the offset it was written with (`taken_offset`) beside `taken_at`. Upgrading reads every photo and home video's date again once, in the background.
+- Home: a shelf for a library of series has a tile for every show (up to 12, the most recently added first) with its count of new episodes, so "3 shows, 18 episodes" shows three shows.
+
 ### Web app
 
 - The sidebar lists Home, then every library you can see with its own icon, in the owner's order, then Other files, Inbox, Downloads and Settings; the phone menu and quick links follow it. Each library's page fits what it holds: posters or video frames, shows with seasons and episodes, or the photo timeline.

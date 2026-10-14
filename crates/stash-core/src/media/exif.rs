@@ -4,14 +4,16 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use ::exif::{DateTime, Exif, Field, In, Reader, Tag, Value};
-use serde::{Deserialize, Serialize};
 
 use crate::Result;
+use crate::capture::Recorded;
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExifInfo {
-    /// DateTimeOriginal (or DateTime) as unix seconds, interpreted with OffsetTimeOriginal when present, else UTC.
-    pub taken_at: Option<i64>,
+    /// DateTimeOriginal (else DateTimeDigitized, else DateTime): the camera's clock, with
+    /// the matching OffsetTime* tag when the camera wrote one. A clock without an offset
+    /// stays a bare clock reading (section 4, Capture time).
+    pub taken: Option<Recorded>,
     /// "Make Model", e.g. "Apple iPhone 15 Pro".
     pub camera: Option<String>,
     pub width: Option<i64>,
@@ -124,7 +126,7 @@ pub fn read_raw(buf: Vec<u8>) -> Option<ExifInfo> {
 
 fn from_exif(exif: &Exif) -> Option<ExifInfo> {
     let field = |tag: Tag| exif.get_field(tag, In::PRIMARY);
-    let taken_at = [
+    let taken = [
         (Tag::DateTimeOriginal, Tag::OffsetTimeOriginal),
         (Tag::DateTimeDigitized, Tag::OffsetTimeDigitized),
         (Tag::DateTime, Tag::OffsetTime),
@@ -152,7 +154,7 @@ fn from_exif(exif: &Exif) -> Option<ExifInfo> {
         .filter(|v| (1..=8).contains(v));
 
     let info = ExifInfo {
-        taken_at,
+        taken,
         camera,
         width,
         height,
@@ -183,50 +185,25 @@ fn first_bytes(field: &Field) -> Option<&[u8]> {
     }
 }
 
-fn datetime(time_field: &Field, offset_field: Option<&Field>) -> Option<i64> {
+/// The clock reading of a date tag, with its offset tag when that parses. A missing or
+/// malformed offset leaves a bare clock reading, never UTC.
+fn datetime(time_field: &Field, offset_field: Option<&Field>) -> Option<Recorded> {
     let mut dt = DateTime::from_ascii(first_bytes(time_field)?).ok()?;
-    if let Some(offset) = offset_field.and_then(first_bytes) {
-        // A malformed offset leaves the time as UTC.
-        let _ = dt.parse_offset(offset);
-    }
-    to_unix(
-        i32::from(dt.year),
-        dt.month,
-        dt.day,
-        dt.hour,
-        dt.minute,
-        dt.second,
-        i32::from(dt.offset.unwrap_or(0)),
+    let offset = offset_field
+        .and_then(first_bytes)
+        .and_then(|offset| dt.parse_offset(offset).ok())
+        .and(dt.offset)
+        .map(i32::from);
+    Recorded::clock(
+        i64::from(dt.year),
+        i64::from(dt.month),
+        i64::from(dt.day),
+        i64::from(dt.hour),
+        i64::from(dt.minute),
+        i64::from(dt.second),
+        offset,
     )
 }
-
-/// Calendar fields plus a UTC offset in minutes → unix seconds. None for impossible dates
-/// and for the zeroed placeholders cameras write when the clock was never set.
-pub(crate) fn to_unix(
-    year: i32,
-    month: u8,
-    day: u8,
-    hour: u8,
-    minute: u8,
-    second: u8,
-    offset_minutes: i32,
-) -> Option<i64> {
-    if !(1800..=2200).contains(&year) {
-        return None;
-    }
-    let month = time::Month::try_from(month).ok()?;
-    let date = time::Date::from_calendar_date(year, month, day).ok()?;
-    let clock = time::Time::from_hms(hour, minute, second.min(59)).ok()?;
-    let offset = time::UtcOffset::from_whole_seconds(offset_minutes.checked_mul(60)?).ok()?;
-    let ts = time::PrimitiveDateTime::new(date, clock)
-        .assume_offset(offset)
-        .unix_timestamp();
-    // 1970-01-01 (unix epoch) and 1904-01-01 (QuickTime epoch) mean "clock never set".
-    (ts != 0 && ts != QUICKTIME_EPOCH).then_some(ts)
-}
-
-/// 1904-01-01T00:00:00Z, the zero point of QuickTime timestamps.
-const QUICKTIME_EPOCH: i64 = -2_082_844_800;
 
 /// "Apple" + "iPhone 15 Pro" → "Apple iPhone 15 Pro"; "Canon" + "Canon EOS R5" → "Canon EOS R5";
 /// "NIKON CORPORATION" + "NIKON D850" → "NIKON D850".
@@ -262,8 +239,26 @@ pub(crate) mod tests {
     use std::io::Cursor;
 
     use ::exif::experimental::Writer;
+    use jiff::tz::TimeZone;
 
     use super::*;
+
+    /// The moment of the capture time when the server runs in UTC.
+    fn at(info: &ExifInfo) -> Option<i64> {
+        info.taken?.resolve(&TimeZone::UTC).map(|t| t.at)
+    }
+
+    fn clock(
+        y: i64,
+        mo: i64,
+        d: i64,
+        h: i64,
+        mi: i64,
+        s: i64,
+        offset: Option<i32>,
+    ) -> Option<Recorded> {
+        Some(Recorded::clock(y, mo, d, h, mi, s, offset).expect("a real clock reading"))
+    }
 
     pub(crate) struct TestExif<'a> {
         pub datetime_original: Option<&'a str>,
@@ -390,8 +385,9 @@ pub(crate) mod tests {
         )
         .unwrap();
         let info = read(&path).unwrap().unwrap();
-        // 12:21 at +02:00 is 10:21 UTC.
-        assert_eq!(info.taken_at, Some(1_718_274_060));
+        // The camera's clock and its offset are both kept: 12:21 at +02:00 is 10:21 UTC.
+        assert_eq!(info.taken, clock(2024, 6, 13, 12, 21, 0, Some(120)));
+        assert_eq!(at(&info), Some(1_718_274_060));
         assert_eq!(info.camera.as_deref(), Some("Apple iPhone 15 Pro"));
         assert_eq!((info.width, info.height), (Some(4032), Some(3024)));
         assert_eq!(info.orientation, Some(6));
@@ -400,7 +396,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn no_offset_means_utc_and_datetime_fallback() {
+    fn no_offset_leaves_a_bare_clock_and_datetime_is_the_fallback() {
         let spec = TestExif {
             datetime_original: None,
             offset_original: None,
@@ -411,17 +407,18 @@ pub(crate) mod tests {
             ..TestExif::default()
         };
         let info = read_raw(tiff_block(&spec)).unwrap();
-        assert_eq!(info.taken_at, Some(1_718_274_060));
+        assert_eq!(info.taken, clock(2024, 6, 13, 10, 21, 0, None));
         assert_eq!(info.camera.as_deref(), Some("Canon EOS R5"));
         assert!(!info.swaps_dimensions());
 
+        // Without OffsetTimeOriginal the clock is all there is, never UTC.
         let spec = TestExif {
             offset_original: None,
             ..TestExif::default()
         };
         assert_eq!(
-            read_raw(tiff_block(&spec)).unwrap().taken_at,
-            Some(1_718_281_260)
+            read_raw(tiff_block(&spec)).unwrap().taken,
+            clock(2024, 6, 13, 12, 21, 0, None)
         );
     }
 
@@ -431,25 +428,31 @@ pub(crate) mod tests {
             datetime_original: Some("0000:00:00 00:00:00"),
             ..TestExif::default()
         };
-        assert_eq!(read_raw(tiff_block(&spec)).unwrap().taken_at, None);
+        assert_eq!(read_raw(tiff_block(&spec)).unwrap().taken, None);
         let spec = TestExif {
             datetime_original: Some("    :  :     :  :  "),
             ..TestExif::default()
         };
-        assert_eq!(read_raw(tiff_block(&spec)).unwrap().taken_at, None);
+        assert_eq!(read_raw(tiff_block(&spec)).unwrap().taken, None);
         let spec = TestExif {
             datetime_original: Some("2024:02:30 10:00:00"),
             ..TestExif::default()
         };
-        assert_eq!(read_raw(tiff_block(&spec)).unwrap().taken_at, None);
-        // Bad offset: keep the time as UTC.
+        assert_eq!(read_raw(tiff_block(&spec)).unwrap().taken, None);
+        let spec = TestExif {
+            datetime_original: Some("1970:01:01 00:00:00"),
+            offset_original: None,
+            ..TestExif::default()
+        };
+        assert_eq!(read_raw(tiff_block(&spec)).unwrap().taken, None);
+        // A malformed offset leaves the bare clock.
         let spec = TestExif {
             offset_original: Some("junk"),
             ..TestExif::default()
         };
         assert_eq!(
-            read_raw(tiff_block(&spec)).unwrap().taken_at,
-            Some(1_718_281_260)
+            read_raw(tiff_block(&spec)).unwrap().taken,
+            clock(2024, 6, 13, 12, 21, 0, None)
         );
     }
 
@@ -546,7 +549,7 @@ pub(crate) mod tests {
         let mut tiff = tiff_block(&TestExif::default());
         break_entry(&mut tiff, 0x0110); // Model
         let info = read_raw(tiff).expect("the readable fields survive");
-        assert_eq!(info.taken_at, Some(1_718_274_060));
+        assert_eq!(at(&info), Some(1_718_274_060));
         assert_eq!(info.camera.as_deref(), Some("Apple"));
         assert_eq!(info.orientation, Some(6));
 
@@ -559,7 +562,7 @@ pub(crate) mod tests {
         let jpeg = std::fs::read(&path).unwrap();
         std::fs::write(&path, inject_into_jpeg(&jpeg, &tiff)).unwrap();
         let info = read(&path).unwrap().expect("date survives a broken Make");
-        assert_eq!(info.taken_at, Some(1_718_274_060));
+        assert_eq!(at(&info), Some(1_718_274_060));
         assert_eq!(info.camera.as_deref(), Some("iPhone 15 Pro"));
     }
 
@@ -576,7 +579,7 @@ pub(crate) mod tests {
         let prefix = tiff_prefix(&mut reader, LIMIT).unwrap().expect("a TIFF");
         assert_eq!(prefix.len() as u64, LIMIT);
         let info = read_limited(&path, LIMIT).unwrap().unwrap();
-        assert_eq!(info.taken_at, Some(1_718_274_060));
+        assert_eq!(at(&info), Some(1_718_274_060));
         assert_eq!(info.orientation, Some(6));
 
         // Other formats are left to the library and the reader is rewound for it.
@@ -641,8 +644,13 @@ pub(crate) mod tests {
         let info = read(&path).unwrap().unwrap();
         assert_eq!(info.camera.as_deref(), Some("NIKON D850"));
         assert_eq!(info.orientation, Some(8));
-        // 23:59:59 at -05:00 is 04:59:59 UTC on Jan 1st.
-        assert_eq!(info.taken_at, Some(1_704_085_199));
+        // New Year's Eve on the camera's clock, 04:59:59 UTC on Jan 1st.
+        assert_eq!(info.taken, clock(2023, 12, 31, 23, 59, 59, Some(-300)));
+        assert_eq!(at(&info), Some(1_704_085_199));
+        assert_eq!(
+            info.taken.unwrap().resolve(&TimeZone::UTC).unwrap().month(),
+            "2023-12"
+        );
         assert_eq!(info.display_size(), (Some(100), Some(200)));
     }
 
@@ -670,16 +678,5 @@ pub(crate) mod tests {
         );
         assert_eq!(camera_name(Some("GoPro"), None).as_deref(), Some("GoPro"));
         assert_eq!(camera_name(None, None), None);
-    }
-
-    #[test]
-    fn unix_conversion() {
-        assert_eq!(to_unix(1970, 1, 1, 0, 0, 0, 0), None);
-        assert_eq!(to_unix(1904, 1, 1, 0, 0, 0, 0), None);
-        assert_eq!(to_unix(1965, 7, 4, 12, 0, 0, 0), Some(-141_825_600));
-        assert_eq!(to_unix(2024, 6, 13, 10, 21, 0, 0), Some(1_718_274_060));
-        assert_eq!(to_unix(2024, 6, 13, 12, 21, 0, 120), Some(1_718_274_060));
-        assert_eq!(to_unix(2024, 13, 1, 0, 0, 0, 0), None);
-        assert_eq!(to_unix(0, 0, 0, 0, 0, 0, 0), None);
     }
 }

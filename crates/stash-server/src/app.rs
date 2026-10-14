@@ -182,7 +182,16 @@ pub async fn start_background(state: &AppState, cancel: CancellationToken) -> an
             let id = job
                 .item_id
                 .ok_or_else(|| anyhow::anyhow!("probe job without item"))?;
-            media.process_item(&id).await?;
+            if job
+                .payload
+                .get("redate")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            {
+                media.redate_item(&id).await?;
+            } else {
+                media.process_item(&id).await?;
+            }
             Ok(())
         }
     });
@@ -308,6 +317,10 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         (None, None) => None,
         _ => anyhow::bail!("Set both STASH_TLS_CERT and STASH_TLS_KEY, or neither"),
     };
+    tracing::info!(
+        time_zone = %stash_core::capture::describe(&stash_core::capture::server_zone()),
+        "file times and camera clocks without an offset are read in this time zone (TZ)"
+    );
     if let Err(e) = config
         .public_url
         .as_ref()

@@ -8,10 +8,11 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+
+use crate::capture::Recorded;
 
 /// What a file name says about itself.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ParsedName {
     /// Cleaned title (movie title, or show name for episodes).
     pub title: String,
@@ -25,8 +26,10 @@ pub struct ParsedName {
     pub has_release_tags: bool,
     /// The name looks like a phone/camera file (IMG_1234, VID_2024…, PXL_, GOPR, DJI_…).
     pub camera_style: bool,
-    /// Date embedded in the name (unix seconds, UTC midnight or exact time when present).
-    pub date: Option<i64>,
+    /// Date embedded in the name: the camera's clock (midnight when the name has no
+    /// time), or a moment for names that carry one (`PXL_` names are UTC, `RPReplay_Final`
+    /// names a unix time).
+    pub date: Option<Recorded>,
 }
 
 macro_rules! re {
@@ -127,12 +130,17 @@ pub fn season_folder(name: &str) -> Option<i64> {
 // Camera names and dates
 
 /// `Some(date)` when the stem looks like a phone or camera file name.
-fn camera_name(stem: &str) -> Option<Option<i64>> {
-    // Names that carry a date and time.
+fn camera_name(stem: &str) -> Option<Option<Recorded>> {
+    // Names that carry a date and time. Pixel phones write theirs in UTC; the others
+    // write the phone's clock.
     if let Some(c) =
-        re!(r"(?i)^(?:IMG|VID|PANO|BURST|MVIMG|PXL|Screenshot)_(\d{8})_(\d{6})").captures(stem)
+        re!(r"(?i)^(IMG|VID|PANO|BURST|MVIMG|PXL|Screenshot)_(\d{8})_(\d{6})").captures(stem)
     {
-        return Some(compact_datetime(&c[1], Some(&c[2])));
+        let date = compact_datetime(&c[2], Some(&c[3]));
+        if c[1].eq_ignore_ascii_case("PXL") {
+            return Some(date.and_then(Recorded::in_utc));
+        }
+        return Some(date);
     }
     if let Some(c) = re!(r"(?i)^Screenshot_(\d{8})-(\d{6})").captures(stem) {
         return Some(compact_datetime(&c[1], Some(&c[2])));
@@ -159,11 +167,11 @@ fn camera_name(stem: &str) -> Option<Option<i64>> {
             };
         }
         let num = |i: usize| c.get(i).and_then(|m| m.as_str().parse::<i64>().ok()).unwrap_or(0);
-        return Some(unix_from_parts(num(1), num(2), num(3), hour, num(5), num(6)));
+        return Some(clock_from_parts(num(1), num(2), num(3), hour, num(5), num(6)));
     }
     if let Some(c) = re!(r"^(\d{4})-(\d{2})-(\d{2}) (\d{2})\.(\d{2})\.(\d{2})").captures(stem) {
         let num = |i: usize| c[i].parse::<i64>().unwrap_or(0);
-        return Some(unix_from_parts(
+        return Some(clock_from_parts(
             num(1),
             num(2),
             num(3),
@@ -174,7 +182,7 @@ fn camera_name(stem: &str) -> Option<Option<i64>> {
     }
     if let Some(c) = re!(r"(?i)^RPReplay_Final(\d{9,10})").captures(stem) {
         let ts: i64 = c[1].parse().unwrap_or(0);
-        return Some((ts > 946_684_800).then_some(ts));
+        return Some((ts > 946_684_800).then(|| Recorded::instant(ts)).flatten());
     }
     if let Some(c) = re!(r"(?i)^DJI_(\d{8})(\d{6})").captures(stem) {
         return Some(compact_datetime(&c[1], Some(&c[2])));
@@ -186,49 +194,36 @@ fn camera_name(stem: &str) -> Option<Option<i64>> {
     undated.is_match(stem).then_some(None)
 }
 
-/// `YYYYMMDD` (+ optional `HHMMSS`) → unix seconds UTC.
-fn compact_datetime(date: &str, time: Option<&str>) -> Option<i64> {
+/// `YYYYMMDD` (+ optional `HHMMSS`) → the clock it names.
+fn compact_datetime(date: &str, time: Option<&str>) -> Option<Recorded> {
     let d = |a: usize, b: usize| date.get(a..b).and_then(|s| s.parse::<i64>().ok());
     let t = |a: usize, b: usize| {
         time.and_then(|t| t.get(a..b))
             .and_then(|s| s.parse::<i64>().ok())
             .unwrap_or(0)
     };
-    unix_from_parts(d(0, 4)?, d(4, 6)?, d(6, 8)?, t(0, 2), t(2, 4), t(4, 6))
+    clock_from_parts(d(0, 4)?, d(4, 6)?, d(6, 8)?, t(0, 2), t(2, 4), t(4, 6))
 }
 
-/// Calendar parts → unix seconds UTC, None when the date is not real or outside 1970–2099.
-pub(crate) fn unix_from_parts(
+/// Calendar parts → the clock reading a name carries (no offset: names never say where),
+/// None when the date is not real or outside 1970–2099.
+fn clock_from_parts(
     year: i64,
     month: i64,
     day: i64,
     hour: i64,
     minute: i64,
     second: i64,
-) -> Option<i64> {
-    if !(1970..=2099).contains(&year) {
+) -> Option<Recorded> {
+    if !(1970..=2099).contains(&year) || !(0..=59).contains(&second) {
         return None;
     }
-    let month = time::Month::try_from(u8::try_from(month).ok()?).ok()?;
-    let date =
-        time::Date::from_calendar_date(i32::try_from(year).ok()?, month, u8::try_from(day).ok()?)
-            .ok()?;
-    let time = time::Time::from_hms(
-        u8::try_from(hour).ok()?,
-        u8::try_from(minute).ok()?,
-        u8::try_from(second).ok()?,
-    )
-    .ok()?;
-    Some(
-        time::PrimitiveDateTime::new(date, time)
-            .assume_utc()
-            .unix_timestamp(),
-    )
+    Recorded::clock(year, month, day, hour, minute, second, None)
 }
 
 /// A date anywhere in the name: `20240613`, `2024-06-13`, `2024_06_13`, `2024.06.13`,
 /// optionally followed by a time (`_101500`, ` 10.15.00`, `T10:15:00`).
-fn find_date(s: &str) -> Option<i64> {
+fn find_date(s: &str) -> Option<Recorded> {
     let re = re!(
         r"((?:19|20)\d{2})([-_.]?)(\d{2})([-_.]?)(\d{2})(?:[ _T.-]?(\d{2})[.:-]?(\d{2})[.:-]?(\d{2}))?"
     );
@@ -255,9 +250,9 @@ fn find_date(s: &str) -> Option<i64> {
             };
             if after_ok {
                 let parsed = if has_time {
-                    unix_from_parts(num(1), num(3), num(5), num(6), num(7), num(8))
+                    clock_from_parts(num(1), num(3), num(5), num(6), num(7), num(8))
                 } else {
-                    unix_from_parts(num(1), num(3), num(5), 0, 0, 0)
+                    clock_from_parts(num(1), num(3), num(5), 0, 0, 0)
                 };
                 if parsed.is_some() {
                     return parsed;
@@ -267,7 +262,7 @@ fn find_date(s: &str) -> Option<i64> {
             let date_after_ok = date_end >= s.len() || !bytes[date_end].is_ascii_digit();
             if has_time
                 && date_after_ok
-                && let Some(ts) = unix_from_parts(num(1), num(3), num(5), 0, 0, 0)
+                && let Some(ts) = clock_from_parts(num(1), num(3), num(5), 0, 0, 0)
             {
                 return Some(ts);
             }
@@ -501,8 +496,8 @@ fn smart_case(s: &str) -> String {
 mod tests {
     use super::*;
 
-    fn ts(y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64) -> Option<i64> {
-        unix_from_parts(y, mo, d, h, mi, s)
+    fn ts(y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64) -> Option<Recorded> {
+        Some(Recorded::clock(y, mo, d, h, mi, s, None).expect("a real clock reading"))
     }
 
     #[test]
@@ -652,13 +647,20 @@ mod tests {
 
     #[test]
     fn camera_names() {
-        let cases: &[(&str, Option<i64>)] = &[
+        let cases: &[(&str, Option<Recorded>)] = &[
             ("IMG_1234", None),
             ("IMG_E1234", None),
             ("VID_20240613_101500", ts(2024, 6, 13, 10, 15, 0)),
             ("IMG_20240613_101500", ts(2024, 6, 13, 10, 15, 0)),
-            ("PXL_20240613_101500123", ts(2024, 6, 13, 10, 15, 0)),
-            ("PXL_20240613_101500123.MP", ts(2024, 6, 13, 10, 15, 0)),
+            // Pixel names are UTC: a moment, not a clock.
+            (
+                "PXL_20240613_101500123",
+                Some(Recorded::Instant(1_718_273_700)),
+            ),
+            (
+                "PXL_20240613_101500123.MP",
+                Some(Recorded::Instant(1_718_273_700)),
+            ),
             ("20240613_101500", ts(2024, 6, 13, 10, 15, 0)),
             (
                 "Screen Recording 2024-06-13 at 10.15.00",
@@ -685,7 +687,10 @@ mod tests {
             ("DSC01234", None),
             ("DSCF1234", None),
             ("C0001", None),
-            ("RPReplay_Final1690000000", Some(1_690_000_000)),
+            (
+                "RPReplay_Final1690000000",
+                Some(Recorded::Instant(1_690_000_000)),
+            ),
         ];
         for &(input, date) in cases {
             let p = parse_name(input);

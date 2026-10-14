@@ -233,6 +233,22 @@ How files move:
 - Files still being copied are left alone until their size has not changed for 10 seconds, so slow network copies are safe.
 - Deleting an item moves it to the trash folder first. It is removed for good after 30 days (change this in **Settings**, then **Libraries**, **Trash**), or when an owner empties the trash.
 
+## Time zone
+
+Photos and home videos show the time on the camera's clock where they were taken, the same for everyone who looks, in any time zone, and the Photos timeline and the `2024/06/` folders use that clock's month. Many files carry that clock themselves (most cameras and iPhones write it in the photo's EXIF data or the video's tags). Some only say when they were taken in UTC, or not at all:
+
+- a file with no date inside it, dated by when the file was last changed,
+- videos from most Android phones and many cameras, which store only a UTC time,
+- Pixel phone file names (`PXL_20240613_...`), which are in UTC.
+
+PopcornStash gives those the date and time in the server's time zone, set with the `TZ` environment variable. Without it the container uses UTC, so a family in New York would see a video taken at 9 in the evening on June 30 listed under July 1. Set it to where you live:
+
+- **Compose:** `TZ=America/New_York` in `.env` (any name from the [list of tz database time zones](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)), then `docker compose up -d`.
+- **Without Compose:** add `-e TZ=America/New_York` to `docker run`.
+- **Unraid:** nothing to do; Unraid passes your server's time zone to every container.
+
+The log line "file times and camera clocks without an offset are read in this time zone" at start shows the zone in use. Set `TZ` before you add your library: files already dated keep the time they got. A camera clock that comes with its time zone, or without any zone at all, is shown exactly as the camera wrote it whatever `TZ` says.
+
 ## File ownership
 
 Every file PopcornStash creates in the library and app data belongs to `PUID:PGID`. On Unraid that is 99:100 (nobody:users), the same as your other shares. Pick the numbers of the user that owns your library folder.

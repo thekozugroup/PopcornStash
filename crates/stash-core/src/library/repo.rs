@@ -11,7 +11,8 @@ use super::access::{Access, Viewer, push_visible};
 use super::defs::{self, LibraryDef, LibraryView};
 use crate::db::Db;
 use crate::models::{
-    Category, FolderState, Item, ItemDetail, ItemRow, ItemStatus, Place, Progress, Suggestion,
+    Category, FolderState, Item, ItemDetail, ItemRow, ItemStatus, Layout, Place, Progress,
+    Suggestion,
 };
 use crate::paths::StashLayout;
 use crate::{CoreError, Result};
@@ -79,8 +80,28 @@ pub struct HomeLibrary {
     /// Up to [`HOME_ROW`] newest ready items, newest first.
     pub recent: Vec<Item>,
     /// Poster item id for each show with an episode in `recent`, from this library,
-    /// chosen the same way as in [`shows`] and [`show`].
+    /// chosen the same way as in [`shows`] and [`show`]. Kept for clients that still
+    /// group `recent`; a series shelf is drawn from `shows`.
     pub show_posters: BTreeMap<String, String>,
+    /// A series library's shelf (layout `series`; empty for the others): up to
+    /// [`HOME_ROW`] of its shows, the one with the most recently added episode first, so
+    /// a library with up to 12 shows has a tile for every show its heading counts.
+    pub shows: Vec<HomeShow>,
+}
+
+/// One show on a series library's Home shelf (`HomeShow`, section 8).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HomeShow {
+    pub show_name: String,
+    /// The show's picture in this library, the same one [`shows`] and [`show`] use.
+    pub poster_item_id: Option<String>,
+    /// The show's ready episodes in this library (`ShowSummary.item_count`).
+    pub item_count: i64,
+    /// Those added in the last [`NEW_EPISODE_DAYS`] days.
+    pub new_count: i64,
+    /// The show's most recently added episode.
+    pub latest: Item,
+    pub last_added_at: i64,
 }
 
 /// `GET /api/home`.
@@ -155,6 +176,8 @@ pub const DEFAULT_TIMELINE_LIMIT: u32 = 200;
 pub const MAX_TIMELINE_LIMIT: u32 = 500;
 /// Items in Continue watching and in each library's row on Home.
 pub const HOME_ROW: i64 = 12;
+/// An episode counts as new on Home for this many days after it was added.
+pub const NEW_EPISODE_DAYS: i64 = 30;
 const INBOX_MAX: i64 = 500;
 
 /// A show's poster, as one SQL subquery: its first episode in season and episode order
@@ -293,9 +316,10 @@ pub async fn get_by_path(db: &Db, rel_path: &str) -> Result<Option<ItemRow>> {
 pub async fn insert_item(db: &Db, row: &ItemRow) -> Result<bool> {
     let result = sqlx::query(
         "INSERT INTO items (id, rel_path, kind, category, status, title, sort_title, year, show_name, season, episode,
-            episode_title, size, mtime, quick_hash, mime, duration_s, width, height, media_json, taken_at, camera,
-            thumb_state, suggestion_json, favorite, source_download_id, missing_since, added_at, updated_at, added_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            episode_title, size, mtime, quick_hash, mime, duration_s, width, height, media_json, taken_at, taken_local,
+            taken_offset, camera, thumb_state, suggestion_json, favorite, source_download_id, missing_since, added_at,
+            updated_at, added_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(rel_path) DO NOTHING",
     )
     .bind(&row.id)
@@ -319,6 +343,8 @@ pub async fn insert_item(db: &Db, row: &ItemRow) -> Result<bool> {
     .bind(row.height)
     .bind(&row.media_json)
     .bind(row.taken_at)
+    .bind(&row.taken_local)
+    .bind(row.taken_offset)
     .bind(&row.camera)
     .bind(row.thumb_state.as_str())
     .bind(&row.suggestion_json)
@@ -359,11 +385,27 @@ struct ListCursor {
     id: String,
 }
 
-/// Position in the photo timeline: the last photo returned (its time key and id).
+/// Position in the photo timeline: the last photo returned (its [`TAKEN_KEY`] and id).
 #[derive(Debug, Serialize, Deserialize)]
 struct TimelineCursor {
-    k: i64,
+    k: String,
     id: String,
+}
+
+/// What `sort=taken` and the photo timeline order by (section 4, Capture time): the
+/// camera's clock where it was taken (`taken_local`, `YYYY-MM-DDTHH:MM:SS`, which sorts
+/// as text), else, for an item with no capture time, when it was added, read in UTC.
+/// Ordering by the clock keeps every month of the timeline in one piece.
+const TAKEN_KEY: &str =
+    "COALESCE(i.taken_local, strftime('%Y-%m-%dT%H:%M:%S', i.added_at, 'unixepoch'))";
+
+/// [`TAKEN_KEY`] of a row, worked out the same way.
+fn taken_key(row: &ItemRow) -> String {
+    row.taken_local.clone().unwrap_or_else(|| {
+        crate::capture::CaptureTime::from_stored(Some(row.added_at), None, None)
+            .map(|t| t.local_text())
+            .unwrap_or_default()
+    })
 }
 
 fn encode_cursor<T: Serialize>(value: &T) -> Result<String> {
@@ -383,7 +425,7 @@ fn sort_key_expr(sort: ItemSort) -> &'static str {
     match sort {
         ItemSort::Added => "i.added_at",
         ItemSort::Title => "i.sort_title",
-        ItemSort::Taken => "COALESCE(i.taken_at, i.added_at)",
+        ItemSort::Taken => TAKEN_KEY,
         ItemSort::Size => "i.size",
     }
 }
@@ -392,7 +434,7 @@ fn sort_key_of(row: &ItemRow, sort: ItemSort) -> CursorKey {
     match sort {
         ItemSort::Added => CursorKey::Int(row.added_at),
         ItemSort::Title => CursorKey::Text(row.sort_title.clone()),
-        ItemSort::Taken => CursorKey::Int(row.taken_at.unwrap_or(row.added_at)),
+        ItemSort::Taken => CursorKey::Text(taken_key(row)),
         ItemSort::Size => CursorKey::Int(row.size),
     }
 }
@@ -452,11 +494,8 @@ pub async fn list(db: &Db, query: &ItemQuery, viewer: &Viewer) -> Result<Page<It
         let cursor: ListCursor = decode_cursor(cursor)?;
         let key_matches_sort = matches!(
             (&cursor.k, query.sort),
-            (CursorKey::Text(_), ItemSort::Title)
-                | (
-                    CursorKey::Int(_),
-                    ItemSort::Added | ItemSort::Taken | ItemSort::Size
-                )
+            (CursorKey::Text(_), ItemSort::Title | ItemSort::Taken)
+                | (CursorKey::Int(_), ItemSort::Added | ItemSort::Size)
         );
         if cursor.s != query.sort || !key_matches_sort {
             return Err(CoreError::invalid(
@@ -690,6 +729,11 @@ pub async fn home(db: &Db, layout: &StashLayout, access: &Access) -> Result<Home
             let rows: Vec<(String, Option<String>)> = qb.build_query_as().fetch_all(db).await?;
             show_posters.extend(rows.into_iter().filter_map(|(name, id)| Some((name, id?))));
         }
+        let shows = if library.layout == Layout::Series {
+            home_shows(db, &library.id, &user_id).await?
+        } else {
+            Vec::new()
+        };
         libraries.push(HomeLibrary {
             library,
             recent: recent
@@ -697,6 +741,7 @@ pub async fn home(db: &Db, layout: &StashLayout, access: &Access) -> Result<Home
                 .map(ItemWithProgress::into_item)
                 .collect(),
             show_posters,
+            shows,
         });
     }
 
@@ -729,6 +774,54 @@ pub async fn home(db: &Db, layout: &StashLayout, access: &Access) -> Result<Home
         inbox_count: inbox_count(db, viewer).await?,
         total_bytes,
     })
+}
+
+/// A series library's Home shelf: up to [`HOME_ROW`] shows, the one with the most recently
+/// added episode first.
+async fn home_shows(db: &Db, library_id: &str, user_id: &str) -> Result<Vec<HomeShow>> {
+    let since = crate::now() - NEW_EPISODE_DAYS * 86_400;
+    let sql = format!(
+        "SELECT i.show_name, count(*), coalesce(sum(i.added_at >= ?), 0), max(i.added_at), {}
+         FROM items i
+         WHERE i.library_id = ? AND i.category = 'episode' AND i.status = 'ready'
+           AND i.show_name IS NOT NULL AND i.show_name != ''
+         GROUP BY i.show_name
+         ORDER BY max(i.added_at) DESC, max(i.id) DESC
+         LIMIT ?",
+        show_poster_subquery("j.library_id = i.library_id AND j.show_name = i.show_name")
+    );
+    let rows: Vec<(String, i64, i64, i64, Option<String>)> = sqlx::query_as(&sql)
+        .bind(since)
+        .bind(library_id)
+        .bind(HOME_ROW)
+        .fetch_all(db)
+        .await?;
+    let mut shows = Vec::with_capacity(rows.len());
+    for (show_name, item_count, new_count, last_added_at, poster_item_id) in rows {
+        let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
+        qb.push_bind(user_id.to_string())
+            .push(" WHERE i.library_id = ")
+            .push_bind(library_id.to_string())
+            .push(" AND i.category = 'episode' AND i.status = 'ready' AND i.show_name = ")
+            .push_bind(show_name.clone())
+            .push(" ORDER BY i.added_at DESC, i.id DESC LIMIT 1");
+        let Some(latest) = qb
+            .build_query_as::<ItemWithProgress>()
+            .fetch_optional(db)
+            .await?
+        else {
+            continue;
+        };
+        shows.push(HomeShow {
+            show_name,
+            poster_item_id,
+            item_count,
+            new_count,
+            latest: latest.into_item(),
+            last_added_at,
+        });
+    }
+    Ok(shows)
 }
 
 /// The shows of an Episodes library, by title.
@@ -803,15 +896,12 @@ pub async fn show(db: &Db, library_id: &str, show_name: &str, user_id: &str) -> 
     })
 }
 
-/// Earliest and latest time keys the timeline can place (years 0001 to 9999, UTC).
-const TIMELINE_MIN_KEY: i64 = -62_135_596_800;
-const TIMELINE_MAX_KEY: i64 = 253_402_300_799;
-
-/// Photos grouped by month (of `taken_at`, else `added_at`, UTC), newest first. A page
-/// holds at most `limit` photos (`0` means [`DEFAULT_TIMELINE_LIMIT`]), so one busy month
-/// can span several pages: `count` is always the month's full total and the next page
-/// continues the same month where this one stopped (clients merge consecutive entries
-/// with the same `month`).
+/// Photos grouped by the month on the camera's clock (section 4, Capture time; of
+/// `added_at` in UTC for a photo with no capture time), newest first, in [`TAKEN_KEY`]
+/// order. A page holds at most `limit` photos (`0` means [`DEFAULT_TIMELINE_LIMIT`]), so
+/// one busy month can span several pages: `count` is always the month's full total and
+/// the next page continues the same month where this one stopped (clients merge
+/// consecutive entries with the same `month`).
 pub async fn photo_timeline(
     db: &Db,
     library_id: &str,
@@ -828,20 +918,17 @@ pub async fn photo_timeline(
         .filter(|c| !c.trim().is_empty())
         .map(decode_cursor)
         .transpose()?;
-    let key = "COALESCE(i.taken_at, i.added_at)";
+    let key = TAKEN_KEY;
     let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
     qb.push_bind(user_id.to_string())
         .push(" WHERE i.library_id = ")
         .push_bind(library_id.to_string())
-        .push(format!(" AND i.status = 'ready' AND {key} BETWEEN "))
-        .push_bind(TIMELINE_MIN_KEY)
-        .push(" AND ")
-        .push_bind(TIMELINE_MAX_KEY);
+        .push(format!(" AND i.status = 'ready' AND {key} IS NOT NULL"));
     if let Some(after) = &after {
         qb.push(format!(" AND ({key} < "))
-            .push_bind(after.k)
+            .push_bind(after.k.clone())
             .push(format!(" OR ({key} = "))
-            .push_bind(after.k)
+            .push_bind(after.k.clone())
             .push(" AND i.id < ")
             .push_bind(after.id.clone())
             .push("))");
@@ -856,7 +943,7 @@ pub async fn photo_timeline(
         rows.truncate(limit as usize);
         match rows.last() {
             Some(last) => Some(encode_cursor(&TimelineCursor {
-                k: last.row.taken_at.unwrap_or(last.row.added_at),
+                k: taken_key(&last.row),
                 id: last.row.id.clone(),
             })?),
             None => None,
@@ -867,7 +954,7 @@ pub async fn photo_timeline(
 
     let mut months: Vec<PhotoMonth> = Vec::new();
     for row in rows {
-        let Some(month) = month_of(row.row.taken_at.unwrap_or(row.row.added_at)) else {
+        let Some(month) = taken_key(&row.row).get(..7).map(str::to_string) else {
             continue;
         };
         let item = row.into_item();
@@ -889,18 +976,18 @@ pub async fn photo_timeline(
         months.first().and_then(|m| month_bounds(&m.month)),
     );
     if let (Some((start, _)), Some((_, end))) = bounds {
-        let totals: Vec<(Option<String>, i64)> = sqlx::query_as(
-            "SELECT strftime('%Y-%m', COALESCE(taken_at, added_at), 'unixepoch') AS month, count(*)
-             FROM items
-             WHERE library_id = ? AND status = 'ready'
-               AND COALESCE(taken_at, added_at) >= ? AND COALESCE(taken_at, added_at) < ?
-             GROUP BY month",
-        )
-        .bind(library_id)
-        .bind(start)
-        .bind(end)
-        .fetch_all(db)
-        .await?;
+        let sql = format!(
+            "SELECT substr({key}, 1, 7) AS month, count(*)
+             FROM items i
+             WHERE i.library_id = ? AND i.status = 'ready' AND {key} >= ? AND {key} < ?
+             GROUP BY month"
+        );
+        let totals: Vec<(Option<String>, i64)> = sqlx::query_as(&sql)
+            .bind(library_id)
+            .bind(start)
+            .bind(end)
+            .fetch_all(db)
+            .await?;
         for month in &mut months {
             if let Some((_, n)) = totals
                 .iter()
@@ -916,26 +1003,15 @@ pub async fn photo_timeline(
     })
 }
 
-/// `YYYY-MM` for a unix time (UTC), matching SQLite's `strftime('%Y-%m', t, 'unixepoch')`.
-fn month_of(ts: i64) -> Option<String> {
-    let dt = time::OffsetDateTime::from_unix_timestamp(ts).ok()?;
-    Some(format!("{:04}-{:02}", dt.year(), u8::from(dt.month())))
-}
-
-/// Unix start of `YYYY-MM` and of the month after it.
-fn month_bounds(month: &str) -> Option<(i64, i64)> {
+/// `YYYY-MM` and the month after it: the bounds of the month's [`TAKEN_KEY`]s as text.
+fn month_bounds(month: &str) -> Option<(String, String)> {
     let (y, m) = month.split_once('-')?;
-    let (y, m): (i32, u8) = (y.parse().ok()?, m.parse().ok()?);
-    let start_month = time::Month::try_from(m).ok()?;
-    let start = time::Date::from_calendar_date(y, start_month, 1).ok()?;
-    let (ny, nm) = if m == 12 {
-        (y + 1, time::Month::January)
-    } else {
-        (y, start_month.next())
-    };
-    let end = time::Date::from_calendar_date(ny, nm, 1).ok()?;
-    let ts = |d: time::Date| d.midnight().assume_utc().unix_timestamp();
-    Some((ts(start), ts(end)))
+    let (y, m): (i32, u32) = (y.parse().ok()?, m.parse().ok()?);
+    if !(1..=12).contains(&m) || !(0..=9998).contains(&y) {
+        return None;
+    }
+    let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+    Some((format!("{y:04}-{m:02}"), format!("{ny:04}-{nm:02}")))
 }
 
 /// The Inbox as `access` sees it.
@@ -1063,6 +1139,8 @@ pub(crate) mod tests {
             height: None,
             media_json: None,
             taken_at: None,
+            taken_local: None,
+            taken_offset: None,
             camera: None,
             thumb_state: ThumbState::Pending,
             suggestion_json: None,
@@ -1505,6 +1583,142 @@ pub(crate) mod tests {
         assert_eq!(typed.poster_item_id.as_deref(), Some("a2"));
     }
 
+    /// Issue 3 of the design review: "3 shows, 18 episodes" must have three show tiles,
+    /// even when the twelve newest episodes belong to two of them.
+    #[tokio::test]
+    async fn a_series_shelf_has_a_tile_for_every_show() {
+        let db = crate::db::open_memory().await.unwrap();
+        add_user(&db, "u").await;
+        let now = crate::now();
+        let day = 86_400;
+        // An older show, added two months ago, with a poster.
+        for ep in 1..=6 {
+            let mut e = episode(
+                &format!("c{ep}"),
+                "Captain Paws",
+                1,
+                ep,
+                now - 60 * day + ep,
+            );
+            e.thumb_state = ThumbState::Ready;
+            insert(&db, &e).await;
+        }
+        // Two shows whose twelve episodes all came in this week.
+        for ep in 1..=5 {
+            insert(
+                &db,
+                &episode(
+                    &format!("s{ep}"),
+                    "Starlight Bakery",
+                    1,
+                    ep,
+                    now - 3 * day + ep,
+                ),
+            )
+            .await;
+        }
+        for ep in 1..=7 {
+            insert(
+                &db,
+                &episode(
+                    &format!("l{ep}"),
+                    "The Lantern Keepers",
+                    1,
+                    ep,
+                    now - 2 * day + ep,
+                ),
+            )
+            .await;
+        }
+        // One more episode of the old show, added 10 days ago: new, but older than the rest.
+        insert(&db, &episode("c7", "Captain Paws", 1, 7, now - 10 * day)).await;
+        let mut gone = episode("c8", "Captain Paws", 1, 8, now);
+        gone.status = ItemStatus::Missing;
+        insert(&db, &gone).await;
+
+        let home = home_as(&db, "u").await;
+        let entry = home
+            .libraries
+            .iter()
+            .find(|l| l.library.id == STARTING_SHOWS)
+            .unwrap();
+        assert_eq!(entry.library.show_count, Some(3));
+        assert_eq!(entry.library.item_count, 19);
+        let tiles: Vec<(&str, i64, i64, &str)> = entry
+            .shows
+            .iter()
+            .map(|s| {
+                (
+                    s.show_name.as_str(),
+                    s.item_count,
+                    s.new_count,
+                    s.latest.id.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            tiles,
+            vec![
+                ("The Lantern Keepers", 7, 7, "l7"),
+                ("Starlight Bakery", 5, 5, "s5"),
+                ("Captain Paws", 7, 1, "c7"),
+            ],
+            "every show, the most recently added first, with its new episodes counted"
+        );
+        assert_eq!(
+            entry.shows.iter().map(|s| s.item_count).sum::<i64>(),
+            entry.library.item_count,
+            "the tiles add up to the heading"
+        );
+        assert_eq!(entry.shows[2].poster_item_id.as_deref(), Some("c1"));
+        assert_eq!(
+            entry.shows[0].poster_item_id.as_deref(),
+            Some("l1"),
+            "without a picture yet, the first episode"
+        );
+        assert_eq!(entry.shows[0].last_added_at, now - 2 * day + 7);
+        // The twelve newest episodes alone would have shown two shows.
+        let grouped: std::collections::BTreeSet<_> = entry
+            .recent
+            .iter()
+            .filter_map(|i| i.show_name.clone())
+            .collect();
+        assert_eq!(grouped.len(), 2);
+        // Other layouts have no shows.
+        for other in home
+            .libraries
+            .iter()
+            .filter(|l| l.library.id != STARTING_SHOWS)
+        {
+            assert!(other.shows.is_empty(), "{}", other.library.name);
+        }
+
+        // More than twelve shows: the twelve with the newest episodes.
+        for n in 0..12 {
+            insert(
+                &db,
+                &episode(
+                    &format!("x{n:02}"),
+                    &format!("Show {n:02}"),
+                    1,
+                    1,
+                    now - 100 + n,
+                ),
+            )
+            .await;
+        }
+        let home = home_as(&db, "u").await;
+        let entry = home
+            .libraries
+            .iter()
+            .find(|l| l.library.id == STARTING_SHOWS)
+            .unwrap();
+        let names: Vec<&str> = entry.shows.iter().map(|s| s.show_name.as_str()).collect();
+        assert_eq!(names.len(), 12);
+        assert_eq!(names[0], "Show 11");
+        assert_eq!(names[11], "Show 00");
+    }
+
     #[tokio::test]
     async fn shows_and_episode_navigation() {
         let db = crate::db::open_memory().await.unwrap();
@@ -1578,6 +1792,109 @@ pub(crate) mod tests {
         ));
     }
 
+    /// A moment read on a server in UTC.
+    fn utc_moment(at: i64) -> Option<crate::capture::CaptureTime> {
+        crate::capture::Recorded::instant(at)?.resolve(&jiff::tz::TimeZone::UTC)
+    }
+
+    /// Photos near a month boundary taken in different time zones group under the month
+    /// on the camera's clock, whatever that is in UTC or wherever the viewer is, and every
+    /// month stays in one piece because the timeline is ordered by that clock.
+    #[tokio::test]
+    async fn the_timeline_groups_by_the_month_on_the_camera_clock() {
+        use crate::capture::Recorded;
+        let db = crate::db::open_memory().await.unwrap();
+        let ny = jiff::tz::TimeZone::get("America/New_York").unwrap();
+        let photos = [
+            // June 30, 20:00 in Los Angeles: July 1, 03:00 UTC.
+            ("la", Recorded::clock(2024, 6, 30, 20, 0, 0, Some(-420))),
+            // July 1, 08:00 in Tokyo: June 30, 23:00 UTC.
+            ("tokyo", Recorded::clock(2024, 7, 1, 8, 0, 0, Some(540))),
+            // June 30, 22:30 on a camera that wrote no offset; the server is in New York.
+            ("bare", Recorded::clock(2024, 6, 30, 22, 30, 0, None)),
+            // A file time of July 1, 02:00 UTC on that New York server: June 30, 22:00.
+            ("mtime", Recorded::instant(1_719_799_200)),
+            // July 1, 00:30 on a camera without an offset.
+            ("july", Recorded::clock(2024, 7, 1, 0, 30, 0, None)),
+        ];
+        for (id, recorded) in photos {
+            let mut r = row(id, id);
+            r.category = Category::Photo;
+            r.kind = crate::models::MediaKind::Photo;
+            r.rel_path = format!("Photos/x/{id}.jpg");
+            r.set_taken(recorded.unwrap().resolve(&ny));
+            insert(&db, &r).await;
+        }
+        let page = photo_timeline(&db, STARTING_PHOTOS, None, 0, "u")
+            .await
+            .unwrap();
+        let months: Vec<(&str, i64, Vec<&str>)> = page
+            .months
+            .iter()
+            .map(|m| {
+                (
+                    m.month.as_str(),
+                    m.count,
+                    m.items.iter().map(|i| i.id.as_str()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            months,
+            vec![
+                ("2024-07", 2, vec!["tokyo", "july"]),
+                ("2024-06", 3, vec!["bare", "mtime", "la"]),
+            ]
+        );
+        let la = &page.months[1].items[2];
+        assert_eq!(la.taken_local.as_deref(), Some("2024-06-30T20:00:00"));
+        assert_eq!(la.taken_offset, Some(-420));
+        assert_eq!(la.taken_at, Some(1_719_802_800));
+        // Paged one photo at a time, the months still come out whole and in order.
+        let mut cursor: Option<String> = None;
+        let mut seen = Vec::new();
+        loop {
+            let page = photo_timeline(&db, STARTING_PHOTOS, cursor.as_deref(), 1, "u")
+                .await
+                .unwrap();
+            for m in &page.months {
+                for i in &m.items {
+                    seen.push((m.month.clone(), m.count, i.id.clone()));
+                }
+            }
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        let expected: Vec<(String, i64, String)> = [
+            ("2024-07", 2, "tokyo"),
+            ("2024-07", 2, "july"),
+            ("2024-06", 3, "bare"),
+            ("2024-06", 3, "mtime"),
+            ("2024-06", 3, "la"),
+        ]
+        .into_iter()
+        .map(|(m, c, id)| (m.to_string(), c, id.to_string()))
+        .collect();
+        assert_eq!(seen, expected);
+        // `sort=taken` uses the same order.
+        let q = ItemQuery {
+            library_id: Some(STARTING_PHOTOS.to_string()),
+            sort: ItemSort::Taken,
+            order: SortOrder::Desc,
+            ..Default::default()
+        };
+        let listed: Vec<String> = list(&db, &q, &owner("u"))
+            .await
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(listed, ["tokyo", "july", "bare", "mtime", "la"]);
+    }
+
     #[tokio::test]
     async fn photo_timeline_pages_by_month() {
         let db = crate::db::open_memory().await.unwrap();
@@ -1591,7 +1908,7 @@ pub(crate) mod tests {
             r.category = Category::Photo;
             r.kind = crate::models::MediaKind::Photo;
             r.rel_path = format!("Photos/x/IMG_{n}.jpg");
-            r.taken_at = taken;
+            r.set_taken(taken.and_then(utc_moment));
             r.added_at = added;
             r
         };
@@ -1651,8 +1968,9 @@ pub(crate) mod tests {
         );
         assert_eq!(
             month_bounds("2024-12"),
-            Some((1_733_011_200, 1_735_689_600))
+            Some(("2024-12".to_string(), "2025-01".to_string()))
         );
+        assert_eq!(month_bounds("2024-13"), None);
     }
 
     #[tokio::test]
@@ -1666,14 +1984,14 @@ pub(crate) mod tests {
             r.kind = crate::models::MediaKind::Photo;
             r.rel_path = format!("Photos/2024/06/j{n}.jpg");
             // Two photos share a timestamp so the id tiebreak is exercised.
-            r.taken_at = Some(june + 100 * (n / 2));
+            r.set_taken(utc_moment(june + 100 * (n / 2)));
             insert(&db, &r).await;
         }
         let mut m = row("m0", "May");
         m.category = Category::Photo;
         m.kind = crate::models::MediaKind::Photo;
         m.rel_path = "Photos/2024/05/m0.jpg".into();
-        m.taken_at = Some(may + 1);
+        m.set_taken(utc_moment(may + 1));
         insert(&db, &m).await;
 
         let mut cursor: Option<String> = None;

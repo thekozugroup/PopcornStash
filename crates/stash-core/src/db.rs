@@ -316,6 +316,107 @@ mod tests {
         db.close().await;
     }
 
+    /// Migration 0003 on a database at 0002 (section 6, Migration 0003): every dated row
+    /// and stored suggestion gets the old moment's UTC reading as its clock, and every
+    /// dated photo and home video gets one probe job that redates it.
+    #[tokio::test]
+    async fn migration_0003_keeps_old_clocks_and_queues_redating() {
+        let dir = tempfile::tempdir().unwrap();
+        let first_two = dir.path().join("migrations");
+        std::fs::create_dir(&first_two).unwrap();
+        for name in ["0001_init.sql", "0002_libraries.sql"] {
+            std::fs::copy(
+                format!("{}/migrations/{name}", env!("CARGO_MANIFEST_DIR")),
+                first_two.join(name),
+            )
+            .unwrap();
+        }
+        let path = dir.path().join("popcornstash.db");
+        let db = super::connect(&path).await.unwrap();
+        sqlx::migrate::Migrator::new(first_two.as_path())
+            .await
+            .unwrap()
+            .run(&db)
+            .await
+            .unwrap();
+        // 1_719_786_600 is 2024-06-30T22:30:00Z: how the old code stored a camera clock
+        // of 22:30 without an offset.
+        sqlx::raw_sql(
+            r#"INSERT INTO items (id, rel_path, kind, category, status, title, sort_title, size, mtime,
+                                taken_at, suggestion_json, added_at, updated_at) VALUES
+                ('photo', 'Photos/2024/06/IMG_1.jpg', 'photo', 'photo', 'ready', 'p', 'p', 1, 1, 1719786600, NULL, 1, 1),
+                ('clip', 'Home Videos/2024/06/VID_1.mp4', 'video', 'home_video', 'ready', 'c', 'c', 1, 1, 1719786600, NULL, 1, 1),
+                ('undated', 'Photos/Undated/x.jpg', 'photo', 'photo', 'ready', 'u', 'u', 1, 1, NULL, NULL, 1, 1),
+                ('movie', 'Movies/Heat (1995)/Heat (1995).mkv', 'video', 'movie', 'ready', 'm', 'm', 1, 1, NULL, NULL, 1, 1),
+                ('gone', 'Photos/2024/06/gone.jpg', 'photo', 'photo', 'missing', 'g', 'g', 1, 1, 1719786600, NULL, 1, 1),
+                ('waiting', 'Inbox/IMG_2.jpg', 'photo', 'photo', 'needs_review', 'w', 'w', 1, 1, 1719786600,
+                 '{"category":"photo","title":"IMG_2","year":null,"show_name":null,"season":null,"episode":null,"episode_title":null,"taken_at":1719786600,"confidence":"low","reason":"r"}', 1, 1),
+                ('queued', 'Photos/2024/06/IMG_3.jpg', 'photo', 'photo', 'ready', 'q', 'q', 1, 1, 1719786600, NULL, 1, 1);
+             INSERT INTO jobs (kind, item_id, payload, state, attempts, run_after, created_at, updated_at) VALUES
+                ('probe', 'queued', '{}', 'queued', 0, 1, 1, 1),
+                ('thumb', 'photo', '{}', 'queued', 0, 1, 1, 1);"#,
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        db.close().await;
+
+        let db = super::open(&path).await.unwrap();
+        type TakenRow = (String, Option<i64>, Option<String>, Option<i64>);
+        let rows: Vec<TakenRow> =
+            sqlx::query_as("SELECT id, taken_at, taken_local, taken_offset FROM items ORDER BY id")
+                .fetch_all(&db)
+                .await
+                .unwrap();
+        let clock = Some("2024-06-30T22:30:00".to_string());
+        assert_eq!(
+            rows,
+            vec![
+                ("clip".into(), Some(1_719_786_600), clock.clone(), None),
+                ("gone".into(), Some(1_719_786_600), clock.clone(), None),
+                ("movie".into(), None, None, None),
+                ("photo".into(), Some(1_719_786_600), clock.clone(), None),
+                ("queued".into(), Some(1_719_786_600), clock.clone(), None),
+                ("undated".into(), None, None, None),
+                ("waiting".into(), Some(1_719_786_600), clock.clone(), None),
+            ]
+        );
+        let suggestion: String =
+            sqlx::query_scalar("SELECT suggestion_json FROM items WHERE id = 'waiting'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let c: crate::models::Classification = serde_json::from_str(&suggestion).unwrap();
+        assert_eq!(c.taken_local, clock);
+        assert_eq!(c.taken_offset, None);
+        assert_eq!(c.taken_at, Some(1_719_786_600));
+        let jobs: Vec<(String, Option<String>, String)> =
+            sqlx::query_as("SELECT kind, item_id, payload FROM jobs ORDER BY kind, item_id")
+                .fetch_all(&db)
+                .await
+                .unwrap();
+        let redate = |id: &str| {
+            (
+                "probe".to_string(),
+                Some(id.to_string()),
+                r#"{"redate":true}"#.to_string(),
+            )
+        };
+        assert_eq!(
+            jobs,
+            vec![
+                redate("clip"),
+                redate("photo"),
+                redate("queued"),
+                redate("undated"),
+                redate("waiting"),
+                ("thumb".into(), Some("photo".into()), "{}".into()),
+            ],
+            "one redating probe per photo and home video that can be read; the waiting probe redates too"
+        );
+        db.close().await;
+    }
+
     #[tokio::test]
     async fn migrations_apply() {
         let db = super::open_memory().await.unwrap();

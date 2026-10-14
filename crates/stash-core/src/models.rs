@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::capture::CaptureTime;
+
 macro_rules! text_enum {
     ($(#[$meta:meta])* $name:ident { $($variant:ident => $text:literal),+ $(,)? }) => {
         $(#[$meta])*
@@ -138,7 +140,11 @@ pub struct ItemRow {
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub media_json: Option<String>,
+    /// When it was taken (section 4, Capture time), in three columns that
+    /// [`ItemRow::taken`] reads together: the moment, the camera's clock and its offset.
     pub taken_at: Option<i64>,
+    pub taken_local: Option<String>,
+    pub taken_offset: Option<i32>,
     pub camera: Option<String>,
     pub thumb_state: ThumbState,
     pub suggestion_json: Option<String>,
@@ -163,6 +169,19 @@ impl ItemRow {
             status: self.status,
             category: self.category,
         }
+    }
+
+    /// When it was taken, from the three capture time columns.
+    pub fn taken(&self) -> Option<CaptureTime> {
+        CaptureTime::from_stored(
+            self.taken_at,
+            self.taken_local.as_deref(),
+            self.taken_offset,
+        )
+    }
+
+    pub fn set_taken(&mut self, taken: Option<CaptureTime>) {
+        (self.taken_at, self.taken_local, self.taken_offset) = CaptureTime::columns(taken.as_ref());
     }
 
     pub fn media(&self) -> Option<MediaSummary> {
@@ -196,6 +215,8 @@ impl ItemRow {
             width: self.width,
             height: self.height,
             taken_at: self.taken_at,
+            taken_local: self.taken_local.clone(),
+            taken_offset: self.taken_offset,
             camera: self.camera.clone(),
             thumb: (self.thumb_state == ThumbState::Ready)
                 .then(|| format!("/api/items/{}/thumb?size=sm&v={}", self.id, self.updated_at)),
@@ -233,7 +254,12 @@ pub struct Item {
     pub duration_s: Option<f64>,
     pub width: Option<i64>,
     pub height: Option<i64>,
+    /// When it was taken (section 4, Capture time): the moment, unix seconds.
     pub taken_at: Option<i64>,
+    /// The camera's clock where it was taken, `YYYY-MM-DDTHH:MM:SS`: what every viewer sees.
+    pub taken_local: Option<String>,
+    /// Minutes east of UTC, when the file wrote one beside the clock.
+    pub taken_offset: Option<i32>,
     pub camera: Option<String>,
     pub thumb: Option<String>,
     pub favorite: bool,
@@ -265,7 +291,13 @@ pub struct Classification {
     pub season: Option<i64>,
     pub episode: Option<i64>,
     pub episode_title: Option<String>,
+    /// When it was taken, as on `Item` (section 4, Capture time). Suggestions stored
+    /// before migration 0003 have only `taken_at`; the migration adds the other two.
     pub taken_at: Option<i64>,
+    #[serde(default)]
+    pub taken_local: Option<String>,
+    #[serde(default)]
+    pub taken_offset: Option<i32>,
     pub confidence: Confidence,
     /// Short human-readable explanation about the file itself, e.g. "Found S01E02 in the name".
     pub reason: String,
@@ -274,6 +306,21 @@ pub struct Classification {
     /// classifier and never stored: where a file goes depends on the claims when it is read.
     #[serde(skip)]
     pub layout: String,
+}
+
+impl Classification {
+    /// When it was taken, from the three capture time fields.
+    pub fn taken(&self) -> Option<CaptureTime> {
+        CaptureTime::from_stored(
+            self.taken_at,
+            self.taken_local.as_deref(),
+            self.taken_offset,
+        )
+    }
+
+    pub fn set_taken(&mut self, taken: Option<CaptureTime>) {
+        (self.taken_at, self.taken_local, self.taken_offset) = CaptureTime::columns(taken.as_ref());
+    }
 }
 
 /// A stored classification as a reader sees it (`ItemDetail.suggestion`, section 8): the

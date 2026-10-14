@@ -1401,13 +1401,16 @@ async fn take_in_folder(
         match in_place_category(def, &item.rel_path, item.kind, size) {
             Some(category) => {
                 let meta = library_metadata(category, &item.rel_path, item.mtime);
-                let taken_at = match category {
-                    Category::HomeVideo | Category::Photo => item.taken_at.or(meta.taken_at),
+                let taken = match category {
+                    Category::HomeVideo | Category::Photo => item.taken().or(meta.taken),
                     _ => None,
                 };
+                let (taken_at, taken_local, taken_offset) =
+                    crate::capture::CaptureTime::columns(taken.as_ref());
                 sqlx::query(
                     "UPDATE items SET category = ?, title = ?, sort_title = ?, year = ?, show_name = ?, season = ?,
-                        episode = ?, episode_title = ?, taken_at = ?, suggestion_json = NULL, updated_at = ?
+                        episode = ?, episode_title = ?, taken_at = ?, taken_local = ?, taken_offset = ?,
+                        suggestion_json = NULL, updated_at = ?
                      WHERE id = ?",
                 )
                 .bind(category.as_str())
@@ -1419,6 +1422,8 @@ async fn take_in_folder(
                 .bind(meta.episode)
                 .bind(&meta.episode_title)
                 .bind(taken_at)
+                .bind(&taken_local)
+                .bind(taken_offset)
                 .bind(now())
                 .bind(&item.id)
                 .execute(&mut *conn)

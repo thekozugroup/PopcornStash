@@ -10,6 +10,7 @@ use super::classify::{classify, media_kind};
 use super::defs::{self, LibraryDef, Shape};
 use super::parse::{parse_name, season_folder};
 use super::{Library, ScanReport, organizer, repo};
+use crate::capture::{self, CaptureTime, Recorded};
 use crate::events::{Event, LibraryChange};
 use crate::jobs::JobKind;
 use crate::models::{
@@ -45,7 +46,7 @@ pub(crate) struct Meta {
     pub season: Option<i64>,
     pub episode: Option<i64>,
     pub episode_title: Option<String>,
-    pub taken_at: Option<i64>,
+    pub taken: Option<CaptureTime>,
 }
 
 impl Meta {
@@ -57,7 +58,7 @@ impl Meta {
             season: c.season,
             episode: c.episode,
             episode_title: c.episode_title.clone(),
-            taken_at: c.taken_at,
+            taken: c.taken(),
         }
     }
 }
@@ -331,12 +332,17 @@ pub(crate) fn library_metadata(category: Category, rel: &str, mtime: i64) -> Met
                 season,
                 episode,
                 episode_title: file.episode_title.clone(),
-                taken_at: None,
+                taken: None,
             }
         }
+        // The name's date, else the file time (section 4, Capture time); the probe job
+        // replaces it with the EXIF or QuickTime date when the file has one.
         Category::HomeVideo | Category::Photo => Meta {
             title: stem.clone(),
-            taken_at: Some(file.date.unwrap_or(mtime)),
+            taken: capture::first_of(
+                [file.date, Recorded::instant(mtime)],
+                &capture::server_zone(),
+            ),
             ..Meta::default()
         },
         Category::Other => Meta {
@@ -358,6 +364,7 @@ pub(crate) fn new_row(
 ) -> ItemRow {
     let t = now();
     let path = Path::new(rel);
+    let (taken_at, taken_local, taken_offset) = CaptureTime::columns(meta.taken.as_ref());
     ItemRow {
         id: new_id(),
         rel_path: rel.to_string(),
@@ -379,7 +386,9 @@ pub(crate) fn new_row(
         width: None,
         height: None,
         media_json: None,
-        taken_at: meta.taken_at,
+        taken_at,
+        taken_local,
+        taken_offset,
         camera: None,
         thumb_state: ThumbState::Pending,
         suggestion_json: None,
@@ -402,7 +411,8 @@ pub(crate) async fn overwrite_row(lib: &Library, id: &str, row: &ItemRow) -> Res
     sqlx::query(
         "UPDATE items SET rel_path = ?, kind = ?, category = ?, status = ?, title = ?, sort_title = ?, year = ?,
             show_name = ?, season = ?, episode = ?, episode_title = ?, size = ?, mtime = ?, quick_hash = ?, mime = ?,
-            duration_s = ?, width = ?, height = ?, media_json = ?, taken_at = ?, camera = ?, thumb_state = ?,
+            duration_s = ?, width = ?, height = ?, media_json = ?, taken_at = ?, taken_local = ?, taken_offset = ?,
+            camera = ?, thumb_state = ?,
             suggestion_json = ?, source_download_id = COALESCE(?, source_download_id), missing_since = NULL,
             added_by = COALESCE(?, added_by), updated_at = ?
          WHERE id = ?",
@@ -427,6 +437,8 @@ pub(crate) async fn overwrite_row(lib: &Library, id: &str, row: &ItemRow) -> Res
     .bind(row.height)
     .bind(&row.media_json)
     .bind(row.taken_at)
+    .bind(&row.taken_local)
+    .bind(row.taken_offset)
     .bind(&row.camera)
     .bind(row.thumb_state.as_str())
     .bind(&row.suggestion_json)
@@ -784,7 +796,7 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
             row.season = meta.season;
             row.episode = meta.episode;
             row.episode_title = meta.episode_title.clone();
-            row.taken_at = meta.taken_at.or(old.taken_at);
+            row.set_taken(meta.taken.or(old.taken()));
         }
         row.source_download_id = None;
         overwrite_row(lib, &old.id, &row).await?;
@@ -1195,9 +1207,15 @@ mod tests {
             5,
         );
         assert_eq!(h.title, "VID_20240613_101500");
-        assert_eq!(h.taken_at, Some(1_718_273_700));
-        let p = library_metadata(Category::Photo, "Photos/beach.jpg", 5);
-        assert_eq!(p.taken_at, Some(5));
+        let taken = h.taken.unwrap();
+        assert_eq!(
+            taken.local_text(),
+            "2024-06-13T10:15:00",
+            "the name's clock"
+        );
+        assert_eq!(taken.offset, None);
+        let p = library_metadata(Category::Photo, "Photos/beach.jpg", 1_700_000_000);
+        assert_eq!(p.taken.unwrap().at, 1_700_000_000, "the file time");
     }
 
     fn def(shape: Shape, claims: &[Category]) -> LibraryDef {
