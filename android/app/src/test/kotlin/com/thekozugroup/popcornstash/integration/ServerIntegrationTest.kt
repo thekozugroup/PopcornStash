@@ -84,11 +84,11 @@ class ServerIntegrationTest {
         private var process: Process? = null
         private lateinit var work: File
         private lateinit var log: File
-        private lateinit var base: HttpUrl
+        internal lateinit var base: HttpUrl
         private lateinit var origin: String
-        private lateinit var passkey: SoftPasskey
+        internal lateinit var passkey: SoftPasskey
         private lateinit var ownerCookie: String
-        private val http: OkHttpClient = baseHttpClient("PopcornStash-Android/integration-test")
+        internal val http: OkHttpClient = baseHttpClient("PopcornStash-Android/integration-test")
 
         /** The signing certificate the server's assetlinks lists for the app (any 32 bytes do for the test). */
         private const val CERT_SHA256 =

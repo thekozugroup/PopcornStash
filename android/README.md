@@ -42,7 +42,7 @@ app/src/main/kotlin/com/thekozugroup/popcornstash/
   data/session/            SessionRepository: who is signed in; ending a session forgets everything
   data/repo/               StashData: Home, libraries, downloads, Inbox and the VPN line, kept current by events
   data/device/             PlaybackCapabilities: this phone's decoders for the playback decision
-  feature/                 signin, downloads, settings, and Home with what it opens:
+  feature/                 signin, downloads, settings, player, and Home with what it opens:
     home/                  HomeTab (the tab's page stack), Home, continue watching
     library/               library pages by layout, shows, Other files, MediaFormat (the web's words)
     item/                  an item's page and its favourite
@@ -53,6 +53,8 @@ Home opens pages on top of itself in the tab's own stack (`PageStack`): a librar
 
 Pictures load through Coil with the session's client, so the bearer token is added for the server and nowhere else; the memory cache and the disk cache (`cacheDir/images`) go with the session. An Other file opens in another app from a private copy in `cacheDir/opened` through a FileProvider with a read-only grant; the copy is deleted when the person comes back, at the next start and on sign-out. "Save the original" in the photo viewer uses the system's "Save to" picker and streams the file into it with the app's own client.
 
+The player (`feature/player/`) is its own activity, opened with `context.openPlayer(itemId, fromStart)`. `PlayerController` holds its rules apart from Android (the playback request from this phone's decoders, progress every 10 seconds and on pause, leaving and the end, the server's HLS session ended once it is no longer played, a forgotten session asked for again, the next episode); `ExoPlayerEngine` is Media3 ExoPlayer with HLS, every request through the signed-in session's OkHttp client so the token goes to the server only. Nothing it plays is cached on disk.
+
 The session's token is sealed with AES-GCM under a non-exportable Android Keystore key and kept in `noBackupFilesDir`; the app allows no backup or device transfer. There is no HTTP logging and no HTTP cache. Signing out, a 401 on any request, or signing in as someone else ends the session: the token file and its key are deleted, the session's work is cancelled and the tabs start again empty.
 
 ## Tests
@@ -60,7 +62,8 @@ The session's token is sealed with AES-GCM under a non-exportable Android Keysto
 - JVM: `ApiClientTest` (every endpoint against MockWebServer: method, path, query, body, token, the error envelope), `PairingFlowTest` (the pairing state machine), `EventStreamTest`, `SessionRepositoryTest`, `SessionStoreTest`, `StashDataTest`, `ServerAddressTest`, `PlaybackCapabilitiesTest`, `SignInControllerTest`, `LibraryIconsTest` (the icon names match the server's list).
 - Home and libraries (JVM, MockWebServer): `LibraryViewModelTest` (each layout's request, sort, paging, a month split across pages, events about the library, a burst of events as one reload, gone, reconnects), `ShowViewModelTest` (what plays next, seasons, gone), `ItemViewModelTest` (next episode, the favourite and its rollback, gone), `OtherFilesViewModelTest` (the list, sort, a private copy with the session client), `HomeViewModelTest` (shelf tiles, continue watching words), `SaveOriginalViewModelTest`, `MediaFormatTest`, `LiveUpdatesTest` (reconnects and the "not connected" line), `PageStackTest` (the stack, its saver, the view model stores).
 - Robolectric: `AppShellTest` (the toolbar's selection, tooltips, descriptions, page changes, slide direction, reduce motion, kept state, Back), `SignInScreensTest`, `HomeTabTest` (Home against a server: opening a library and Back, tapping Home again, a tab keeping its pages, a show playing what comes next, continue watching and "Start from the beginning", the photo viewer hiding the toolbar, a library that goes away, "Edit library").
-- Roborazzi: `ShellScreenshotTest`, `SignInScreenshotTest`, `HomeScreenshotTest` and `LibraryScreenshotTest` (Home, each library layout, a show, an item, the photo viewer and Other files, with their loading, empty and failed states), light and dark, in `app/src/test/screenshots/`. The pictures in them are painted by the test (`testing/SampleImages.kt`) and served by Coil's fake engine; the titles and people are invented.
+- Player: `PlaybackRequestBuilderTest` (the playback request and its wire shape, quality and audio choices), `ProgressSaverTest`, `StreamSessionsTest`, `PlayerControllerTest` (open and resume, direct and HLS, progress every 10 s, pause, background, leaving and the end, quality and audio switches, late answers ended, a forgotten session asked for again, gone videos, retry, the safe-codec retry, the next episode), `PlayerFormatTest`, `ExoPlayerEngineTest` (Robolectric: the token and Range on the session's client, no token to another host, ExoPlayer's errors, HLS and file loads, the picture-in-picture shape), `PlayerScreenTest` (Robolectric: what each control says and does, the menu, the end, failures, hiding the chrome, picture-in-picture) and `PlayerLauncherTest`.
+- Roborazzi: `ShellScreenshotTest`, `SignInScreenshotTest`, `HomeScreenshotTest`, `LibraryScreenshotTest` (Home, each library layout, a show, an item, the photo viewer and Other files, with their loading, empty and failed states) and `PlayerScreenshotTest`, light and dark (the player is always dark), in `app/src/test/screenshots/`. The pictures in them are painted by the test (`testing/SampleImages.kt`) and served by Coil's fake engine; the titles and people are invented.
 - `ServerIntegrationTest` runs the app's client against a real server: it builds a `scripts/dev-fixture.sh` stash, starts `popcornstash serve`, makes the owner with a software passkey and the setup code from the log (as tests/e2e does with Chrome's virtual authenticator), then pairs the app (the owner approves the code), signs in with a passkey from the app's `android:apk-key-hash:` origin (`STASH_ANDROID_ASSETLINKS` lists it), and reads the libraries, Home and live events with the app's token; then the Home view models read the real stash (Movies as posters, Shows with what plays next, the photo timeline, an item's favourite saved and put back), a thumbnail comes with the bearer client and an Other file is fetched into a private copy. It needs ffmpeg and the server binary, so it runs only when asked:
 
   ```sh
@@ -68,7 +71,7 @@ The session's token is sealed with AES-GCM under a non-exportable Android Keysto
   cd android && ./gradlew :app:testDebugUnitTest --tests '*ServerIntegrationTest*' -PpopcornstashServer=../target/debug/popcornstash
   ```
 
-  `scripts/check.sh --e2e` runs it. `POPCORNSTASH_KEEP=1` keeps its temporary stash and server log.
+  `scripts/check.sh --e2e` runs it. `POPCORNSTASH_KEEP=1` keeps its temporary stash and server log. `PlayerServerIntegrationTest` uses the same server: the player gets the fixture's H.264 MP4 directly (a Range request answers 206) and its HEVC MKV as a conversion (the playlist and the first segment answer the app's token), the place where it paused is saved, and leaving ends the conversion (the playlist then answers 404). The command above (and `check.sh --e2e`) runs both.
 
 ## Icons
 
