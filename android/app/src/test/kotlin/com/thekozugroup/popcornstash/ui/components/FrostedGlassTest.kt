@@ -54,14 +54,14 @@ class FrostedGlassTest {
         compose.waitForIdle()
     }
 
-    /** The glass at the start of the Downloads square, clear of its icon and the bar's edge. */
+    /** The glass at the top of the Downloads square, clear of its icon and the bar's edge. */
     private fun glass(): Color {
         val image = compose.onNodeWithTag("toolbar").captureToImage()
-        val x = with(compose.density) { 10.dp.roundToPx() }
-        return image.toPixelMap()[x, image.height / 2]
+        val y = with(compose.density) { 10.dp.roundToPx() }
+        return image.toPixelMap()[image.width / 2, y]
     }
 
-    /** The pixel 1dp outside the selected square's start edge, half way down. */
+    /** The pixel 1dp outside the selected square's left edge, half way down. */
     private fun besideTheSquare(): Color {
         val toolbar = compose.onNodeWithTag("toolbar")
         val bar = toolbar.getUnclippedBoundsInRoot()
@@ -77,7 +77,7 @@ class FrostedGlassTest {
 
     @Test
     fun theGlassShowsWhatIsUnderItAndFollowsAScroll() {
-        // Bands far taller than the bar: red, blue, red, ... The bar starts over the second, blue.
+        // Bands far taller than the bar: red, blue, red, ... The bar (near the bottom) is over the second, blue.
         shell(GlassTier.Captured) { page -> Bands(page.tab, listOf(Red, Blue)) }
         val before = glass()
         assertTrue("Over a blue band the glass is bluish, not $before", before.bluish())

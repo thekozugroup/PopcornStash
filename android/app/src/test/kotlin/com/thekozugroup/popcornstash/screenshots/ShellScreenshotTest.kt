@@ -1,6 +1,11 @@
 package com.thekozugroup.popcornstash.screenshots
 
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
@@ -10,7 +15,10 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
+import com.thekozugroup.popcornstash.feature.downloads.DownloadsActions
+import com.thekozugroup.popcornstash.feature.downloads.DownloadsPage
 import com.thekozugroup.popcornstash.feature.downloads.DownloadsSamples
+import com.thekozugroup.popcornstash.feature.settings.SettingsRootPage
 import com.thekozugroup.popcornstash.navigation.AppShell
 import com.thekozugroup.popcornstash.navigation.Tab
 import com.thekozugroup.popcornstash.ui.theme.PopcornTheme
@@ -20,8 +28,10 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * The shell as a phone shows it, light and dark. Recorded with
- * `./gradlew recordRoborazziDebug`, compared with `verifyRoborazziDebug`.
+ * The shell as a phone shows it, light and dark: the upright toolbar on the right edge over
+ * each tab, a long page scrolled to its end clear of the bar, a snackbar beside it, the tab
+ * slide and the phone turned on its side. Recorded with `./gradlew recordRoborazziDebug`,
+ * compared with `verifyRoborazziDebug`.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(qualifiers = PHONE)
@@ -74,22 +84,24 @@ class ShellScreenshotTest {
         compose.onRoot().captureRoboImage(screenshot("shell-settings-dark"))
     }
 
-    /** The floating toolbar alone, Home selected, with the Downloads badge. */
+    /** The floating toolbar close up, Home selected, with the Downloads badge on its top-left corner. */
     @Test
     fun toolbarLight() {
         shell(dark = false, tab = Tab.Home, readyToImport = DownloadsSamples.content().imports.size)
-        compose.onNodeWithTag("toolbar").captureRoboImage(screenshot("toolbar-light"))
+        compose.captureToolbarCloseUp("toolbar-light")
     }
 
     @Test
     fun toolbarDark() {
         shell(dark = true, tab = Tab.Home, readyToImport = DownloadsSamples.content().imports.size)
-        compose.onNodeWithTag("toolbar").captureRoboImage(screenshot("toolbar-dark"))
+        compose.captureToolbarCloseUp("toolbar-dark")
     }
 
     /**
-     * Three moments of Home sliding to Settings after a tap on Settings: early, about half way
-     * and most of the way on the page spring, the selection square travelling with it. The press ripple runs on the platform's clock, so 1% of the pixels may differ.
+     * Three moments of Settings rising over Home after a tap on Settings (the square below Home):
+     * early, about half way and most of the way on the page spring, the selection square
+     * travelling down with it. The press ripple runs on the platform's clock, so 1% of the
+     * pixels may differ.
      */
     @Test
     fun tabTransitionLight() {
@@ -106,6 +118,104 @@ class ShellScreenshotTest {
             }
             compose.onRoot().captureRoboImage(screenshot("transition-${index + 1}-light"), roborazziOptions = ripple)
         }
+    }
+
+    /** Downloads scrolled to its end: the last row, its More button and its line sit above the bar. */
+    private fun downloadsAtTheEnd(dark: Boolean) {
+        val samples = DownloadsSamples
+        compose.setContent {
+            PopcornTheme(darkTheme = dark, reduceMotion = false) {
+                AppShell(initialTab = Tab.Downloads, readyToImport = samples.content().imports.size) { page ->
+                    if (page.tab == Tab.Downloads) {
+                        // Past the last index: the list settles at its end.
+                        val list = remember { LazyListState(firstVisibleItemIndex = 999) }
+                        DownloadsPage(page, samples.content(), DownloadsActions(onOpenPlace = {}), samples.NOW, listState = list)
+                    } else {
+                        SampleTabRoot(page)
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.assertNothingUnderTheToolbar()
+    }
+
+    @Test
+    fun downloadsAtTheEndLight() {
+        downloadsAtTheEnd(dark = false)
+        compose.onRoot().captureRoboImage(screenshot("shell-downloads-end-light"))
+    }
+
+    @Test
+    fun downloadsAtTheEndDark() {
+        downloadsAtTheEnd(dark = true)
+        compose.onRoot().captureRoboImage(screenshot("shell-downloads-end-dark"))
+    }
+
+    /** Settings (the owner's) scrolled to its end: the last library row's More button and Sign out clear the bar. */
+    @Test
+    fun settingsAtTheEndLight() {
+        compose.setContent {
+            PopcornTheme(darkTheme = false, reduceMotion = false) {
+                AppShell(initialTab = Tab.Settings) { page ->
+                    if (page.tab == Tab.Settings) {
+                        val list = remember { LazyListState(firstVisibleItemIndex = 999) }
+                        SettingsRootPage(page, SampleOwner, "stash.example.com", "0.2.0", SampleLibrarySettings, onOpenWeb = {}, onSignOut = {}, listState = list)
+                    } else {
+                        SampleTabRoot(page)
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.assertNothingUnderTheToolbar()
+        compose.onRoot().captureRoboImage(screenshot("shell-settings-end-light"))
+    }
+
+    /** A snackbar after an action: at the bottom, level with the bar's bottom edge and to its left. */
+    private fun snackbarBesideTheBar(dark: Boolean) {
+        val samples = DownloadsSamples
+        compose.setContent {
+            PopcornTheme(darkTheme = dark, reduceMotion = false) {
+                AppShell(initialTab = Tab.Downloads, readyToImport = samples.content().imports.size) { page ->
+                    if (page.tab == Tab.Downloads) {
+                        val snackbar = remember { SnackbarHostState() }
+                        LaunchedEffect(Unit) { snackbar.showSnackbar("Ignored. clip_final_v2.mkv stays where it is.", duration = SnackbarDuration.Indefinite) }
+                        DownloadsPage(page, samples.content(), DownloadsActions(onOpenPlace = {}), samples.NOW, snackbar = snackbar)
+                    } else {
+                        SampleTabRoot(page)
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+    }
+
+    @Test
+    fun snackbarLight() {
+        snackbarBesideTheBar(dark = false)
+        compose.onRoot().captureRoboImage(screenshot("shell-snackbar-light"))
+    }
+
+    @Test
+    fun snackbarDark() {
+        snackbarBesideTheBar(dark = true)
+        compose.onRoot().captureRoboImage(screenshot("shell-snackbar-dark"))
+    }
+
+    /** The phone on its side: the bar stays on the right edge, bottom-aligned the same way. */
+    @Test
+    @Config(qualifiers = PHONE_LANDSCAPE)
+    fun landscapeHomeLight() {
+        shell(dark = false, tab = Tab.Home, readyToImport = DownloadsSamples.content().imports.size)
+        compose.onRoot().captureRoboImage(screenshot("shell-landscape-home-light"))
+    }
+
+    @Test
+    @Config(qualifiers = PHONE_LANDSCAPE)
+    fun landscapeDownloadsDark() {
+        shell(dark = true, tab = Tab.Downloads, readyToImport = DownloadsSamples.content().imports.size)
+        compose.onRoot().captureRoboImage(screenshot("shell-landscape-downloads-dark"))
     }
 
     @Test

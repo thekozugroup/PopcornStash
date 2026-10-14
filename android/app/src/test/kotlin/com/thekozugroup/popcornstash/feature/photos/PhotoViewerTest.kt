@@ -1,12 +1,16 @@
 package com.thekozugroup.popcornstash.feature.photos
 
 import androidx.activity.ComponentActivity
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.unit.DpRect
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.thekozugroup.popcornstash.testing.SampleMedia
@@ -15,6 +19,7 @@ import com.thekozugroup.popcornstash.testing.plain
 import com.thekozugroup.popcornstash.ui.theme.PlayerTokens
 import com.thekozugroup.popcornstash.ui.theme.PopcornTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -65,6 +70,34 @@ class PhotoViewerTest {
         assertEquals((chrome.left + tokens.edge).value, plate.left.value, 0.5f)
         assertEquals((chrome.right - tokens.edge).value, plate.right.value, 0.5f)
         assertEquals((chrome.bottom - tokens.edge).value, plate.bottom.value, 0.5f)
+    }
+
+    /** The viewer's own messages sit on top of its plate, not over Save the original or Details. */
+    @Test
+    fun aMessageSitsOnTopOfThePlate() {
+        val snackbar = SnackbarHostState()
+        compose.setContent {
+            PopcornTheme(darkTheme = false, reduceMotion = true) {
+                WithSampleImages {
+                    PhotoViewer(
+                        photos = SampleMedia.timeline.flatMap { it.items },
+                        startId = "s2",
+                        onClose = {},
+                        onDetails = {},
+                        onPlay = {},
+                        onSaveOriginal = {},
+                        snackbar = snackbar,
+                    )
+                    LaunchedEffect(Unit) { snackbar.showSnackbar("Original saved.", duration = SnackbarDuration.Indefinite) }
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("Original saved.").assertExists()
+        val note = compose.onNodeWithTag("viewer snackbars").getUnclippedBoundsInRoot()
+        val plate = compose.onNodeWithTag("viewer plate").getUnclippedBoundsInRoot()
+        assertTrue("The snackbar ends at ${note.bottom}, above the plate at ${plate.top}", note.bottom <= plate.top)
+        assertEquals(plate.left.value, note.left.value, 0.5f)
     }
 
     @Test

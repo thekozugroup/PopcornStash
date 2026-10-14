@@ -43,7 +43,7 @@ Libraries the owner defines, each with its own icon and its own audience, and th
 
 ### Android app
 
-- A new app for Android 9 and later (`android/`, docs/android.md), in the Popcorn design, light and dark with the system. Three tabs in a floating bar, icons only: Downloads, Home (where it opens) and Settings. The pages slide in from the side of the tab you tap, or fade when the phone's animations are off, and each tab keeps its place.
+- A new app for Android 9 and later (`android/`, docs/android.md), in the Popcorn design, light and dark with the system. Three tabs in a floating bar on the right edge of the screen, low enough for the thumb of the hand holding the phone, icons only: Downloads, Home (where it opens) and Settings, top to bottom. It stays on the right in every language and with the phone on its side. The pages slide up or down the way the selection moves, or fade when the phone's animations are off, and each tab keeps its place. Every page scrolls its last row clear of the bar, and messages appear at the bottom beside it.
 - Sign in with your server's address, then pair with a code or use your passkey (`STASH_ANDROID_ASSETLINKS`, now passed through by `compose.yaml`).
 - Home: what to carry on watching, then every library you can see; libraries as grids, shows by season, photos by month with a full-screen viewer; item pages and a full-screen player that resumes, saves your place, offers the next episode and keeps playing in a small window.
 - Downloads: live progress, the VPN line, pause, resume, remove and add a link; the files waiting to be imported with the library picker, edit, accept, ignore and accept all; finished downloads say where they went. Links, photos, videos and files shared from other apps are added or uploaded.

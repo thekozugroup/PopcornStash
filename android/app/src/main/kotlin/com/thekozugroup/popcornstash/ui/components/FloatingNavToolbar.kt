@@ -8,13 +8,14 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,6 +31,7 @@ import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
+import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -52,7 +54,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.thekozugroup.popcornstash.navigation.Tab
 import com.thekozugroup.popcornstash.ui.icons.LucideIcon
@@ -61,10 +62,12 @@ import com.thekozugroup.popcornstash.ui.theme.Popcorn
 import com.thekozugroup.popcornstash.ui.theme.PopcornMotion
 
 /**
- * The app's navigation (android/DESIGN.md, Floating toolbar): one rounded bar of square
- * targets, icons only, with an Action Blue square behind the selected one that slides
- * to the tapped square. The bar's outer radius is the square radius plus its padding,
- * so the selected square sits concentric in the end squares.
+ * The app's navigation (android/DESIGN.md, Floating toolbar): one upright rounded bar of
+ * square targets stacked top to bottom, icons only, with an Action Blue square behind the
+ * selected one that slides up or down to the tapped square. The bar's outer radius is the
+ * square radius plus its padding, so the selected square sits concentric in the end squares.
+ * The shell puts it on the right edge of the screen; nothing in it follows the layout
+ * direction, because which hand holds the phone does not change with the language.
  *
  * The square carries a thin `surface` ring, so its edge keeps 3:1 against whatever the glass
  * shows. Each icon is white where the square is under it and `textMuted` elsewhere, drawn
@@ -104,11 +107,12 @@ fun FloatingNavToolbar(
     )
 
     BoxWithConstraints(modifier) {
-        // Shrink the squares on a narrow screen, never below the 48dp touch minimum.
-        val room = maxWidth - tokens.margin * 2 - tokens.padding * 2 - tokens.gap * (tabs.size - 1)
+        // Shrink the squares when the height the shell gives the bar is short (a phone in
+        // landscape split screen), never below the 48dp touch minimum.
+        val room = maxHeight - tokens.padding * 2 - tokens.gap * (tabs.size - 1)
         val square: Dp = (room / tabs.size).coerceIn(tokens.minSquare, tokens.square)
         val selectedIndex = tabs.indexOf(selected).coerceAtLeast(0)
-        // From the bar's start edge; read only while placing and drawing, so a slide recomposes nothing.
+        // From the bar's top edge; read only while placing and drawing, so a slide recomposes nothing.
         val indicatorOffset = animateDpAsState(
             targetValue = (square + tokens.gap) * selectedIndex,
             animationSpec = if (reduceMotion) snap() else PopcornMotion.indicatorSpring(),
@@ -122,12 +126,12 @@ fun FloatingNavToolbar(
                 .frostedGlass(glass, backdrop, barShape, glassStyle)
                 .border(tokens.border, if (frosted) colors.glassEdge else colors.divider, barShape)
                 .padding(tokens.padding)
-                .semantics { collectionInfo = CollectionInfo(rowCount = 1, columnCount = tabs.size) }
+                .semantics { collectionInfo = CollectionInfo(rowCount = tabs.size, columnCount = 1) }
                 .selectableGroup(),
         ) {
             Box(
                 Modifier
-                    .offset { IntOffset(indicatorOffset.value.roundToPx(), 0) }
+                    .offset { IntOffset(0, indicatorOffset.value.roundToPx()) }
                     .testTag("toolbar indicator")
                     .size(square)
                     .drawBehind {
@@ -142,16 +146,16 @@ fun FloatingNavToolbar(
                     }
                     .background(colors.accent, squareShape),
             )
-            Row {
+            Column {
                 tabs.forEachIndexed { index, tab ->
-                    if (index > 0) Spacer(Modifier.width(tokens.gap))
+                    if (index > 0) Spacer(Modifier.height(tokens.gap))
                     ToolbarSquare(
                         tab = tab,
                         index = index,
                         count = tabs.size,
                         selected = tab == selected,
                         size = square,
-                        indicatorStart = { indicatorOffset.value - (square + tokens.gap) * index },
+                        indicatorTop = { indicatorOffset.value - (square + tokens.gap) * index },
                         badge = if (tab == Tab.Downloads) readyToImport else 0,
                         onClick = { onSelect(tab) },
                     )
@@ -169,8 +173,8 @@ private fun ToolbarSquare(
     count: Int,
     selected: Boolean,
     size: Dp,
-    /** Where the selection square starts, measured from this square's start edge. */
-    indicatorStart: () -> Dp,
+    /** Where the selection square's top is, measured from this square's top edge. */
+    indicatorTop: () -> Dp,
     badge: Int,
     onClick: () -> Unit,
 ) {
@@ -182,8 +186,9 @@ private fun ToolbarSquare(
     }
     // A press on the blue square lightens it only as far as white keeps 4.5:1 (OnAccentRipple).
     val ripples = if (selected) OnAccentRipple else LocalRippleConfiguration.current
+    // The name opens to the left, over the page: the bar is on the right edge.
     TooltipBox(
-        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
+        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Left),
         tooltip = { PlainTooltip { Text(tab.label) } },
         state = rememberTooltipState(),
     ) {
@@ -204,28 +209,29 @@ private fun ToolbarSquare(
                         .semantics {
                             contentDescription = description
                             collectionItemInfo = CollectionItemInfo(
-                                rowIndex = 0,
+                                rowIndex = index,
                                 rowSpan = 1,
-                                columnIndex = index,
+                                columnIndex = 0,
                                 columnSpan = 1,
                             )
                         },
                 ) {
                     // The icon twice: muted beside the square, white over it.
-                    IconPart(indicatorStart, overSquare = false) {
+                    IconPart(indicatorTop, overSquare = false) {
                         LucideIcon(tab.glyph, contentDescription = null, tint = colors.textMuted, size = tokens.icon)
                     }
-                    IconPart(indicatorStart, overSquare = true) {
+                    IconPart(indicatorTop, overSquare = true) {
                         LucideIcon(tab.glyph, contentDescription = null, tint = colors.onAccent, size = tokens.icon)
                     }
                 }
             }
             if (badge > 0) {
+                // On the top-left corner, the side away from the screen edge, in every layout direction.
                 ToolbarBadge(
                     count = badge,
                     modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .offset(x = tokens.badgeOffset, y = -tokens.badgeOffset),
+                        .align(AbsoluteAlignment.TopLeft)
+                        .absoluteOffset(x = -tokens.badgeOffset, y = -tokens.badgeOffset),
                 )
             }
         }
@@ -234,20 +240,18 @@ private fun ToolbarSquare(
 
 /**
  * The part of a square's icon that is over the selection square ([overSquare]) or beside it.
- * The square is as tall as this one and only slides along the bar, so its vertical edge is the
- * boundary; its rounded corners stay clear of the icon, which keeps the square's corner radius
- * of space on every side, even at the 48dp minimum.
+ * The square is as wide as this one and only slides up and down the bar, so its horizontal edge
+ * is the boundary; its rounded corners stay clear of the icon, which keeps the square's corner
+ * radius of space on every side, even at the 48dp minimum.
  */
 @Composable
-private fun BoxScope.IconPart(indicatorStart: () -> Dp, overSquare: Boolean, icon: @Composable () -> Unit) {
+private fun BoxScope.IconPart(indicatorTop: () -> Dp, overSquare: Boolean, icon: @Composable () -> Unit) {
     Box(
         Modifier
             .matchParentSize()
             .drawWithContent {
-                val start = indicatorStart().toPx()
-                // The square is this square's width; in a right-to-left bar its start is the right edge.
-                val left = if (layoutDirection == LayoutDirection.Ltr) start else -start
-                clipRect(left, 0f, left + size.width, size.height, if (overSquare) ClipOp.Intersect else ClipOp.Difference) {
+                val top = indicatorTop().toPx()
+                clipRect(0f, top, size.width, top + size.height, if (overSquare) ClipOp.Intersect else ClipOp.Difference) {
                     this@drawWithContent.drawContent()
                 }
             },
@@ -267,6 +271,7 @@ private fun ToolbarBadge(count: Int, modifier: Modifier = Modifier) {
         color = colors.onBadge,
         textAlign = TextAlign.Center,
         modifier = modifier
+            .testTag("toolbar badge")
             .clearAndSetSemantics { }
             .defaultMinSize(minWidth = tokens.badgeHeight, minHeight = tokens.badgeHeight)
             .border(tokens.badgeRing, colors.surface, shape)

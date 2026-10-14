@@ -4,8 +4,8 @@ import com.thekozugroup.popcornstash.ui.icons.LucideGlyph
 import com.thekozugroup.popcornstash.ui.icons.PopcornIcons
 
 /**
- * The app's three destinations, in toolbar order from left to right. Home, in the
- * centre, is the start tab. The order decides which way a tab change slides.
+ * The app's three destinations, in toolbar order from top to bottom. Home, in the
+ * middle, is the start tab. The order decides which way a tab change slides.
  */
 enum class Tab(val label: String, val glyph: LucideGlyph) {
     Downloads("Downloads", PopcornIcons.Downloads),

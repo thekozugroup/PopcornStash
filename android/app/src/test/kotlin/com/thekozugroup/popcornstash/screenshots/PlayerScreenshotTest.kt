@@ -21,9 +21,6 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
-/** The same phone held sideways, as the player shows it. */
-const val PHONE_LANDSCAPE = "w891dp-h411dp-land-xxhdpi"
-
 /**
  * The player as a phone shows it, sideways. The player is always dark (android/DESIGN.md,
  * Player), so the system's light and dark give the same picture; `player-paused-system-dark`
