@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {expect, test} from '@playwright/test';
-import {apiJson, env, exists, expectFile, findItem, stashPath, type ItemSummary} from '../helpers/env';
+import {LIBRARY, apiJson, env, exists, expectFile, findItem, libraryPath, stashPath, type ItemSummary} from '../helpers/env';
 
 test.use({storageState: async ({}, use) => use(env.ownerState)});
 
@@ -49,11 +49,18 @@ test('the ambiguous file waits in Inbox, and Accept with an edited title moves i
   expect(exists('Inbox/clip_final_v2.mkv')).toBe(true);
   const inbox = await apiJson<{items: ItemSummary[]}>(page.request, '/api/inbox');
   expect(inbox.items.map(item => item.rel_path)).toEqual(['Inbox/clip_final_v2.mkv']);
-  expect(inbox.items[0]?.suggestion).toMatchObject({category: 'other', confidence: 'low', destination: 'Other/clip_final_v2.mkv'});
+  expect(inbox.items[0]?.suggestion).toMatchObject({
+    category: 'other',
+    confidence: 'low',
+    place: 'other_files',
+    library_id: null,
+    destination: 'Other/clip_final_v2.mkv',
+    waiting: 'low_confidence',
+  });
 
   // Movies is open in another tab; the accepted file should appear there by itself.
   const moviesPage = await context.newPage();
-  await moviesPage.goto('/movies');
+  await moviesPage.goto(libraryPath(LIBRARY.movies));
   const movies = moviesPage.getByRole('list', {name: 'Movies'});
   await expect(movies.getByRole('link', {name: /^Paper Boats/})).toBeVisible();
   await expect(movies.getByRole('link', {name: /^Final Cut/})).toHaveCount(0);
@@ -64,16 +71,26 @@ test('the ambiguous file waits in Inbox, and Accept with an edited title moves i
   await expect(row).toBeVisible();
   await expect(row.getByText('Now in Inbox')).toBeVisible();
   await expect(row.getByText('We could not tell what this video is')).toBeVisible();
-  await expect(row.getByText('Will move to Other')).toBeVisible();
+  // The row's Library selector is its one statement of where the file goes: the suggestion.
+  const picker = row.getByRole('combobox', {name: 'Library'}).or(row.getByRole('button', {name: /^Library/})).first();
+  await expect(picker).toContainText('Other files');
+  // Every library a video fits (a Photos library takes phone clips too), then Other files.
+  await picker.click();
+  for (const name of ['Movies', 'Shows', 'Home Videos', 'Photos', 'Other files']) {
+    await expect(page.getByRole('option', {name})).toBeVisible();
+  }
+  await page.keyboard.press('Escape');
 
   await row.getByRole('button', {name: 'Edit'}).click();
   const form = page.getByRole('form', {name: /^Edit where clip_final_v2 goes/});
   await expect(form).toBeVisible();
-  await form.getByRole('combobox', {name: 'What is this file?'}).or(form.getByRole('button', {name: /What is this file\?/})).first().click();
-  await page.getByRole('option', {name: 'Movie'}).click();
+  await form.getByRole('combobox', {name: 'Library'}).or(form.getByRole('button', {name: /^Library/})).first().click();
+  await page.getByRole('option', {name: 'Movies'}).click();
   await form.getByRole('textbox', {name: 'Title'}).fill('Final Cut');
   await form.getByRole('textbox', {name: 'Year'}).fill('2020');
-  await expect(form.getByText('Will move to Movies / Final Cut (2020)')).toBeVisible();
+  // The live preview is the one place that says it in words; owners also see the folder.
+  await expect(form.getByText('Will move to Movies')).toBeVisible();
+  await expect(form.getByText('Movies/Final Cut (2020)/')).toBeVisible();
   await form.getByRole('button', {name: 'Move it there'}).click();
 
   await expect(row).toBeHidden();
@@ -91,7 +108,7 @@ test('the ambiguous file waits in Inbox, and Accept with an edited title moves i
 
 test('a video copied into Inbox while the server runs is sorted once stable, and Movies updates by itself', async ({page}) => {
   test.setTimeout(90_000);
-  await page.goto('/movies');
+  await page.goto(libraryPath(LIBRARY.movies));
   const grid = page.getByRole('list', {name: 'Movies'});
   await expect(grid.getByRole('link', {name: /^Paper Boats/})).toBeVisible();
   await expect(grid.getByRole('link', {name: /^Copper Trail/})).toHaveCount(0);
@@ -119,8 +136,15 @@ test('a file in an owner folder moves only when the owner organizes it', async (
   await page.getByRole('menuitem', {name: 'Organize into library'}).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
-  await dialog.getByRole('combobox', {name: 'What is it?'}).or(dialog.getByRole('button', {name: /What is it\?/})).first().click();
-  await page.getByRole('option', {name: 'Home video'}).click();
+  await dialog.getByRole('combobox', {name: 'Library'}).or(dialog.getByRole('button', {name: /^Library/})).first().click();
+  await page.getByRole('option', {name: 'Home Videos'}).click();
+  await dialog
+    .getByRole('combobox', {name: 'What is this file?'})
+    .or(dialog.getByRole('button', {name: /What is this file\?/}))
+    .first()
+    .click();
+  await page.getByRole('option', {name: 'A camera video'}).click();
+  await expect(dialog.getByText('Will move to Home Videos')).toBeVisible();
   await dialog.getByRole('button', {name: 'Move to Home Videos'}).click();
   await expect(dialog).toBeHidden();
 
@@ -148,18 +172,19 @@ test('an item moved to Trash leaves the library and can be restored to its place
   const confirm = page.getByRole('alertdialog', {name: /Move “Copper Trail” to Trash\?/});
   await confirm.getByRole('button', {name: 'Move to Trash'}).click();
   await expect(confirm).toBeHidden();
-  await expect(page).toHaveURL(/\/movies$/);
+  // Back to the library the item was in.
+  await expect(page).toHaveURL(new RegExp(`${libraryPath(LIBRARY.movies)}$`));
 
   // Out of the library folder and into the stash's own trash, not deleted.
   await expect.poll(() => exists(rel)).toBe(false);
   const trashDir = stashPath('.popcornstash/Trash');
   const trashed = fs.readdirSync(trashDir, {recursive: true}).map(String).filter(name => name.endsWith('.mp4'));
   expect(trashed.some(name => name.includes('Copper Trail'))).toBe(true);
-  await page.goto('/movies');
+  await page.goto(libraryPath(LIBRARY.movies));
   await expect(page.getByRole('heading', {level: 1, name: 'Movies'})).toBeVisible();
   await expect(page.getByRole('list', {name: 'Movies'}).getByRole('link', {name: /^Copper Trail/})).toHaveCount(0);
 
-  await page.goto('/settings/library');
+  await page.goto('/settings/libraries');
   const row = page.getByRole('listitem').filter({hasText: 'Copper Trail'});
   await expect(row).toBeVisible();
   // The owner sees the trashed item's picture.

@@ -1,7 +1,9 @@
 /**
- * One library category as a searchable, sortable grid with infinite scroll
- * (Movies, Home Videos, Other). Search, sort and the favourites filter live
- * in the address so the back button returns to the same view.
+ * Items as a searchable, sortable grid with infinite scroll: a one-offs
+ * library (posters or frames) or Other files. Search, sort and the
+ * favourites filter live in the address so the back button returns to the
+ * same view. The page header belongs to the page; this draws the toolbar,
+ * the grid and its loading, error and empty states.
  */
 import * as stylex from '@stylexjs/stylex';
 import {Button} from '@astryxdesign/core/Button';
@@ -14,12 +16,11 @@ import {watchedFraction} from '../../lib/format';
 import {EmptyPanel} from '../EmptyPanel';
 import {MediaGrid, MediaGridSkeleton} from '../MediaGrid';
 import {MediaTile, type MediaShape} from '../MediaTile';
-import {PageHeader} from '../PageHeader';
 import {LibraryToolbar, type SortOption} from './LibraryToolbar';
 import {LoadError} from './LoadError';
 import {displayTitle, itemHref, itemMeta, thumbSources} from './libraryFormat';
 import {useInfiniteScroll} from './useInfiniteScroll';
-import {usePagedItems} from './usePagedItems';
+import {usePagedItems, type PagedItemsScope} from './usePagedItems';
 
 const styles = stylex.create({
   more: {
@@ -45,24 +46,22 @@ const SORT_ORDER: Record<ItemSort, SortOrder> = {
   size: 'desc',
 };
 
-export interface CategoryLibraryConfig {
-  category: 'movie' | 'home_video' | 'other';
-  title: string;
-  subtitle: string;
+export interface ItemGridConfig {
+  scope: PagedItemsScope;
+  /** The grid's accessible name (the library's name, "Other files"). */
+  label: string;
   shape: MediaShape;
-  /** Plural noun in sentences: "movies", "home videos", "files". */
+  /** Plural noun in sentences: "videos", "files". */
   noun: string;
   sortOptions: SortOption<ItemSort>[];
   defaultSort: ItemSort;
-  /** Empty library: the same quiet icon as the category's tile placeholder. */
-  empty: {title: string; description: string; icon: LucideIcon};
+  /** What an empty place shows (an EmptyPanel in the place's own words). */
+  empty: ReactNode;
   /** Placeholder icon for an item without a thumbnail. */
   placeholderFor?: (item: Item) => LucideIcon | undefined;
-  /** Primary action when the category is empty. */
-  emptyAction?: ReactNode;
 }
 
-export function CategoryLibraryPage({config}: {config: CategoryLibraryConfig}) {
+export function ItemGridView({config}: {config: ItemGridConfig}) {
   const [params, setParams] = useSearchParams();
   const q = params.get('q') ?? '';
   const sortParam = params.get('sort') as ItemSort | null;
@@ -88,7 +87,7 @@ export function CategoryLibraryPage({config}: {config: CategoryLibraryConfig}) {
 
   const onQueryChange = useCallback((value: string) => update({q: value || null}), [update]);
 
-  const list = usePagedItems({category: config.category, q, sort, order: SORT_ORDER[sort], favorite: favoritesOnly});
+  const list = usePagedItems({...config.scope, q, sort, order: SORT_ORDER[sort], favorite: favoritesOnly});
   const sentinel = useInfiniteScroll(list.loadMore, {
     enabled: list.hasMore && !list.isLoadingMore && !list.loadMoreError,
     resetKey: list.items.length,
@@ -100,7 +99,7 @@ export function CategoryLibraryPage({config}: {config: CategoryLibraryConfig}) {
   if (list.isLoading) {
     body = <MediaGridSkeleton shape={config.shape} count={config.shape === 'poster' ? 18 : 12} />;
   } else if (list.error) {
-    body = <LoadError title={`${config.title} could not be loaded`} error={list.error} onRetry={list.retry} />;
+    body = <LoadError title={`${config.label} could not be loaded`} error={list.error} onRetry={list.retry} />;
   } else if (list.items.length === 0 && !list.isStale) {
     body = q ? (
       <EmptyPanel
@@ -115,17 +114,12 @@ export function CategoryLibraryPage({config}: {config: CategoryLibraryConfig}) {
         actions={<Button label={`Show all ${config.noun}`} variant="secondary" onClick={() => update({fav: null})} />}
       />
     ) : (
-      <EmptyPanel
-        title={config.empty.title}
-        description={config.empty.description}
-        icon={<config.empty.icon size={28} strokeWidth={1.5} />}
-        actions={config.emptyAction}
-      />
+      config.empty
     );
   } else {
     body = (
       <>
-        <MediaGrid shape={config.shape} label={config.title} isBusy={list.isStale}>
+        <MediaGrid shape={config.shape} label={config.label} isBusy={list.isStale}>
           {list.items.map(item => {
             const thumb = thumbSources(item, list.versionOf(item.id));
             return (
@@ -161,14 +155,13 @@ export function CategoryLibraryPage({config}: {config: CategoryLibraryConfig}) {
     );
   }
 
-  const hasLibrary = !(list.items.length === 0 && !isFiltered && !list.isLoading && !list.isStale && !list.error);
+  const hasItems = !(list.items.length === 0 && !isFiltered && !list.isLoading && !list.isStale && !list.error);
 
   return (
     <>
-      <PageHeader title={config.title} subtitle={config.subtitle} />
-      {hasLibrary ? (
+      {hasItems ? (
         <LibraryToolbar
-          searchLabel={`Search ${config.noun}`}
+          searchLabel={`Search ${config.label}`}
           query={q}
           onQueryChange={onQueryChange}
           sort={sort}

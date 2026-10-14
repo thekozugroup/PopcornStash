@@ -5,7 +5,7 @@
  * on /pair, and the client's token can add downloads but not read the library.
  */
 import {expect, request as playwrightRequest, test} from '@playwright/test';
-import {env, expectNotClipped, ownerContext} from '../helpers/env';
+import {LIBRARY, env, expectNotClipped, libraryPath, ownerContext} from '../helpers/env';
 import {VirtualAuthenticator} from '../helpers/passkeys';
 
 const MEMBER_NAME = 'Sam Example';
@@ -44,7 +44,7 @@ test('an invited family member joins with a passkey and cannot open owner settin
   await expect(ownerPage.getByText('No open invites.', {exact: false})).toBeVisible({timeout: 15_000});
 
   // Members can browse...
-  await page.goto('/movies');
+  await page.goto(libraryPath(LIBRARY.movies));
   await expect(page.getByRole('list', {name: 'Movies'}).getByRole('link', {name: /^Paper Boats/})).toBeVisible();
 
   // ...but owner-only settings are hidden, and closed if reached by address.
@@ -52,14 +52,14 @@ test('an invited family member joins with a passkey and cannot open owner settin
   const tabs = page.getByRole('navigation', {name: 'Tabs'});
   await expect(tabs.getByRole('link', {name: 'Devices'})).toBeVisible();
   await expect(tabs.getByRole('link', {name: 'Security'})).toBeVisible();
-  for (const owners of ['VPN', 'People', 'Library', 'System']) {
+  for (const owners of ['VPN', 'People', 'Libraries', 'System']) {
     await expect(tabs.getByRole('link', {name: owners})).toHaveCount(0);
   }
-  for (const path of ['/settings/vpn', '/settings/people', '/settings/system', '/settings/library']) {
+  for (const path of ['/settings/vpn', '/settings/people', '/settings/system', '/settings/libraries', '/settings/libraries/new']) {
     await page.goto(path);
     await expect(page.getByRole('heading', {name: 'Only the owner can change this'})).toBeVisible();
   }
-  for (const url of ['/api/settings', '/api/users', '/api/invites', '/api/system', '/api/audit', '/api/vpn/nordvpn/countries']) {
+  for (const url of ['/api/settings', '/api/users', '/api/invites', '/api/system', '/api/audit', '/api/vpn/nordvpn/countries', '/api/libraries/folders']) {
     const response = await page.request.get(url);
     expect(response.status(), url).toBe(403);
     expect((await response.json()).error.code, url).toBe('forbidden');
@@ -79,6 +79,8 @@ test('an invited family member joins with a passkey and cannot open owner settin
   await page.getByRole('button', {name: 'More actions'}).click();
   await expect(page.getByRole('menuitem', {name: 'Edit details'})).toBeVisible();
   await expect(page.getByRole('menuitem', {name: 'Move to Trash'})).toHaveCount(0);
+  // Moving files between libraries is for owners too.
+  await expect(page.getByRole('menuitem', {name: /library/})).toHaveCount(0);
   await page.keyboard.press('Escape');
   // The owner removes the download that can never finish.
   const memberDownload = (await added.json()) as {id: string};
@@ -151,7 +153,7 @@ test('a device pairs with a code, gets its token once, and can only add download
   expect((await device.get('/api/downloads')).status()).toBe(200);
 
   // ...and for nothing else.
-  for (const url of ['/api/items', '/api/library/summary', '/api/me/passkeys', '/api/settings']) {
+  for (const url of ['/api/items', '/api/home', '/api/libraries', '/api/me/passkeys', '/api/settings']) {
     const response = await device.get(url);
     expect(response.status(), url).toBe(403);
   }

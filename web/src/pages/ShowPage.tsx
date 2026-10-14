@@ -1,9 +1,10 @@
 /**
- * One show (`/shows/:name`): the show's poster (the server's choice, the same
- * picture as on Shows and Home), how much there is, and one
- * primary action that resumes the next unwatched episode. Seasons sit in
- * tabs; each season lists its episodes with code, title, runtime and
- * progress.
+ * One show in a series library (`/libraries/:id/shows/:name`): the show's
+ * poster (the server's choice, the same picture as on the library page and
+ * Home), how much there is, and one primary action that resumes the next
+ * unwatched episode. Seasons sit in tabs; each season lists its episodes with
+ * code, title, runtime and progress. Only this library's episodes count, so
+ * a show that spans libraries shows its part here.
  */
 import * as stylex from '@stylexjs/stylex';
 import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
@@ -12,17 +13,21 @@ import {Heading} from '@astryxdesign/core/Heading';
 import {Skeleton} from '@astryxdesign/core/Skeleton';
 import {Tab, TabList} from '@astryxdesign/core/TabList';
 import {Text} from '@astryxdesign/core/Text';
-import {ChevronLeft, Film, Play, RotateCcw} from 'lucide-react';
+import {ChevronLeft, Play, RotateCcw, type LucideIcon} from 'lucide-react';
 import {useEffect, useMemo, useState} from 'react';
 import {useNavigate, useParams} from 'react-router';
-import {ApiError, shows as showsApi} from '../api/client';
+import {ApiError, libraries as librariesApi} from '../api/client';
 import type {Item, ShowDetail} from '../api/types';
+import {useLibraries} from '../app/LibrariesProvider';
 import {EpisodeList} from '../components/library/EpisodeList';
 import {LoadError} from '../components/library/LoadError';
 import {episodeName, itemHref, largeThumb, resumePosition, showMeta, timeLeft} from '../components/library/libraryFormat';
 import {useLibraryEvents} from '../components/library/useLibraryEvents';
 import {PageHeader, useDocumentTitle} from '../components/PageHeader';
 import {formatEpisodeCode} from '../lib/format';
+import {libraryHref} from '../lib/libraries';
+import {libraryIcon} from '../lib/libraryIcons';
+import {LibraryGone} from './LibraryPage';
 
 const styles = stylex.create({
   back: {
@@ -112,13 +117,14 @@ function seasonLabel(season: number): string {
 }
 
 interface ShowState {
+  /** `${libraryId}/${name}` the state belongs to. */
   name: string;
   nonce: number;
   show: ShowDetail | null;
   error: unknown;
 }
 
-function ShowPoster({episode}: {episode: Item | undefined}) {
+function ShowPoster({episode, icon: Icon}: {episode: Item | undefined; icon: LucideIcon}) {
   const [failed, setFailed] = useState<string | null>(null);
   const src = episode ? largeThumb(episode) : null;
   return (
@@ -127,7 +133,7 @@ function ShowPoster({episode}: {episode: Item | undefined}) {
         <img src={src} alt="" decoding="async" onError={() => setFailed(src)} {...stylex.props(styles.posterImage)} />
       ) : (
         <span aria-hidden="true" {...stylex.props(styles.posterPlaceholder)}>
-          <Film size={28} strokeWidth={1.5} />
+          <Icon size={28} strokeWidth={1.5} />
         </span>
       )}
       <span aria-hidden="true" {...stylex.props(styles.hairline)} />
@@ -136,8 +142,11 @@ function ShowPoster({episode}: {episode: Item | undefined}) {
 }
 
 export default function ShowPage() {
-  const {name = ''} = useParams();
+  const {id: libraryId = '', name = ''} = useParams();
   const navigate = useNavigate();
+  const {find, status: librariesStatus} = useLibraries();
+  const library = find(libraryId);
+  const key = `${libraryId}/${name}`;
   const [nonce, setNonce] = useState(0);
   const [state, setState] = useState<ShowState>({name: '', nonce: -1, show: null, error: null});
   const [chosenSeason, setChosenSeason] = useState<{name: string; season: number} | null>(null);
@@ -145,17 +154,17 @@ export default function ShowPage() {
 
   useEffect(() => {
     const controller = new AbortController();
-    showsApi.get(name, controller.signal).then(
-      show => setState({name, nonce, show, error: null}),
+    librariesApi.show(libraryId, name, controller.signal).then(
+      show => setState({name: key, nonce, show, error: null}),
       (error: unknown) => {
-        if (!controller.signal.aborted) setState(s => ({name, nonce, show: s.name === name ? s.show : null, error}));
+        if (!controller.signal.aborted) setState(s => ({name: key, nonce, show: s.name === key ? s.show : null, error}));
       },
     );
     return () => controller.abort();
-  }, [name, nonce]);
+  }, [key, libraryId, name, nonce]);
 
-  const show = state.name === name ? state.show : null;
-  const error = state.name === name ? state.error : null;
+  const show = state.name === key ? state.show : null;
+  const error = state.name === key ? state.error : null;
 
   useLibraryEvents({
     onChanged: ids => {
@@ -174,23 +183,32 @@ export default function ShowPage() {
   const episodeCount = seasons.reduce((sum, season) => sum + season.episodes.length, 0);
   const defaultSeason = up?.episode.season ?? seasons[0]?.season ?? 1;
   const activeSeason =
-    chosenSeason?.name === name && seasons.some(s => s.season === chosenSeason.season) ? chosenSeason.season : defaultSeason;
+    chosenSeason?.name === key && seasons.some(s => s.season === chosenSeason.season) ? chosenSeason.season : defaultSeason;
   const current = seasons.find(season => season.season === activeSeason) ?? seasons[0];
 
+  // The back link names the library.
   const back = (
     <div {...stylex.props(styles.back)}>
-      <Button label="Shows" variant="ghost" href="/shows" icon={<ChevronLeft size={18} strokeWidth={1.75} aria-hidden="true" />} />
+      <Button
+        label={library?.name ?? 'Back'}
+        variant="ghost"
+        href={libraryHref(libraryId)}
+        icon={<ChevronLeft size={18} strokeWidth={1.75} aria-hidden="true" />}
+      />
     </div>
   );
+  const placeholder = libraryIcon(library?.icon);
 
   if (!show && error) {
     if (error instanceof ApiError && error.code === 'not_found') {
-      // One way out: the action already leads back to Shows, so no back link as well.
+      // The library itself is gone or hidden: the same page as for the library.
+      if (librariesStatus === 'ready' && !library) return <LibraryGone />;
+      // One way out: the action already leads back to the library, so no back link as well.
       return (
         <PageHeader
           title="Show not found"
-          subtitle={`There is no show called “${name}” in your library. It may have been renamed or removed.`}
-          actions={<Button label="See all shows" variant="primary" href="/shows" />}
+          subtitle={`There is no show called “${name}” in ${library?.name ?? 'this library'}. It may have been renamed or removed.`}
+          actions={<Button label="See all shows" variant="primary" href={libraryHref(libraryId)} />}
           isActionBelow
         />
       );
@@ -268,7 +286,7 @@ export default function ShowPage() {
     <>
       {back}
       <div {...stylex.props(styles.hero)}>
-        <ShowPoster episode={posterEpisode} />
+        <ShowPoster episode={posterEpisode} icon={placeholder} />
         <div {...stylex.props(styles.intro)}>
           <Heading level={1} textWrap="balance">
             {show.show_name}
@@ -286,7 +304,7 @@ export default function ShowPage() {
           <div {...stylex.props(styles.tabs)}>
             <TabList
               value={String(activeSeason)}
-              onChange={value => setChosenSeason({name, season: Number(value)})}
+              onChange={value => setChosenSeason({name: key, season: Number(value)})}
               role="tablist"
               hasDivider>
               {seasons.map(season => (

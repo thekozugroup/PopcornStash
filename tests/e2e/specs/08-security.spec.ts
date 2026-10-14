@@ -62,7 +62,7 @@ test('pages and API responses carry the security headers', async ({page, baseURL
   expect(headers['strict-transport-security']).toBeUndefined();
   await expect(page.getByRole('heading', {level: 1, name: 'Home'})).toBeVisible();
 
-  for (const url of ['/api/health', '/api/auth/state', '/api/library/summary', '/login']) {
+  for (const url of ['/api/health', '/api/auth/state', '/api/home', '/login']) {
     const response = await page.request.get(url);
     expect(response.headers()['content-security-policy'], url).toBe(CSP);
     expect(response.headers()['x-content-type-options'], url).toBe('nosniff');
@@ -89,6 +89,8 @@ test('pages and API responses carry the security headers', async ({page, baseURL
   // The app itself runs under the policy without violations.
   await page.goto('/movies');
   await expect(page.getByRole('heading', {level: 1, name: 'Movies'})).toBeVisible();
+  await page.goto('/settings/libraries/new');
+  await expect(page.getByRole('heading', {name: 'New library'})).toBeVisible();
   await page.goto('/settings/system');
   await expect(page.getByRole('heading', {level: 1, name: 'Settings'})).toBeVisible();
   expect(violations).toEqual([]);

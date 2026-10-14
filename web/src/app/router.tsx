@@ -4,7 +4,8 @@
  * the player (hls.js) and other heavy pages do not weigh down sign-in.
  */
 import type {ComponentType} from 'react';
-import {createBrowserRouter, type RouteObject} from 'react-router';
+import {Navigate, createBrowserRouter, type RouteObject} from 'react-router';
+import type * as Redirects from '../pages/LegacyLibraryRedirect';
 import {FullPageSpinner, RequireSession} from '../auth/RequireSession';
 import LoginPage from '../pages/LoginPage';
 import SetupPage from '../pages/SetupPage';
@@ -13,9 +14,14 @@ import {RouteError} from './RouteError';
 
 type PageModule = {default: ComponentType};
 
-/** Lazy route: `page(() => import('../pages/MoviesPage'))`. */
+/** Lazy route: `page(() => import('../pages/LibraryPage'))`. */
 function page(load: () => Promise<PageModule>): Pick<RouteObject, 'lazy'> {
   return {lazy: async () => ({Component: (await load()).default})};
+}
+
+/** An old fixed-category address: redirects to the library that takes that kind now. */
+function legacy(pick: (module: typeof Redirects) => ComponentType): Pick<RouteObject, 'lazy'> {
+  return {lazy: async () => ({Component: pick(await import('../pages/LegacyLibraryRedirect'))})};
 }
 
 export const routes: RouteObject[] = [
@@ -34,11 +40,13 @@ export const routes: RouteObject[] = [
             element: <AppLayout />,
             children: [
               {index: true, ...page(() => import('../pages/HomePage'))},
-              {path: 'movies', ...page(() => import('../pages/MoviesPage'))},
-              {path: 'shows', ...page(() => import('../pages/ShowsPage'))},
-              {path: 'shows/:name', ...page(() => import('../pages/ShowPage'))},
-              {path: 'home-videos', ...page(() => import('../pages/HomeVideosPage'))},
-              {path: 'photos', ...page(() => import('../pages/PhotosPage'))},
+              {path: 'libraries/:id', ...page(() => import('../pages/LibraryPage'))},
+              {path: 'libraries/:id/shows/:name', ...page(() => import('../pages/ShowPage'))},
+              {path: 'movies', ...legacy(module => module.MoviesRedirect)},
+              {path: 'shows', ...legacy(module => module.ShowsRedirect)},
+              {path: 'shows/:name', ...legacy(module => module.ShowsRedirect)},
+              {path: 'home-videos', ...legacy(module => module.HomeVideosRedirect)},
+              {path: 'photos', ...legacy(module => module.PhotosRedirect)},
               {path: 'other', ...page(() => import('../pages/OtherPage'))},
               {path: 'item/:id', ...page(() => import('../pages/ItemPage'))},
               {path: 'inbox', ...page(() => import('../pages/InboxPage'))},
@@ -60,7 +68,10 @@ export const routes: RouteObject[] = [
                   {path: 'devices', ...page(() => import('../pages/settings/DevicesSettingsPage'))},
                   {path: 'people', ...page(() => import('../pages/settings/PeopleSettingsPage'))},
                   {path: 'security', ...page(() => import('../pages/settings/SecuritySettingsPage'))},
-                  {path: 'library', ...page(() => import('../pages/settings/LibrarySettingsPage'))},
+                  {path: 'libraries', ...page(() => import('../pages/settings/LibrariesSettingsPage'))},
+                  {path: 'libraries/new', ...page(() => import('../pages/settings/LibraryEditorPage'))},
+                  {path: 'libraries/:id', ...page(() => import('../pages/settings/LibraryEditorPage'))},
+                  {path: 'library', element: <Navigate to="/settings/libraries" replace />},
                   {path: 'system', ...page(() => import('../pages/settings/SystemSettingsPage'))},
                 ],
               },

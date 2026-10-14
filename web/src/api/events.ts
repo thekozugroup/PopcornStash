@@ -17,6 +17,7 @@ type AnyHandler = (data: unknown) => void;
 export const STASH_EVENT_NAMES: readonly StashEventName[] = [
   'download',
   'library',
+  'libraries',
   'vpn',
   'inbox',
   'job',

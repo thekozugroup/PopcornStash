@@ -29,9 +29,12 @@ export type ErrorCode =
   | 'method_not_allowed'
   | 'internal';
 
-/** `{"error": {"code": "not_found", "message": "Human readable sentence."}}` */
+/**
+ * `{"error": {"code": "not_found", "message": "Human readable sentence.", "field": "name"}}`.
+ * `field` names the one request field at fault, as the request spells it.
+ */
 export interface ApiErrorBody {
-  error: {code: ErrorCode; message: string};
+  error: {code: ErrorCode; message: string; field?: string};
 }
 
 /** Cursor pagination: `?limit=50&cursor=<opaque>`. */
@@ -106,6 +109,10 @@ export type ItemCategory =
   | 'photo'
   | 'other';
 export type ItemStatus = 'ready' | 'needs_review' | 'missing' | 'trashed';
+/** Which kind of place holds an item (architecture section 6). */
+export type ItemPlace = 'library' | 'other_files' | 'incoming' | 'folder' | 'trash';
+/** The kinds of new file a library can claim. */
+export type ClaimKind = 'movie' | 'episode' | 'home_video' | 'photo';
 
 export interface ItemProgress {
   position_s: number;
@@ -136,6 +143,9 @@ export interface Item {
   favorite: boolean;
   added_at: UnixSeconds;
   progress: ItemProgress | null;
+  /** The library whose folder holds the item; null outside a library. */
+  library_id: Id | null;
+  place: ItemPlace;
 }
 
 /** `items.media_json` summary (architecture section 6). */
@@ -179,6 +189,9 @@ export interface MediaSubtitleStream {
 
 export type Confidence = 'high' | 'low';
 
+/** Why a waiting Inbox item waits, worked out when it is read (architecture section 8). */
+export type Waiting = 'choose_library' | 'folder_unavailable' | 'low_confidence' | 'confirm';
+
 export interface Classification {
   category: ItemCategory;
   title: string;
@@ -189,9 +202,16 @@ export interface Classification {
   episode_title: string | null;
   taken_at: UnixSeconds | null;
   confidence: Confidence;
+  /** The classifier's sentence about the file ("Not sure this is a movie."). */
   reason: string;
-  /** Relative path the file would move to. */
-  destination: string;
+  /** Null: no library the reader can see claims this kind. */
+  place: 'library' | 'other_files' | null;
+  /** The claiming library, when the reader can see it. */
+  library_id: Id | null;
+  /** Relative path the file would get; null when `place` is null. */
+  destination: string | null;
+  /** Why a needs_review item waits; null for other items. */
+  waiting: Waiting | null;
 }
 
 export type ItemDetail = Item & {
@@ -233,7 +253,123 @@ export interface Download {
   error: string | null;
   created_at: UnixSeconds;
   completed_at: UnixSeconds | null;
+  /** Linked items the caller can see. */
   item_ids: Id[];
+  /** Where those items are now, grouped, in first-seen order. */
+  destinations: DownloadDestination[];
+}
+
+export interface DownloadDestination {
+  place: 'library' | 'other_files' | 'incoming';
+  library_id: Id | null;
+  count: number;
+}
+
+/** A `download` event for a download that left the caller's view. */
+export interface DownloadRemoved {
+  id: Id;
+  removed: true;
+}
+
+// ---------------------------------------------------------------------------
+// Libraries (architecture section 8, Libraries)
+// ---------------------------------------------------------------------------
+
+/** A Lucide icon name from the curated list (`GET /api/libraries/icons`). */
+export type LibraryIcon = string;
+export type ContentType = 'video' | 'photos';
+export type Structure = 'episodes' | 'one_offs';
+/** How clients draw a library, worked out by the server. */
+export type LibraryLayout = 'posters' | 'frames' | 'series' | 'timeline';
+export type LibraryVisibility = 'everyone' | 'selected';
+export type FolderState = 'ok' | 'missing' | 'read_only';
+
+export interface Library {
+  id: Id;
+  name: string;
+  icon: LibraryIcon;
+  content_type: ContentType;
+  /** Null for photos. */
+  structure: Structure | null;
+  claims: ClaimKind[];
+  layout: LibraryLayout;
+  /** Index in the caller's own list, 0 to k-1. */
+  position: number;
+  /** Ready items. */
+  item_count: number;
+  /** Episodes structure only. */
+  show_count: number | null;
+  created_at: UnixSeconds;
+  updated_at: UnixSeconds;
+  /** Full owners only; null for everyone else. */
+  folder: string | null;
+  visibility: LibraryVisibility | null;
+  member_ids: Id[] | null;
+  folder_state: FolderState | null;
+  /** Type and structure can change only while true. */
+  is_empty: boolean | null;
+}
+
+export interface LibraryList {
+  libraries: Library[];
+}
+
+/** A top-level folder that is not a library (owner only). */
+export interface UnassignedFolder {
+  name: string;
+  /** video_count + photo_count + other_count */
+  item_count: number;
+  video_count: number;
+  photo_count: number;
+  other_count: number;
+  suggested: {content_type: ContentType; structure: Structure | null};
+}
+
+export interface LibraryFolderRequest {
+  mode: 'new' | 'existing';
+  name: string;
+}
+
+export interface LibraryCreateRequest {
+  name: string;
+  icon: LibraryIcon;
+  content_type: ContentType;
+  structure: Structure | null;
+  claims: ClaimKind[];
+  folder: LibraryFolderRequest;
+  visibility: LibraryVisibility;
+  member_ids: Id[];
+  position?: number;
+}
+
+/** Any subset; `claims` and `member_ids` are full new sets. The folder never changes. */
+export interface LibraryEditRequest {
+  name?: string;
+  icon?: LibraryIcon;
+  content_type?: ContentType;
+  structure?: Structure | null;
+  claims?: ClaimKind[];
+  visibility?: LibraryVisibility;
+  member_ids?: Id[];
+}
+
+export interface HomeLibrary {
+  library: Library;
+  /** Up to 12 newest ready items, newest first. */
+  recent: Item[];
+  /** For each show with an episode in `recent`, its poster item from this library. */
+  show_posters: Record<string, Id>;
+}
+
+/** `GET /api/home`. */
+export interface HomeResponse {
+  continue_watching: Item[];
+  /** Every library the caller sees, in order. */
+  libraries: HomeLibrary[];
+  other_files_count: number;
+  /** Waiting items the caller sees. */
+  inbox_count: number;
+  total_bytes: number;
 }
 
 export type VpnState =
@@ -447,28 +583,13 @@ export interface OkResponse {
   ok: true;
 }
 
-export interface LibrarySummary {
-  counts: {
-    movies: number;
-    shows: number;
-    episodes: number;
-    home_videos: number;
-    photos: number;
-    other: number;
-  };
-  total_bytes: number;
-  needs_review: number;
-  /** Up to 12 newest items per category, photos included, newest first. */
-  recently_added: Item[];
-  /** Poster item of each show with an episode in `recently_added` (as in `ShowSummary`). */
-  show_posters: Record<string, Id>;
-  continue_watching: Item[];
-}
-
 export type ItemSort = 'added' | 'title' | 'taken' | 'size';
 export type SortOrder = 'asc' | 'desc';
 
 export interface ItemQuery extends PageParams {
+  /** Items of one library (404 when the caller cannot see it). */
+  library_id?: Id;
+  place?: ItemPlace;
   category?: ItemCategory;
   q?: string;
   sort?: ItemSort;
@@ -488,8 +609,15 @@ export interface ItemPatch {
   episode_title?: string | null;
 }
 
-export interface OrganizeRequest {
-  category: ItemCategory;
+/** Where an Inbox accept or Organize sends a file: the library or Other files the person chose. */
+export interface MoveTarget {
+  place: 'library' | 'other_files';
+  /** Set for `place: "library"`. */
+  library_id?: Id;
+}
+
+export interface OrganizeRequest extends Partial<MoveTarget> {
+  category?: ItemCategory;
   title?: string;
   year?: number | null;
   show_name?: string | null;
@@ -545,12 +673,15 @@ export interface PhotoTimeline {
 }
 
 export interface InboxResponse {
+  /** Waiting (needs_review), oldest first. */
   items: ItemDetail[];
+  /** Ignored, still in Inbox/ or Downloads/Completed/. */
+  ignored: ItemDetail[];
 }
 
 export type InboxAction = 'accept' | 'ignore';
 
-export interface InboxDecision {
+export interface InboxDecision extends Partial<MoveTarget> {
   action: InboxAction;
   category?: ItemCategory;
   title?: string;
@@ -569,6 +700,8 @@ export interface TrashEntry {
   original_rel_path: string;
   trashed_at: UnixSeconds;
   trashed_by: Id | null;
+  /** The sentence a restore would be refused with now, else null. */
+  restore_refusal: string | null;
 }
 
 export type DownloadFilter = 'active' | 'finished' | 'all';
@@ -732,7 +865,12 @@ export interface AuditEntry {
 export interface LibraryEvent {
   type: 'added' | 'updated' | 'removed';
   item_id: Id;
+  /** Never set on `removed`. */
+  library_id: Id | null;
 }
+
+/** The caller's own `GET /api/libraries` answer changed: refetch it. */
+export type LibrariesEvent = Record<string, never>;
 
 export interface InboxEvent {
   count: number;
@@ -745,8 +883,9 @@ export interface JobEvent {
 }
 
 export interface StashEventMap {
-  download: Download;
+  download: Download | DownloadRemoved;
   library: LibraryEvent;
+  libraries: LibrariesEvent;
   vpn: VpnStatus;
   inbox: InboxEvent;
   job: JobEvent;

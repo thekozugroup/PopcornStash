@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {expect, test, type Page} from '@playwright/test';
-import {env, exists, expectFile, expectNotClipped, findItem} from '../helpers/env';
+import {LIBRARY, env, exists, expectFile, expectNotClipped, findItem, libraryPath} from '../helpers/env';
 
 test.use({storageState: async ({}, use) => use(env.ownerState)});
 
@@ -38,8 +38,10 @@ test('a video uploaded from the Downloads page is sorted into Movies', async ({p
   await expect(page.getByText(/^Upload · Uploading/).first()).toBeVisible();
   await expect(page.getByRole('progressbar', {name: `${name} progress`})).toBeVisible();
 
-  // Then it is finished, moved through Downloads/Completed and sorted.
-  await expect(page.getByText(/^Sorted into Movies/).first()).toBeVisible({timeout: 30_000});
+  // Then it is finished, moved through Downloads/Completed and sorted: the row names the library.
+  const done = page.getByText(/^In Movies$/).first();
+  await expect(done).toBeVisible({timeout: 30_000});
+  await expect(done.getByRole('link', {name: 'Movies'})).toHaveAttribute('href', libraryPath(LIBRARY.movies));
   await expectFile('Movies/Sunset Drive (2020)/Sunset Drive (2020).mp4');
   expect(sortedFromCompleted(name), 'the sorter took the upload from Downloads/Completed').toBe(true);
   expect(exists(`Downloads/Completed/${name}`)).toBe(false);
@@ -49,20 +51,21 @@ test('a video uploaded from the Downloads page is sorted into Movies', async ({p
   const download = downloads.items.find((d: {name: string}) => d.name === name);
   expect(download).toMatchObject({kind: 'upload', state: 'sorted', progress: 1});
   expect(download.item_ids).toHaveLength(1);
+  expect(download.destinations).toEqual([{place: 'library', library_id: LIBRARY.movies, count: 1}]);
 
   // Nothing is in progress any more, and the page says so in a padded panel.
   await expectNotClipped(page.getByText('Nothing is downloading right now.', {exact: false}));
 
   const item = await findItem(page.request, 'Sunset Drive', '&category=movie');
   expect(download.item_ids[0]).toBe(item.id);
-  await page.goto('/movies');
+  await page.goto(libraryPath(LIBRARY.movies));
   await expect(page.getByRole('list', {name: 'Movies'}).getByRole('link', {name: /^Sunset Drive 2020/})).toBeVisible();
 });
 
 test('files dropped anywhere in the app are uploaded and sorted', async ({page}) => {
   const name = 'Kite.Festival.2021.1080p.WEB.mp4';
   await slowUploads(page);
-  await page.goto('/movies');
+  await page.goto(libraryPath(LIBRARY.movies));
   await expect(page.getByRole('heading', {level: 1, name: 'Movies'})).toBeVisible();
 
   const bytes = fs.readFileSync(path.join(env.files, name)).toString('base64');
@@ -85,12 +88,12 @@ test('files dropped anywhere in the app are uploaded and sorted', async ({page})
   await expect(page).toHaveURL(/\/downloads$/);
   await expect(page.getByRole('heading', {name: 'Drop to upload'})).toBeHidden();
   await expect(page.getByRole('progressbar', {name: `${name} progress`})).toBeVisible();
-  await expect(page.getByText(/^Sorted into Movies/).first()).toBeVisible({timeout: 30_000});
+  await expect(page.getByText(/^In Movies$/).first()).toBeVisible({timeout: 30_000});
   await expectFile('Movies/Kite Festival (2021)/Kite Festival (2021).mp4');
   expect(sortedFromCompleted(name)).toBe(true);
 
   await page.goto('/');
-  await expect(page.getByRole('region', {name: 'Recently added'}).getByRole('link', {name: /^Kite Festival 2021/})).toBeVisible();
+  await expect(page.getByRole('region', {name: 'Movies', exact: true}).getByRole('link', {name: /^Kite Festival 2021/})).toBeVisible();
 });
 
 test('a paused upload keeps showing what the server already has', async ({page}) => {

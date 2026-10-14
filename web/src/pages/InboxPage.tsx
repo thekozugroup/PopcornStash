@@ -1,27 +1,44 @@
 /**
- * Inbox: files the sorter was not sure about. Each one shows why it waited
- * and where it would go; nothing moves until someone accepts, edits or
- * ignores it. The list follows `inbox` events, so files that arrive or are
- * decided on another device appear and disappear on their own.
+ * Inbox: files that wait for a decision. Each row says why it waits (when
+ * that adds something) and shows where it goes in a Library selector, with
+ * the suggestion preselected; nothing moves until someone accepts, edits or
+ * ignores it. Accept always sends the library the row shows, never a later
+ * guess. Ignored files sit after the waiting ones under a closed disclosure,
+ * with the same row and Accept.
  *
- * After a decision the row leaves the list, so keyboard focus moves on to the
- * next file's actions (or to the page when Inbox is empty).
+ * The list follows `inbox` and `libraries` events, so files that arrive or
+ * are decided on another device, and suggestions re-pointed by a library
+ * change, appear on their own. After a decision the row leaves the list, so
+ * keyboard focus moves on to the next file's actions (or to the page).
  */
 import * as stylex from '@stylexjs/stylex';
 import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {AlertDialog} from '@astryxdesign/core/AlertDialog';
 import {Banner} from '@astryxdesign/core/Banner';
 import {Button} from '@astryxdesign/core/Button';
+import {Collapsible} from '@astryxdesign/core/Collapsible';
+import {Text} from '@astryxdesign/core/Text';
 import {useToast} from '@astryxdesign/core/Toast';
 import {Inbox} from 'lucide-react';
 import {useEffect, useState} from 'react';
-import {inbox as inboxApi} from '../api/client';
+import {ApiError, inbox as inboxApi} from '../api/client';
 import type {InboxDecision, ItemDetail} from '../api/types';
+import {useLibraries} from '../app/LibrariesProvider';
 import {useAuth} from '../auth/AuthProvider';
 import {ListSkeleton} from '../components/downloads/ListSkeleton';
 import {EmptyPanel} from '../components/EmptyPanel';
 import {InboxRow} from '../components/inbox/InboxRow';
-import {baseName, describeDestination} from '../components/inbox/places';
+import {fieldOfServerError, type MoveFieldErrors} from '../components/inbox/MoveFields';
+import {
+  baseName,
+  needsDetails,
+  resolveTarget,
+  suggestedTarget,
+  targetChoices,
+  targetName,
+  targetValue,
+  type TargetValue,
+} from '../components/inbox/places';
 import {useInbox} from '../components/inbox/useInbox';
 import {PageHeader} from '../components/PageHeader';
 import {errorMessage} from '../lib/errors';
@@ -49,36 +66,73 @@ const styles = stylex.create({
   banner: {
     marginBottom: 24,
   },
+  ignored: {
+    marginTop: 32,
+  },
+  ignoredBody: {
+    paddingTop: 12,
+  },
 });
 
 type Busy = {id: string; kind: 'accept' | 'ignore' | 'edit'} | {id: '*'; kind: 'all'};
 
 const MAIN_ID = 'astryx-app-shell-main';
+const NO_ERRORS: MoveFieldErrors = {};
 
 export default function InboxPage() {
   const {isOwner} = useAuth();
   const showToast = useToast();
-  const {status, error, items, reload, removeItem} = useInbox();
+  const {libraries: listed} = useLibraries();
+  const libraries = listed ?? [];
+  const {status, error, items, ignored, reload, removeItem} = useInbox();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<MoveFieldErrors>({});
   const [busy, setBusy] = useState<Busy | null>(null);
   const [confirmAll, setConfirmAll] = useState(false);
   const [allProgress, setAllProgress] = useState<{done: number; total: number} | null>(null);
+  /** What each row's selector shows, once the person changed it. */
+  const [chosen, setChosen] = useState<Record<string, TargetValue | null>>({});
   /** Where keyboard focus goes once a decided row has left the list (null: the page). */
   const [focusNext, setFocusNext] = useState<{id: string | null} | null>(null);
 
-  const withSuggestion = items.filter(item => item.suggestion !== null);
-  const count = items.length;
-
-  const neighbourOf = (id: string): string | null => {
-    const index = items.findIndex(item => item.id === id);
-    return (items[index + 1] ?? items[index - 1])?.id ?? null;
+  const choicesOf = (item: ItemDetail) => targetChoices(item, libraries, isOwner);
+  /** The row's target: the person's choice, else the suggestion when it is one of the choices. */
+  const targetOf = (item: ItemDetail): TargetValue | null => {
+    const choices = choicesOf(item).map(targetValue);
+    const picked = chosen[item.id];
+    if (picked !== undefined && (picked === null || choices.includes(picked))) return picked;
+    const suggested = suggestedTarget(item, libraries);
+    if (suggested && choices.includes(suggested)) return suggested;
+    // One place to go (a document: Other files) needs no choosing.
+    return choices.length === 1 ? (choices[0] ?? null) : null;
   };
 
-  const decide = async (item: ItemDetail, decision: InboxDecision): Promise<boolean> => {
+  const ready = items.filter(item => {
+    const target = resolveTarget(targetOf(item), libraries);
+    return target !== null && !needsDetails(target, item);
+  });
+  const count = items.length;
+  const unchosen = count - ready.length;
+
+  const neighbourOf = (id: string): string | null => {
+    const all = [...items, ...ignored];
+    const index = all.findIndex(item => item.id === id);
+    return (all[index + 1] ?? all[index - 1])?.id ?? null;
+  };
+
+  const decide = async (item: ItemDetail, decision: InboxDecision) => {
     await inboxApi.decide(item.id, decision);
     removeItem(item.id);
-    return true;
+  };
+
+  /** The request for a plain Accept: exactly the place and library the row shows. */
+  const acceptDecision = (value: TargetValue): InboxDecision | null => {
+    const target = resolveTarget(value, libraries);
+    if (!target) return null;
+    return target.library
+      ? {action: 'accept', place: 'library', library_id: target.library.id}
+      : {action: 'accept', place: 'other_files'};
   };
 
   // Focus left on a removed row (or nowhere) moves to the next file's actions.
@@ -96,16 +150,20 @@ export default function InboxPage() {
     return () => window.clearTimeout(timer);
   }, [focusNext, items]);
 
-  const accept = async (item: ItemDetail) => {
-    if (!item.suggestion) return;
+  const accept = async (item: ItemDetail, value: TargetValue) => {
+    const decision = acceptDecision(value);
+    const target = resolveTarget(value, libraries);
+    if (!decision || !target) return;
     setBusy({id: item.id, kind: 'accept'});
     const next = neighbourOf(item.id);
     try {
-      await decide(item, {action: 'accept'});
+      await decide(item, decision);
       setFocusNext({id: next});
-      showToast({body: `Moved to ${describeDestination(item.suggestion.destination)}.`});
+      showToast({body: `Moved to ${targetName(target)}.`});
     } catch (cause) {
       showToast({body: errorMessage(cause, `${baseName(item.rel_path)} did not move. Try again.`), type: 'error'});
+      // A target that changed meanwhile (a claim moved, a library was hidden): show what is true now.
+      if (cause instanceof ApiError && (cause.code === 'conflict' || cause.code === 'not_found')) reload();
     } finally {
       setBusy(null);
     }
@@ -118,6 +176,7 @@ export default function InboxPage() {
       await decide(item, {action: 'ignore'});
       setFocusNext({id: next});
       showToast({body: `Ignored. ${baseName(item.rel_path)} stays where it is.`});
+      reload();
     } catch (cause) {
       showToast({body: errorMessage(cause, 'That did not work. Try again.'), type: 'error'});
     } finally {
@@ -125,9 +184,11 @@ export default function InboxPage() {
     }
   };
 
-  const submitEdit = async (item: ItemDetail, decision: InboxDecision, destination: string) => {
+  const submitEdit = async (item: ItemDetail, decision: InboxDecision, destination: string, value: TargetValue) => {
     setBusy({id: item.id, kind: 'edit'});
     setEditError(null);
+    setFieldErrors({});
+    setChosen(current => ({...current, [item.id]: value}));
     const next = neighbourOf(item.id);
     try {
       await decide(item, decision);
@@ -135,21 +196,26 @@ export default function InboxPage() {
       setFocusNext({id: next});
       showToast({body: `Moved to ${destination}.`});
     } catch (cause) {
-      setEditError(errorMessage(cause, 'The file did not move. Check the details and try again.'));
+      const field = cause instanceof ApiError ? fieldOfServerError(cause.field) : null;
+      const message = errorMessage(cause, 'The file did not move. Check the details and try again.');
+      if (field) setFieldErrors({[field]: message});
+      else setEditError(message);
     } finally {
       setBusy(null);
     }
   };
 
   const acceptAll = async () => {
-    const targets = withSuggestion;
+    const targets = ready.map(item => ({item, value: targetOf(item)}));
     setBusy({id: '*', kind: 'all'});
     setAllProgress({done: 0, total: targets.length});
     let moved = 0;
     let failed = 0;
-    for (const item of targets) {
+    for (const {item, value} of targets) {
+      const decision = value ? acceptDecision(value) : null;
       try {
-        await decide(item, {action: 'accept'});
+        if (!decision) throw new Error('no target');
+        await decide(item, decision);
         moved += 1;
       } catch {
         failed += 1;
@@ -159,14 +225,15 @@ export default function InboxPage() {
     setBusy(null);
     setAllProgress(null);
     setConfirmAll(false);
-    setFocusNext({id: items.find(item => item.suggestion === null)?.id ?? null});
+    setFocusNext({id: items.find(item => !ready.includes(item))?.id ?? null});
     if (failed === 0) {
-      showToast({body: `${formatCount(moved, 'file')} moved to their suggested places.`});
+      showToast({body: `${formatCount(moved, 'file')} moved to the places shown.`});
     } else {
       showToast({
         body: `${formatCount(moved, 'file')} moved. ${formatCount(failed, 'file')} did not move and ${failed === 1 ? 'is' : 'are'} still here.`,
         type: 'error',
       });
+      reload();
     }
   };
 
@@ -175,13 +242,44 @@ export default function InboxPage() {
       ? `${count === 1 ? 'One file needs' : `${formatCount(count, 'file')} need`} a decision. Nothing moves until you choose.`
       : 'Files PopcornStash is not sure about wait here until you choose where they go.';
 
+  const renderRow = (item: ItemDetail, index: number, isIgnored: boolean) => (
+    <li key={item.id} {...stylex.props(styles.item)}>
+      <InboxRow
+        item={item}
+        libraries={libraries}
+        choices={choicesOf(item)}
+        target={targetOf(item)}
+        onTargetChange={(row, value) => setChosen(current => ({...current, [row.id]: value}))}
+        isOwner={isOwner}
+        isNext={!isIgnored && index === 0}
+        isIgnored={isIgnored}
+        isEditing={editingId === item.id}
+        busy={busy && busy.id === item.id && busy.kind !== 'all' ? busy.kind : null}
+        error={editingId === item.id ? editError : null}
+        fieldErrors={editingId === item.id ? fieldErrors : NO_ERRORS}
+        onClearServerErrors={() => {
+          if (Object.keys(fieldErrors).length) setFieldErrors(NO_ERRORS);
+        }}
+        isLocked={busy !== null}
+        onAccept={(row, value) => void accept(row, value)}
+        onIgnore={row => void ignore(row)}
+        onEdit={row => {
+          setEditError(null);
+          setFieldErrors({});
+          setEditingId(row ? row.id : null);
+        }}
+        onSubmitEdit={(row, decision, destination, value) => void submitEdit(row, decision, destination, value)}
+      />
+    </li>
+  );
+
   return (
     <>
       <PageHeader
         title="Inbox"
         subtitle={subtitle}
         actions={
-          withSuggestion.length >= 2 && status === 'ready' ? (
+          ready.length >= 2 && status === 'ready' ? (
             <Button
               label="Accept all suggestions"
               variant="secondary"
@@ -220,28 +318,25 @@ export default function InboxPage() {
       {status === 'ready' && count > 0 ? (
         <div {...stylex.props(styles.panel)}>
           <ul {...stylex.props(styles.list)} aria-label="Files waiting for a decision">
-            {items.map((item, index) => (
-              <li key={item.id} {...stylex.props(styles.item)}>
-                <InboxRow
-                  item={item}
-                  isOwner={isOwner}
-                  isNext={index === 0}
-                  isEditing={editingId === item.id}
-                  busy={busy && busy.id === item.id && busy.kind !== 'all' ? busy.kind : null}
-                  error={editingId === item.id ? editError : null}
-                  isLocked={busy !== null}
-                  onAccept={target => void accept(target)}
-                  onIgnore={target => void ignore(target)}
-                  onEdit={target => {
-                    setEditError(null);
-                    setEditingId(target ? target.id : null);
-                  }}
-                  onSubmitEdit={(target, decision, destination) => void submitEdit(target, decision, destination)}
-                />
-              </li>
-            ))}
+            {items.map((item, index) => renderRow(item, index, false))}
           </ul>
         </div>
+      ) : null}
+
+      {status === 'ready' && ignored.length > 0 ? (
+        <Collapsible
+          trigger={<Text weight="semibold">{`Left where they are (${ignored.length})`}</Text>}
+          defaultIsOpen={false}
+          chevronPosition="start"
+          xstyle={styles.ignored}>
+          <div {...stylex.props(styles.ignoredBody)}>
+            <div {...stylex.props(styles.panel)}>
+              <ul {...stylex.props(styles.list)} aria-label="Ignored files">
+                {ignored.map((item, index) => renderRow(item, index, true))}
+              </ul>
+            </div>
+          </div>
+        </Collapsible>
       ) : null}
 
       <AlertDialog
@@ -249,15 +344,13 @@ export default function InboxPage() {
         onOpenChange={open => {
           if (!open && busy === null) setConfirmAll(false);
         }}
-        title={`Accept all ${withSuggestion.length} suggestions?`}
+        title={`Accept all ${ready.length} suggestions?`}
         description={
           allProgress
             ? `Moving ${allProgress.done + 1 > allProgress.total ? allProgress.total : allProgress.done + 1} of ${allProgress.total}…`
             : [
-                'Each file moves to the place shown in its row.',
-                count > withSuggestion.length
-                  ? `${count - withSuggestion.length === 1 ? 'One file' : formatCount(count - withSuggestion.length, 'file')} without a suggestion ${count - withSuggestion.length === 1 ? 'stays' : 'stay'} in Inbox.`
-                  : null,
+                'Each file moves to the library shown in its row.',
+                unchosen > 0 ? `Choose a library for ${formatCount(unchosen, 'file')}.` : null,
               ]
                 .filter(Boolean)
                 .join(' ')

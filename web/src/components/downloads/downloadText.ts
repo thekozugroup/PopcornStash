@@ -1,9 +1,9 @@
 /**
  * Downloads in plain words: kind, state, and where finished files went.
  */
-import type {Download, DownloadKind, DownloadState, ItemDetail} from '../../api/types';
+import type {Download, DownloadKind, DownloadState, Library} from '../../api/types';
 import {formatCount} from '../../lib/format';
-import {CATEGORY_FOLDER, itemTitle} from '../inbox/places';
+import {libraryHref} from '../../lib/libraries';
 
 export const KIND_LABEL: Record<DownloadKind, string> = {
   torrent: 'Torrent',
@@ -60,8 +60,14 @@ export function filesStillInDownloads(download: Download): boolean {
   return download.state !== 'sorted' && download.state !== 'cancelled';
 }
 
+/** One place a sorted download's files are now: "In Kids" (a link to the library). */
+export interface OutcomePlace {
+  label: string;
+  href: string;
+}
+
 export type FinishedOutcome =
-  | {kind: 'sorted'; text: string; linkLabel: string | null; href: string | null}
+  | {kind: 'sorted'; text: string; places: OutcomePlace[]}
   | {kind: 'review'; text: string; href: string}
   | {kind: 'waiting'; text: string}
   | {kind: 'sorting'; text: string}
@@ -71,12 +77,13 @@ export type FinishedOutcome =
   | {kind: 'unknown'; text: string};
 
 /**
- * Where a finished download's files went, from the download and whatever of
- * its items have loaded. `isOwner` decides whether folder names may appear.
+ * Where a finished download's files went, from the server's `destinations`
+ * (only places this person can see). `isOwner` decides whether folder names
+ * may appear. A sorted download with nothing left to show says only "Sorted".
  */
 export function finishedOutcome(
   download: Download,
-  items: (ItemDetail | undefined)[],
+  find: (id: string | null) => Library | undefined,
   isOwner: boolean,
 ): FinishedOutcome {
   switch (download.state) {
@@ -95,42 +102,32 @@ export function finishedOutcome(
       break;
   }
 
-  if (download.item_ids.length === 0) {
-    return {
-      kind: 'nothing',
-      text: isOwner
-        ? 'No videos or photos inside. The files stay in Downloads/Completed.'
-        : 'No videos or photos inside, so nothing was added to the library.',
-    };
+  const destinations = download.destinations ?? [];
+  if (destinations.length === 0) {
+    // Owners see every file, so nothing to show means nothing came in. Anyone else may
+    // have had it sorted into a library they cannot see: that is only ever "Sorted".
+    return isOwner && download.item_ids.length === 0
+      ? {kind: 'nothing', text: 'No videos or photos inside. The files stay in Downloads/Completed.'}
+      : {kind: 'sorted', text: 'Sorted', places: []};
   }
 
-  const loaded = items.filter((item): item is ItemDetail => item !== undefined);
-  if (loaded.some(item => item.status === 'needs_review')) {
-    return {kind: 'review', text: 'Waiting for a decision', href: '/inbox'};
+  const waiting = destinations
+    .filter(destination => destination.place === 'incoming')
+    .reduce((sum, destination) => sum + destination.count, 0);
+  if (waiting > 0) {
+    return {kind: 'review', text: `${formatCount(waiting, 'file')} waiting in Inbox`, href: '/inbox'};
   }
-  if (loaded.length === 0) return {kind: 'unknown', text: 'Sorted into your library.'};
 
-  const folders = Array.from(new Set(loaded.map(item => CATEGORY_FOLDER[item.category])));
-  const into = folders.length === 1 ? folders[0] : `${folders.slice(0, -1).join(', ')} and ${folders[folders.length - 1]}`;
-  const text = `Sorted into ${into ?? 'your library'}`;
-  const first = loaded[0];
-  if (!first) return {kind: 'sorted', text, linkLabel: null, href: null};
-
-  const total = download.item_ids.length;
-  if (total === 1) {
-    return {kind: 'sorted', text, linkLabel: itemTitle(first), href: `/item/${encodeURIComponent(first.id)}`};
+  const places: OutcomePlace[] = [];
+  for (const destination of destinations) {
+    if (destination.place === 'other_files') {
+      places.push({label: 'Other files', href: '/other'});
+      continue;
+    }
+    const library = find(destination.library_id);
+    // A library this person cannot open is never named.
+    if (library) places.push({label: library.name, href: libraryHref(library.id)});
   }
-  const shows = new Set(loaded.map(item => item.show_name));
-  if (first.category === 'episode' && first.show_name && shows.size === 1 && folders.length === 1) {
-    return {
-      kind: 'sorted',
-      text,
-      linkLabel: `${formatCount(total, 'episode')} of ${first.show_name}`,
-      href: `/shows/${encodeURIComponent(first.show_name)}`,
-    };
-  }
-  if (first.category === 'photo' && folders.length === 1) {
-    return {kind: 'sorted', text, linkLabel: formatCount(total, 'photo'), href: '/photos'};
-  }
-  return {kind: 'sorted', text, linkLabel: formatCount(total, 'file'), href: `/item/${encodeURIComponent(first.id)}`};
+  if (places.length === 0) return {kind: 'sorted', text: 'Sorted', places: []};
+  return {kind: 'sorted', text: 'In', places};
 }

@@ -3,7 +3,7 @@
  * without the passkey staying at the sign-in page.
  */
 import {expect, test} from '@playwright/test';
-import {OWNER_NAME, env, runAdmin, signInWithPasskey} from '../helpers/env';
+import {LIBRARY, OWNER_NAME, env, runAdmin, signInWithPasskey} from '../helpers/env';
 import {VirtualAuthenticator} from '../helpers/passkeys';
 
 test('the owner signs out and signs back in with only the passkey', async ({page}) => {
@@ -22,8 +22,9 @@ test('the owner signs out and signs back in with only the passkey', async ({page
   await page.goto('/movies');
   await expect(page).toHaveURL(/\/login\?next=%2Fmovies$/);
 
+  // The old address now leads to the library that takes movies.
   await page.getByRole('button', {name: 'Sign in with a passkey'}).click();
-  await expect(page).toHaveURL(/\/movies$/);
+  await expect(page).toHaveURL(new RegExp(`/libraries/${LIBRARY.movies}$`));
   await expect(page.getByRole('heading', {level: 1, name: 'Movies'})).toBeVisible();
   const me = await (await page.request.get('/api/me')).json();
   expect(me).toMatchObject({display_name: OWNER_NAME, role: 'owner'});
@@ -51,7 +52,7 @@ test('a browser without the passkey cannot get past the sign-in page', async ({b
 
   const state = await (await page.request.get('/api/auth/state')).json();
   expect(state).toMatchObject({setup_required: false, authenticated: false, user: null});
-  for (const url of ['/api/me', '/api/items', '/api/library/summary', '/api/downloads']) {
+  for (const url of ['/api/me', '/api/items', '/api/home', '/api/libraries', '/api/downloads']) {
     const response = await page.request.get(url);
     expect(response.status(), url).toBe(401);
   }

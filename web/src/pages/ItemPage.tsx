@@ -1,9 +1,10 @@
 /**
  * One item (`/item/:id`): the player (or photo, or file) on a black stage,
  * then the title, a quiet metadata line and the actions: favourite,
- * download the original, edit details, organize files that sit outside the
- * library folders, and (owner only) move to Trash. Technical details and
- * the file's location appear only on request.
+ * download the original, edit details, and for owners organize (move it into
+ * a library or Other files) and move to Trash. The back link names the
+ * item's library (or its show there). Technical details and the file's
+ * location appear only on request.
  */
 import * as stylex from '@stylexjs/stylex';
 import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
@@ -20,6 +21,7 @@ import {useEffect, useRef, useState} from 'react';
 import {useLocation, useNavigate, useParams} from 'react-router';
 import {ApiError, items as itemsApi} from '../api/client';
 import type {ItemDetail} from '../api/types';
+import {useLibraries} from '../app/LibrariesProvider';
 import {useAuth} from '../auth/AuthProvider';
 import {DeleteItemDialog} from '../components/library/DeleteItemDialog';
 import {EditDetailsDialog} from '../components/library/EditDetailsDialog';
@@ -28,12 +30,10 @@ import {FileStage, PhotoStage} from '../components/library/ItemStages';
 import {LoadError} from '../components/library/LoadError';
 import {OrganizeDialog} from '../components/library/OrganizeDialog';
 import {
-  CATEGORY_FOLDER,
   displayTitle,
   fileType,
   formatTime,
   hasFileNameTitle,
-  isInLibraryFolder,
   itemHref,
   itemParent,
 } from '../components/library/libraryFormat';
@@ -193,6 +193,7 @@ export default function ItemPage() {
   const navigate = useNavigate();
   const showToast = useToast();
   const {user} = useAuth();
+  const {find} = useLibraries();
   const [nonce, setNonce] = useState(0);
   const [state, setState] = useState<ItemState>({id: '', item: null, error: null});
   const [dialog, setDialog] = useState<{kind: 'edit' | 'organize' | 'delete'; key: number} | null>(null);
@@ -229,7 +230,7 @@ export default function ItemPage() {
     },
   });
 
-  const parent = item ? itemParent(item) : null;
+  const parent = item ? itemParent(item, find(item.library_id)) : null;
   const back = (
     <div {...stylex.props(styles.back)}>
       <Button
@@ -278,7 +279,8 @@ export default function ItemPage() {
   }
 
   const isOwner = user?.role === 'owner';
-  const canOrganize = !isInLibraryFolder(item.rel_path) && item.status !== 'trashed';
+  // Organize moves the file: an explicit action, for owners, on any item that is not in the trash.
+  const canOrganize = isOwner && item.status !== 'trashed';
   const isVideo = item.kind === 'video';
   const isPhoto = item.kind === 'photo';
   const hasStageDownload = !isVideo && !isPhoto && item.kind !== 'audio';
@@ -303,7 +305,13 @@ export default function ItemPage() {
   const menuItems = [
     {label: 'Edit details', icon: Pencil, onClick: () => setDialog({kind: 'edit', key: Date.now()})},
     ...(canOrganize
-      ? [{label: 'Organize into library', icon: FolderInput, onClick: () => setDialog({kind: 'organize', key: Date.now()})}]
+      ? [
+          {
+            label: item.place === 'library' ? 'Move to another library' : 'Organize into library',
+            icon: FolderInput,
+            onClick: () => setDialog({kind: 'organize', key: Date.now()}),
+          },
+        ]
       : []),
     ...(isOwner && item.status !== 'trashed'
       ? [
@@ -413,9 +421,9 @@ export default function ItemPage() {
           item={item}
           isOpen
           onOpenChange={open => !open && setDialog(null)}
-          onOrganized={moved => {
+          onOrganized={(moved, destination) => {
             replaceItem(moved);
-            showToast({body: `Moved into ${CATEGORY_FOLDER[moved.category]}.`});
+            showToast({body: `Moved into ${destination}.`});
           }}
         />
       ) : null}

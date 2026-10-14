@@ -1,17 +1,17 @@
 /**
  * Library items created from finished downloads, so each finished row can
- * say where its files went ("Sorted into Movies") and show the poster or
- * frame. Loads a few items per download, caches them for the session, and
- * refreshes an item when a `library` event says it changed (for example
- * after an Inbox decision).
+ * show the poster or frame (where the files went comes from the download's
+ * own `destinations`). Loads a couple of items per download, caches them for
+ * the session, and refreshes an item when a `library` event says it changed
+ * (for example after an Inbox decision).
  */
 import {useEffect, useRef, useState} from 'react';
 import {items as itemsApi} from '../../api/client';
 import {useStashEvent} from '../../api/events';
 import type {Download, ItemDetail} from '../../api/types';
 
-/** Items looked up per download; enough to name the destination and spot Inbox items. */
-const ITEMS_PER_DOWNLOAD = 6;
+/** Items looked up per download; enough to find one with a picture. */
+const ITEMS_PER_DOWNLOAD = 2;
 const cache = new Map<string, ItemDetail>();
 
 export function useDownloadItems(finished: Download[]): Map<string, ItemDetail> {

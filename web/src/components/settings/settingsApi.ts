@@ -1,6 +1,6 @@
 /**
  * Settings-page views over the shared API client: the rows the People and
- * Library pages list, and "sign out everywhere else".
+ * Libraries pages list, and "sign out everywhere else".
  */
 import {invites, me, trash} from '../../api/client';
 import type {InviteListEntry, ItemCategory, ItemKind, Session, UnixSeconds} from '../../api/types';
@@ -28,6 +28,8 @@ export interface TrashRow {
   thumb: string | null;
   originalPath: string;
   trashedAt: UnixSeconds;
+  /** Why a restore would be refused now (its library no longer shows this kind of file), else null. */
+  restoreRefusal: string | null;
 }
 
 function fileName(path: string): string {
@@ -46,6 +48,7 @@ export async function listTrash(signal?: AbortSignal): Promise<TrashRow[]> {
       thumb: row.item.thumb,
       originalPath: row.original_rel_path,
       trashedAt: row.trashed_at,
+      restoreRefusal: row.restore_refusal ?? null,
     }))
     .sort((a, b) => b.trashedAt - a.trashedAt);
 }

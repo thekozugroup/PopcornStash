@@ -172,14 +172,17 @@ test('a magnet pasted on Downloads comes in through the VPN and is sorted into M
 
   const finished = page.getByRole('list', {name: 'Finished'});
   const done = finished.getByRole('listitem').filter({hasText: stack.torrentName});
-  await expect(done).toContainText('Sorted into Movies', {timeout: 180_000});
-  await expect(done.getByRole('link', {name: stack.title})).toBeVisible();
+  // The finished row names the library it went to, as a link to it.
+  await expect(done).toContainText('In Movies', {timeout: 180_000});
+  await expect(done.getByRole('link', {name: 'Movies', exact: true})).toBeVisible();
   await expect(inProgress.getByRole('listitem').filter({hasText: stack.torrentName})).toHaveCount(0);
   await shoot('downloads-finished-1440-light.png');
 });
 
 test('Movies shows the film with a thumbnail, and it plays', async () => {
+  // The old address leads to the library that takes movies.
   await page.goto('/movies');
+  await expect(page).toHaveURL(/\/libraries\/[0-9a-f-]+$/);
   const tile = page.getByRole('link', {name: new RegExp(`^${stack.title}`)});
   await expect(tile).toBeVisible();
   // The thumbnail is made in the background; the page shows it once it exists.
