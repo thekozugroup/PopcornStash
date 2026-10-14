@@ -1,7 +1,9 @@
 package com.thekozugroup.popcornstash.feature.photos
 
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -9,6 +11,7 @@ import androidx.compose.ui.unit.DpRect
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.thekozugroup.popcornstash.testing.SampleMedia
 import com.thekozugroup.popcornstash.testing.WithSampleImages
+import com.thekozugroup.popcornstash.testing.plain
 import com.thekozugroup.popcornstash.ui.theme.PlayerTokens
 import com.thekozugroup.popcornstash.ui.theme.PopcornTheme
 import org.junit.Assert.assertEquals
@@ -16,6 +19,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.util.TimeZone
 
 /**
  * The viewer's chrome follows the player's rules (android/DESIGN.md, Player and photo viewer):
@@ -61,5 +65,34 @@ class PhotoViewerTest {
         assertEquals((chrome.left + tokens.edge).value, plate.left.value, 0.5f)
         assertEquals((chrome.right - tokens.edge).value, plate.right.value, 0.5f)
         assertEquals((chrome.bottom - tokens.edge).value, plate.bottom.value, 0.5f)
+    }
+
+    @Test
+    fun thePlateShowsTheCameraClockWhateverThePhonesZone() {
+        // 18:05 in Lisbon is 07:05 the next morning on Kiritimati (UTC+14), where this phone is.
+        val before = TimeZone.getDefault()
+        TimeZone.setDefault(TimeZone.getTimeZone("Pacific/Kiritimati"))
+        try {
+            compose.setContent {
+                PopcornTheme(darkTheme = true, reduceMotion = true) {
+                    WithSampleImages {
+                        PhotoViewer(
+                            photos = listOf(SampleMedia.lisbonSunset),
+                            startId = SampleMedia.lisbonSunset.id,
+                            onClose = {},
+                            onDetails = {},
+                            onPlay = {},
+                            onSaveOriginal = {},
+                        )
+                    }
+                }
+            }
+            compose.waitForIdle()
+            val line = compose.onNode(hasText("6:05", substring = true), useUnmergedTree = true)
+                .fetchSemanticsNode().config[SemanticsProperties.Text].joinToString()
+            assertEquals("Sep 12, 2026, 6:05 PM", plain(line))
+        } finally {
+            TimeZone.setDefault(before)
+        }
     }
 }

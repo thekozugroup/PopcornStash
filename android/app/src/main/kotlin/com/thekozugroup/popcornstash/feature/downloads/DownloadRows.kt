@@ -75,12 +75,20 @@ fun DownloadsSectionHeader(title: String, count: Int?, modifier: Modifier = Modi
             .padding(start = Popcorn.spacing.gutter, end = Popcorn.spacing.xs, top = Popcorn.spacing.l),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(title, style = Popcorn.type.title, color = Popcorn.colors.text, modifier = Modifier.semantics { heading() })
-        if (count != null) {
-            Spacer(Modifier.width(Popcorn.spacing.xs))
-            Text(count.toString(), style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
+        // With large text the heading wraps at its words; the count and the action ("Accept all")
+        // keep their own width and are never broken inside a word.
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                title,
+                style = Popcorn.type.title,
+                color = Popcorn.colors.text,
+                modifier = Modifier.weight(1f, fill = false).semantics { heading() },
+            )
+            if (count != null) {
+                Spacer(Modifier.width(Popcorn.spacing.xs))
+                Text(count.toString(), style = Popcorn.type.metadata, color = Popcorn.colors.textMuted, maxLines = 1)
+            }
         }
-        Spacer(Modifier.weight(1f))
         action?.invoke()
     }
 }

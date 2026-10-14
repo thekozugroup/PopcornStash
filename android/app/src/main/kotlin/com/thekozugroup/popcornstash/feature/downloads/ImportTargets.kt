@@ -10,8 +10,7 @@ import com.thekozugroup.popcornstash.data.api.Place
 import com.thekozugroup.popcornstash.data.api.Structure
 import com.thekozugroup.popcornstash.data.api.Suggestion
 import com.thekozugroup.popcornstash.data.api.Waiting
-import java.time.Instant
-import java.time.ZoneOffset
+import com.thekozugroup.popcornstash.feature.library.captureClock
 import java.util.Locale
 
 // Where a waiting file can go and how it will be laid out there (docs/architecture.md
@@ -192,11 +191,11 @@ fun previewMove(target: ImportTarget, form: MoveForm, item: ItemDetail, showFold
             )
         }
         Category.HomeVideo, Category.Photo -> {
-            val taken = item.suggestion?.takenAt ?: item.takenAt
-            val month = taken?.let {
-                val date = Instant.ofEpochSecond(it).atOffset(ZoneOffset.UTC)
-                listOf(date.year.toString(), String.format(Locale.ROOT, "%02d", date.monthValue))
-            }
+            // The month on the camera's clock, as the server files it (docs/architecture.md section 4,
+            // Capture time): the suggestion's, else the file's own; never moved to this phone's zone.
+            val suggestion = item.suggestion
+            val taken = captureClock(suggestion?.takenLocal, suggestion?.takenAt) ?: captureClock(item.takenLocal, item.takenAt)
+            val month = taken?.let { listOf(it.year.toString(), String.format(Locale.ROOT, "%02d", it.monthValue)) }
             val hint = when {
                 month != null -> null
                 categoryAt(target, form) == Category.Photo -> "Filed by the month it was taken."

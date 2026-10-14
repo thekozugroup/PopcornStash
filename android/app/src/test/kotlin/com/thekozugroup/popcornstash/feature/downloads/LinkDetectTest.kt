@@ -1,5 +1,6 @@
 package com.thekozugroup.popcornstash.feature.downloads
 
+import com.thekozugroup.popcornstash.testing.plain
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -34,11 +35,13 @@ class LinkDetectTest {
         assertEquals(LinkKind.Http, web.kind)
         assertEquals("example.org", web.host)
         assertEquals("harbor-lights.mp4", web.name)
-        assertEquals("Web link from example.org. Downloads straight to PopcornStash.", describeLink(web))
+        assertEquals("Web link from example.org. Downloads straight to PopcornStash.", plain(describeLink(web)))
+        // A long host wraps after its dots and hyphens, never inside a word.
+        assertEquals("Web link from example.​org. Downloads straight to PopcornStash.", describeLink(web))
         val torrent = (checkLink("https://tracker.example.org/files/puddle-club.torrent") as LinkCheck.Ok).link
         assertEquals(LinkKind.TorrentUrl, torrent.kind)
         assertTrue(torrent.isTorrent())
-        assertEquals("Link to a .torrent file on tracker.example.org. Downloads as a torrent, only through the VPN.", describeLink(torrent))
+        assertEquals("Link to a .torrent file on tracker.example.org. Downloads as a torrent, only through the VPN.", plain(describeLink(torrent)))
     }
 
     @Test

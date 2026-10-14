@@ -6,6 +6,7 @@ import com.thekozugroup.popcornstash.data.api.Progress
 import com.thekozugroup.popcornstash.data.api.SubtitleStream
 import com.thekozugroup.popcornstash.data.api.VideoStream
 import com.thekozugroup.popcornstash.testing.SampleMedia
+import com.thekozugroup.popcornstash.testing.plain
 import com.thekozugroup.popcornstash.ui.components.TileShape
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -42,7 +43,7 @@ class MediaFormatTest {
         assertEquals("39:31", format.clock(2371.2))
         assertEquals("1:02:05", format.clock(3725.0))
         assertEquals("0:08", format.clock(8.9))
-        assertEquals("June 2024", format.month("2024-06"))
+        assertEquals("June 2024", plain(format.month("2024-06")))
         assertEquals("not a month", format.month("not a month"))
     }
 
@@ -59,7 +60,7 @@ class MediaFormatTest {
     fun tileLinesByKind() {
         assertEquals("2011 · 1 h 44 min", format.tileLine(SampleMedia.paperBoats))
         assertEquals("S01E02 · 24 min", format.tileLine(SampleMedia.lantern[1]))
-        assertEquals("Sep 11, 2026 · 3 min", format.tileLine(SampleMedia.beachDay))
+        assertEquals("Sep 11, 2026 · 3 min", plain(format.tileLine(SampleMedia.beachDay)))
         assertEquals("PDF · 192 KB", format.tileLine(SampleMedia.otherFiles[0]))
         assertEquals("MP3 · 3 min", format.tileLine(SampleMedia.otherFiles[1]))
     }
@@ -69,7 +70,7 @@ class MediaFormatTest {
         assertEquals("Fog over the pier", format.displayTitle(SampleMedia.lantern[1]))
         assertEquals("Episode 5", MediaFormat.episodeName(SampleMedia.lantern[4]))
         val camera = SampleMedia.recentPhotos[0]
-        assertEquals("Photo from ${format.date(camera.takenAt!!)}", format.displayTitle(camera))
+        assertEquals("Photo from ${format.date(camera.capturedAt!!)}", format.displayTitle(camera))
         assertEquals("Paper Boats", format.displayTitle(SampleMedia.paperBoats))
         assertEquals("S01E02", MediaFormat.episodeCode(1, 2))
         assertEquals("Specials", MediaFormat.seasonName(0))
@@ -81,7 +82,19 @@ class MediaFormatTest {
         assertEquals("2011 · 1 h 44 min", format.detailLine(SampleMedia.paperBoats))
         assertEquals("Season 1, episode 2 · 24 min", format.detailLine(SampleMedia.lantern[1]))
         assertEquals("Special 1 · 24 min", format.detailLine(SampleMedia.episode("x", "Show", 0, 1, null)))
-        assertEquals("Taken at ${format.time(SampleMedia.recentPhotos[0].takenAt!!)}", format.detailLine(SampleMedia.recentPhotos[0]))
+        assertEquals("Taken at ${format.time(SampleMedia.recentPhotos[0].capturedAt!!)}", format.detailLine(SampleMedia.recentPhotos[0]))
+        assertEquals("Taken Sep 12, 2026, 6:05 PM", plain(format.detailLine(SampleMedia.lisbonSunset.copy(title = "Sunset at Belem"))))
+    }
+
+    @Test
+    fun datesAndMonthsStayOnOneLine() {
+        val clock = SampleMedia.lisbonSunset.capturedAt!!
+        assertEquals("Sep 12, 2026", format.date(clock))
+        // The one place a line may end is between the date and the time.
+        assertEquals(1, format.dateTime(clock).count { it == ' ' })
+        assertEquals("Sep 12, 2026, 6:05 PM", plain(format.dateTime(clock)))
+        assertEquals("July 2026", format.month("2026-07"))
+        assertEquals("Grandma's Slides", MediaFormat.unbroken("Grandma's Slides"))
     }
 
     @Test

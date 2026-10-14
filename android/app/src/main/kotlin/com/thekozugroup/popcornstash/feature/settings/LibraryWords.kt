@@ -9,6 +9,7 @@ import com.thekozugroup.popcornstash.data.api.Structure
 import com.thekozugroup.popcornstash.data.api.UnassignedFolder
 import com.thekozugroup.popcornstash.data.api.User
 import com.thekozugroup.popcornstash.data.api.Visibility
+import com.thekozugroup.popcornstash.feature.library.MediaFormat
 import java.text.NumberFormat
 
 // Libraries in the owner's words, the same words as the web's Settings, Libraries and its
@@ -143,9 +144,20 @@ fun shownWords(folder: UnassignedFolder, contentType: ContentType, structure: St
     return parts.takeIf { it.isNotEmpty() }?.let(::joinWords)
 }
 
+/** Folder names up to this long are kept on one line inside a sentence. */
+private const val FOLDER_KEPT_WHOLE = 24
+
+/**
+ * A folder as a sentence names it, "Grandma's Slides/": a name that fits on a line is never
+ * split across two ("Grandma's" at the end of one line, "Slides/" on the next); a longer one
+ * wraps at its spaces like the rest of the sentence.
+ */
+fun folderInSentence(name: String): String =
+    (if (name.length <= FOLDER_KEPT_WHOLE) MediaFormat.unbroken(name) else name) + "/"
+
 /** "Files stay in Holidays/. Nothing is moved. 12 photos there will not show in this library." */
 fun existingFolderSentence(folderName: String, folder: UnassignedFolder?, contentType: ContentType, structure: Structure?, claims: List<Category>): String {
-    val stays = "Files stay in $folderName/. Nothing is moved."
+    val stays = "Files stay in ${folderInSentence(folderName)}. Nothing is moved."
     if (folder == null) return stays
     val (photos, other) = hiddenCounts(folder, contentType, structure, claims)
     if (photos == 0L && other == 0L) return stays
@@ -162,8 +174,8 @@ fun whoWillSeeSentence(shown: String, visibility: Visibility, chosenNames: List<
 
 /** What deleting a library does, for its confirmation. */
 fun deleteSentence(library: Library): String =
-    "Takes ${library.name} out of the app. Its files stay in ${library.folder ?: "its folder"}/ and only owners will see them."
+    "Takes ${library.name} out of the app. Its files stay in ${library.folder?.let(::folderInSentence) ?: "its folder/"} and only owners will see them."
 
 /** The note after a library was deleted. */
 fun deletedNotice(library: Library): String =
-    "${library.name} is no longer in the app. Its files stay in ${library.folder ?: "its folder"}/."
+    "${library.name} is no longer in the app. Its files stay in ${library.folder?.let(::folderInSentence) ?: "its folder/"}."

@@ -182,6 +182,15 @@ class DownloadsScreenshotTest {
     }
 
     @Test
+    fun editAPhotoLight() {
+        // Taken at 21:30 on 30 September in Los Angeles (1 October in UTC): filed under September.
+        val row = s.content().imports.first { it.item.id == s.photo.id }
+        val edit = EditState(row.item.id, initialMoveForm(row.item, row.target))
+        show(s.content().copy(edit = edit), dark = false)
+        captureScreenRoboImage(screenshot("downloads-edit-photo-light"))
+    }
+
+    @Test
     fun editAnEpisodeWithAServerErrorDark() {
         val row = s.content().imports.first()
         val form = initialMoveForm(row.item, ImportTarget(s.kids)).copy(show = "Puddle Club", season = "1", episode = "")

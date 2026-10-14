@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -53,6 +55,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.thekozugroup.popcornstash.data.auth.PairingState
 import com.thekozugroup.popcornstash.data.auth.PasskeyAuthenticator
+import com.thekozugroup.popcornstash.feature.downloads.breakableUrl
 import com.thekozugroup.popcornstash.navigation.pushTransition
 import com.thekozugroup.popcornstash.ui.components.PrimaryButton
 import com.thekozugroup.popcornstash.ui.components.SecondaryButton
@@ -279,14 +282,22 @@ private fun Brand() {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ServerLine(server: ServerInfo) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.semantics(mergeDescendants = true) {}) {
         LucideIcon(PopcornIcons.Server, contentDescription = null, tint = Popcorn.colors.textMuted, size = 20.dp)
         Spacer(Modifier.width(Popcorn.spacing.s))
-        Text(server.display, style = Popcorn.type.item, color = Popcorn.colors.text)
-        Spacer(Modifier.width(Popcorn.spacing.xs))
-        Text("Version ${server.version}", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
+        // The version follows the address on its line while there is room, else goes under it; it
+        // is never squeezed. A long address wraps after a dot or a hyphen, never inside a word.
+        FlowRow(
+            Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(Popcorn.spacing.xs),
+            itemVerticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(breakableUrl(server.display), style = Popcorn.type.item, color = Popcorn.colors.text)
+            Text("Version ${server.version}", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted, maxLines = 1)
+        }
     }
 }
 

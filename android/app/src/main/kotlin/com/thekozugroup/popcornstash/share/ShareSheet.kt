@@ -197,7 +197,7 @@ private fun ColumnScope.FilesContent(state: ShareSheetState.Files, actions: Shar
         )
     }
     Spacer(Modifier.height(Popcorn.spacing.s))
-    Sentence("Uploads as ${state.userName} to ${state.server}.")
+    Sentence("Uploads as ${state.userName} to ${breakableUrl(state.server)}.")
     if (state.refused > 0) {
         Spacer(Modifier.height(Popcorn.spacing.xxs))
         Text(

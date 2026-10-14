@@ -1,5 +1,6 @@
 package com.thekozugroup.popcornstash.feature.downloads
 
+import com.thekozugroup.popcornstash.testing.hasPlainText
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -237,7 +238,7 @@ class DownloadsScreenTest {
     @Test
     fun theAddSheetTakesALinkAndSaysWhatItIs() {
         show(s.empty.copy(add = AddLinkState(text = "https://example.org/clip.mp4", fromClipboard = true)))
-        compose.onNodeWithText("From your clipboard. Web link from example.org. Downloads straight to PopcornStash.").assertIsDisplayed()
+        compose.onNode(hasPlainText("From your clipboard. Web link from example.org. Downloads straight to PopcornStash.")).assertIsDisplayed()
         compose.onNodeWithTag("link field").performTextInput("x")
         compose.onNode(hasText("Add") and hasClickAction()).performClick()
         assertEquals("add", calls.last())

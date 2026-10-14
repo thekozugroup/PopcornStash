@@ -1,5 +1,6 @@
 package com.thekozugroup.popcornstash.feature.settings
 
+import com.thekozugroup.popcornstash.testing.hasPlainText
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.semantics.Role
@@ -206,7 +207,7 @@ class SettingsTabTest {
         compose.onNodeWithTag("more Kids").performClick()
         compose.onNodeWithText("Delete").performClick()
         compose.onNodeWithText("Delete Kids?").assertIsDisplayed()
-        compose.onNodeWithText("Takes Kids out of the app. Its files stay in Kids/ and only owners will see them.").assertIsDisplayed()
+        compose.onNode(hasPlainText("Takes Kids out of the app. Its files stay in Kids/ and only owners will see them.")).assertIsDisplayed()
         routes.only("GET", "/api/libraries", F.FOUR)
         compose.onNodeWithText("Delete library").performClick()
         assertEquals("DELETE /api/libraries/${F.KIDS_ID}", routes.nextWrite().let { "${it.method} ${it.path}" })

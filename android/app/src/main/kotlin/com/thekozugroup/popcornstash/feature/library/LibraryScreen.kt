@@ -4,13 +4,12 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridScope
@@ -311,11 +310,16 @@ private fun TimelineGrid(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MonthHeading(month: PhotoMonth, first: Boolean, format: MediaFormat) {
+    // The month as the server groups it ("2026-07" is July 2026 on the camera's clock), never
+    // moved to this phone's time zone.
     val label = format.month(month.month)
     val count = format.count(month.count, "photo")
-    Row(
+    // The count follows the month while there is room and goes under it when there is not
+    // (large text): neither is ever broken inside a word.
+    FlowRow(
         Modifier
             .fillMaxWidth()
             .padding(
@@ -328,11 +332,17 @@ private fun MonthHeading(month: PhotoMonth, first: Boolean, format: MediaFormat)
                 contentDescription = "$label, $count"
                 heading()
             },
-        verticalAlignment = Alignment.Bottom,
+        horizontalArrangement = Arrangement.spacedBy(Popcorn.spacing.xs),
+        itemVerticalAlignment = Alignment.Bottom,
     ) {
         Text(label, style = Popcorn.type.title, color = Popcorn.colors.text)
-        Spacer(Modifier.width(Popcorn.spacing.xs))
-        Text(count, style = Popcorn.type.metadata, color = Popcorn.colors.textMuted, modifier = Modifier.padding(bottom = 3.dp))
+        Text(
+            MediaFormat.unbroken(count),
+            style = Popcorn.type.metadata,
+            color = Popcorn.colors.textMuted,
+            maxLines = 1,
+            modifier = Modifier.padding(bottom = 3.dp),
+        )
     }
 }
 

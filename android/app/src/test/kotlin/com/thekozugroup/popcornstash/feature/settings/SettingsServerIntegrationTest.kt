@@ -1,5 +1,6 @@
 package com.thekozugroup.popcornstash.feature.settings
 
+import com.thekozugroup.popcornstash.testing.plain
 import com.thekozugroup.popcornstash.data.api.ApiClient
 import com.thekozugroup.popcornstash.data.api.ApiException
 import com.thekozugroup.popcornstash.data.api.AuthInterceptor
@@ -283,7 +284,7 @@ class SettingsServerIntegrationTest {
         settings.refresh()
         list = settings.state.until { state -> state.shown?.size == 6 }
         settings.delete(list.shown!!.first { it.name == "Holidays" })
-        assertEquals("Holidays is no longer in the app. Its files stay in Family 2019/.", withTimeout(30_000) { settings.notices.first() })
+        assertEquals("Holidays is no longer in the app. Its files stay in Family 2019/.", plain(withTimeout(30_000) { settings.notices.first() }))
         val kidsEditor = editor(id = kidsLibrary.id)
         kidsEditor.askDelete()
         kidsEditor.confirmDelete()

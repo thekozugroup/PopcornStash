@@ -153,5 +153,21 @@ class DownloadsTextTest {
     @Test
     fun namesBreakAfterDotsUnderscoresAndHyphens() {
         assertEquals("a.​b_​c-​d", breakableName("a.b_c-d"))
+        assertEquals("Harbor.​Lights.​2019.​1080p.​BluRay.x264", breakableName("Harbor.Lights.2019.1080p.BluRay.x264"))
+    }
+
+    @Test
+    fun anExtensionStaysWithTheNameBeforeIt() {
+        // Never "zip" or "mp4" alone on a line.
+        assertEquals("Grandma 80th birthday.zip", breakableName("Grandma 80th birthday.zip"))
+        assertEquals("harbor-​lights-​trailer.mp4", breakableName("harbor-lights-trailer.mp4"))
+        assertEquals("PXL_​20261012_​181502.mp4 and 2 more", breakableName("PXL_20261012_181502.mp4 and 2 more"))
+    }
+
+    @Test
+    fun anOlderFinishedDateStaysOnOneLine() {
+        com.thekozugroup.popcornstash.testing.inEachZone(listOf("UTC")) {
+            assertEquals("1 Oct", formatAgo(s.NOW - 13 * 86_400, s.NOW, us))
+        }
     }
 }

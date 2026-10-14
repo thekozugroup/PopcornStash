@@ -5,6 +5,7 @@ import com.thekozugroup.popcornstash.data.api.Category
 import com.thekozugroup.popcornstash.data.api.ContentType
 import com.thekozugroup.popcornstash.data.api.Home
 import com.thekozugroup.popcornstash.data.api.HomeLibrary
+import com.thekozugroup.popcornstash.data.api.HomeShow
 import com.thekozugroup.popcornstash.data.api.Item
 import com.thekozugroup.popcornstash.data.api.ItemDetail
 import com.thekozugroup.popcornstash.data.api.ItemStatus
@@ -21,6 +22,9 @@ import com.thekozugroup.popcornstash.data.api.ShowSummary
 import com.thekozugroup.popcornstash.data.api.Structure
 import com.thekozugroup.popcornstash.data.api.SubtitleStream
 import com.thekozugroup.popcornstash.data.api.VideoStream
+import java.time.LocalDateTime
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 
 /**
  * A family's stash as the screenshots and UI tests show it: invented titles, people and
@@ -85,10 +89,20 @@ object SampleMedia {
         libraryId = shows.id, place = Place.Library,
     )
 
+    /** The family's cameras are on New York time (EDT in September): minutes east of UTC. */
+    const val HOME_OFFSET = -240
+
+    /** The camera's clock (`taken_local`) for a moment on a camera whose clock is [offsetMinutes] east of UTC. */
+    fun clock(at: Long, offsetMinutes: Int = HOME_OFFSET): String =
+        LocalDateTime.ofEpochSecond(at, 0, ZoneOffset.ofTotalSeconds(offsetMinutes * 60)).format(CLOCK)
+
+    private val CLOCK = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss")
+
     fun homeVideo(id: String, title: String, daysAgo: Int, seconds: Int) = Item(
         id = id, kind = MediaKind.Video, category = Category.HomeVideo, status = ItemStatus.Ready, title = title,
         relPath = "Home Videos/2026/08/$title.mp4", size = 180_000_000, durationS = seconds.toDouble(), width = 1920, height = 1080,
-        takenAt = NOW - daysAgo * DAY, camera = "Pixel 8", thumb = thumb(id), addedAt = NOW - daysAgo * DAY,
+        takenAt = NOW - daysAgo * DAY, takenLocal = clock(NOW - daysAgo * DAY), takenOffset = HOME_OFFSET,
+        camera = "Pixel 8", thumb = thumb(id), addedAt = NOW - daysAgo * DAY,
         libraryId = homeVideos.id, place = Place.Library,
     )
 
@@ -96,8 +110,20 @@ object SampleMedia {
         id = id, kind = if (video) MediaKind.Video else MediaKind.Photo, category = Category.Photo, status = ItemStatus.Ready,
         title = "PXL_${id.uppercase()}", relPath = "Photos/2026/08/PXL_${id.uppercase()}.${if (video) "mp4" else "jpg"}",
         size = 3_400_000, durationS = if (video) 14.0 else null, width = 4032, height = 3024,
-        takenAt = NOW - daysAgo * DAY + hour * 3600L, camera = "Pixel 8", thumb = thumb(id), addedAt = NOW - daysAgo * DAY,
+        takenAt = NOW - daysAgo * DAY + hour * 3600L, takenLocal = clock(NOW - daysAgo * DAY + hour * 3600L), takenOffset = HOME_OFFSET,
+        camera = "Pixel 8", thumb = thumb(id), addedAt = NOW - daysAgo * DAY,
         libraryId = photos.id, place = Place.Library,
+    )
+
+    /**
+     * A photo from a trip to Lisbon: its camera read 18:05 on 12 September (UTC+01:00), which
+     * was 13:05 in New York. Everyone sees 18:05, whatever zone their phone is in.
+     */
+    val lisbonSunset = photo("s2", daysAgo = 2).copy(
+        takenAt = LocalDateTime.of(2026, 9, 12, 18, 5).toEpochSecond(ZoneOffset.ofHours(1)),
+        takenLocal = "2026-09-12T18:05:00",
+        takenOffset = 60,
+        camera = "Pixel 8 Pro",
     )
 
     val paperBoats = movie("m-paper", "Paper Boats", 2011, 104, watched = 0.38)
@@ -132,6 +158,28 @@ object SampleMedia {
 
     val recentPhotos = (1..10).map { photo("p$it", daysAgo = it / 3, hour = 8 + it, video = it == 4) }
 
+    /**
+     * The Shows library's Home shelf: all six of its shows (its heading says "6 shows"), the
+     * one with the newest episode first, though the newest episodes belong to three of them.
+     */
+    val homeShows = listOf(
+        HomeShow("The Lantern Keepers", "e-l101", itemCount = 7, newCount = 2, latest = lanternSeason2[1], lastAddedAt = NOW - DAY),
+        HomeShow("Tidepool Detectives", "e-t104", itemCount = 12, newCount = 2, latest = tidepool[1], lastAddedAt = NOW - 2 * DAY),
+        HomeShow("Garden Hour", "e-g301", itemCount = 24, newCount = 1, latest = garden, lastAddedAt = NOW - 3 * DAY),
+        HomeShow(
+            "Night Bakery", "e-n101", itemCount = 8, newCount = 0,
+            latest = episode("e-n108", "Night Bakery", 1, 8, "Rye at midnight", added = NOW - 40 * DAY), lastAddedAt = NOW - 40 * DAY,
+        ),
+        HomeShow(
+            "Small Planet", "e-s101", itemCount = 6, newCount = 0,
+            latest = episode("e-s106", "Small Planet", 1, 6, "The tide pool", added = NOW - 75 * DAY), lastAddedAt = NOW - 75 * DAY,
+        ),
+        HomeShow(
+            "Puddle Club", "e-p101", itemCount = 29, newCount = 0,
+            latest = episode("e-p213", "Puddle Club", 2, 13, "Boots on", added = NOW - 120 * DAY), lastAddedAt = NOW - 120 * DAY,
+        ),
+    )
+
     val continueWatching = listOf(lantern[1], paperBoats, episode("e-t103", "Tidepool Detectives", 1, 3, "Low tide", minutes = 11, watched = 0.8))
 
     val home = Home(
@@ -142,6 +190,7 @@ object SampleMedia {
                 shows,
                 lanternSeason2 + tidepool + garden,
                 showPosters = mapOf("The Lantern Keepers" to "e-l101", "Tidepool Detectives" to "e-t104", "Garden Hour" to "e-g301"),
+                shows = homeShows,
             ),
             HomeLibrary(homeVideos, listOf(beachDay, bikeRide, birthday, lakeMorning)),
             HomeLibrary(photos, recentPhotos),
@@ -166,7 +215,7 @@ object SampleMedia {
     )
 
     val timeline = listOf(
-        PhotoMonth("2026-09", 7, (1..7).map { photo("s$it", daysAgo = it, video = it == 3) }),
+        PhotoMonth("2026-09", 7, (1..7).map { if (it == 2) lisbonSunset else photo("s$it", daysAgo = it, video = it == 3) }),
         PhotoMonth("2026-08", 9, (8..16).map { photo("a$it", daysAgo = it + 10) }),
     )
 

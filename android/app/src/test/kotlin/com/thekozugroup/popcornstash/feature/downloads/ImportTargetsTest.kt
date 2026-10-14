@@ -138,7 +138,8 @@ class ImportTargetsTest {
         assertEquals("Shows/Puddle Club/Season 01/", episode.folder)
         assertEquals("Puddle Club - S01E01.mkv", episode.fileName)
         val photo = previewMove(ImportTarget(s.photos), initialMoveForm(s.photo, ImportTarget(s.photos)), s.photo, true)
-        assertEquals("Photos/2026/10/", photo.folder)
+        // The month on the camera's clock (30 September in Los Angeles), not the UTC month.
+        assertEquals("Photos/2026/09/", photo.folder)
         val other = previewMove(ImportTarget.OtherFiles, initialMoveForm(s.document, ImportTarget.OtherFiles), s.document, true)
         assertEquals(MovePreview("Will move to Other files", "Other/", null, null), other)
         val untitled = previewMove(ImportTarget(s.movies), movie.copy(title = ""), s.lowConfidence, true)

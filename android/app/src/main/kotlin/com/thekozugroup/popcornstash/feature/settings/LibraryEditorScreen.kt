@@ -345,7 +345,9 @@ private fun FolderPicker(state: LibraryEditorUi, draft: LibraryDraft, actions: L
             supportingText = error?.let { message -> { Text(message) } },
             trailingIcon = { LucideIcon(PopcornIcons.Expand, contentDescription = null, size = 20.dp) },
             textStyle = Popcorn.type.body.copy(fontFamily = FontFamily.Monospace),
-            singleLine = true,
+            // The whole name shows: a long one wraps at its spaces instead of being cut off.
+            singleLine = false,
+            maxLines = 3,
             shape = Popcorn.shapes.control,
             colors = stashFieldColors(),
             modifier = Modifier

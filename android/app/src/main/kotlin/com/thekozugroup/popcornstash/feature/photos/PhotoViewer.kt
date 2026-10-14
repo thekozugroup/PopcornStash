@@ -68,6 +68,7 @@ import com.thekozugroup.popcornstash.data.api.Item
 import com.thekozugroup.popcornstash.data.api.MediaKind
 import com.thekozugroup.popcornstash.feature.library.LibraryServices
 import com.thekozugroup.popcornstash.feature.library.MediaFormat
+import com.thekozugroup.popcornstash.feature.library.capturedAt
 import com.thekozugroup.popcornstash.feature.library.OtherFilesViewModel
 import com.thekozugroup.popcornstash.feature.library.displayTitle
 import com.thekozugroup.popcornstash.navigation.HideToolbarWhileShown
@@ -263,7 +264,8 @@ fun PhotoViewer(
 @Composable
 private fun Plate(item: Item, saving: Boolean, format: MediaFormat, onSave: (Item) -> Unit, onDetails: (Item) -> Unit) {
     val onMedia = Popcorn.colors.onMedia
-    val taken = item.takenAt
+    // The camera's clock as it read where the photo was taken, not moved to this phone's zone.
+    val taken = item.capturedAt
     Row(
         Modifier
             .fillMaxWidth()
