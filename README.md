@@ -30,9 +30,11 @@ docker compose logs popcornstash | grep -A 1 "setup code"
 
 Use your own `APPDATA_PATH`, `STASH_PATH`, `PUID` and `PGID` in the two folder commands. If the library folder does not belong to `PUID:PGID`, no setup code appears and the log names the folder and the `chown` that fixes it.
 
+Until the first release is published on ghcr.io, `docker compose up -d` builds the image from this clone, which takes a while the first time. Update such an install with `git pull --ff-only` and `docker compose up -d --build` ([Updating a clone of the repository](docs/deployment.md#updating-a-clone-of-the-repository)).
+
 Open your HTTPS address, enter the setup code and create the owner passkey. Then set up the VPN in Settings to turn on torrents.
 
-On Unraid, use the template in [unraid/popcornstash.xml](unraid/popcornstash.xml).
+On Unraid, use the template in [unraid/popcornstash.xml](unraid/popcornstash.xml) once the first release is published (it pulls the published image); until then, use Compose from a clone as above.
 
 ## Documentation
 

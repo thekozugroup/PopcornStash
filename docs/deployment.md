@@ -284,7 +284,7 @@ Hardware encoding has not been tested on a real graphics chip yet (see [CHANGELO
 
 ## Images and versions
 
-The image is published at `ghcr.io/thekozugroup/popcornstash` for Intel/AMD (`linux/amd64`) and ARM (`linux/arm64`) machines under one name; Docker downloads the right one by itself. It is public, so pulling it needs no login. Each release is built, tested and published from the maintainer's computer with `scripts/release.sh` (there is no CI service), and gets these tags:
+From the first release on, the image is published at `ghcr.io/thekozugroup/popcornstash` for Intel/AMD (`linux/amd64`) and ARM (`linux/arm64`) machines under one name; Docker downloads the right one by itself. Until then there is nothing to pull: build the image from a clone ([Building the image yourself](#building-the-image-yourself)) and update it with `git pull` ([Updating a clone of the repository](#updating-a-clone-of-the-repository)). It is public, so pulling it needs no login. Each release is built, tested and published from the maintainer's computer with `scripts/release.sh` (there is no CI service), and gets these tags:
 
 | Tag | Points to | Use it to |
 |---|---|---|
@@ -325,6 +325,22 @@ Read the release notes of the new version first ([CHANGELOG.md](../CHANGELOG.md)
 docker compose pull
 docker compose up -d
 ```
+
+### Updating a clone of the repository
+
+If you run PopcornStash from a clone of this repository with the image built there (`docker compose up -d` builds it from the clone when no image is available, which is the case until the first release is published), update from the repository instead:
+
+```sh
+cd /path/to/PopcornStash
+docker compose stop                 # then back up app data (see Backups)
+git pull --ff-only
+docker compose up -d --build
+docker compose logs --tail 50 popcornstash
+```
+
+`--build` is what picks up the new code: without it Compose starts the image it built last time. Docker reuses its build cache, so only what changed is compiled again. `.env` is not tracked by git, so your settings stay as they are; if `git pull` refuses because a tracked file was edited on this machine, keep your changes in `.env` instead. The database is upgraded on start, as with a published image, and `docker compose ps` shows the container as healthy once the server answers.
+
+Building needs room for Docker's build cache (about 8 GB) and some memory for the Rust compiler. If the build stops because it ran out of memory, close other heavy containers while it builds.
 
 On Unraid, use **Check for Updates** on the Docker page, then **Apply Update**. If you pinned a version, change the tag first. Your folders and settings are kept. The database is upgraded automatically on start, so back up app data before upgrading (see [Backups](#backups)).
 
