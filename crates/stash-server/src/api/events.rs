@@ -73,6 +73,7 @@ struct Conn {
     known_downloads: HashSet<String>,
     /// The caller's `GET /api/libraries` answer, counts aside.
     libraries: Option<String>,
+    /// The caller's Inbox count as last sent (or as it was when the stream opened).
     inbox_count: Option<i64>,
 }
 
@@ -97,6 +98,7 @@ impl Conn {
         }
         if conn.library() {
             conn.libraries = Some(conn.libraries_now().await?);
+            conn.inbox_count = Some(repo::inbox_count(&conn.state.db, &conn.access.viewer).await?);
         }
         Ok(conn)
     }
@@ -174,8 +176,11 @@ impl Conn {
                 item_id,
                 facts,
             } => {
+                // A job about an item goes where the item is seen. Of the jobs without
+                // one, only a scan goes to everyone: a sort job's timing would tell a
+                // member that files bound for a library they cannot see arrived.
                 let allowed = match item_id {
-                    None => true,
+                    None => kind == "scan" || self.access.full_owner(),
                     Some(_) => facts.as_ref().is_some_and(|f| self.access.sees(f)),
                 };
                 if self.library() && allowed {
@@ -185,7 +190,9 @@ impl Conn {
                     )));
                 }
             }
-            Live::Inbox => self.inbox(&mut out, true).await?,
+            // Only when this caller's own count changed: a change elsewhere (a file
+            // waiting for a library they cannot see) must not reach them.
+            Live::Inbox => self.inbox(&mut out).await?,
             Live::Download { download, links } => {
                 if self.downloads() {
                     match download_view(&self.access, download, links) {
@@ -258,12 +265,14 @@ impl Conn {
         }
     }
 
-    async fn inbox(&mut self, out: &mut Vec<Out>, always: bool) -> ApiResult<()> {
+    /// Send the caller's Inbox count when it differs from the last one they were given
+    /// (or counted when the stream opened).
+    async fn inbox(&mut self, out: &mut Vec<Out>) -> ApiResult<()> {
         if !self.library() {
             return Ok(());
         }
         let count = repo::inbox_count(&self.state.db, &self.access.viewer).await?;
-        if always || self.inbox_count != Some(count) {
+        if self.inbox_count != Some(count) {
             self.inbox_count = Some(count);
             out.push(Out::Send(frame(
                 "inbox",
@@ -344,7 +353,7 @@ impl Conn {
                 self.item_diff(out, &old).await?;
             }
             self.recheck_downloads(out, None).await?;
-            self.inbox(out, false).await?;
+            self.inbox(out).await?;
         }
         if self.library() {
             let now = self.libraries_now().await?;
@@ -855,6 +864,106 @@ mod tests {
         );
     }
 
+    /// Files bound for a library a member cannot see send that member nothing: no
+    /// `job` event for the sort and no `inbox` event while their own count stays the
+    /// same (section 7, Live events). The owner hears about both.
+    #[tokio::test]
+    async fn files_for_a_hidden_library_send_members_nothing() {
+        let app = TestApp::new().await;
+        let (owner_id, owner) = app.user("owner").await;
+        let (member_id, member) = app.user("member").await;
+        let tv = app.device_token(&member_id, &["library:read"]).await;
+        let owner_tv = app.device_token(&owner_id, &["library:read"]).await;
+        let (status, json) = app
+            .send_json(
+                "POST",
+                "/api/libraries",
+                &owner,
+                serde_json::json!({"name": "Private", "icon": "heart", "content_type": "video",
+                    "structure": "one_offs", "claims": ["movie", "home_video"],
+                    "folder": {"mode": "new", "name": "Private"}, "visibility": "selected"}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{json}");
+        let hidden = json["id"].as_str().unwrap().to_string();
+        let mut streams = Vec::new();
+        for token in [&member, &tv, &owner_tv, &owner] {
+            let mut body = open(&app, token).await;
+            up_to_marker(&app, &mut body, "warm").await;
+            streams.push(body);
+        }
+        let root = app.state.config.stash_root.clone();
+        let inbox = root.join("Inbox");
+        std::fs::create_dir_all(&inbox).unwrap();
+        // One file the classifier is unsure of (it waits) and one camera video (sorted
+        // straight into the hidden library), each in its own sort job.
+        let mut sorted = Vec::new();
+        for name in ["Private.Thing.1080p.WEB-DL.x264-GRP.mp4", "IMG_7777.MOV"] {
+            std::fs::write(inbox.join(name), b"not really a video").unwrap();
+            for state in ["running", "done"] {
+                if state == "done" {
+                    let rel = format!("Inbox/{name}");
+                    sorted.extend(app.state.library.sort_path(&rel, None).await.unwrap());
+                }
+                app.state.events.publish(Event::Job {
+                    kind: "sort".into(),
+                    state: state.into(),
+                    item_id: None,
+                });
+            }
+        }
+        assert_eq!(sorted.len(), 2, "{sorted:?}");
+        let (_, waiting) = app.json("/api/inbox", &owner).await;
+        assert_eq!(waiting["items"].as_array().unwrap().len(), 1, "{waiting}");
+        let (_, json) = app
+            .json(&format!("/api/items?library_id={hidden}"), &owner)
+            .await;
+        assert_eq!(json["items"].as_array().unwrap().len(), 1, "{json}");
+
+        let mut texts = Vec::new();
+        for body in &mut streams {
+            texts.push(up_to_marker(&app, body, "after-sort").await);
+        }
+        let [member_text, tv_text, owner_tv_text, owner_text] = &texts[..] else {
+            unreachable!()
+        };
+        for (who, text) in [("member", member_text), ("member's TV", tv_text)] {
+            assert!(!text.contains("event: job"), "{who}: {text}");
+            assert!(!text.contains("event: inbox"), "{who}: {text}");
+            assert!(!text.contains("event: library"), "{who}: {text}");
+            for id in &sorted {
+                assert!(!text.contains(id.as_str()), "{who}: {text}");
+            }
+        }
+        // The owner's TV sees the libraries, but sort jobs are for full owners only;
+        // the waiting file is claimed by a library it sees, so its count changes.
+        assert!(!owner_tv_text.contains("event: job"), "{owner_tv_text}");
+        assert!(
+            owner_tv_text.contains(r#"data: {"count":1}"#),
+            "{owner_tv_text}"
+        );
+        assert!(
+            owner_text.contains(r#"data: {"item_id":null,"kind":"sort","state":"done"}"#),
+            "{owner_text}"
+        );
+        assert!(owner_text.contains(r#"data: {"count":1}"#), "{owner_text}");
+
+        // A file the member can see waiting changes their own count, which they are told.
+        let clip = app
+            .item(
+                "Inbox/VID_20240613_101500.mp4",
+                MediaKind::Video,
+                Category::HomeVideo,
+                ItemStatus::NeedsReview,
+                Some(b"clip"),
+            )
+            .await;
+        app.added_by(&clip, &member_id).await;
+        app.state.events.publish(Event::Inbox { count: 2 });
+        let text = up_to_marker(&app, &mut streams[0], "own-count").await;
+        assert!(text.contains(r#"data: {"count":1}"#), "{text}");
+    }
+
     /// Making a member an owner shows on their open stream at once, not at the 60 s re-check.
     #[tokio::test]
     async fn a_role_change_reaches_open_streams_at_once() {
@@ -898,7 +1007,9 @@ mod tests {
             let mut stream = Box::pin(stream);
             // Let the stream subscribe before publishing.
             let first = stream.next();
-            app.state.events.publish(Event::Inbox { count: 1 });
+            app.state
+                .events
+                .publish(Event::Vpn(VpnStatus::unreachable(false, "first")));
             let first = tokio::time::timeout(Duration::from_secs(5), first)
                 .await
                 .expect("an event arrives");

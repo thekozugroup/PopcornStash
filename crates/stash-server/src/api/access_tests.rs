@@ -638,9 +638,10 @@ async fn events_about_hidden_items_never_reach_the_member() {
         seen.contains(&w.visible_clip),
         "the visible clip's job: {seen}"
     );
+    // The server-wide count changed, the member's own (the visible waiting clip) did not.
     assert!(
-        seen.contains(r#"data: {"count":1}"#),
-        "the member's own count: {seen}"
+        !seen.contains("event: inbox"),
+        "the member's own count did not change: {seen}"
     );
 }
 
@@ -785,4 +786,225 @@ async fn positions_leave_no_gap_for_hidden_libraries() {
             (STARTING_PHOTOS.to_string(), 2),
         ]
     );
+}
+
+/// Accept a waiting item as `token`; the status and the error's field and message.
+async fn accept(
+    app: &TestApp,
+    token: &str,
+    id: &str,
+    target: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let mut body = serde_json::json!({"action": "accept"});
+    body.as_object_mut()
+        .unwrap()
+        .extend(target.as_object().unwrap().clone());
+    app.send_json("POST", &format!("/api/inbox/{id}"), token, body)
+        .await
+}
+
+async fn new_library(app: &TestApp, owner: &str, body: serde_json::Value) -> String {
+    let (status, json) = app.send_json("POST", "/api/libraries", owner, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{json}");
+    json["id"].as_str().unwrap().to_string()
+}
+
+/// Section 8, Who may choose what: a member who sees a waiting file only because a
+/// library they see claims its kind may accept it only into that library, as it is now.
+/// The person who added a file may still send it anywhere that fits, Other files included.
+#[tokio::test]
+async fn only_the_adder_may_send_a_waiting_file_elsewhere() {
+    let w = world().await;
+    let app = &w.app;
+    let only_the_adder = "Only the person who added this file can send it somewhere else.";
+    let changed = "Where this file goes changed. Check it and accept again.";
+    let cartoons = new_library(
+        app,
+        &w.owner,
+        serde_json::json!({"name": "Cartoons", "icon": "tv", "content_type": "video",
+            "structure": "episodes", "folder": {"mode": "new", "name": "Cartoons"}}),
+    )
+    .await;
+    // The visible waiting clip is a camera video, claimed by Home Videos (everyone).
+    let clip = &w.visible_waiting;
+    for (what, target) in [
+        ("Other files", serde_json::json!({"place": "other_files"})),
+        (
+            "a library that does not fit",
+            serde_json::json!({"place": "library", "library_id": cartoons}),
+        ),
+    ] {
+        let (status, json) = accept(app, &w.member, clip, target).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{what}: {json}");
+        assert_eq!(json["error"]["field"], "library_id", "{what}: {json}");
+        assert_eq!(json["error"]["message"], only_the_adder, "{what}: {json}");
+    }
+    // The claim moves to another library the member sees: the row they were shown
+    // (Home Videos) is stale.
+    let family = new_library(
+        app,
+        &w.owner,
+        serde_json::json!({"name": "Family clips", "icon": "users", "content_type": "video",
+            "structure": "one_offs", "claims": ["home_video"],
+            "folder": {"mode": "new", "name": "Family clips"}}),
+    )
+    .await;
+    let stale = serde_json::json!({"place": "library", "library_id": STARTING_HOME_VIDEOS});
+    let (status, json) = accept(app, &w.member, clip, stale).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{json}");
+    assert_eq!(json["error"]["field"], "library_id", "{json}");
+    assert_eq!(json["error"]["message"], changed, "{json}");
+    // Into the library that claims it now.
+    let (status, json) = accept(
+        app,
+        &w.member,
+        clip,
+        serde_json::json!({"place": "library", "library_id": family}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["library_id"], family.as_str(), "{json}");
+    assert!(
+        json["rel_path"]
+            .as_str()
+            .unwrap()
+            .starts_with("Family clips/"),
+        "{json}"
+    );
+
+    // The member's own waiting file: Other files is theirs to choose.
+    let own = app
+        .item(
+            "Inbox/VID_20240614_090000.mp4",
+            MediaKind::Video,
+            Category::HomeVideo,
+            ItemStatus::NeedsReview,
+            Some(b"own clip"),
+        )
+        .await;
+    app.added_by(&own, &w.member_id).await;
+    let (status, json) = accept(
+        app,
+        &w.member,
+        &own,
+        serde_json::json!({"place": "other_files"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["place"], "other_files", "{json}");
+}
+
+/// Section 11: a library someone cannot see never appears in what they are told about
+/// their own waiting file, even when that library claims its kind.
+#[tokio::test]
+async fn suggestions_never_name_a_hidden_library() {
+    let w = world().await;
+    let app = &w.app;
+    // Movies (hidden from the member) claims movies.
+    let own = app
+        .item(
+            "Inbox/Their.Movie.2010.1080p.mkv",
+            MediaKind::Video,
+            Category::Movie,
+            ItemStatus::NeedsReview,
+            Some(b"own movie"),
+        )
+        .await;
+    app.added_by(&own, &w.member_id).await;
+    let suggestion = serde_json::json!({"category": "movie", "title": "Their Movie",
+        "year": 2010, "show_name": null, "season": null, "episode": null,
+        "episode_title": null, "taken_at": null, "confidence": "high",
+        "reason": "Found a year in the name."});
+    sqlx::query("UPDATE items SET suggestion_json = ? WHERE id = ?")
+        .bind(suggestion.to_string())
+        .bind(&own)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+    let (status, json) = app.json(&format!("/api/items/{own}"), &w.member).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    let s = &json["suggestion"];
+    assert_eq!(s["title"], "Their Movie", "{json}");
+    assert!(s["place"].is_null(), "{json}");
+    assert!(s["library_id"].is_null(), "{json}");
+    assert!(s["destination"].is_null(), "{json}");
+    assert_eq!(s["waiting"], "choose_library", "{json}");
+    let text = json.to_string();
+    assert!(
+        !text.contains(STARTING_MOVIES) && !text.contains("Movies/"),
+        "{text}"
+    );
+    let (_, inbox) = app.json("/api/inbox", &w.member).await;
+    let row = inbox["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == own.as_str())
+        .unwrap_or_else(|| panic!("their own file is listed: {inbox}"));
+    assert!(row["suggestion"]["library_id"].is_null(), "{row}");
+    assert_eq!(row["suggestion"]["waiting"], "choose_library", "{row}");
+    // The owner is told where it would go.
+    let (_, json) = app.json(&format!("/api/items/{own}"), &w.owner).await;
+    assert_eq!(json["suggestion"]["library_id"], STARTING_MOVIES, "{json}");
+    assert_eq!(json["suggestion"]["waiting"], "confirm", "{json}");
+}
+
+/// An owner's TV token (`library:read`) does not see another person's upload waiting in
+/// Downloads/Completed when no library it sees claims its kind, nor one they ignored.
+#[tokio::test]
+async fn an_owner_tv_token_does_not_see_a_members_waiting_upload() {
+    let w = world().await;
+    let app = &w.app;
+    let tv = app.device_token(&w.owner_id, &["library:read"]).await;
+    // Nobody claims photos now: a waiting photo is the uploader's and full owners' only.
+    let (status, json) = app
+        .send_json(
+            "PATCH",
+            &format!("/api/libraries/{STARTING_PHOTOS}"),
+            &w.owner,
+            serde_json::json!({"claims": []}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    let mut uploads = Vec::new();
+    for (rel, kind, category, status) in [
+        (
+            "Downloads/Completed/member-photo.jpg",
+            MediaKind::Photo,
+            Category::Photo,
+            ItemStatus::NeedsReview,
+        ),
+        (
+            "Downloads/Completed/member-ignored.mp4",
+            MediaKind::Video,
+            Category::Movie,
+            ItemStatus::Ready,
+        ),
+    ] {
+        let id = app.item(rel, kind, category, status, Some(b"upload")).await;
+        app.added_by(&id, &w.member_id).await;
+        uploads.push(id);
+    }
+    let (_, inbox) = app.json("/api/inbox", &tv).await;
+    let listed: Vec<String> = ["items", "ignored"]
+        .iter()
+        .flat_map(|k| ids(&inbox, k))
+        .collect();
+    let (_, mine) = app.json("/api/inbox", &w.member).await;
+    let theirs: Vec<String> = ["items", "ignored"]
+        .iter()
+        .flat_map(|k| ids(&mine, k))
+        .collect();
+    let (_, all) = app.json("/api/inbox", &w.owner).await;
+    let everything: Vec<String> = ["items", "ignored"]
+        .iter()
+        .flat_map(|k| ids(&all, k))
+        .collect();
+    for id in &uploads {
+        let (status, _, body) = app.get(&format!("/api/items/{id}"), Some(&tv)).await;
+        assert_item_not_found("a member's upload", "detail", status, &body);
+        assert!(!listed.contains(id), "{inbox}");
+        assert!(theirs.contains(id), "the uploader sees it: {mine}");
+        assert!(everything.contains(id), "full owners see it: {all}");
+    }
 }
