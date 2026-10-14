@@ -1,5 +1,6 @@
 package com.thekozugroup.popcornstash.ui.components
 
+import android.app.UiModeManager
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.RenderEffect
 import android.graphics.RenderNode
@@ -7,9 +8,13 @@ import android.graphics.Shader
 import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
@@ -43,6 +48,7 @@ import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.node.requireGraphicsContext
 import androidx.compose.ui.node.requireLayoutCoordinates
 import androidx.compose.ui.platform.InspectorInfo
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -68,7 +74,10 @@ enum class GlassTier {
      */
     Captured,
 
-    /** Android 9 to 11, which have no RenderEffect: the bar keeps its opaque surface. */
+    /**
+     * Android 9 to 11, which have no RenderEffect, and any phone set to more contrast: the bar
+     * keeps its opaque surface.
+     */
     Opaque,
 }
 
@@ -81,18 +90,44 @@ private const val RENDER_EFFECT_SDK_INT = 31
 /**
  * The glass tier for a phone that reports [sdkInt] (`Build.VERSION.SDK_INT`) and [sdkIntFull]
  * (`Build.VERSION.SDK_INT_FULL`, the major and minor release; it exists from Android 16, so
- * pass 0 below it).
+ * pass 0 below it). [moreContrast] is the system's contrast setting above standard: the person
+ * asked for stronger edges, so the bar is solid instead of see-through.
  */
-fun glassTierFor(sdkInt: Int, sdkIntFull: Int): GlassTier = when {
+fun glassTierFor(sdkInt: Int, sdkIntFull: Int, moreContrast: Boolean = false): GlassTier = when {
+    moreContrast -> GlassTier.Opaque
     sdkInt >= Build.VERSION_CODES.CINNAMON_BUN && sdkIntFull >= BACKDROP_SDK_INT_FULL -> GlassTier.Backdrop
     sdkInt >= RENDER_EFFECT_SDK_INT -> GlassTier.Captured
     else -> GlassTier.Opaque
 }
 
-/** The glass tier for the phone the app runs on. */
-fun deviceGlassTier(): GlassTier {
+/** The glass tier for the phone the app runs on, from its release alone. */
+fun deviceGlassTier(moreContrast: Boolean = false): GlassTier {
     val full = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) Build.VERSION.SDK_INT_FULL else 0
-    return glassTierFor(Build.VERSION.SDK_INT, full)
+    return glassTierFor(Build.VERSION.SDK_INT, full, moreContrast)
+}
+
+/**
+ * The glass tier for this phone as it is set now: its release, and whether the system's colour
+ * contrast setting (Android 14 and later) is above standard. It follows a change of that setting
+ * while the app is open.
+ */
+@Composable
+fun rememberGlassTier(): GlassTier = deviceGlassTier(moreContrast = rememberMoreContrast())
+
+/** True while the system contrast setting is medium or high (Android 14 and later). */
+@Composable
+private fun rememberMoreContrast(): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return false
+    val context = LocalContext.current
+    val uiMode = remember(context) { context.getSystemService(UiModeManager::class.java) } ?: return false
+    var contrast by remember(uiMode) { mutableFloatStateOf(uiMode.contrast) }
+    DisposableEffect(uiMode) {
+        val listener = UiModeManager.ContrastChangeListener { contrast = it }
+        uiMode.addContrastChangeListener(context.mainExecutor, listener)
+        contrast = uiMode.contrast
+        onDispose { uiMode.removeContrastChangeListener(listener) }
+    }
+    return contrast > 0f
 }
 
 /**

@@ -70,6 +70,9 @@ fun PopcornTheme(
  * Press feedback on Action Blue (the primary button, the toolbar's selected square): a white
  * ripple, 8% while pressed, focused or dragged (white words keep 4.61:1) and 4% while a mouse
  * hovers (4.92:1). Material's own 10% would leave them at 4.45:1 (android/DESIGN.md, Colour).
+ * Material draws the focus or hover layer and the press together, so a press on a focused
+ * button is 15.4% white (4.06:1) for as long as the key is held; lowering focus far enough to
+ * avoid that would leave keyboard focus too faint to see.
  */
 val OnAccentRipple = RippleConfiguration(
     color = PopcornPalette.White,

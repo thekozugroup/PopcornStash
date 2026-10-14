@@ -36,6 +36,14 @@ class GlassTierTest {
         assertEquals(GlassTier.Captured, glassTierFor(sdkInt = 36, sdkIntFull = 3_700_002))
     }
 
+    /** Medium or high contrast in the system settings asks for stronger edges: a solid bar on every release. */
+    @Test
+    fun moreContrastKeepsTheOpaqueBar() {
+        assertEquals(GlassTier.Opaque, glassTierFor(sdkInt = 34, sdkIntFull = 0, moreContrast = true))
+        assertEquals(GlassTier.Opaque, glassTierFor(sdkInt = 36, sdkIntFull = 3_600_000, moreContrast = true))
+        assertEquals(GlassTier.Opaque, glassTierFor(sdkInt = 37, sdkIntFull = 3_700_002, moreContrast = true))
+    }
+
     @Test
     fun theBackdropReleaseIsAndroidSeventeenQpr2() {
         assertEquals(Build.VERSION_CODES_FULL.CINNAMON_BUN_2, BACKDROP_SDK_INT_FULL)

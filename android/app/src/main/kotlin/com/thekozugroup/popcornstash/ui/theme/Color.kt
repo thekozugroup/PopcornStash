@@ -155,7 +155,9 @@ fun PopcornColors.toColorScheme(): ColorScheme {
         onPrimary = onAccent,
         primaryContainer = accent,
         onPrimaryContainer = onAccent,
-        inversePrimary = accent,
+        // Blue words on the inverse surface (a snackbar's action) take the link blue for that surface:
+        // blue-400 on light's zinc-900 (6.72:1; blue-600 would be 3.38:1), blue-600 on dark's zinc-50 (5.03:1).
+        inversePrimary = if (isDark) PopcornPalette.Blue600 else PopcornPalette.Blue400,
         secondary = text,
         onSecondary = page,
         secondaryContainer = subtle,

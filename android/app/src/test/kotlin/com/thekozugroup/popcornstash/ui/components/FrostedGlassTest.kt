@@ -1,5 +1,6 @@
 package com.thekozugroup.popcornstash.ui.components
 
+import android.app.UiModeManager
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -13,6 +14,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
@@ -27,12 +29,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 /**
  * The toolbar's glass (android/DESIGN.md, Floating toolbar) shows the colour of what is under
  * it and follows it live: a scroll and a change of tab both reach the glass. Robolectric runs
- * Android 16, so this is the captured glass (Android 12 to 17.1).
+ * Android 16, so this is the captured glass (Android 12 to 17.1). The selected square keeps a
+ * `surface` ring on any glass, and a phone set to more contrast gets the opaque bar.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(qualifiers = "w411dp-h891dp-xxhdpi")
@@ -40,10 +44,11 @@ class FrostedGlassTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
 
-    private fun shell(tier: GlassTier, page: @Composable (TabPage) -> Unit) {
+    /** The shell with [tier], or with the tier the phone's settings give when it is null. */
+    private fun shell(tier: GlassTier?, dark: Boolean = false, page: @Composable (TabPage) -> Unit) {
         compose.setContent {
-            PopcornTheme(darkTheme = false, reduceMotion = true) {
-                AppShell(glassTier = tier, page = page)
+            PopcornTheme(darkTheme = dark, reduceMotion = true) {
+                if (tier == null) AppShell(page = page) else AppShell(glassTier = tier, page = page)
             }
         }
         compose.waitForIdle()
@@ -54,6 +59,17 @@ class FrostedGlassTest {
         val image = compose.onNodeWithTag("toolbar").captureToImage()
         val x = with(compose.density) { 10.dp.roundToPx() }
         return image.toPixelMap()[x, image.height / 2]
+    }
+
+    /** The pixel 1dp outside the selected square's start edge, half way down. */
+    private fun besideTheSquare(): Color {
+        val toolbar = compose.onNodeWithTag("toolbar")
+        val bar = toolbar.getUnclippedBoundsInRoot()
+        val square = compose.onNodeWithTag("toolbar indicator").getUnclippedBoundsInRoot()
+        val image = toolbar.captureToImage().toPixelMap()
+        return with(compose.density) {
+            image[(square.left - bar.left - 1.dp).roundToPx(), ((square.top + square.bottom) / 2 - bar.top).roundToPx()]
+        }
     }
 
     private fun Color.reddish() = red - blue > 0.1f
@@ -82,6 +98,38 @@ class FrostedGlassTest {
         compose.waitForIdle()
         val settings = glass()
         assertTrue("Settings is blue under the bar, and the glass bluish, not $settings", settings.bluish())
+    }
+
+    /**
+     * Over a white picture the dark glass is grey (1.79:1 against Action Blue); the ring keeps
+     * zinc-900 next to the blue (3.38:1). Over black the light glass is light grey; the ring keeps white.
+     */
+    @Test
+    fun theSelectedSquareIsRingedInSurfaceOnAnyGlass() {
+        shell(GlassTier.Captured, dark = true) { page -> Bands(page.tab, listOf(Color.White)) }
+        val dark = besideTheSquare()
+        assertTrue("Beside the square on dark glass over white: zinc-900, not $dark", dark.red < 0.12f && dark.blue < 0.13f)
+    }
+
+    @Test
+    fun theSelectedSquareIsRingedInWhiteOnLightGlassOverBlack() {
+        shell(GlassTier.Captured) { page -> Bands(page.tab, listOf(Color.Black)) }
+        val light = besideTheSquare()
+        assertTrue("Beside the square on light glass over black: white, not $light", light.red > 0.97f && light.blue > 0.97f)
+    }
+
+    @Test
+    fun aPhoneSetToMoreContrastGetsTheOpaqueBarAndFollowsTheSetting() {
+        val uiMode = shadowOf(compose.activity.getSystemService(UiModeManager::class.java))
+        uiMode.setContrast(0.5f)
+        shell(tier = null) { page -> Bands(page.tab, listOf(Red, Blue)) }
+        val opaque = glass()
+        assertTrue("At medium contrast the bar is the opaque white, not $opaque", opaque.red > 0.97f && opaque.green > 0.97f && opaque.blue > 0.97f)
+
+        compose.runOnUiThread { uiMode.setContrast(0f) }
+        compose.waitForIdle()
+        val frosted = glass()
+        assertTrue("Back at standard contrast the glass shows the blue band under it, not $frosted", frosted.bluish())
     }
 
     @Test

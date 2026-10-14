@@ -33,6 +33,12 @@ data class ToolbarTokens(
     /** The squares shrink on narrow screens, never below this. */
     val minSquare: Dp = 48.dp,
     val squareRadius: Dp = 12.dp,
+    /**
+     * A `surface` ring around the selection square, outside its edge. Over a bright picture the
+     * dark glass turns grey and Action Blue alone is 1.79:1 against it; next to the ring it keeps
+     * 3.38:1 in dark and 5.25:1 in light, whatever the glass shows.
+     */
+    val indicatorRing: Dp = 2.dp,
     /** Space between the squares; 0 merges them into one bar. */
     val gap: Dp = 0.dp,
     /** Space between the squares and the bar's edge. */

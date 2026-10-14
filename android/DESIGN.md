@@ -11,7 +11,7 @@ Every value below is a token in `app/src/main/kotlin/com/thekozugroup/popcornsta
 | Token | Light | Dark | Used for |
 | --- | --- | --- | --- |
 | `page` | zinc-50 `#FAFAFA` | zinc-950 `#09090B` | the canvas behind every page, the top app bar |
-| `surface` | white `#FFFFFF` | zinc-900 `#18181B` | toolbar, sheet, panels |
+| `surface` | white `#FFFFFF` | zinc-900 `#18181B` | toolbar, sheet, panels, the ring around the toolbar's selected square and its badge |
 | `subtle` | zinc-100 `#F4F4F5` | zinc-800 `#27272A` | media placeholders, avatar |
 | `divider` | zinc-200 `#E4E4E7` | zinc-800 `#27272A` | panel borders, row dividers, the scrolled top bar's rule |
 | `fieldOutline` | zinc-500 `#71717B` | zinc-500 `#71717B` | the edge of a text field (3:1 or more on the page) |
@@ -29,7 +29,7 @@ Every value below is a token in `app/src/main/kotlin/com/thekozugroup/popcornsta
 | `mediaControl` | zinc-950 at 62% | zinc-950 at 62% | discs behind controls laid over a picture |
 | `connected` / `warning` / `error` | emerald-700, amber-700, red-700 | emerald-400, amber-400, red-400 | status words; the dot beside them uses the 500 shade |
 
-Material roles: `primary` = accent, `onPrimary` = onAccent, `background` and `surface` = page, every `surfaceContainer*` = surface, `onSurface` = text, `onSurfaceVariant` = textMuted, `outlineVariant` = divider, `outline` = zinc-300 / zinc-700, `secondaryContainer` = subtle, `inverseSurface` = zinc-900 / zinc-50 (tooltips), `error` = red-700 / red-400.
+Material roles: `primary` = accent, `onPrimary` = onAccent, `background` and `surface` = page, every `surfaceContainer*` = surface, `onSurface` = text, `onSurfaceVariant` = textMuted, `outlineVariant` = divider, `outline` = zinc-300 / zinc-700, `secondaryContainer` = subtle, `inverseSurface` = zinc-900 / zinc-50 (tooltips, snackbars), `inversePrimary` = blue-400 / blue-600 (blue words on the inverse surface, such as a snackbar action, take the link blue for that surface: 6.72:1 on zinc-900, 5.03:1 on zinc-50), `error` = red-700 / red-400.
 
 #### Action Blue, measured
 
@@ -38,21 +38,21 @@ Action Blue is blue-600 in both themes so that everything on it can be white: wh
 | Pairing | Light | Dark |
 | --- | --- | --- |
 | White on Action Blue: button words and icons, the busy ring, the toolbar's selected icon | 5.25:1 | 5.25:1 |
-| The same under a press, focus or drag (an 8% white ripple, `OnAccentRipple`) | 4.61:1 | 4.61:1 |
+| The same under a press, keyboard focus or drag (an 8% white ripple, `OnAccentRipple`) | 4.61:1 | 4.61:1 |
 | The same under a mouse hover (4% white) | 4.92:1 | 4.92:1 |
 | Action Blue on `page`: buttons, the focused field edge | 5.03:1 | 3.79:1 |
 | Action Blue on `surface`: buttons in sheets and dialogs, the pull-to-refresh arc on its disc | 5.25:1 | 3.38:1 |
 | Action Blue on `progressTrack`: a download's progress | 4.77:1 | 3.38:1 |
 | Action Blue on `mediaProgressTrack` over a picture: the watched bar | 3.04:1 over white, 3.81:1 over black | the same |
-| Action Blue on the glass toolbar: the selected square | 3.27:1 (glass over black) to 5.25:1 (over white) | 1.79:1 (glass over white) to 3.54:1 (over black) |
+| Action Blue on its `surface` ring: the toolbar's selected square, on glass or on the opaque bar | 5.25:1 | 3.38:1 |
 
 What changed to keep those numbers, and what is still short:
 
-- **Press ripples.** Material's ripple is 10%, which would leave white words at 4.45:1 while pressed; presses on Action Blue use 8% instead (4% for a mouse hover). There is no darker hover as on the web: on a phone the press is the state that shows. With a mouse, hovering and pressing at once adds up to 11.7% white (4.33:1) for the moment of the click.
+- **Press ripples.** Material's ripple is 10%, which would leave white words at 4.45:1 while pressed; presses on Action Blue use 8% instead (4% for a mouse hover). There is no darker hover as on the web: on a phone the press is the state that shows. Material draws the hover or focus layer and the press together, so two moments fall short while a key or button is held: hovering with a mouse and clicking adds up to 11.7% white (4.33:1), and pressing a button that has keyboard or D-pad focus adds up to 15.4% white (4.06:1). Keeping every combination at 4.5:1 would need 9.4% white in total: next to an 8% press, focus would be about 1.5%, too faint to see, and an even split (about 5% and 4%) would make both the press and the focus hard to see on the blue. A visible focus matters more than the moment of the press.
 - **A download's progress (dark).** The track was `subtle` (zinc-800), where blue-600 is 2.84:1; it is now `progressTrack`, zinc-900 in dark (3.38:1). Light keeps zinc-100.
 - **The watched bar.** Its zinc-950 track was 40%, so over a bright picture the blue was 1.93:1 (blue-500 was 1.38:1); at 90% it is 3.04:1 over white and 3.81:1 over black.
-- **The player's seek bar** (always dark, on a `mediaControl` plate over the video). Over a white frame the plate turns mid grey and the blue thumb was 1.09:1 against it (blue-500 was 1.51:1), so the 16dp thumb now has a 2dp `onMedia` ring: 5.45:1 against the plate over a white frame, 19.45:1 over black. The played part against the unplayed track is 1.6 to 1.7:1 over any frame (blue-500 was 1.2 to 2.4:1): a track that held 3:1 would have to be nearly opaque white or black and would hide the buffered part, so the position is carried by the ringed thumb, with the times beside the bar.
-- **The selected square on dark glass.** Over a pure white picture the dark glass turns grey and the blue square is 1.79:1 against it; keeping 3:1 there would take a bar 96% opaque, which is no longer glass. The square is also the only filled square and its icon is white on blue at 5.25:1, so the selection still reads. On the opaque bar (Android 9 to 11) it is 5.25:1 in light and 3.38:1 in dark.
+- **The player's seek bar** (always dark, on a `mediaControl` plate over the video). Over a white frame the plate turns mid grey and the blue thumb was 1.09:1 against it (blue-500 was 1.51:1), so the 16dp thumb now has a 2dp `onMedia` ring: 5.45:1 against the plate over a white frame, 19.45:1 over black. The played part against the unplayed track is 1.0 to 1.7:1 (1.64:1 over a white frame, 1.69:1 over black): the track is lighter than the blue over bright frames and darker over dark ones, so over a mid-grey frame the two match and the played part disappears into the track (blue-500 had the same problem, 1.0 to 2.4:1). A track that held 3:1 would have to be nearly opaque white or black and would hide the buffered part, so the position is carried by the ringed thumb, 5.45:1 or more against the plate over any frame, with the times beside the bar.
+- **The toolbar's selected square.** On glass the blue square's neighbour is whatever the glass shows: over a pure white picture the dark glass turns grey (`#464649`) and the square was 1.79:1 against it (blue-500 would have been 2.49:1, so the glass causes it, not the darker blue); over black the light glass is `#CCCCCC` and the square was 3.27:1. The square now has a 2dp `surface` ring outside its edge (`ToolbarTokens.indicatorRing`) that slides with it, as the badge has, so its neighbour is always white or zinc-900: 5.25:1 in light and 3.38:1 in dark, on any picture and on the opaque bar. Making the dark glass opaque enough to hold 3:1 instead (zinc-950 at 90%) would have cost most of the translucency.
 - The launcher icon is the white Lucide `popcorn` glyph on Action Blue (`res/values/colors.xml`, `ic_launcher_foreground.xml`), 5.25:1.
 - Links keep their own tokens (blue-600 in light, blue-400 in dark). Checkboxes, radios and the icon picker stay neutral (`text`), because a choice is not an action.
 
@@ -91,7 +91,7 @@ Flat. Pages, panels and tiles have no shadow; tiles get the 1dp `mediaHairline` 
 | --- | --- | --- |
 | `pageSpring` | spring, no bounce, stiffness 500 (about 300 ms) | page slides |
 | `indicatorSpring` | spring, damping 0.85, stiffness 500 | the toolbar's selection square |
-| `fast` | 150 ms | icon tint, crossfades |
+| `fast` | 150 ms | crossfades |
 | `toolbarShowHide` | 200 ms | the toolbar leaving for the viewer and the player |
 | `push` | 30dp horizontal shift with a fade, `pageSpring` | opening and closing a page inside a tab (a library, a show, an item, the library editor) |
 
@@ -136,6 +136,7 @@ The app's navigation: one elongated rounded rectangle floating at the bottom cen
 - Each icon sits in its own square target: 52dp, 12dp corners. The squares touch, so together they make one bar; the bar adds 4dp of padding and a 16dp outer radius (12 + 4: the outer radius is always the inner radius plus the padding). On a screen narrower than the bar plus two 16dp margins, the squares shrink, never below 48dp.
 - Container: frosted glass where the phone can blur (Frosted glass, below), the opaque `surface` where it cannot; the 8dp shadow outside the bar only and a 1dp edge. 16dp above the gesture or navigation bar inset.
 - Unselected icons: `textMuted`. Selected: the square fills with Action Blue and the icon turns `onAccent` (white). This is the one place navigation uses blue, by the owner's direction; elsewhere navigation stays neutral as on the web. A press on the selected square uses the 8% white ripple.
+- The blue square has a 2dp `surface` ring outside its edge (`indicatorRing`, radius 14dp, concentric with the square and the bar), so its edge keeps 3:1 against whatever the glass shows (Colour, Action Blue measured). On the opaque bar the ring is the bar's own colour and does not show.
 - The Downloads square carries the number of files ready to import (the `inbox` count) as a small `text`-coloured badge on its top-end corner (`tag` type on `page`, never a status colour, with a 2dp `surface` ring that parts it from the icon and the glass); it disappears at zero.
 - Every square has a content description (its name, and for Downloads the count: "Downloads, 3 ready to import"), the tab role, its position ("1 of 3") and a ripple clipped to the square. A long press shows a plain tooltip with the name above the square.
 - It floats over the content: pages scroll under it and end with enough bottom padding (bar height + its margin + the inset + 16dp) that the last row clears it.
@@ -144,23 +145,23 @@ The app's navigation: one elongated rounded rectangle floating at the bottom cen
 
 ### Frosted glass (`ui/components/FrostedGlass.kt`)
 
-The pages scroll under the toolbar softened and tinted: what is behind it turns to its colours, so the bar shows where it is without competing with the pictures. One look, made three ways, chosen once per phone by `glassTierFor(SDK_INT, SDK_INT_FULL)` (tested in `GlassTierTest`):
+The pages scroll under the toolbar softened and tinted: what is behind it turns to its colours, so the bar shows where it is without competing with the pictures. One look, made three ways, chosen by `glassTierFor(SDK_INT, SDK_INT_FULL, moreContrast)` from the phone's release and its contrast setting (tested in `GlassTierTest`):
 
 | Tier | Android | How the blur is made |
 | --- | --- | --- |
-| Backdrop | 17 QPR2 (SDK 37.2) and later | The platform blurs what the window drew behind the bar: a render node the bar's size with `RenderNode.setBackdropRenderEffect` (blur, then saturation) and the tint drawn inside it. Nothing is recorded. |
+| Backdrop | 17 QPR2 (SDK 37.2) and later | The platform blurs what the window drew behind the bar: a render node the bar's size with `RenderNode.setBackdropRenderEffect` (blur, then saturation) and the tint drawn inside it. Nothing is recorded. The bar fades in and out with its alpha applied to each drawing operation (`CompositingStrategy.ModulateAlpha`), not through a layer of its own: inside such a layer the platform would blur the empty layer instead of the window, and the pages would show sharp under the tint for the 200 ms of the fade. |
 | Captured | 12 (API 31) to 17.1 | `AppShell` records the tab pages into one Compose `GraphicsLayer` each frame they draw (`glassSource`); the bar draws that layer moved to its own place, blurred (`BlurEffect`) and saturated, clipped to its shape, under the tint. Only the bar's part of the pages, and the blur's reach around it, is blurred. It follows scrolling, page slides and the bar's own slide in and out. |
-| Opaque | 9 to 11 (API 28 to 30) | No RenderEffect: the opaque `surface` bar with its `divider` edge, as before. |
+| Opaque | 9 to 11 (API 28 to 30), and any phone set to medium or high contrast | No RenderEffect, or the person asked for stronger edges: the opaque `surface` bar with its `divider` edge, as before. |
 
 Android 17 QPR2 reaches Pixels in December 2026, so the captured glass is what most phones show.
 
 - Blur radius 24dp (`ToolbarTokens.glassBlur`): text and edges behind the bar become soft colour; 16dp left the shapes of the pictures readable, 32dp looked the same as 24dp.
 - Saturation 1.8 (`glassSaturation`): the colours behind read through the tint instead of washing out to grey. It does not change white or black, so it does not change the contrast below.
-- Tint (`glass`): `surface` at 80% in both themes (white in light, zinc-900 in dark). The unselected icons need 64% or more in light and 76% or more in dark to stay at 3:1 over anything; in light, 77% or more also keeps the blue square at 3:1 over black. 72% in light looked more frosted, but left the selected square at 2.65:1 over black.
+- Tint (`glass`): `surface` at 80% in both themes (white in light, zinc-900 in dark). The unselected icons need 64% or more in light and 76% or more in dark to stay at 3:1 over anything. The selected square does not depend on the tint: its `surface` ring is its neighbour.
 - Edge (`glassEdge`): zinc-950 at 10% in light, white at 10% in dark, drawn over the glass, so it reads as a hairline over any picture (it renders as `#E6E6E6` on white glass, `#58585B` on dark glass).
 - Shadow: the platform's 8dp elevation shadow, drawn with the bar's own area cut out, so it never shows through the glass.
 - The selected square, its slide (`indicatorSpring`) and its jump under reduce motion are the same on glass; reduce motion does not change the glass.
-- Android has no setting for reduced transparency (checked in the SDK 37.2 sources: there are high-contrast text and a contrast level, nothing for transparency), so the glass is on wherever the phone can blur.
+- Android has no setting for reduced transparency (checked in the SDK 37.2 sources). The nearest is the colour contrast setting (Android 14 and later, `UiModeManager.getContrast`): at medium or high contrast the bar is the opaque one, and it follows a change of the setting while the app is open (`rememberGlassTier`, tested in `GlassTierTest` and `FrostedGlassTest`). High-contrast text is left out: its query (`AccessibilityManager.isHighContrastTextEnabled`) is behind a feature flag in the SDK, so a phone may not have it.
 
 Contrast on the glass, at its worst (the bar over a pure white and a pure black picture; `glass-white-black-light.png` and `-dark.png`):
 
@@ -168,7 +169,8 @@ Contrast on the glass, at its worst (the bar over a pure white and a pure black 
 | --- | --- | --- | --- | --- |
 | The glass renders as | `#FFFFFF` | `#CCCCCC` | `#464649` | `#131316` |
 | Unselected icon (`textMuted`) | 7.72:1 | 4.81:1 | 3.59:1 | 7.07:1 |
-| The selected square (Action Blue) | 5.25:1 | 3.27:1 | 1.79:1 | 3.54:1 |
+| The selected square (Action Blue) against its `surface` ring | 5.25:1 | 5.25:1 | 3.38:1 | 3.38:1 |
+| Action Blue against the bare glass, without the ring | 5.25:1 | 3.27:1 | 1.79:1 | 3.54:1 |
 | White icon on the selected square | 5.25:1 | 5.25:1 | 5.25:1 | 5.25:1 |
 
 The Downloads badge is opaque (`badge` with `onBadge` words, ringed in `surface`), so it reads the same on glass as on the opaque bar.
@@ -177,7 +179,7 @@ Cost: on Android 12 to 17.1 the pages are recorded once per frame they draw and 
 
 ### Selection indicator
 
-One Action Blue square that lives behind the icons and slides along the bar to the tapped square with `indicatorSpring`. The icon tints cross over during the slide (`fast`). Under reduce motion it jumps. Both are tested frame by frame (`AppShellTest`): a few frames after a tap the square is between the two squares; under reduce motion it is already under the tapped one.
+One Action Blue square that lives behind the icons and slides along the bar to the tapped square with `indicatorSpring`. The icons take their colour from the square itself, not from a timer: each icon is drawn twice, white clipped to the square's current bounds and `textMuted` clipped to the rest, so while the square slides the part of an icon over the blue is white and the part beside it is grey. No icon is ever white on the glass (where it would vanish in light) or grey on the blue. Under reduce motion the square and the colours jump together. Tested frame by frame (`AppShellTest`): a few frames after a tap the square is between the two squares, and with its edge across the Home icon the icon is white over the square and grey beside it; under reduce motion the square is already under the tapped one. `transition-1-light.png` to `transition-3-light.png` show it.
 
 ### Tab transitions (`navigation/PageTransitions.kt`)
 
