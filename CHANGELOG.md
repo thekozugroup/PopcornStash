@@ -48,6 +48,7 @@ Libraries the owner defines, each with its own icon and its own audience, and th
 - Home: what to carry on watching, then every library you can see; libraries as grids, shows by season, photos by month with a full-screen viewer; item pages and a full-screen player that resumes, saves your place, offers the next episode and keeps playing in a small window.
 - Downloads: live progress, the VPN line, pause, resume, remove and add a link; the files waiting to be imported with the library picker, edit, accept, ignore and accept all; finished downloads say where they went. Links, photos, videos and files shared from other apps are added or uploaded.
 - Settings: who you are, the server and sign out; owners manage the libraries here too. The other admin pages open the web settings.
+- The app updates itself from GitHub: Settings, This app shows the version and build, checks for a newer build and installs it after checking its checksum and signature. It asks GitHub once a day unless that is turned off, and sends only its name and version. A copy built on your own computer cannot update itself and says how to switch to the GitHub builds once (docs/android.md, Updates).
 - Photos and home videos show the camera's clock in the app too, whatever time zone the phone is in, and a waiting photo previews the month folder of that clock. A series shelf on Home has a tile for every show.
 - Long words wrap where they should on narrow phones and with large text: a server address after its dots and hyphens (the sign-in page no longer squeezes "Version" into a column), a folder name in a sentence stays whole, a long folder name in Settings wraps instead of ending in "...", "Accept all" and photo counts are never split, and dates never break inside. The chosen season or file kind carries a check, not only a faint tint.
 - Everything on the blue is white: the words and icons on buttons, the selected tab's icon in the floating bar and the app's launcher icon. The blue is one shade deeper (Tailwind blue-600), so white reads at 5.25:1, and pressing a blue button uses a fainter white ripple so its words stay readable while pressed. So that thin blue marks keep 3:1 against what is around them, a download's progress track in dark is darker, the track under the watched bar on a picture is nearly opaque, and the player's seek thumb has a thin white ring.
@@ -58,6 +59,7 @@ Libraries the owner defines, each with its own icon and its own audience, and th
 ### Tooling
 
 - `scripts/check.sh --e2e` also runs the Android app against a real server, never from Gradle's cache.
+- `scripts/android-release.sh` publishes the Android app from a clean, pushed main as the GitHub pre-release `android-N` (N is the number of commits on main), signed with the release key from the environment and checked against `android/release-cert.sha256`. It skips when nothing under `android/` changed (README, Releasing).
 
 ## [0.1.0] - 2026-10-13
 
