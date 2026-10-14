@@ -25,6 +25,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.thekozugroup.popcornstash.TabRequests
 import com.thekozugroup.popcornstash.data.api.ApiClient
 import com.thekozugroup.popcornstash.data.api.Role as PersonRole
 import com.thekozugroup.popcornstash.data.api.StashEvent
@@ -80,7 +81,7 @@ class SettingsTabTest {
         server.close()
     }
 
-    private fun show(routes: Routes, user: User = owner) {
+    private fun show(routes: Routes, user: User = owner, requests: TabRequests? = null, uploadsRunning: Int = 0) {
         this.routes = routes
         server.dispatcher = routes
         val api = ApiClient(server.url("/"), baseHttpClient("t"))
@@ -95,6 +96,9 @@ class SettingsTabTest {
                     onOpenWeb = {},
                     onSignOut = {},
                     services = services,
+                    open = requests?.settings,
+                    onOpened = { requests?.settingsOpened() },
+                    uploadsRunning = uploadsRunning,
                 )
             }
         }
@@ -225,6 +229,53 @@ class SettingsTabTest {
         reselections.intValue++
         waitGone("library editor")
         waitFor("make a library")
+    }
+
+    @Test
+    fun anEditorHomeAsksForOpensOverTheFirstPageOnce() {
+        val requests = TabRequests()
+        show(F.ownerServer().on("GET", "/api/libraries/${F.MOVIES_ID}", F.MOVIES), requests = requests)
+        waitFor("library row Movies")
+        compose.runOnUiThread { requests.openSettings(SettingsRoute.EditLibrary(F.MOVIES_ID)) }
+        waitFor("save library")
+        compose.onNodeWithText("Save changes").assertExists()
+        compose.runOnIdle { assertEquals(null, requests.settings) }
+        back()
+        waitGone("library editor")
+        waitFor("library row Movies")
+    }
+
+    @Test
+    fun aNewLibraryHomeAsksForReplacesAnEditorAlreadyOpen() {
+        val requests = TabRequests()
+        show(F.ownerServer().on("GET", "/api/libraries/${F.MOVIES_ID}", F.MOVIES), requests = requests)
+        waitFor("library row Movies")
+        compose.onNodeWithTag("library row Movies").performClick()
+        waitFor("save library")
+        compose.runOnUiThread { requests.openSettings(SettingsRoute.NewLibrary()) }
+        waitForText("New library")
+        compose.onNodeWithText("Save changes").assertDoesNotExist()
+        back()
+        waitGone("library editor")
+        waitFor("library row Movies")
+    }
+
+    @Test
+    fun aMemberAskedForAnEditorStaysOnTheFirstPage() {
+        val requests = TabRequests()
+        show(F.ownerServer(), user = member, requests = requests)
+        compose.runOnUiThread { requests.openSettings(SettingsRoute.NewLibrary()) }
+        compose.runOnIdle { assertEquals(null, requests.settings) }
+        assertEquals(0, compose.onAllTagged("library editor"))
+        compose.onNodeWithText("Devices").assertIsDisplayed()
+    }
+
+    @Test
+    fun signingOutSaysHowManyUploadsStop() {
+        show(F.ownerServer(), user = member, uploadsRunning = 2)
+        compose.onNodeWithText("Sign out").performScrollTo().performClick()
+        compose.onNodeWithText("Sign out on this phone?").assertIsDisplayed()
+        compose.onNodeWithText("PopcornStash forgets your sign-in and everything it kept on this phone. 2 uploads stop.").assertIsDisplayed()
     }
 
     @Test

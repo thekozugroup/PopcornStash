@@ -113,4 +113,12 @@ class LibraryWordsTest {
         assertEquals(listOf("settings/devices", "settings/security"), member)
         assertTrue("libraries are managed in the app", "Libraries" !in owner)
     }
+
+    @Test
+    fun signingOutNamesTheUploadsItStops() {
+        val base = "PopcornStash forgets your sign-in and everything it kept on this phone."
+        assertEquals(base, signOutSentence(0))
+        assertEquals("$base 1 upload stops.", signOutSentence(1))
+        assertEquals("$base 3 uploads stop.", signOutSentence(3))
+    }
 }

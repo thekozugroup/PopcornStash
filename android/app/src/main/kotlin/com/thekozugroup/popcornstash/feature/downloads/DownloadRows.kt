@@ -235,22 +235,6 @@ fun VpnLineRow(line: VpnLine, onOpenSettings: (() -> Unit)?, modifier: Modifier 
     }
 }
 
-/** "Not connected to the server. Trying again." with the warning dot, while the events are cut off. */
-@Composable
-fun ConnectionLostLine(modifier: Modifier = Modifier) {
-    Row(
-        modifier
-            .fillMaxWidth()
-            .padding(horizontal = Popcorn.spacing.gutter, vertical = Popcorn.spacing.xs)
-            .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(8.dp).background(Popcorn.colors.warningDot, Popcorn.shapes.avatar))
-        Spacer(Modifier.width(Popcorn.spacing.xs))
-        Text("Not connected to the server. Trying again.", style = Popcorn.type.metadata, color = Popcorn.colors.warning)
-    }
-}
-
 // ---------------------------------------------------------------- transfers ----
 
 /** The common shape of an in-progress row: name, bar, facts, trailing actions. */
@@ -482,28 +466,4 @@ private fun Bar(widthFraction: Float, height: androidx.compose.ui.unit.Dp) {
             .height(height)
             .background(Popcorn.colors.subtle, Popcorn.shapes.tag),
     )
-}
-
-/** A load that did not work: one sentence and "Try again", where the content would be. */
-@Composable
-fun LoadFailedBlock(title: String, message: String, onRetry: () -> Unit, modifier: Modifier = Modifier) {
-    Column(
-        modifier
-            .fillMaxWidth()
-            .padding(horizontal = Popcorn.spacing.gutter, vertical = Popcorn.spacing.xl)
-            .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(title, style = Popcorn.type.section, color = Popcorn.colors.text, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(Popcorn.spacing.xxs))
-        Text(
-            message,
-            style = Popcorn.type.body,
-            color = Popcorn.colors.textMuted,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.widthIn(max = 360.dp),
-        )
-        Spacer(Modifier.height(Popcorn.spacing.m))
-        SecondaryButton("Try again", onClick = onRetry)
-    }
 }

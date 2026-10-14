@@ -95,7 +95,8 @@ class LibrarySettingsActions(
 /**
  * Settings, the right tab's first page (android/DESIGN.md, Settings): the signed-in person, this
  * server, for owners the libraries and the folders that are not a library yet, the web settings
- * pages, and sign out. [libraries] is null for members.
+ * pages, and sign out. [libraries] is null for members. [uploadsRunning] share sheet uploads
+ * stop when the person signs out, and the confirmation says so.
  */
 @Composable
 fun SettingsRootPage(
@@ -108,6 +109,7 @@ fun SettingsRootPage(
     onSignOut: () -> Unit,
     actions: LibrarySettingsActions = LibrarySettingsActions(),
     listState: LazyListState = rememberLazyListState(),
+    uploadsRunning: Int = 0,
 ) {
     var confirmSignOut by rememberSaveable { mutableStateOf(false) }
     var confirmDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -159,7 +161,7 @@ fun SettingsRootPage(
     if (confirmSignOut) {
         ConfirmDialog(
             title = "Sign out on this phone?",
-            text = "PopcornStash forgets your sign-in and everything it kept on this phone.",
+            text = signOutSentence(uploadsRunning),
             confirm = "Sign out",
             onConfirm = {
                 confirmSignOut = false
@@ -462,5 +464,15 @@ private fun Avatar(name: String) {
         contentAlignment = Alignment.Center,
     ) {
         Text(initials.ifEmpty { "?" }, style = Popcorn.type.section, color = Popcorn.colors.text)
+    }
+}
+
+/** The sign-out confirmation, with how many share sheet uploads it stops (android/DESIGN.md, Settings). */
+fun signOutSentence(uploadsRunning: Int): String {
+    val base = "PopcornStash forgets your sign-in and everything it kept on this phone."
+    return when {
+        uploadsRunning <= 0 -> base
+        uploadsRunning == 1 -> "$base 1 upload stops."
+        else -> "$base $uploadsRunning uploads stop."
     }
 }

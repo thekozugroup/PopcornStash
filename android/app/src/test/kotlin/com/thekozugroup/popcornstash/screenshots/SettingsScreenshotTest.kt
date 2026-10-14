@@ -4,6 +4,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -59,12 +60,12 @@ class SettingsScreenshotTest {
     private val owner = SampleOwner
     private val member = User(id = "u-tomas", displayName = "Tomas Ribeiro", role = Role.Member)
 
-    private fun settings(dark: Boolean, user: User = owner, state: LibrarySettingsUi?) {
+    private fun settings(dark: Boolean, user: User = owner, state: LibrarySettingsUi?, uploadsRunning: Int = 0) {
         compose.setContent {
             PopcornTheme(darkTheme = dark, reduceMotion = true) {
                 AppShell(initialTab = Tab.Settings) { page ->
                     if (page.tab == Tab.Settings) {
-                        SettingsRootPage(page, user, "stash.example.com", "0.2.0", state, onOpenWeb = {}, onSignOut = {})
+                        SettingsRootPage(page, user, "stash.example.com", "0.2.0", state, onOpenWeb = {}, onSignOut = {}, uploadsRunning = uploadsRunning)
                     } else {
                         SampleTabRoot(page)
                     }
@@ -186,6 +187,24 @@ class SettingsScreenshotTest {
         compose.onNodeWithTag("more Shows").performClick()
         compose.waitForIdle()
         screen("settings-more-menu-dark")
+    }
+
+    private fun signOutWithUploads(dark: Boolean) {
+        settings(dark = dark, user = member, state = null, uploadsRunning = 2)
+        compose.onNodeWithText("Sign out").performScrollTo().performClick()
+        compose.waitForIdle()
+    }
+
+    @Test
+    fun signOutWithUploadsLight() {
+        signOutWithUploads(dark = false)
+        screen("settings-sign-out-light")
+    }
+
+    @Test
+    fun signOutWithUploadsDark() {
+        signOutWithUploads(dark = true)
+        screen("settings-sign-out-dark")
     }
 
     // ------------------------------------------------------------ the editor ----

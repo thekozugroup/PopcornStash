@@ -44,6 +44,8 @@ import com.thekozugroup.popcornstash.ui.theme.Popcorn
  * A library that the person no longer sees closes, with its pages, and a snackbar says so.
  *
  * [onPlay] hands an item to the player; [onManageLibrary] opens a library's settings (owners).
+ * [open] is a page another tab asked for (a finished download's library): it opens on top of
+ * whatever Home shows, once, and then [onOpened] clears the request.
  */
 @Composable
 fun HomeTab(
@@ -52,6 +54,8 @@ fun HomeTab(
     user: User,
     onPlay: (itemId: String, fromStart: Boolean) -> Unit,
     onManageLibrary: (libraryId: String?) -> Unit,
+    open: HomeRoute? = null,
+    onOpened: () -> Unit = {},
 ) {
     val stack = rememberPageStack<HomeRoute>(HomeRoute.Root, HomeRoute.serializer())
     val snackbar = remember { SnackbarHostState() }
@@ -71,6 +75,13 @@ fun HomeTab(
             handled = page.reselections
             if (!stack.popToRoot()) rootReselections++
         }
+    }
+
+    // A page another tab asked for, unless it is already the one showing.
+    LaunchedEffect(open) {
+        val route = open ?: return@LaunchedEffect
+        if (route == HomeRoute.Root) stack.popToRoot() else if (stack.top.route != route) stack.push(route)
+        onOpened()
     }
 
     // Libraries the person stops seeing (deleted, or no longer shared) close with their pages.

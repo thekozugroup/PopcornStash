@@ -32,13 +32,16 @@ import com.thekozugroup.popcornstash.data.auth.ServerAddress
 import com.thekozugroup.popcornstash.data.session.Session
 import com.thekozugroup.popcornstash.data.session.SessionState
 import com.thekozugroup.popcornstash.feature.downloads.DownloadsTab
+import com.thekozugroup.popcornstash.feature.home.HomeRoute
 import com.thekozugroup.popcornstash.feature.home.HomeTab
 import com.thekozugroup.popcornstash.feature.library.FileFetcher
 import com.thekozugroup.popcornstash.feature.library.LibraryServices
 import com.thekozugroup.popcornstash.feature.library.connectionLost
 import com.thekozugroup.popcornstash.feature.library.reconnects
+import com.thekozugroup.popcornstash.feature.player.openPlayer
+import com.thekozugroup.popcornstash.feature.settings.SettingsRoute
+import com.thekozugroup.popcornstash.feature.settings.SettingsServices
 import com.thekozugroup.popcornstash.feature.settings.SettingsTab
-import com.thekozugroup.popcornstash.feature.settings.rememberSettingsServices
 import com.thekozugroup.popcornstash.feature.signin.SignInFlow
 import com.thekozugroup.popcornstash.feature.signin.SignInViewModel
 import com.thekozugroup.popcornstash.navigation.AppShell
@@ -136,7 +139,7 @@ fun SignedInApp(
         )
     }
     val readyToImport by session.data.readyToImport.collectAsStateWithLifecycle()
-    val settings = rememberSettingsServices(session)
+    val settings = remember(session, ui) { SettingsServices(session.api, session.data, ui.pages) }
     var version by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(session) {
         session.data.refreshHome()
@@ -147,22 +150,39 @@ fun SignedInApp(
         }
     }
     val pictures = remember(session) { Pictures(session.server) }
-    fun webPage(vararg segments: String) =
-        session.server.newBuilder().apply { segments.forEach { addPathSegment(it) } }.build().toString()
+    val uploadsRunning by uploads.progress.collectAsStateWithLifecycle()
+    // One tab asking for a page of another, and the tab a notification or the share sheet asked for.
+    val requests = remember { TabRequests() }
+    LaunchedEffect(openTab) {
+        if (openTab != null) {
+            requests.showTab(openTab)
+            onOpenedTab()
+        }
+    }
     CompositionLocalProvider(LocalStashImages provides ui.images, LocalPictures provides pictures) {
-        AppShell(readyToImport = readyToImport.toInt(), openTab = openTab, onOpenedTab = onOpenedTab) { page ->
+        AppShell(readyToImport = readyToImport.toInt(), openTab = requests.tab, onOpenedTab = requests::tabShown) { page ->
             when (page.tab) {
-                Tab.Downloads -> DownloadsTab(page, session, uploads, openUrl)
+                Tab.Downloads -> DownloadsTab(
+                    page = page,
+                    session = session,
+                    uploads = uploads,
+                    openUrl = openUrl,
+                    // "In Kids" opens the library in Home; "In Other files", Other files.
+                    onOpenPlace = { place ->
+                        requests.openHome(place.libraryId?.let { HomeRoute.Library(it, place.name, place.icon.orEmpty()) } ?: HomeRoute.OtherFiles)
+                    },
+                )
                 Tab.Home -> HomeTab(
                     page = page,
                     services = library,
                     user = user,
-                    // The player plugs in here; until it does, the web app plays the item.
-                    onPlay = { itemId, _ -> openUrl(webPage("item", itemId)) },
-                    // Library settings open on the web until Settings manages libraries in the app.
+                    onPlay = { itemId, fromStart -> context.openPlayer(itemId, fromStart) },
+                    // "Edit library" and "Make a library" open the editor in Settings (owners).
                     onManageLibrary = { id ->
-                        openUrl(if (id == null) webPage("settings", "libraries", "new") else webPage("settings", "libraries", id))
+                        requests.openSettings(if (id == null) SettingsRoute.NewLibrary() else SettingsRoute.EditLibrary(id))
                     },
+                    open = requests.home,
+                    onOpened = requests::homeOpened,
                 )
                 Tab.Settings -> SettingsTab(
                     page = page,
@@ -172,6 +192,9 @@ fun SignedInApp(
                     onOpenWeb = { web -> openUrl(session.api.url("/${web.path}").toString()) },
                     onSignOut = onSignOut,
                     services = settings,
+                    open = requests.settings,
+                    onOpened = requests::settingsOpened,
+                    uploadsRunning = uploadsRunning.size,
                 )
             }
         }

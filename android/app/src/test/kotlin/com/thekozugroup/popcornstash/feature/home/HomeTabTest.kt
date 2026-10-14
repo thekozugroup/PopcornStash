@@ -12,6 +12,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.thekozugroup.popcornstash.TabRequests
 import com.thekozugroup.popcornstash.data.api.ApiClient
 import com.thekozugroup.popcornstash.data.api.Home
 import com.thekozugroup.popcornstash.data.api.ItemDetail
@@ -125,7 +126,7 @@ class HomeTabTest {
         }
     }
 
-    private fun show() {
+    private fun show(requests: TabRequests? = null) {
         val api = ApiClient(server.url("/"), baseHttpClient("t"))
         val services = LibraryServices(
             api = api,
@@ -140,7 +141,15 @@ class HomeTabTest {
             PopcornTheme(darkTheme = false, reduceMotion = true) {
                 AppShell { page ->
                     if (page.tab == Tab.Home) {
-                        HomeTab(page, services, owner, onPlay = { id, fromStart -> played += id to fromStart }, onManageLibrary = { managed += it })
+                        HomeTab(
+                            page,
+                            services,
+                            owner,
+                            onPlay = { id, fromStart -> played += id to fromStart },
+                            onManageLibrary = { managed += it },
+                            open = requests?.home,
+                            onOpened = { requests?.homeOpened() },
+                        )
                     }
                 }
             }
@@ -168,6 +177,21 @@ class HomeTabTest {
         show()
         openMovies()
         compose.onNodeWithText("Continue watching").assertDoesNotExist()
+        back()
+        waitFor(hasText("Continue watching"))
+        gone(hasTestTag("library grid"))
+    }
+
+    @Test
+    fun aLibraryAnotherTabAsksForOpensOnTopOfHomeOnce() {
+        val requests = TabRequests()
+        show(requests)
+        waitFor(hasText("Continue watching"))
+        val movies = SampleMedia.movies
+        compose.runOnUiThread { requests.openHome(HomeRoute.Library(movies.id, movies.name, movies.icon)) }
+        waitFor(hasTestTag("library grid"))
+        waitFor(hasText("A Quiet Orchard"))
+        compose.runOnIdle { assertEquals(null, requests.home) }
         back()
         waitFor(hasText("Continue watching"))
         gone(hasTestTag("library grid"))

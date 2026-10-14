@@ -3,7 +3,6 @@ package com.thekozugroup.popcornstash.screenshots
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
@@ -21,11 +20,11 @@ import com.thekozugroup.popcornstash.feature.downloads.DownloadsSamples
 import com.thekozugroup.popcornstash.feature.downloads.DownloadsUiState
 import com.thekozugroup.popcornstash.feature.downloads.EditState
 import com.thekozugroup.popcornstash.feature.downloads.ImportTarget
-import com.thekozugroup.popcornstash.feature.downloads.LocalDownloadThumbnails
 import com.thekozugroup.popcornstash.feature.downloads.initialMoveForm
 import com.thekozugroup.popcornstash.feature.downloads.vpnLine
 import com.thekozugroup.popcornstash.navigation.AppShell
 import com.thekozugroup.popcornstash.navigation.Tab
+import com.thekozugroup.popcornstash.testing.WithSampleImages
 import com.thekozugroup.popcornstash.ui.theme.PopcornTheme
 import org.junit.Rule
 import org.junit.Test
@@ -56,7 +55,7 @@ class DownloadsScreenshotTest {
 
     @Composable
     private fun Page(state: DownloadsUiState, list: LazyListState?) {
-        CompositionLocalProvider(LocalDownloadThumbnails provides s.pictures) {
+        WithSampleImages {
             AppShell(initialTab = Tab.Downloads, readyToImport = state.imports.size) { page ->
                 if (list != null) {
                     DownloadsPage(page, state, DownloadsActions(), s.NOW, listState = list)

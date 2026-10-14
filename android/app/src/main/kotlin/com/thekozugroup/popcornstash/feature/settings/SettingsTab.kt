@@ -17,7 +17,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -26,12 +25,10 @@ import com.thekozugroup.popcornstash.data.api.ApiClient
 import com.thekozugroup.popcornstash.data.api.Role
 import com.thekozugroup.popcornstash.data.api.User
 import com.thekozugroup.popcornstash.data.repo.StashData
-import com.thekozugroup.popcornstash.data.session.Session
 import com.thekozugroup.popcornstash.navigation.PageStackHost
 import com.thekozugroup.popcornstash.navigation.TabPage
 import com.thekozugroup.popcornstash.navigation.ViewModelStores
 import com.thekozugroup.popcornstash.navigation.rememberPageStack
-import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -54,34 +51,22 @@ sealed interface SettingsRoute {
     data class NewLibrary(val folder: String? = null) : SettingsRoute
 }
 
-/** What Settings needs from the signed-in session to manage libraries. */
-class SettingsServices(val api: ApiClient, val data: StashData, val pages: ViewModelStores)
-
 /**
- * Keeps the Settings pages' view models for one session in the activity: they survive a tab
+ * What Settings needs from the signed-in session to manage libraries. [pages] is the session's
+ * store of page view models (AppContainer.sessionUi), shared with Home: they survive a tab
  * switch and a rotation, end with their page, and all end with the person's session.
  */
-class SettingsPagesHolder : ViewModel() {
-    val stores = ViewModelStores()
-
-    override fun onCleared() = stores.clearAll()
-}
-
-/** The Settings tab's services for [session]; its page view models end when the session does. */
-@Composable
-fun rememberSettingsServices(session: Session): SettingsServices {
-    val holder: SettingsPagesHolder = viewModel(key = "settings pages ${session.id}")
-    return remember(session, holder) {
-        session.scope.coroutineContext.job.invokeOnCompletion { holder.stores.clearAll() }
-        SettingsServices(session.api, session.data, holder.stores)
-    }
-}
+class SettingsServices(val api: ApiClient, val data: StashData, val pages: ViewModelStores)
 
 /**
  * Settings, the right tab (android/DESIGN.md, Settings and Library editor). Its first page shows
  * the person, this server, the owner's libraries and folders, the web settings pages and sign
  * out; the library editor opens on top of it and closes back to it. Without [services] (the
  * shell's sample pages) the libraries are left out.
+ *
+ * [open] is an editor another tab asked for (Home's "Edit library" and "Make a library"): it
+ * opens over the first page, once, and then [onOpened] clears the request. [uploadsRunning]
+ * is how many share sheet uploads signing out would stop.
  */
 @Composable
 fun SettingsTab(
@@ -92,6 +77,9 @@ fun SettingsTab(
     onOpenWeb: (WebSettingsPage) -> Unit,
     onSignOut: () -> Unit,
     services: SettingsServices? = null,
+    open: SettingsRoute? = null,
+    onOpened: () -> Unit = {},
+    uploadsRunning: Int = 0,
 ) {
     val stack = rememberPageStack<SettingsRoute>(SettingsRoute.Root, SettingsRoute.serializer())
     val stores = services?.pages ?: remember { ViewModelStores() }
@@ -110,6 +98,15 @@ fun SettingsTab(
     }
     // Someone who stops being an owner leaves the editor.
     LaunchedEffect(owner) { if (!owner) stack.popToRoot() }
+    // An editor another tab asked for replaces any editor already open; members get the first page.
+    LaunchedEffect(open) {
+        val route = open ?: return@LaunchedEffect
+        if (stack.top.route != route) {
+            stack.popToRoot()
+            if (owner && route != SettingsRoute.Root) stack.push(route)
+        }
+        onOpened()
+    }
 
     Box(Modifier.fillMaxSize()) {
         PageStackHost(stack, stores, name = "settings") { entry ->
@@ -122,6 +119,7 @@ fun SettingsTab(
                     services = services?.takeIf { owner },
                     onOpenWeb = onOpenWeb,
                     onSignOut = onSignOut,
+                    uploadsRunning = uploadsRunning,
                     onOpenEditor = { stack.push(it) },
                     onNotice = show,
                 )
@@ -157,12 +155,23 @@ private fun SettingsFirstPage(
     services: SettingsServices?,
     onOpenWeb: (WebSettingsPage) -> Unit,
     onSignOut: () -> Unit,
+    uploadsRunning: Int,
     onOpenEditor: (SettingsRoute) -> Unit,
     onNotice: (String) -> Unit,
 ) {
     val listState = rememberLazyListState()
     if (services == null) {
-        SettingsRootPage(page, user, serverDisplay, serverVersion, libraries = null, onOpenWeb = onOpenWeb, onSignOut = onSignOut, listState = listState)
+        SettingsRootPage(
+            page,
+            user,
+            serverDisplay,
+            serverVersion,
+            libraries = null,
+            onOpenWeb = onOpenWeb,
+            onSignOut = onSignOut,
+            listState = listState,
+            uploadsRunning = uploadsRunning,
+        )
         return
     }
     val model: LibrarySettingsViewModel = viewModel(
@@ -183,6 +192,7 @@ private fun SettingsFirstPage(
         onOpenWeb = onOpenWeb,
         onSignOut = onSignOut,
         listState = listState,
+        uploadsRunning = uploadsRunning,
         actions = LibrarySettingsActions(
             onRetry = controller::refresh,
             onOpen = { onOpenEditor(SettingsRoute.EditLibrary(it.id)) },

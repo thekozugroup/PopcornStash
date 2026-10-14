@@ -34,7 +34,9 @@ import androidx.compose.ui.unit.dp
 import com.thekozugroup.popcornstash.data.api.Download
 import com.thekozugroup.popcornstash.navigation.TabPage
 import com.thekozugroup.popcornstash.share.UploadBatchProgress
+import com.thekozugroup.popcornstash.ui.components.ConnectionLostRow
 import com.thekozugroup.popcornstash.ui.components.EmptyState
+import com.thekozugroup.popcornstash.ui.components.LoadFailed
 import com.thekozugroup.popcornstash.ui.components.PageTopBar
 import com.thekozugroup.popcornstash.ui.components.PrimaryButton
 import com.thekozugroup.popcornstash.ui.components.QuietButton
@@ -252,10 +254,10 @@ private fun EntryView(
     onShowWaiting: () -> Unit,
 ) {
     when (entry) {
-        Entry.Connection -> ConnectionLostLine()
+        Entry.Connection -> ConnectionLostRow()
         Entry.Vpn -> VpnLineRow(state.vpn, actions.onOpenVpnSettings)
         Entry.Placeholder -> DownloadsPlaceholder()
-        is Entry.Failed -> LoadFailedBlock("Downloads could not be loaded", entry.message, onRetry = onRetryLoad)
+        is Entry.Failed -> LoadFailed(entry.message, onRetry = onRetryLoad, title = "Downloads could not be loaded")
         Entry.Empty -> EmptyState(
             glyph = PopcornIcons.Downloads,
             title = "Nothing downloading",
@@ -283,7 +285,7 @@ private fun EntryView(
         is Entry.ImportsHeader -> DownloadsSectionHeader("Ready to import", entry.count.takeIf { it > 0 }) {
             if (entry.acceptAll) QuietButton("Accept all", onClick = actions.onAskAcceptAll, enabled = !locked)
         }
-        is Entry.ImportsFailed -> LoadFailedBlock("Files to import could not be loaded", entry.message, onRetry = onRetryLoad)
+        is Entry.ImportsFailed -> LoadFailed(entry.message, onRetry = onRetryLoad, title = "Files to import could not be loaded")
         is Entry.Import -> {
             if (entry.ruled) RowRule(start = Popcorn.spacing.gutter + 64.dp + Popcorn.spacing.m)
             ImportRowView(

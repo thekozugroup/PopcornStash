@@ -1,11 +1,5 @@
 package com.thekozugroup.popcornstash.feature.downloads
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.LinearGradient
-import android.graphics.Paint
-import android.graphics.Shader
-import androidx.compose.ui.graphics.asImageBitmap
 import com.thekozugroup.popcornstash.data.api.Category
 import com.thekozugroup.popcornstash.data.api.ContentType
 import com.thekozugroup.popcornstash.data.api.Destination
@@ -185,20 +179,4 @@ object DownloadsSamples {
         connectionLost = true,
         vpn = vpnLine(null, unavailable = true, isOwner = false),
     )
-
-    /** Frames that stand in for the server's thumbnails: a soft two-colour gradient per item. */
-    val pictures = ThumbnailLoader { path ->
-        val colors = when {
-            "i-clip" in path -> 0xFF35506B.toInt() to 0xFFC08457.toInt()
-            "i-puddle" in path -> 0xFF4B7F52.toInt() to 0xFFE8C468.toInt()
-            "i-photo" in path -> 0xFF8DB6C9.toInt() to 0xFFF2E3C6.toInt()
-            else -> return@ThumbnailLoader null
-        }
-        val bitmap = Bitmap.createBitmap(160, 90, Bitmap.Config.ARGB_8888)
-        Canvas(bitmap).drawRect(
-            0f, 0f, 160f, 90f,
-            Paint().apply { shader = LinearGradient(0f, 0f, 160f, 90f, colors.first, colors.second, Shader.TileMode.CLAMP) },
-        )
-        bitmap.asImageBitmap()
-    }
 }

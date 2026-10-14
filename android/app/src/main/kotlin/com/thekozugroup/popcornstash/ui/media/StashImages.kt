@@ -42,6 +42,9 @@ class Pictures(private val server: HttpUrl) {
         return (if (large) url.newBuilder().setQueryParameter("size", "lg").build() else url).toString()
     }
 
+    /** A server-relative picture address as the server gives it (an Inbox row's `thumb`). */
+    fun url(path: String?): String? = path?.let { server.resolve(it) }?.toString()
+
     /** The thumbnail of the item with [id] when only its id is known (a show's poster). */
     fun thumbOf(id: String, large: Boolean = false): String =
         server.newBuilder().addPathSegments("api/items").addPathSegment(id).addPathSegment("thumb")

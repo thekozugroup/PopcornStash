@@ -25,18 +25,23 @@ import com.thekozugroup.popcornstash.ui.theme.Popcorn
 
 /**
  * A load that did not work (android/DESIGN.md, Loading and errors): one sentence and
- * "Try again", where the content would be.
+ * "Try again", where the content would be. [title] names what did not load when a page has
+ * more than one part ("Files to import could not be loaded"); it is read with the sentence.
  */
 @Composable
-fun LoadFailed(message: String, onRetry: () -> Unit, modifier: Modifier = Modifier) {
+fun LoadFailed(message: String, onRetry: () -> Unit, modifier: Modifier = Modifier, title: String? = null) {
     Column(
         modifier
             .fillMaxWidth()
             .padding(horizontal = Popcorn.spacing.gutter, vertical = Popcorn.spacing.xl)
-            .semantics { liveRegion = LiveRegionMode.Polite },
+            .semantics(mergeDescendants = title != null) { liveRegion = LiveRegionMode.Polite },
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
+        if (title != null) {
+            Text(title, style = Popcorn.type.section, color = Popcorn.colors.text, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(Popcorn.spacing.xxs))
+        }
         Text(
             message,
             style = Popcorn.type.body,

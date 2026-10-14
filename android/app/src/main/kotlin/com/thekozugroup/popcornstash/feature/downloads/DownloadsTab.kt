@@ -5,7 +5,6 @@ import android.content.Context
 import android.os.Build
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
@@ -85,9 +84,7 @@ fun DownloadsTab(
             },
         )
     }
-    CompositionLocalProvider(LocalDownloadThumbnails provides held.thumbnails) {
-        DownloadsPage(page = page, state = state, actions = actions, nowSeconds = now, snackbar = snackbar)
-    }
+    DownloadsPage(page = page, state = state, actions = actions, nowSeconds = now, snackbar = snackbar)
 }
 
 /**
@@ -105,11 +102,11 @@ private fun clipboardText(entry: ClipEntry?, context: Context): CharSequence? {
 }
 
 /**
- * The Downloads controller and thumbnails of each session, outside composition so they
+ * The Downloads controller of each session, outside composition so they
  * live while the person switches tabs, and end with the session (its scope).
  */
 internal object DownloadsHolders {
-    class Held(val controller: DownloadsController, val thumbnails: SessionThumbnails)
+    class Held(val controller: DownloadsController)
 
     private val held = mutableMapOf<Long, Held>()
 
@@ -127,7 +124,7 @@ internal object DownloadsHolders {
             )
             controller.refresh()
             session.scope.coroutineContext.job.invokeOnCompletion { drop(session.id) }
-            Held(controller, SessionThumbnails(session.http, session.api))
+            Held(controller)
         }
 
     @Synchronized
