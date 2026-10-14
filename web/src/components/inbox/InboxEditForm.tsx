@@ -5,7 +5,6 @@
  * error that names a field sits under that field.
  */
 import * as stylex from '@stylexjs/stylex';
-import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {Banner} from '@astryxdesign/core/Banner';
 import {Button} from '@astryxdesign/core/Button';
 import {useEffect, useRef, useState, type FormEvent} from 'react';
@@ -27,7 +26,8 @@ const styles = stylex.create({
     paddingBlock: 20,
     paddingInline: {default: 20, '@media (max-width: 559px)': 16},
     borderRadius: 10,
-    backgroundColor: colorVars['--color-background-muted'],
+    // Zinc Subtle in light, Zinc Black in dark: the form's focus rings keep 3:1 on it.
+    backgroundColor: 'var(--popcorn-control-well)',
   },
   actions: {
     display: 'flex',

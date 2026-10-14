@@ -118,7 +118,7 @@ Turning the cookie option off removes Chrome's access to all sites. Chrome may c
 ## How it is built
 
 - TypeScript (strict), bundled with esbuild into `extension/dist`. No framework: the popup and options page are plain DOM code, so the popup opens instantly and the whole extension stays around 30 KB zipped.
-- Styling is plain CSS with custom properties that mirror DESIGN.md and the web app's Popcorn theme: zinc neutrals, blue-500 as the single action and focus colour with zinc-950 text on blue, the system font, flat surfaces with thin dividers, 8px controls, 44px targets, light and dark from the system setting, and reduced motion respected. React and Astryx are not used in the extension (Astryx is a React component library; pulling React into a 344px popup would cost more than it gives).
+- Styling is plain CSS with custom properties that mirror DESIGN.md and the web app's Popcorn theme: zinc neutrals, blue-600 as the single action and focus colour with white on blue, the system font, flat surfaces with thin dividers, 8px controls, 44px targets, light and dark from the system setting, and reduced motion respected. React and Astryx are not used in the extension (Astryx is a React component library; pulling React into a 344px popup would cost more than it gives).
 - Code layout: `src/background.ts` (context menus, notifications, download takeover), `src/popup/`, `src/options/`, and `src/lib/` (address validation, request payloads, API client, error wording, storage, and `src/lib/context-menu.ts`: the right-click menu items and what a click sends).
 
 Scripts (run with `npm --prefix extension run <name>`):

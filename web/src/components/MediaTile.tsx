@@ -100,8 +100,9 @@ const styles = stylex.create({
     insetInline: 0,
     bottom: 0,
     height: 4,
-    // The black stage colour at 45%: a dark track that reads on any frame.
-    backgroundColor: 'color-mix(in oklch, var(--popcorn-stage) 45%, transparent)',
+    // The black stage colour, opaque: the Action Blue fill keeps 4:1 against it on any
+    // frame (a translucent track let a bright or mid-grey frame show through at 1.0-3.0:1).
+    backgroundColor: 'var(--popcorn-stage)',
   },
   progressFill: {
     display: 'block',

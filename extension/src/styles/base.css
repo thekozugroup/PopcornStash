@@ -1,8 +1,8 @@
 /*
  * PopcornStash tokens for the extension, mirroring DESIGN.md and the web
  * app's Popcorn theme (web/src/themes/popcorn/popcornTheme.ts): zinc
- * neutrals, blue-500 as the single action and focus accent with zinc-950 text
- * on blue, the system sans, flat surfaces, thin dividers, 8px controls,
+ * neutrals, blue-600 as the single action and focus accent with white on
+ * blue, the system sans, flat surfaces, thin dividers, 8px controls,
  * 44px targets, system light/dark and reduced motion.
  */
 
@@ -22,27 +22,36 @@
   --zinc-900: oklch(21% 0.006 285.885);
   --zinc-950: oklch(14.1% 0.005 285.823);
   --blue-400: oklch(70.7% 0.165 254.624);
-  --blue-500: oklch(62.3% 0.214 259.815);
   --blue-600: oklch(54.6% 0.245 262.881);
+  --blue-700: oklch(48.8% 0.243 264.376);
+  --blue-800: oklch(42.4% 0.199 265.638);
+  --white: oklch(100% 0 0);
 
   /* Semantic, light */
   --page: var(--zinc-50);
-  --surface: #fff;
+  --surface: var(--white);
   --text: var(--zinc-900);
   --text-muted: var(--zinc-600);
   --divider: var(--zinc-200);
   --control-border: var(--zinc-300);
   --control-border-hover: var(--zinc-400);
   --fill-subtle: var(--zinc-100);
+  /* A notice can hold a button, so its fill keeps the Action Blue focus ring at 3:1. */
+  --notice-fill: var(--fill-subtle);
   --fill-hover: oklch(14.1% 0.005 285.823 / 5%);
   --fill-pressed: oklch(14.1% 0.005 285.823 / 10%);
+  /* An Action Blue progress fill keeps 3:1 against its track (4.2:1 here). */
   --track: var(--zinc-200);
   /* A switch that is off still needs 3:1 against the page (WCAG 1.4.11). */
   --switch-off: var(--zinc-500);
   --switch-off-hover: var(--zinc-600);
-  --accent: var(--blue-500);
-  --accent-hover: var(--blue-400);
-  --on-accent: var(--zinc-950);
+  /* Action Blue with white on it (5.3:1); hover goes darker so white keeps 6.8:1. */
+  --accent: var(--blue-600);
+  --accent-hover: var(--blue-700);
+  --on-accent: var(--white);
+  /* An on switch hovered goes darker, so the white knob keeps 4.5:1 or more: 15% toward Zinc
+     Black here, a visible step (1.26:1) with the knob at 6.6:1. Dark mixes in blue-800. */
+  --switch-on-hover: color-mix(in srgb, var(--accent), var(--zinc-950) 15%);
   --text-accent: var(--blue-600);
   --error-text: oklch(50.5% 0.213 27.518);
   --error-fill: oklch(63.7% 0.237 25.331 / 10%);
@@ -54,7 +63,7 @@
   --mark-tile: var(--zinc-900);
   --mark-glyph: var(--zinc-50);
   --skeleton: var(--zinc-200);
-  --selection: oklch(62.3% 0.214 259.815 / 22%);
+  --selection: oklch(54.6% 0.245 262.881 / 22%);
 
   /* Shape and size */
   --radius-control: 8px;
@@ -81,18 +90,28 @@
     --control-border: var(--zinc-700);
     --control-border-hover: var(--zinc-600);
     --fill-subtle: var(--zinc-800);
+    /* Zinc Ink: on Zinc Dark Divider the focus ring would be 2.8:1; here it is 3.4:1. */
+    --notice-fill: var(--surface);
     --fill-hover: oklch(100% 0 0 / 6%);
     --fill-pressed: oklch(100% 0 0 / 12%);
-    --track: var(--zinc-800);
+    /* Halfway between Zinc Ink and Zinc Dark Divider: the fill keeps 3.1:1 against it (Zinc
+       Dark Divider was 2.8:1), and the empty part of the bar still shows on the Zinc Black
+       page at 1.22:1 (Zinc Ink alone was 1.12:1). */
+    --track: color-mix(in srgb, var(--zinc-900), var(--zinc-800));
     --switch-off-hover: var(--zinc-400);
+    /* 15% toward blue-800: the knob keeps 5.7:1 and the track 3.5:1 against the dark page
+       (Zinc Black would leave it at 3.0:1, blue-700 at 2.9:1). */
+    --switch-on-hover: color-mix(in srgb, var(--accent), var(--blue-800) 15%);
     --text-accent: var(--blue-400);
     --error-text: oklch(70.4% 0.191 22.216);
-    --error-fill: oklch(63.7% 0.237 25.331 / 14%);
+    /* 12%: an error notice can hold a button, and its Action Blue focus ring keeps 3:1 on
+       this fill over the page (3.5:1) or a panel (3.05:1); at 14% it was 2.98:1 on a panel. */
+    --error-fill: oklch(63.7% 0.237 25.331 / 12%);
     --error-line: oklch(63.7% 0.237 25.331 / 40%);
     --mark-tile: var(--zinc-50);
     --mark-glyph: var(--zinc-900);
     --skeleton: var(--zinc-800);
-    --selection: oklch(62.3% 0.214 259.815 / 35%);
+    --selection: oklch(54.6% 0.245 262.881 / 35%);
   }
 }
 
@@ -429,7 +448,7 @@ dd {
   justify-items: start;
   padding: 12px 14px;
   border-radius: var(--radius-control);
-  background: var(--fill-subtle);
+  background: var(--notice-fill);
   font-size: 13px;
   line-height: 1.5;
 }
