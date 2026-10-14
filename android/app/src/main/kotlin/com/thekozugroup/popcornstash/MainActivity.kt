@@ -53,6 +53,7 @@ import com.thekozugroup.popcornstash.ui.media.LocalStashImages
 import com.thekozugroup.popcornstash.ui.media.Pictures
 import com.thekozugroup.popcornstash.ui.theme.Popcorn
 import com.thekozugroup.popcornstash.ui.theme.PopcornTheme
+import com.thekozugroup.popcornstash.update.AppUpdates
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -104,6 +105,7 @@ fun PopcornStashApp(container: AppContainer, activity: Activity, openTab: Tab? =
                 session = current.session,
                 ui = container.sessionUi(current.session),
                 uploads = container.uploads,
+                updates = container.updates,
                 openUrl = openUrl,
                 onSignOut = { scope.launch { container.sessions.signOut() } },
                 openTab = openTab,
@@ -121,6 +123,7 @@ fun SignedInApp(
     uploads: UploadQueue,
     openUrl: (String) -> Unit,
     onSignOut: () -> Unit,
+    updates: AppUpdates? = null,
     openTab: Tab? = null,
     onOpenedTab: () -> Unit = {},
 ) {
@@ -194,6 +197,7 @@ fun SignedInApp(
                     services = settings,
                     open = requests.settings,
                     onOpened = requests::settingsOpened,
+                    updates = updates,
                     uploadsRunning = uploadsRunning.size,
                 )
             }

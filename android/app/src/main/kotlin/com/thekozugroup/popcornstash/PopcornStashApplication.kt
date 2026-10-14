@@ -20,6 +20,13 @@ class PopcornStashApplication : Application() {
         container.appScope.launch(Dispatchers.IO) { container.sessions.restore() }
         // Private copies of Other files opened before the process ended (docs/architecture.md section 10).
         container.appScope.launch(Dispatchers.IO) { File(cacheDir, "opened").deleteRecursively() }
+        // The updater: a verified download waiting to be installed, and the daily check (on unless turned off).
+        container.appScope.launch(Dispatchers.IO) { container.updates.restore() }
+        try {
+            container.updates.schedule()
+        } catch (_: IllegalStateException) {
+            // WorkManager starts with the app (androidx.startup); only a test process may lack it.
+        }
         // Live events run only while the app is in the foreground.
         ProcessLifecycleOwner.get().lifecycle.addObserver(
             object : DefaultLifecycleObserver {

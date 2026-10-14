@@ -97,8 +97,8 @@ class LibrarySettingsActions(
 /**
  * Settings, the right tab's first page (android/DESIGN.md, Settings): the signed-in person, this
  * server, for owners the libraries and the folders that are not a library yet, the web settings
- * pages, and sign out. [libraries] is null for members. [uploadsRunning] share sheet uploads
- * stop when the person signs out, and the confirmation says so.
+ * pages, this app and its updates ([appUpdates]), and sign out. [libraries] is null for members.
+ * [uploadsRunning] share sheet uploads stop when the person signs out, and the confirmation says so.
  */
 @Composable
 fun SettingsRootPage(
@@ -112,6 +112,8 @@ fun SettingsRootPage(
     actions: LibrarySettingsActions = LibrarySettingsActions(),
     listState: LazyListState = rememberLazyListState(),
     uploadsRunning: Int = 0,
+    appUpdates: AppUpdateSectionState? = null,
+    updateActions: AppUpdateActions = AppUpdateActions(),
 ) {
     var confirmSignOut by rememberSaveable { mutableStateOf(false) }
     var confirmDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -150,6 +152,7 @@ fun SettingsRootPage(
                 if (index < pages.lastIndex) RowDivider(inset = false)
             }
         }
+        if (appUpdates != null) appUpdateSection(appUpdates, updateActions)
         item(key = "sign out") {
             Spacer(Modifier.height(Popcorn.spacing.xl))
             RowDivider(inset = false)

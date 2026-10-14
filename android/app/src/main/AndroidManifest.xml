@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Installing a newer build of this app from GitHub (update/, docs/android.md, Updates). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!--
       No backups and no device transfer: the token, caches and lists hold the family's
@@ -84,7 +86,16 @@
             </intent-filter>
         </activity>
 
-        <!-- WorkManager's foreground service runs the upload job ([UploadWorker]). -->
+        <!--
+          PackageInstaller's answer about an update (update/UpdateInstallReceiver): Android's
+          confirmation to show, or how the install ended. Only the PendingIntent the app hands
+          the install session reaches it.
+        -->
+        <receiver
+            android:name=".update.UpdateInstallReceiver"
+            android:exported="false" />
+
+        <!-- WorkManager's foreground service runs the upload job ([UploadWorker]) and the update download. -->
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"

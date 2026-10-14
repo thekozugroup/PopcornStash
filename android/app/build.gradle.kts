@@ -30,6 +30,29 @@ val serverBinary = providers.gradleProperty("popcornstashServer")
     .map { path -> File(path).let { if (it.isAbsolute) it else rootProject.file(path) }.absolutePath }
     .orNull
 
+// The version: scripts/android-release.sh passes the build number (commits on main) and
+// "<Cargo version>+<build>"; a local build is versionCode 1 with the Cargo workspace version.
+val cargoVersion: String = repoRoot.resolve("Cargo.toml").readLines()
+    .dropWhile { it.trim() != "[workspace.package]" }
+    .firstNotNullOfOrNull { Regex("^version\\s*=\\s*\"([^\"]+)\"").find(it.trim())?.groupValues?.get(1) }
+    ?: throw GradleException("No version in Cargo.toml [workspace.package].")
+val appVersionCode: Int = providers.gradleProperty("popcornstashVersionCode").orNull?.toInt() ?: 1
+val appVersionName: String = providers.gradleProperty("popcornstashVersionName").orNull ?: cargoVersion
+
+// The release key's certificate SHA-256 (android/release-cert.sha256, public, committed once the
+// owner has made the key). The app compares its own certificate with it to tell a copy signed with
+// another key (a debug build), which cannot install a release over itself, before downloading one.
+val releaseCertFile = rootProject.file("release-cert.sha256")
+val releaseCertSha256: String = if (releaseCertFile.isFile) {
+    releaseCertFile.readText().filterNot { it == ':' || it.isWhitespace() }.lowercase().also {
+        if (it.isNotEmpty() && !Regex("^[0-9a-f]{64}$").matches(it)) {
+            throw GradleException("android/release-cert.sha256 is not a SHA-256 fingerprint (64 hex digits, colons allowed).")
+        }
+    }
+} else {
+    ""
+}
+
 android {
     namespace = "com.thekozugroup.popcornstash"
     // Android 17 QPR2 (SDK 37.2): the floating toolbar's glass uses the platform's backdrop
@@ -44,8 +67,9 @@ android {
         // Passkeys go through Credential Manager, which needs Android 9 (API 28).
         minSdk = 28
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
+        buildConfigField("String", "RELEASE_CERT_SHA256", "\"$releaseCertSha256\"")
     }
 
     signingConfigs {
@@ -186,6 +210,7 @@ dependencies {
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.coil.test)
     testImplementation(libs.androidx.work.testing)
+    testImplementation(libs.apksig)
 }
 
 // ---------------------------------------------------------------- Lucide glyphs ----
