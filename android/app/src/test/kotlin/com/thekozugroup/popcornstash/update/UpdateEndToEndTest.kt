@@ -48,7 +48,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  * Robolectric's PackageManager reads an APK's package and versionCode but not its certificates
  * (its copy of Android's APK signature verifier cannot reach the JDK's memory-mapped buffers), so
  * the test reads those with apksig, the library apksigner is built on; on a phone
- * [PackageManagerApks] reads all three with getPackageArchiveInfo(GET_SIGNING_CERTIFICATES).
+ * [PackageManagerApks] reads all three with getPackageArchiveInfo(GET_SIGNING_CERTIFICATES, and
+ * GET_SIGNATURES as well on Android 9 and 10, which read the certificates only then).
  */
 @RunWith(RobolectricTestRunner::class)
 class UpdateEndToEndTest {
@@ -244,7 +245,8 @@ class UpdateEndToEndTest {
         }
         val build = AppBuild(415, server.url("/a.apk").toString(), server.url("/a.apk.sha256").toString(), "https://github.com/x", 0)
         assertFalse(updates.download(build))
-        assertEquals(UpdateStatus.OtherKey(build), status())
+        // The installed app is release-signed: a build from another key is refused, never sent to the release page.
+        assertEquals(UpdateStatus.Failed(UpdateProblem.FetchFailed(FetchProblem.OtherSigner), build), status())
         assertEquals(emptyList<String>(), File(context.cacheDir, "updates").list().orEmpty().toList())
     }
 
@@ -267,29 +269,48 @@ class UpdateEndToEndTest {
         val started = shadowOf(app).nextStartedActivity
         assertEquals("android.content.pm.action.CONFIRM_INSTALL", started.action)
         assertTrue(started.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0)
+        // Kept, so the page can open it again if the person leaves it.
+        assertEquals("android.content.pm.action.CONFIRM_INSTALL", app.container.updates.confirmation()?.action)
 
         UpdateInstallReceiver().onReceive(
             context,
             Intent().putExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE_ABORTED),
         )
         assertEquals(UpdateStatus.Failed(UpdateProblem.InstallCancelled, null), app.container.updates.state.value.status)
+        assertNull(app.container.updates.confirmation())
 
+        // Android's own message stays out of what the page says.
         UpdateInstallReceiver().onReceive(
             context,
             Intent()
                 .putExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE_STORAGE)
-                .putExtra(PackageInstaller.EXTRA_STATUS_MESSAGE, "INSTALL_FAILED_INSUFFICIENT_STORAGE"),
+                .putExtra(PackageInstaller.EXTRA_STATUS_MESSAGE, "INSTALL_FAILED_INSUFFICIENT_STORAGE: Failed to allocate"),
         )
         assertEquals(
-            UpdateStatus.Failed(UpdateProblem.InstallFailed("INSTALL_FAILED_INSUFFICIENT_STORAGE"), null),
+            UpdateStatus.Failed(UpdateProblem.InstallFailed(InstallFailure.Storage), null),
             app.container.updates.state.value.status,
         )
+    }
+
+    @Test
+    fun packageInstallersAnswersAreReadAsPlainReasons() {
+        assertEquals(InstallStatus.Installed, installStatusOf(PackageInstaller.STATUS_SUCCESS))
+        assertEquals(InstallStatus.Cancelled, installStatusOf(PackageInstaller.STATUS_FAILURE_ABORTED))
+        assertEquals(InstallStatus.Failed(InstallFailure.Storage), installStatusOf(PackageInstaller.STATUS_FAILURE_STORAGE))
+        assertEquals(InstallStatus.Failed(InstallFailure.Incompatible), installStatusOf(PackageInstaller.STATUS_FAILURE_INCOMPATIBLE))
+        assertEquals(InstallStatus.Failed(InstallFailure.Conflict), installStatusOf(PackageInstaller.STATUS_FAILURE_CONFLICT))
+        assertEquals(InstallStatus.Failed(InstallFailure.Blocked), installStatusOf(PackageInstaller.STATUS_FAILURE_BLOCKED))
+        assertEquals(InstallStatus.Failed(InstallFailure.Invalid), installStatusOf(PackageInstaller.STATUS_FAILURE_INVALID))
+        assertEquals(InstallStatus.Failed(InstallFailure.Other), installStatusOf(PackageInstaller.STATUS_FAILURE))
+        assertEquals(InstallStatus.Failed(InstallFailure.Other), installStatusOf(PackageInstaller.STATUS_FAILURE_TIMEOUT))
     }
 
     @Test
     fun theManifestDeclaresWhatInstallingNeeds() {
         val info = context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_PERMISSIONS or PackageManager.GET_RECEIVERS)
         assertTrue(info.requestedPermissions.orEmpty().contains("android.permission.REQUEST_INSTALL_PACKAGES"))
+        // Without it Android 12 and later ignore USER_ACTION_NOT_REQUIRED and ask every time.
+        assertTrue(info.requestedPermissions.orEmpty().contains("android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION"))
         val receiver = info.receivers.orEmpty().single { it.name == UpdateInstallReceiver::class.java.name }
         assertFalse("only the app's own PendingIntent may reach it", receiver.exported)
     }

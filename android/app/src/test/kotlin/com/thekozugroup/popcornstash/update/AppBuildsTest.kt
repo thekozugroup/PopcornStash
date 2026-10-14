@@ -71,6 +71,19 @@ class AppBuildsTest {
     }
 
     @Test
+    fun aBuildLargerThanAnyAppIsNotOffered() {
+        fun sized(size: Long) = release(
+            "android-421",
+            listOf(
+                Asset("popcornstash-android-421.apk", "https://x.test/421.apk", size = size),
+                Asset("popcornstash-android-421.apk.sha256", "https://x.test/421.sha256"),
+            ),
+        )
+        assertEquals(415, newest(sized(UpdateFetcher.MAX_APK_BYTES + 1), appRelease(415))?.number)
+        assertEquals(421, newest(sized(UpdateFetcher.MAX_APK_BYTES), appRelease(415))?.number)
+    }
+
+    @Test
     fun offersOnlyAHigherBuild() {
         val newest = UpdateFixtures.build(415)
         assertEquals(newest, AppBuilds.offer(newest, installed = 412))

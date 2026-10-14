@@ -46,7 +46,7 @@ object AppBuilds {
 
     /**
      * [release] as a build, or null when it is not one the app can install: not an `android-N`
-     * tag, a draft, or without both files complete.
+     * tag, a draft, without both files complete, or larger than [UpdateFetcher.MAX_APK_BYTES].
      */
     fun buildOf(release: GitHubRelease): AppBuild? {
         val number = tagPattern.matchEntire(release.tagName)?.groupValues?.get(1)?.toIntOrNull() ?: return null
@@ -56,6 +56,8 @@ object AppBuilds {
         val sha = release.assets.firstOrNull { it.name == "$apkName.sha256" && it.state == "uploaded" } ?: return null
         // Release builds refuse plain http anyway (no cleartext exception outside debug builds).
         if (!isWebAddress(apk.browserDownloadUrl) || !isWebAddress(sha.browserDownloadUrl)) return null
+        // A build of the app is about 6 MB; a list that says more is not offered.
+        if (apk.size > UpdateFetcher.MAX_APK_BYTES) return null
         return AppBuild(number, apk.browserDownloadUrl, sha.browserDownloadUrl, release.htmlUrl, apk.size)
     }
 

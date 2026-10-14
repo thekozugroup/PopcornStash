@@ -12,16 +12,21 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.thekozugroup.popcornstash.feature.downloads.DownloadsActions
 import com.thekozugroup.popcornstash.feature.downloads.DownloadsPage
 import com.thekozugroup.popcornstash.feature.downloads.DownloadsSamples
+import com.thekozugroup.popcornstash.feature.settings.AppUpdateSectionState
 import com.thekozugroup.popcornstash.feature.settings.SettingsRootPage
 import com.thekozugroup.popcornstash.navigation.AppShell
 import com.thekozugroup.popcornstash.navigation.Tab
 import com.thekozugroup.popcornstash.ui.theme.PopcornTheme
+import com.thekozugroup.popcornstash.update.AppBuild
+import com.thekozugroup.popcornstash.update.AppUpdateUi
+import com.thekozugroup.popcornstash.update.UpdateStatus
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -38,6 +43,14 @@ import org.robolectric.annotation.Config
 class ShellScreenshotTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    private val sampleBuild = AppBuild(
+        number = 415,
+        apkUrl = "https://github.com/thekozugroup/PopcornStash/releases/download/android-415/popcornstash-android-415.apk",
+        sha256Url = "https://github.com/thekozugroup/PopcornStash/releases/download/android-415/popcornstash-android-415.apk.sha256",
+        pageUrl = "https://github.com/thekozugroup/PopcornStash/releases/tag/android-415",
+        size = 14_268_412,
+    )
 
     private fun shell(dark: Boolean, tab: Tab, readyToImport: Int = 0) {
         compose.setContent {
@@ -152,15 +165,28 @@ class ShellScreenshotTest {
         compose.onRoot().captureRoboImage(screenshot("shell-downloads-end-dark"))
     }
 
-    /** Settings (the owner's) scrolled to its end: the last library row's More button and Sign out clear the bar. */
-    @Test
-    fun settingsAtTheEndLight() {
+    /**
+     * Settings (the owner's) scrolled to its end, with "This app" in [update]: Sign out, the
+     * automatic-check switch, the update's button or its bar all end 16dp or more above the bar.
+     */
+    private fun settingsAtTheEnd(dark: Boolean, update: UpdateStatus) {
+        val ui = AppUpdateUi(version = "0.1.0", build = 412, status = update, autoCheck = true)
         compose.setContent {
-            PopcornTheme(darkTheme = false, reduceMotion = false) {
+            PopcornTheme(darkTheme = dark, reduceMotion = false) {
                 AppShell(initialTab = Tab.Settings) { page ->
                     if (page.tab == Tab.Settings) {
                         val list = remember { LazyListState(firstVisibleItemIndex = 999) }
-                        SettingsRootPage(page, SampleOwner, "stash.example.com", "0.2.0", SampleLibrarySettings, onOpenWeb = {}, onSignOut = {}, listState = list)
+                        SettingsRootPage(
+                            page,
+                            SampleOwner,
+                            "stash.example.com",
+                            "0.2.0",
+                            SampleLibrarySettings,
+                            onOpenWeb = {},
+                            onSignOut = {},
+                            listState = list,
+                            appUpdates = AppUpdateSectionState(ui, now = 0L),
+                        )
                     } else {
                         SampleTabRoot(page)
                     }
@@ -168,8 +194,19 @@ class ShellScreenshotTest {
             }
         }
         compose.waitForIdle()
-        compose.assertNothingUnderTheToolbar()
+        compose.assertNothingUnderTheToolbar(clearance = 16.dp)
+    }
+
+    @Test
+    fun settingsAtTheEndLight() {
+        settingsAtTheEnd(dark = false, update = UpdateStatus.Available(sampleBuild))
         compose.onRoot().captureRoboImage(screenshot("shell-settings-end-light"))
+    }
+
+    @Test
+    fun settingsAtTheEndDownloadingDark() {
+        settingsAtTheEnd(dark = true, update = UpdateStatus.Downloading(sampleBuild, 41))
+        compose.onRoot().captureRoboImage(screenshot("shell-settings-end-downloading-dark"))
     }
 
     /** A snackbar after an action: at the bottom, level with the bar's bottom edge and to its left. */

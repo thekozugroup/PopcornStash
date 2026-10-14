@@ -9,6 +9,7 @@ import okhttp3.Request
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
 
 /** What an APK says about itself: its package, its build and the certificates it is signed with (SHA-256, hex). */
@@ -28,7 +29,7 @@ fun interface ApkInspector {
 
 /** Why a download did not end as a verified APK. */
 sealed interface FetchProblem {
-    /** The connection broke, or GitHub answered with an error. */
+    /** The connection broke, GitHub answered with an error, or the file ran past its size or the time allowed. */
     data object DownloadStopped : FetchProblem
 
     /** The file's SHA-256 is not the one in its `.sha256` file, or that file is unusable. */
@@ -52,7 +53,8 @@ sealed interface FetchOutcome {
  * its SHA-256 against the build's `.sha256` file, then with [inspector] that it is this app
  * ([packageName]), the build it says it is, and signed by the installed app's certificate
  * ([installedSigners]). Whatever fails a check is deleted at once; so is a download that is
- * stopped. Only one build is kept at a time.
+ * stopped. Only one build is kept at a time. A download stops as soon as it is larger than it
+ * said it would be, or than [MAX_APK_BYTES], and when it takes longer than [DOWNLOAD_DEADLINE_MINUTES].
  */
 class UpdateFetcher(
     private val http: OkHttpClient,
@@ -117,12 +119,19 @@ class UpdateFetcher(
         null
     }
 
-    /** Writes the APK to [part] and returns its SHA-256, or null when the download broke. */
+    /** Writes the APK to [part] and returns its SHA-256, or null when the download broke or ran over. */
     private suspend fun download(build: AppBuild, part: File, onProgress: suspend (Long, Long?) -> Unit): String? = try {
-        http.newCall(Request.Builder().url(build.apkUrl).build()).await().use { response ->
+        val call = http.newCall(Request.Builder().url(build.apkUrl).build())
+        // The whole download, not each read: a server that trickles a byte a minute is cut off too.
+        call.timeout().timeout(DOWNLOAD_DEADLINE_MINUTES, TimeUnit.MINUTES)
+        call.await().use { response ->
             if (!response.isSuccessful) return null
             val body = response.body
-            val total = body.contentLength().takeIf { it > 0 } ?: build.size.takeIf { it > 0 }
+            val declared = body.contentLength().takeIf { it > 0 }
+            if (declared != null && declared > MAX_APK_BYTES) return null
+            val total = declared ?: build.size.takeIf { it > 0 }
+            // Never more than it said, nor more than any build of the app could be.
+            val limit = minOf(total ?: MAX_APK_BYTES, MAX_APK_BYTES)
             val digest = MessageDigest.getInstance("SHA-256")
             var done = 0L
             var reported = -1L
@@ -133,6 +142,7 @@ class UpdateFetcher(
                         coroutineContext.ensureActive()
                         val read = input.read(buffer)
                         if (read < 0) break
+                        if (done + read > limit) return null
                         output.write(buffer, 0, read)
                         digest.update(buffer, 0, read)
                         done += read
@@ -157,6 +167,12 @@ class UpdateFetcher(
 
     companion object {
         private const val MAX_SHA_FILE = 4096L
+
+        /** The largest APK the app downloads (a build is about 6 MB): a list or a server that says more is refused. */
+        const val MAX_APK_BYTES = 200L * 1024 * 1024
+
+        /** How long one download may take from start to end. */
+        const val DOWNLOAD_DEADLINE_MINUTES = 60L
 
         fun fileName(build: AppBuild) = "popcornstash-android-${build.number}.apk"
 

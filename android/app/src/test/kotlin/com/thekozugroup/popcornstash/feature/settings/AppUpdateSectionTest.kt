@@ -41,6 +41,7 @@ class AppUpdateSectionTest {
     private val actions = mutableListOf<UpdateAction>()
     private val switches = mutableListOf<Boolean>()
     private var ui by mutableStateOf(AppUpdateUi("0.1.0", 412, UpdateStatus.Available(build), autoCheck = true))
+    private var notificationsOff by mutableStateOf(false)
 
     private fun show() {
         compose.setContent {
@@ -55,7 +56,7 @@ class AppUpdateSectionTest {
                             libraries = null,
                             onOpenWeb = {},
                             onSignOut = {},
-                            appUpdates = AppUpdateSectionState(ui, 0L),
+                            appUpdates = AppUpdateSectionState(ui, 0L, notificationsOff),
                             updateActions = AppUpdateActions(
                                 onAction = { actions += it },
                                 onAutoCheck = { on ->
@@ -81,7 +82,7 @@ class AppUpdateSectionTest {
         show()
         reach(hasText("This app"))
         compose.onNodeWithText("This app").assertIsDisplayed()
-        compose.onNodeWithText("0.1.0, build 412").assertIsDisplayed()
+        compose.onNodeWithText("Version 0.1.0, build 412").assertIsDisplayed()
         compose.onNodeWithText("Build 415 is available.").assertIsDisplayed()
         reach(hasTestTag("update action"))
         compose.onNodeWithTag("update action").performClick()
@@ -100,7 +101,29 @@ class AppUpdateSectionTest {
         ui = ui.copy(status = UpdateStatus.UpToDate(0L))
         reach(hasText("Check for updates"))
         compose.onNodeWithText("Check for updates").performClick()
-        assertEquals(listOf(UpdateAction.Install, UpdateAction.OpenReleasePage, UpdateAction.Check), actions)
+        // Android's confirmation was left: "Install" opens it again.
+        ui = ui.copy(status = UpdateStatus.Installing(build, canConfirm = true))
+        reach(hasTestTag("update action"))
+        compose.onNodeWithTag("update action").performClick()
+        assertEquals(listOf(UpdateAction.Install, UpdateAction.OpenReleasePage, UpdateAction.Check, UpdateAction.Confirm), actions)
+    }
+
+    @Test
+    fun checkingTheDownloadShowsAMovingBarAndNoButton() {
+        ui = ui.copy(status = UpdateStatus.Verifying(build))
+        show()
+        reach(hasTestTag("update progress"))
+        compose.onNodeWithText("Making sure it is the real build from GitHub.").assertIsDisplayed()
+        compose.onNodeWithTag("update progress").assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.ProgressBarRangeInfo))
+        compose.onNodeWithTag("update action").assertDoesNotExist()
+    }
+
+    @Test
+    fun theSwitchSaysWhenNotificationsAreOff() {
+        notificationsOff = true
+        show()
+        reach(hasTestTag("auto check"))
+        compose.onNodeWithText("Asks GitHub once a day. Notifications are off, so a new build shows only here.").assertIsDisplayed()
     }
 
     @Test

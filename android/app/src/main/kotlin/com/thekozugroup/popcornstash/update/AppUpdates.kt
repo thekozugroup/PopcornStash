@@ -1,5 +1,6 @@
 package com.thekozugroup.popcornstash.update
 
+import android.content.Intent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -13,6 +14,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.CoroutineContext
 
 /** The background jobs of the updater ([WorkManagerUpdateJobs] on a phone). */
@@ -37,9 +40,11 @@ interface UpdateNotifier {
  * in [com.thekozugroup.popcornstash.AppContainer]; the jobs report back into it.
  *
  * [installedSigners] are the installed app's certificates, [releaseSigner] the release key's
- * (android/release-cert.sha256, built into the app; null when the repository had none). A copy
- * signed with another key, such as a debug build, cannot install a release over itself, so it
- * is told so before anything is downloaded.
+ * (android/release-cert.sha256, built into the app; null when the repository had none), and
+ * [debugBuild] is true for a debug build, which is never signed with the release key. A copy
+ * that is not signed with the release key cannot install a GitHub build over itself, so it is
+ * told so before anything is downloaded. A download signed with another key than a
+ * release-signed copy's is refused and deleted, never offered for installing by hand.
  */
 class AppUpdates(
     versionName: String,
@@ -53,6 +58,7 @@ class AppUpdates(
     private val scope: CoroutineScope,
     private val installedSigners: () -> Set<String>,
     private val releaseSigner: String?,
+    private val debugBuild: Boolean = false,
     private val inForeground: () -> Boolean = { true },
     private val ioContext: CoroutineContext = Dispatchers.IO,
 ) {
@@ -64,6 +70,15 @@ class AppUpdates(
     private val checking = Mutex()
     private var checkJob: Job? = null
 
+    /** One download at a time: a job replaced by a newer one finishes with its file before the next starts. */
+    private val downloading = Mutex()
+
+    /** Each requested or started download takes a number; only the newest one reports. */
+    private val downloads = AtomicInteger()
+
+    /** True from "Install" until the session is with Android, so a quick return to the page does not undo it. */
+    private val writingSession = AtomicBoolean(false)
+
     /** The person asked for this build: install it as soon as it is verified, while they are here. */
     @Volatile
     private var installWhenReady: Int? = null
@@ -72,8 +87,9 @@ class AppUpdates(
 
     private fun set(status: UpdateStatus) = _state.update { it.copy(status = status) }
 
-    /** Whether this copy is signed with a key other than the release key. */
+    /** Whether this copy is known not to be signed with the release key: a debug build, or another certificate. */
     private val otherKey: Boolean by lazy {
+        if (debugBuild) return@lazy true
         val release = releaseSigner?.lowercase() ?: return@lazy false
         val installed = installedSigners()
         installed.isNotEmpty() && release !in installed
@@ -88,8 +104,7 @@ class AppUpdates(
     fun restore() {
         if (status != UpdateStatus.Idle) return
         val ready = memory.ready
-        val file = ready?.let { File(fetcher.dir, it.fileName) }
-        val restored = if (ready != null && file != null && ready.build.number > installedBuild && file.isFile && sha256Of(file) == ready.sha256) {
+        val restored = if (ready != null && ready.build.number > installedBuild && isIntact(ready)) {
             UpdateStatus.ReadyToInstall(ready.build)
         } else {
             memory.ready = null
@@ -103,6 +118,18 @@ class AppUpdates(
             }
         }
         _state.update { if (it.status == UpdateStatus.Idle) it.copy(status = restored) else it }
+    }
+
+    /** Whether the verified file is still there, unchanged. The system may clear the cache at any time. */
+    private fun isIntact(ready: ReadyBuild): Boolean {
+        val file = File(fetcher.dir, ready.fileName)
+        return try {
+            file.isFile && sha256Of(file) == ready.sha256
+        } catch (_: IOException) {
+            false
+        } catch (_: RuntimeException) {
+            false
+        }
     }
 
     private fun offer(build: AppBuild): UpdateStatus = if (otherKey) UpdateStatus.OtherKey(build) else UpdateStatus.Available(build)
@@ -121,15 +148,16 @@ class AppUpdates(
     }
 
     /** Asks GitHub and shows what it said; returns the build on offer, if any. */
-    suspend fun check(): AppBuild? = checking.withLock {
+    suspend fun check(): AppBuild? = (ask() as? CheckResult.Answered)?.let { AppBuilds.offer(it.newest, installedBuild) }
+
+    /** Asks GitHub and shows the answer; null when a download or an install was running. */
+    private suspend fun ask(): CheckResult? = checking.withLock {
         if (busy) return null
         val before = status
         set(UpdateStatus.Checking)
-        when (val result = checker.check()) {
-            is CheckResult.Failed -> {
-                set(UpdateStatus.Failed(UpdateProblem.CheckFailed(result.problem), null))
-                null
-            }
+        val result = checker.check()
+        when (result) {
+            is CheckResult.Failed -> set(UpdateStatus.Failed(UpdateProblem.CheckFailed(result.problem), null))
             is CheckResult.Answered -> {
                 val build = AppBuilds.offer(result.newest, installedBuild)
                 val ready = memory.ready
@@ -141,15 +169,23 @@ class AppUpdates(
                         else -> offer(build)
                     },
                 )
-                build
             }
         }
+        result
     }
 
-    /** The daily job: checks when automatic checks are on, and posts one notification per new build. */
+    /**
+     * The daily job: checks when automatic checks are on, and posts one notification per new
+     * build this copy can install. A copy that needs a one-time reinstall gets none (Settings
+     * says so), and a build that disappeared from GitHub no longer holds back the next notification.
+     */
     suspend fun backgroundCheck() {
         if (!memory.autoCheck) return
-        val build = check() ?: return
+        val answer = ask() as? CheckResult.Answered ?: return
+        val newest = answer.newest?.number ?: 0
+        if (memory.lastNotified > newest) memory.lastNotified = newest
+        val build = AppBuilds.offer(answer.newest, installedBuild) ?: return
+        if (otherKey) return
         if (build.number > memory.lastNotified) {
             memory.lastNotified = build.number
             notifier.newBuild(build)
@@ -165,16 +201,33 @@ class AppUpdates(
     /** Makes sure the daily check matches the setting (at every start of the process). */
     fun schedule() = jobs.scheduleDailyCheck(memory.autoCheck)
 
-    /** The release page of the build on offer, or every release: where a build is installed by hand. */
+    /**
+     * Whether to ask for permission to post notifications now (Android 13 and later, while it is
+     * not given): whenever the person turns automatic checks on, and otherwise only the first
+     * time they check or update, so the daily check's notification can reach them.
+     */
+    fun askForNotifications(turningOn: Boolean): Boolean {
+        if (!turningOn && memory.askedForNotifications) return false
+        memory.askedForNotifications = true
+        return true
+    }
+
+    /**
+     * The release page of the build on offer, or every release: where a build is installed by
+     * hand. Only pages of this repository on github.com open; anything else in the list is ignored.
+     */
     fun releasePage(): String = when (val current = status) {
         is UpdateStatus.OtherKey -> current.build.pageUrl
         is UpdateStatus.Available -> current.build.pageUrl
         is UpdateStatus.Failed -> current.build?.pageUrl
         else -> null
-    }?.takeIf { it.startsWith("https://") } ?: UpdateChecker.RELEASES_PAGE
+    }?.takeIf { it.startsWith(UpdateChecker.RELEASES_PAGE + "/") } ?: UpdateChecker.RELEASES_PAGE
 
     /** The system page where the person lets this app install apps. */
     fun permissionIntent() = installer.permissionIntent()
+
+    /** Android's confirmation for the install waiting on the person, to open again from the page. */
+    fun confirmation(): Intent? = installer.confirmation()
 
     /**
      * "Update" (and "Try again" after a failed download): downloads the build on offer.
@@ -199,64 +252,100 @@ class AppUpdates(
     }
 
     private fun startDownload(build: AppBuild) {
+        // Whatever download was running is replaced (WorkManager cancels it): it reports no more.
+        downloads.incrementAndGet()
         installWhenReady = build.number
         notifier.cancel()
         set(UpdateStatus.Downloading(build, null))
         jobs.startDownload(build)
     }
 
-    /** The person came back to the page: carry on if they have just allowed installs. */
+    /**
+     * The person came back to the page: carry on if they have just allowed installs, and find
+     * the way out of "Installing" when Android has no session of this app's any more (it was
+     * dropped without a word), so the page is never left without an action.
+     */
     fun onResume() {
-        val waiting = status as? UpdateStatus.NeedsPermission ?: return
-        if (!installer.canInstall()) return
+        when (val current = status) {
+            is UpdateStatus.NeedsPermission -> {
+                if (!installer.canInstall()) return
+                val ready = memory.ready
+                if (ready != null && ready.build.number == current.build.number) install() else startDownload(current.build)
+            }
+            is UpdateStatus.Installing -> if (!writingSession.get() && !installer.hasSession()) set(installEnded(current.build))
+            else -> Unit
+        }
+    }
+
+    /** An install that ended without an answer: the verified file is offered again, or else the build. */
+    private fun installEnded(build: AppBuild): UpdateStatus {
         val ready = memory.ready
-        if (ready != null && ready.build.number == waiting.build.number) install() else startDownload(waiting.build)
+        return if (ready != null && ready.build.number == build.number) UpdateStatus.ReadyToInstall(build) else offer(build)
     }
 
     /**
      * The download job's work: fetches and checks [build], reporting progress through the
      * state (and [onProgress], for its notification). Returns true when the build is verified.
+     * A job that a newer download replaced waits for this one's files to be gone and then
+     * neither downloads nor reports.
      */
     suspend fun download(build: AppBuild, onProgress: suspend (percent: Int?) -> Unit = {}): Boolean {
-        set(UpdateStatus.Downloading(build, null))
-        memory.ready = null
-        var shown: Int? = null
-        val outcome = try {
-            fetcher.fetch(
-                build,
-                onProgress = { done, total ->
-                    val percent = total?.let { ((done * 100) / it).toInt().coerceIn(0, 100) }
-                    if (percent != shown) {
-                        shown = percent
-                        set(UpdateStatus.Downloading(build, percent))
-                        onProgress(percent)
-                    }
-                },
-                onVerifying = { set(UpdateStatus.Verifying(build)) },
-            )
-        } catch (e: CancellationException) {
-            // The job was stopped (by Android, or a newer download): say so instead of "Downloading" forever.
-            installWhenReady = null
-            set(UpdateStatus.Failed(UpdateProblem.FetchFailed(FetchProblem.DownloadStopped), build))
-            throw e
+        val attempt = downloads.incrementAndGet()
+        fun current() = downloads.get() == attempt
+        fun report(status: UpdateStatus) {
+            if (current()) set(status)
         }
-        return when (outcome) {
-            is FetchOutcome.Failed -> {
-                installWhenReady = null
-                set(
-                    if (outcome.problem == FetchProblem.OtherSigner) {
-                        UpdateStatus.OtherKey(build)
-                    } else {
-                        UpdateStatus.Failed(UpdateProblem.FetchFailed(outcome.problem), build)
+        return downloading.withLock {
+            if (!current()) return@withLock false
+            report(UpdateStatus.Downloading(build, null))
+            memory.ready = null
+            var shown: Int? = null
+            val outcome = try {
+                fetcher.fetch(
+                    build,
+                    onProgress = { done, total ->
+                        val percent = total?.let { ((done * 100) / it).toInt().coerceIn(0, 100) }
+                        if (percent != shown && current()) {
+                            shown = percent
+                            report(UpdateStatus.Downloading(build, percent))
+                            onProgress(percent)
+                        }
                     },
+                    onVerifying = { report(UpdateStatus.Verifying(build)) },
                 )
-                false
+            } catch (e: CancellationException) {
+                // The job was stopped (by Android, or a newer download): say so instead of "Downloading" forever.
+                if (current()) {
+                    installWhenReady = null
+                    set(UpdateStatus.Failed(UpdateProblem.FetchFailed(FetchProblem.DownloadStopped), build))
+                }
+                throw e
             }
-            is FetchOutcome.Verified -> {
-                memory.ready = ReadyBuild(build, outcome.sha256, outcome.file.name)
-                set(UpdateStatus.ReadyToInstall(build))
-                if (installWhenReady == build.number && inForeground()) install()
-                true
+            if (!current()) {
+                // Replaced while it finished: the newer download starts from nothing.
+                fetcher.clear()
+                return@withLock false
+            }
+            when (outcome) {
+                is FetchOutcome.Failed -> {
+                    installWhenReady = null
+                    set(
+                        // Only a copy known not to be release-signed hears "reinstall once"; for any other
+                        // copy a download signed with another key is a build that is not PopcornStash's.
+                        if (outcome.problem == FetchProblem.OtherSigner && otherKey) {
+                            UpdateStatus.OtherKey(build)
+                        } else {
+                            UpdateStatus.Failed(UpdateProblem.FetchFailed(outcome.problem), build)
+                        },
+                    )
+                    false
+                }
+                is FetchOutcome.Verified -> {
+                    memory.ready = ReadyBuild(build, outcome.sha256, outcome.file.name)
+                    set(UpdateStatus.ReadyToInstall(build))
+                    if (installWhenReady == build.number && inForeground()) install()
+                    true
+                }
             }
         }
     }
@@ -272,43 +361,61 @@ class AppUpdates(
             set(UpdateStatus.NeedsPermission(ready.build))
             return false
         }
+        writingSession.set(true)
         set(UpdateStatus.Installing(ready.build))
         // Reading the file again and writing it into the session takes a moment: off the main thread.
-        scope.launch(ioContext) { installNow(ready) }
+        scope.launch(ioContext) {
+            try {
+                installNow(ready)
+            } finally {
+                writingSession.set(false)
+            }
+        }
         return true
     }
 
     private fun installNow(ready: ReadyBuild) {
-        val file = File(fetcher.dir, ready.fileName)
-        if (!file.isFile || sha256Of(file) != ready.sha256) {
+        if (!isIntact(ready)) {
             forgetDownload()
             set(UpdateStatus.Failed(UpdateProblem.FetchFailed(FetchProblem.ChecksumMismatch), ready.build))
             return
         }
         try {
-            installer.install(file)
-        } catch (e: IOException) {
+            installer.install(File(fetcher.dir, ready.fileName))
+        } catch (_: IOException) {
             forgetDownload()
-            set(UpdateStatus.Failed(UpdateProblem.InstallFailed(e.message), ready.build))
+            set(UpdateStatus.Failed(UpdateProblem.InstallFailed(InstallFailure.Other), ready.build))
+        } catch (_: RuntimeException) {
+            forgetDownload()
+            set(UpdateStatus.Failed(UpdateProblem.InstallFailed(InstallFailure.Other), ready.build))
         }
     }
 
     /** What Android said about the install. */
     fun onInstallStatus(result: InstallStatus) {
-        val build = (status as? UpdateStatus.Installing)?.build ?: memory.ready?.build
+        val ready = memory.ready
+        val build = (status as? UpdateStatus.Installing)?.build ?: ready?.build
         when (result) {
-            InstallStatus.NeedsConfirmation -> build?.let { set(UpdateStatus.Installing(it)) }
+            is InstallStatus.NeedsConfirmation -> build?.let {
+                // Without a confirmation to show, the person can only start again from the verified file.
+                set(if (result.canReopen) UpdateStatus.Installing(it, canConfirm = true) else installEnded(it))
+            }
             InstallStatus.Installed -> {
                 forgetDownload()
                 set(UpdateStatus.UpToDate(memory.lastChecked ?: 0L))
             }
-            InstallStatus.Cancelled -> {
-                forgetDownload()
-                set(UpdateStatus.Failed(UpdateProblem.InstallCancelled, build))
+            InstallStatus.Cancelled -> when {
+                // Closing Android's confirmation is not a failure: the verified file stays for "Install".
+                ready != null && build != null && ready.build.number == build.number && isIntact(ready) ->
+                    set(UpdateStatus.ReadyToInstall(build, cancelled = true))
+                else -> {
+                    forgetDownload()
+                    set(UpdateStatus.Failed(UpdateProblem.InstallCancelled, build))
+                }
             }
             is InstallStatus.Failed -> {
                 forgetDownload()
-                set(UpdateStatus.Failed(UpdateProblem.InstallFailed(result.message), build))
+                set(UpdateStatus.Failed(UpdateProblem.InstallFailed(result.reason), build))
             }
         }
     }

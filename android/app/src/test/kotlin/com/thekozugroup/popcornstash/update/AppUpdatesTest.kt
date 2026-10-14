@@ -7,6 +7,7 @@ import com.thekozugroup.popcornstash.update.UpdateFixtures.list
 import com.thekozugroup.popcornstash.update.UpdateFixtures.serverRelease
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -54,13 +55,15 @@ class AppUpdatesTest {
     private var apkFacts = ApkFacts("com.thekozugroup.popcornstash", 415, setOf(ours))
     private var installedSigners = setOf(ours)
     private var releaseSigner: String? = ours
+    private var debugBuild = false
     private var foreground = true
     private var slowApk = false
     private val memory = InMemoryUpdateMemory()
 
     private class FakeInstaller : UpdateInstaller {
         var allowed = true
-        var failWith: IOException? = null
+        var failWith: Exception? = null
+        var session = false
         val installed = mutableListOf<File>()
 
         override fun canInstall() = allowed
@@ -70,7 +73,12 @@ class AppUpdatesTest {
         override fun install(apk: File) {
             failWith?.let { throw it }
             installed += apk
+            session = true
         }
+
+        override fun confirmation(): Intent? = null
+
+        override fun hasSession() = session
     }
 
     private class FakeJobs : UpdateJobs {
@@ -138,6 +146,7 @@ class AppUpdatesTest {
         scope = backgroundScope,
         installedSigners = { installedSigners },
         releaseSigner = releaseSigner,
+        debugBuild = debugBuild,
         inForeground = { foreground },
         ioContext = StandardTestDispatcher(testScheduler),
     )
@@ -239,17 +248,63 @@ class AppUpdatesTest {
     }
 
     @Test
-    fun withoutAReleaseKeyInTheBuildTheDownloadDecides() = runTest {
+    fun aDebugBuildIsToldBeforeAnyDownloadAndIsNotNotified() = runTest {
+        // No release key in the build (as today) and a debug build: it can never install a GitHub build.
+        releaseSigner = null
+        debugBuild = true
+        installedSigners = setOf(theirs)
+        val updates = updates()
+        updates.backgroundCheck()
+        assertEquals(415, (updates.status() as UpdateStatus.OtherKey).build.number)
+        assertTrue("no notification for a build this copy cannot install", notifier.posted.isEmpty())
+        // A start shows it again from the last answer.
+        updates().apply { restore() }.let { assertTrue(it.status() is UpdateStatus.OtherKey) }
+    }
+
+    @Test
+    fun aCopySignedWithAnotherKeyIsNotNotified() = runTest {
+        installedSigners = setOf(theirs)
+        updates(1).backgroundCheck()
+        assertTrue(notifier.posted.isEmpty())
+        assertEquals(0, memory.lastNotified)
+    }
+
+    @Test
+    fun aReleaseSignedCopyRefusesADownloadSignedWithAnotherKey() = runTest {
+        // The installed app is the release build; the file on GitHub (and its checksum) were replaced.
+        apkFacts = apkFacts.copy(signers = setOf(theirs), lineage = setOf(theirs))
+        val updates = updates()
+        updates.check()
+        val build = (updates.status() as UpdateStatus.Available).build
+        updates.update()
+        assertFalse(updates.download(build))
+        // Not "reinstall by hand from the release page": a refused build, deleted.
+        assertEquals(UpdateStatus.Failed(UpdateProblem.FetchFailed(FetchProblem.OtherSigner), build), updates.status())
+        assertNull(memory.ready)
+        assertEquals(emptyList<String>(), fetcher.dir.list().orEmpty().toList())
+    }
+
+    @Test
+    fun withoutAReleaseKeyInTheBuildADownloadFromAnotherKeyIsRefused() = runTest {
+        // Not a debug build, and no release key built in: whether this copy is release-signed is not known,
+        // so a download signed with another key is refused rather than offered for installing by hand.
         releaseSigner = null
         installedSigners = setOf(theirs)
         val updates = updates()
         updates.check()
-        assertTrue(updates.status() is UpdateStatus.Available)
         val build = (updates.status() as UpdateStatus.Available).build
         updates.update()
         assertFalse(updates.download(build))
-        assertEquals(UpdateStatus.OtherKey(build), updates.status())
+        assertEquals(UpdateStatus.Failed(UpdateProblem.FetchFailed(FetchProblem.OtherSigner), build), updates.status())
         assertEquals(emptyList<String>(), fetcher.dir.list().orEmpty().toList())
+    }
+
+    @Test
+    fun onlyThisRepositorysPagesOpen() = runTest {
+        memory.remember("\"e\"", UpdateFixtures.build(415).copy(pageUrl = "https://example.test/releases/tag/android-415"))
+        val updates = updates().apply { restore() }
+        assertTrue(updates.status() is UpdateStatus.Available)
+        assertEquals(UpdateChecker.RELEASES_PAGE, updates.releasePage())
     }
 
     @Test
@@ -361,26 +416,64 @@ class AppUpdatesTest {
     }
 
     @Test
-    fun androidsConfirmationKeepsItInstalling() = runTest {
+    fun androidsConfirmationCanBeOpenedAgain() = runTest {
         val (updates, build) = installing()
-        updates.onInstallStatus(InstallStatus.NeedsConfirmation)
-        assertEquals(UpdateStatus.Installing(build), updates.status())
+        updates.onInstallStatus(InstallStatus.NeedsConfirmation(canReopen = true))
+        assertEquals(UpdateStatus.Installing(build, canConfirm = true), updates.status())
     }
 
     @Test
-    fun aCancelledInstallDeletesTheFileAndOffersUpdateAgain() = runTest {
+    fun withoutAConfirmationToShowTheFileIsOfferedAgain() = runTest {
         val (updates, build) = installing()
+        updates.onInstallStatus(InstallStatus.NeedsConfirmation(canReopen = false))
+        assertEquals(UpdateStatus.ReadyToInstall(build), updates.status())
+        assertTrue(fetcher.dir.resolve("popcornstash-android-415.apk").isFile)
+    }
+
+    @Test
+    fun anInstallAndroidDroppedWithoutAWordIsNotLeftInstalling() = runTest {
+        val (updates, build) = installing()
+        // Back on the page while Android still holds the session (its confirmation left with Home): still installing.
+        updates.onResume()
+        assertEquals(UpdateStatus.Installing(build), updates.status())
+        // Android has no session of this app's any more and never answered: the verified file is offered again.
+        installer.session = false
+        updates.onResume()
+        assertEquals(UpdateStatus.ReadyToInstall(build), updates.status())
+        assertTrue(updates.install())
+        runCurrent()
+        assertEquals(2, installer.installed.size)
+    }
+
+    @Test
+    fun aCancelledInstallKeepsTheVerifiedFileForInstall() = runTest {
+        val (updates, build) = installing()
+        updates.onInstallStatus(InstallStatus.Cancelled)
+        assertEquals(UpdateStatus.ReadyToInstall(build, cancelled = true), updates.status())
+        assertEquals(build, memory.ready?.build)
+        assertTrue(fetcher.dir.resolve("popcornstash-android-415.apk").isFile)
+        // "Install" hands the same file to Android, without downloading it again.
+        val requests = releaseCount()
+        assertTrue(updates.install())
+        runCurrent()
+        assertEquals(2, installer.installed.size)
+        assertEquals(requests, releaseCount())
+    }
+
+    @Test
+    fun aCancelWhenTheFileIsGoneOffersUpdateAgain() = runTest {
+        val (updates, build) = installing()
+        fetcher.clear()
         updates.onInstallStatus(InstallStatus.Cancelled)
         assertEquals(UpdateStatus.Failed(UpdateProblem.InstallCancelled, build), updates.status())
         assertNull(memory.ready)
-        assertEquals(emptyList<String>(), fetcher.dir.list().orEmpty().toList())
     }
 
     @Test
-    fun aRefusedInstallSaysAndroidsReason() = runTest {
+    fun aRefusedInstallSaysWhyInPlainWords() = runTest {
         val (updates, build) = installing()
-        updates.onInstallStatus(InstallStatus.Failed("INSTALL_FAILED_INSUFFICIENT_STORAGE"))
-        assertEquals(UpdateStatus.Failed(UpdateProblem.InstallFailed("INSTALL_FAILED_INSUFFICIENT_STORAGE"), build), updates.status())
+        updates.onInstallStatus(InstallStatus.Failed(InstallFailure.Storage))
+        assertEquals(UpdateStatus.Failed(UpdateProblem.InstallFailed(InstallFailure.Storage), build), updates.status())
         assertEquals(emptyList<String>(), fetcher.dir.list().orEmpty().toList())
     }
 
@@ -388,8 +481,31 @@ class AppUpdatesTest {
     fun aSessionThatCannotBeWrittenIsAFailedInstall() = runTest {
         installer.failWith = IOException("No space left on device")
         val (updates, build) = installing()
-        assertEquals(UpdateStatus.Failed(UpdateProblem.InstallFailed("No space left on device"), build), updates.status())
+        assertEquals(UpdateStatus.Failed(UpdateProblem.InstallFailed(InstallFailure.Other), build), updates.status())
         assertEquals(emptyList<String>(), fetcher.dir.list().orEmpty().toList())
+    }
+
+    @Test
+    fun aSessionAndroidRefusesToOpenIsAFailedInstallNotACrash() = runTest {
+        // createSession throws SecurityException or IllegalStateException (too many sessions).
+        installer.failWith = SecurityException("Too many active sessions")
+        val (updates, build) = installing()
+        assertEquals(UpdateStatus.Failed(UpdateProblem.InstallFailed(InstallFailure.Other), build), updates.status())
+    }
+
+    @Test
+    fun aDownloadFileGoneBeforeInstallIsAFailureNotACrash() = runTest {
+        foreground = false
+        val updates = updates()
+        updates.check()
+        val build = (updates.status() as UpdateStatus.Available).build
+        updates.download(build)
+        fetcher.clear()
+        updates.install()
+        runCurrent()
+        assertEquals(UpdateStatus.Failed(UpdateProblem.FetchFailed(FetchProblem.ChecksumMismatch), build), updates.status())
+        // And at the next start nothing is offered from it.
+        updates().apply { restore() }.let { assertTrue(it.status() is UpdateStatus.Available) }
     }
 
     @Test
@@ -422,6 +538,29 @@ class AppUpdatesTest {
     }
 
     @Test
+    fun aReplacedDownloadJobNeitherReportsNorTouchesTheNewOne() = runTest {
+        slowApk = true
+        foreground = false
+        val updates = updates()
+        updates.check()
+        val build = (updates.status() as UpdateStatus.Available).build
+        updates.update()
+        val first = launch(Dispatchers.IO) { updates.download(build) }
+        withContext(Dispatchers.Default) {
+            withTimeout(10_000) {
+                while ((updates.status() as? UpdateStatus.Downloading)?.percent == null) delay(10)
+            }
+        }
+        // WorkManager replaces the job (ExistingWorkPolicy.REPLACE): the new one starts while the old one unwinds.
+        val second = async(Dispatchers.IO) { updates.download(build) }
+        first.cancelAndJoin()
+        assertFalse("the old job's stop is not reported", updates.status() is UpdateStatus.Failed)
+        assertTrue(withContext(Dispatchers.Default) { withTimeout(20_000) { second.await() } })
+        assertEquals(UpdateStatus.ReadyToInstall(build), updates.status())
+        assertEquals(listOf("popcornstash-android-415.apk"), fetcher.dir.list().orEmpty().toList())
+    }
+
+    @Test
     fun noCheckWhileADownloadRuns() = runTest {
         val updates = updates()
         updates.check()
@@ -446,9 +585,30 @@ class AppUpdatesTest {
     }
 
     @Test
+    fun aBuildThatDisappearedDoesNotHoldBackTheNext() = runTest {
+        // A mistaken android-999999999 was notified, then deleted from GitHub.
+        memory.lastNotified = 999_999_999
+        val updates = updates()
+        updates.backgroundCheck()
+        assertEquals(415, memory.lastNotified)
+        releases = list(appRelease(416, server.url("/files/android-415").toString().trimEnd('/')), appRelease(415))
+        updates.backgroundCheck()
+        assertEquals(listOf(416), notifier.posted)
+    }
+
+    @Test
     fun theDailyCheckDoesNotNotifyWhenUpToDate() = runTest {
         updates(415).backgroundCheck()
         assertTrue(notifier.posted.isEmpty())
+    }
+
+    @Test
+    fun notificationsAreAskedForOnceUnlessTheSwitchIsTurnedOn() = runTest {
+        val updates = updates()
+        assertTrue(updates.askForNotifications(turningOn = false))
+        assertFalse(updates.askForNotifications(turningOn = false))
+        assertTrue(memory.askedForNotifications)
+        assertTrue(updates.askForNotifications(turningOn = true))
     }
 
     @Test

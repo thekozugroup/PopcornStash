@@ -85,6 +85,9 @@ class AppContainer(context: Context) {
     private val apks = PackageManagerApks(app)
     private val updateMemory = PreferencesUpdateMemory(app)
 
+    /** Android's install sessions for updates; [com.thekozugroup.popcornstash.update.UpdateInstallReceiver] keeps Android's confirmation in it. */
+    val updateInstaller = PackageInstallerUpdates(app)
+
     /** Updates of the app itself from GitHub releases (docs/android.md, Updates); they do not depend on who is signed in. */
     val updates = AppUpdates(
         versionName = BuildConfig.VERSION_NAME,
@@ -92,12 +95,14 @@ class AppContainer(context: Context) {
         memory = updateMemory,
         checker = UpdateChecker(updateHttp, updateMemory),
         fetcher = UpdateFetcher(updateHttp, File(app.cacheDir, "updates"), app.packageName, apks, apks::installedSigners),
-        installer = PackageInstallerUpdates(app),
+        installer = updateInstaller,
         jobs = WorkManagerUpdateJobs(app),
         notifier = UpdateNotifications(app),
         scope = appScope,
         installedSigners = apks::installedSigners,
         releaseSigner = BuildConfig.RELEASE_CERT_SHA256.ifEmpty { null },
+        // A debug build is signed with its builder's debug key, never the release key.
+        debugBuild = BuildConfig.DEBUG,
         inForeground = { ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) },
     )
 

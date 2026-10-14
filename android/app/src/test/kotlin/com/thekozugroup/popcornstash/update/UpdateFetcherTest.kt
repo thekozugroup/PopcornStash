@@ -31,6 +31,7 @@ class UpdateFetcherTest {
     private var shaFile = "$apkSha  popcornstash-android-415.apk\n"
     private var apkCode = 200
     private var apkBody = apk
+    private var apkChunked = false
     private var facts: ApkFacts? = ApkFacts("com.thekozugroup.popcornstash", 415, setOf(ours))
     private var installed = setOf(ours)
     private val inspected = mutableListOf<String>()
@@ -43,8 +44,9 @@ class UpdateFetcherTest {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when (request.url.encodedPath) {
                 "/android-415/popcornstash-android-415.apk.sha256" -> MockResponse.Builder().body(shaFile).build()
-                "/android-415/popcornstash-android-415.apk" ->
-                    MockResponse.Builder().code(apkCode).body(Buffer().write(apkBody)).build()
+                "/android-415/popcornstash-android-415.apk" -> MockResponse.Builder().code(apkCode)
+                    .apply { if (apkChunked) chunkedBody(Buffer().write(apkBody), 4096) else body(Buffer().write(apkBody)) }
+                    .build()
                 else -> MockResponse.Builder().code(404).build()
             }
         }
@@ -107,6 +109,25 @@ class UpdateFetcherTest {
         assertEquals(1, server.requestCount)
         shaFile = "a".repeat(10_000)
         assertEquals(FetchOutcome.Failed(FetchProblem.ChecksumMismatch), fetcher.fetch(build))
+    }
+
+    @Test
+    fun aBodyLongerThanTheListSaidIsCutOff() = runTest {
+        // No Content-Length (chunked), so the list's size is the limit: 8538 bytes, and 300 KB come.
+        apkChunked = true
+        val seen = mutableListOf<Long>()
+        val outcome = fetcher.fetch(build, onProgress = { done, _ -> seen += done })
+        assertEquals(FetchOutcome.Failed(FetchProblem.DownloadStopped), outcome)
+        assertTrue("stopped at the limit, not at the end: $seen", seen.all { it <= build.size })
+        assertEquals(emptyList<String>(), files())
+        assertTrue(inspected.isEmpty())
+    }
+
+    @Test
+    fun aChunkedBodyOfTheListedSizeIsVerified() = runTest {
+        apkChunked = true
+        val outcome = fetcher.fetch(build.copy(size = apk.size.toLong()))
+        assertTrue(outcome is FetchOutcome.Verified)
     }
 
     @Test

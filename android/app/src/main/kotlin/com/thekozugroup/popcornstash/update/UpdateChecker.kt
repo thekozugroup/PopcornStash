@@ -35,7 +35,8 @@ sealed interface CheckResult {
 /**
  * Asks GitHub for the repository's releases, without a login: the repository is public.
  * The answer's ETag is kept with the newest build it held, and sent back as If-None-Match,
- * so an unchanged list costs a 304, which GitHub does not count against the hour's 60.
+ * so an unchanged list comes back as an empty 304. That saves the download, not the hourly
+ * limit: GitHub counts a 304 to a request without a login like any other.
  * The request carries the app's User-Agent and nothing else about the phone or the person.
  */
 class UpdateChecker(

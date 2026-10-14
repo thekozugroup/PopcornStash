@@ -14,7 +14,8 @@ data class ReadyBuild(val build: AppBuild, val sha256: String, val fileName: Str
 /**
  * What the updater keeps between runs. None of it is about the person or their server: the
  * last answer from GitHub (its ETag and the newest build it listed), when the app last asked,
- * whether it asks by itself, the last build it notified about, and a verified download.
+ * whether it asks by itself, the last build it notified about, a verified download, and whether
+ * it has asked for permission to post notifications.
  */
 interface UpdateMemory {
     val etag: String?
@@ -27,6 +28,7 @@ interface UpdateMemory {
     var autoCheck: Boolean
     var lastNotified: Int
     var ready: ReadyBuild?
+    var askedForNotifications: Boolean
 }
 
 /** [UpdateMemory] in the app's own preferences ("updates"); not backed up, like everything else. */
@@ -59,6 +61,10 @@ class PreferencesUpdateMemory(private val preferences: SharedPreferences) : Upda
         get() = decode(preferences.getString(READY, null), ReadyBuild.serializer())
         set(value) = preferences.edit { putString(READY, value?.let { StashJson.encodeToString(ReadyBuild.serializer(), it) }) }
 
+    override var askedForNotifications: Boolean
+        get() = preferences.getBoolean(ASKED_NOTIFICATIONS, false)
+        set(value) = preferences.edit { putBoolean(ASKED_NOTIFICATIONS, value) }
+
     private fun <T> decode(text: String?, serializer: kotlinx.serialization.KSerializer<T>): T? = text?.let {
         try {
             StashJson.decodeFromString(serializer, it)
@@ -76,6 +82,7 @@ class PreferencesUpdateMemory(private val preferences: SharedPreferences) : Upda
         const val AUTO_CHECK = "auto_check"
         const val LAST_NOTIFIED = "last_notified"
         const val READY = "ready"
+        const val ASKED_NOTIFICATIONS = "asked_notifications"
     }
 }
 
@@ -85,6 +92,7 @@ class InMemoryUpdateMemory(
     override var autoCheck: Boolean = true,
     override var lastNotified: Int = 0,
     override var ready: ReadyBuild? = null,
+    override var askedForNotifications: Boolean = false,
 ) : UpdateMemory {
     override var etag: String? = null
         private set
