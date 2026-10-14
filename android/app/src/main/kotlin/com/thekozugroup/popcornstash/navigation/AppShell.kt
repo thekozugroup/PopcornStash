@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -52,8 +53,9 @@ data class TabPage(
  * - Each tab keeps its state and scroll position while another tab shows (one saveable
  *   state holder entry per tab).
  * - System Back on another tab returns to Home; on Home it leaves the app.
- * - The toolbar floats over the pages and leaves when [toolbarVisible] is false (the
- *   player and the photo viewer) and while the keyboard is open.
+ * - The toolbar floats over the pages and leaves when [toolbarVisible] is false, while a
+ *   page asks it to ([HideToolbarWhileShown]: the photo viewer, the player) and while the
+ *   keyboard is open.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -67,6 +69,7 @@ fun AppShell(
     var current by rememberSaveable { mutableStateOf(initialTab) }
     val reselections = remember { Tab.entries.associateWith { mutableIntStateOf(0) } }
     val holder = rememberSaveableStateHolder()
+    val toolbarRequests = remember { ToolbarRequests() }
     val reduceMotion = Popcorn.reduceMotion
     val toolbar = Popcorn.toolbar
     val navigationBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -75,26 +78,28 @@ fun AppShell(
     BackHandler(enabled = current != Tab.Start) { current = Tab.Start }
 
     Box(modifier.fillMaxSize().background(Popcorn.colors.page)) {
-        AnimatedContent(
-            targetState = current,
-            transitionSpec = { tabTransition(initialState, targetState, reduceMotion) },
-            label = "tab pages",
-            modifier = Modifier.fillMaxSize(),
-        ) { tab ->
-            holder.SaveableStateProvider(tab.name) {
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .background(Popcorn.colors.page)
-                        .testTag("page ${tab.name}"),
-                ) {
-                    page(TabPage(tab, clearance, reselections.getValue(tab).intValue))
+        CompositionLocalProvider(LocalToolbarRequests provides toolbarRequests) {
+            AnimatedContent(
+                targetState = current,
+                transitionSpec = { tabTransition(initialState, targetState, reduceMotion) },
+                label = "tab pages",
+                modifier = Modifier.fillMaxSize(),
+            ) { tab ->
+                holder.SaveableStateProvider(tab.name) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(Popcorn.colors.page)
+                            .testTag("page ${tab.name}"),
+                    ) {
+                        page(TabPage(tab, clearance, reselections.getValue(tab).intValue))
+                    }
                 }
             }
         }
 
         AnimatedVisibility(
-            visible = toolbarVisible && !WindowInsets.isImeVisible,
+            visible = toolbarVisible && !toolbarRequests.hidden && !WindowInsets.isImeVisible,
             enter = slideInVertically(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) { it / 2 } +
                 fadeIn(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)),
             exit = slideOutVertically(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) { it / 2 } +

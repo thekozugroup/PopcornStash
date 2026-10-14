@@ -21,12 +21,15 @@ import com.thekozugroup.popcornstash.ui.theme.IconStroke
 @Immutable
 data class LucideGlyph(val name: String, val paths: List<String>)
 
-private val vectorCache = HashMap<Pair<String, Float>, ImageVector>()
+private val vectorCache = HashMap<Triple<String, Float, Boolean>, ImageVector>()
 
-/** The glyph as a stroked vector, with round caps and joins like Lucide's SVGs. */
-fun LucideGlyph.toImageVector(strokeWidth: Float = IconStroke.Regular): ImageVector =
+/**
+ * The glyph as a stroked vector, with round caps and joins like Lucide's SVGs. [filled] also
+ * fills its closed shapes (a heart that is on), as the web does with `fill: currentColor`.
+ */
+fun LucideGlyph.toImageVector(strokeWidth: Float = IconStroke.Regular, filled: Boolean = false): ImageVector =
     synchronized(vectorCache) {
-        vectorCache.getOrPut(name to strokeWidth) {
+        vectorCache.getOrPut(Triple(name, strokeWidth, filled)) {
             ImageVector.Builder(
                 name = "lucide.$name",
                 defaultWidth = 24.dp,
@@ -37,7 +40,7 @@ fun LucideGlyph.toImageVector(strokeWidth: Float = IconStroke.Regular): ImageVec
                 for (data in paths) {
                     addPath(
                         pathData = addPathNodes(data),
-                        fill = null,
+                        fill = if (filled) SolidColor(Color.Black) else null,
                         stroke = SolidColor(Color.Black),
                         strokeLineWidth = strokeWidth,
                         strokeLineCap = StrokeCap.Round,
@@ -60,8 +63,9 @@ fun LucideIcon(
     tint: Color = LocalContentColor.current,
     size: Dp = 24.dp,
     strokeWidth: Float = IconStroke.Regular,
+    filled: Boolean = false,
 ) {
-    val vector = remember(glyph, strokeWidth) { glyph.toImageVector(strokeWidth) }
+    val vector = remember(glyph, strokeWidth, filled) { glyph.toImageVector(strokeWidth, filled) }
     Icon(
         imageVector = vector,
         contentDescription = contentDescription,

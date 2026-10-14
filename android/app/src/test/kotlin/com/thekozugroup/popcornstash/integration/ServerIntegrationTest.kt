@@ -14,7 +14,20 @@ import com.thekozugroup.popcornstash.data.auth.PairingFlow
 import com.thekozugroup.popcornstash.data.auth.PairingState
 import com.thekozugroup.popcornstash.data.auth.PasskeySignIn
 import com.thekozugroup.popcornstash.data.auth.ServerAddress
+import com.thekozugroup.popcornstash.data.api.ItemQuery
+import com.thekozugroup.popcornstash.data.api.Place
+import com.thekozugroup.popcornstash.data.repo.Loadable
+import com.thekozugroup.popcornstash.feature.item.ItemViewModel
+import com.thekozugroup.popcornstash.feature.library.FileFetcher
+import com.thekozugroup.popcornstash.feature.library.ItemSort
+import com.thekozugroup.popcornstash.feature.library.LibraryViewModel
+import com.thekozugroup.popcornstash.feature.library.MediaFormat
+import com.thekozugroup.popcornstash.feature.library.ShowViewModel
+import com.thekozugroup.popcornstash.testing.MainDispatcherRule
+import com.thekozugroup.popcornstash.testing.keep
 import com.thekozugroup.popcornstash.testing.SoftPasskey
+import com.thekozugroup.popcornstash.testing.awaitUntil
+import com.thekozugroup.popcornstash.ui.media.Pictures
 import com.thekozugroup.popcornstash.ui.icons.LibraryIcons
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +35,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.toList
@@ -44,6 +58,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.BeforeClass
+import org.junit.Rule
 import org.junit.Test
 import java.io.File
 import java.net.ServerSocket
@@ -61,6 +76,10 @@ import java.util.concurrent.TimeUnit
  *   ./gradlew :app:testDebugUnitTest --tests '*ServerIntegrationTest*' -PpopcornstashServer=../target/debug/popcornstash
  */
 class ServerIntegrationTest {
+    /** View models run their work on a test dispatcher (Home and library pages, below). */
+    @get:Rule
+    val main = MainDispatcherRule()
+
     companion object {
         private var process: Process? = null
         private lateinit var work: File
@@ -269,6 +288,66 @@ class ServerIntegrationTest {
         } finally {
             scope.cancel()
         }
+    }
+
+    /**
+     * Home and the pages it opens, through the app's own view models, on the fixture: Movies as
+     * posters, Shows with The Lantern Keepers and what plays next, the photo timeline, an item
+     * with its favourite, thumbnails and an Other file fetched with the bearer client.
+     */
+    @Test
+    fun homeAndTheLibraryPagesReadARealStash() = runBlocking {
+        val token = PasskeySignIn(ApiClient(base, http), passkey, "Pixel 9 (libraries)").signIn().token!!
+        val (api, session) = clientWith(token)
+        readLibrariesAndHome(token)
+        val libraries = api.libraries().associateBy { it.name }
+
+        val movies = main.keep { LibraryViewModel(api, emptyFlow(), emptyFlow(), libraries.getValue("Movies").id) }
+        val items = (movies.ui.awaitUntil { it.content is LibraryViewModel.Content.Items }.content as LibraryViewModel.Content.Items)
+        assertEquals(ItemSort.Added, items.sort)
+        assertTrue(items.page.items.map { it.title }.containsAll(listOf("Paper Boats", "Glass Orchard", "Tin Lighthouse")))
+
+        val shows = main.keep { LibraryViewModel(api, emptyFlow(), emptyFlow(), libraries.getValue("Shows").id) }
+        val summaries = (shows.ui.awaitUntil { it.content is LibraryViewModel.Content.Shows }.content as LibraryViewModel.Content.Shows).shows
+        val lantern = summaries.first { it.showName == "The Lantern Keepers" }
+        assertEquals(2L, lantern.seasonCount)
+        val show = main.keep { ShowViewModel(api, emptyFlow(), emptyFlow(), libraries.getValue("Shows").id, lantern.showName) }
+        val showUi = show.ui.awaitUntil { it.show is Loadable.Ready }
+        assertEquals(listOf(1, 2), showUi.show.valueOrNull!!.seasons.map { it.season })
+        assertEquals("S01E01", MediaFormat.episodeCode(showUi.upNext!!.episode.season, showUi.upNext!!.episode.episode))
+
+        val photos = main.keep { LibraryViewModel(api, emptyFlow(), emptyFlow(), libraries.getValue("Photos").id) }
+        val timeline = photos.ui.awaitUntil { it.content is LibraryViewModel.Content.Timeline }.content as LibraryViewModel.Content.Timeline
+        assertTrue("the fixture's three photos from May 2022", timeline.page.items.any { it.month == "2022-05" && it.count >= 3 })
+
+        val paperBoats = items.page.items.first { it.title == "Paper Boats" }
+        val item = main.keep { ItemViewModel(api, emptyFlow(), emptyFlow(), paperBoats.id) }
+        val detail = item.ui.awaitUntil { it.item is Loadable.Ready }.item.valueOrNull!!
+        assertEquals(2011, detail.year)
+        item.toggleFavourite()
+        assertTrue(item.ui.awaitUntil { !it.savingFavourite }.item.valueOrNull!!.favorite)
+        assertTrue("the server kept it", api.item(paperBoats.id).favorite)
+        item.toggleFavourite()
+        item.ui.awaitUntil { !it.savingFavourite }
+
+        // Thumbnails come with the session's token; an Other file is fetched the same way.
+        val pictures = Pictures(base)
+        val withThumb = withTimeout(60_000) {
+            var found = api.items(ItemQuery(libraryId = libraries.getValue("Movies").id)).items.firstOrNull { it.thumb != null }
+            while (found == null) {
+                delay(500)
+                found = api.items(ItemQuery(libraryId = libraries.getValue("Movies").id)).items.firstOrNull { it.thumb != null }
+            }
+            found
+        }
+        session.newCall(Request.Builder().url(pictures.thumb(withThumb, large = true)!!).build()).execute().use {
+            assertEquals(200, it.code)
+            assertEquals("image/webp", it.header("Content-Type"))
+        }
+        val other = api.items(ItemQuery(place = Place.OtherFiles)).items.first { it.title == "Recipe Card" }
+        val copy = File(work, "opened/${other.id}/Recipe Card.pdf")
+        FileFetcher(session).download(api.fileUrl(other.id), copy)
+        assertTrue(copy.readBytes().copyOfRange(0, 4).contentEquals("%PDF".toByteArray()))
     }
 
     private suspend fun readLibrariesAndHome(token: String) {

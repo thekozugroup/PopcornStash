@@ -17,6 +17,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
+import okhttp3.Response
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 
@@ -62,7 +63,7 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
         val body = json.encodeToString(PairingPollRequest.serializer(), PairingPollRequest(pairingId, pollSecret))
         val response = execute(request("/api/pairing/poll").post(body.toRequestBody(JSON)).build())
         response.use {
-            val text = it.body.string()
+            val text = it.text()
             return when (it.code) {
                 200, 202, 410 -> decode(PairingPollAnswer.serializer(), text, it.code)
                 else -> throw errorFrom(it.code, text, json)
@@ -243,7 +244,7 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
             .put(bytes)
             .build()
         execute(request).use { response ->
-            val text = response.body.string()
+            val text = response.text()
             if (response.isSuccessful) return decode(UploadReceived.serializer(), text, response.code)
             if (response.code == 409) {
                 val received = runCatching { json.parseToJsonElement(text).jsonObject["received"]?.jsonPrimitive?.content?.toLong() }
@@ -295,7 +296,7 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
     /** Sends [request] and returns the body of a 2xx answer; anything else is an [ApiException]. */
     private suspend fun send(request: Request, allowEmpty: Boolean): String {
         execute(request).use { response ->
-            val text = response.body.string()
+            val text = response.text()
             if (!response.isSuccessful) throw errorFrom(response.code, text, json)
             if (text.isEmpty() && !allowEmpty) throw ApiException.unexpected(response.code)
             return text
@@ -304,6 +305,16 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
 
     private suspend fun execute(request: Request) = try {
         http.newCall(request).await()
+    } catch (_: IOException) {
+        throw ApiException.network()
+    }
+
+    /**
+     * The whole body of an answer. A connection that breaks while the body arrives is a network
+     * failure like one that never answered, never an exception a caller does not expect.
+     */
+    private fun Response.text(): String = try {
+        body.string()
     } catch (_: IOException) {
         throw ApiException.network()
     }

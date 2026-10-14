@@ -70,8 +70,24 @@ data class MediaTokens(
     val gridRowGap: Dp = 20.dp,
     val photoGap: Dp = 3.dp,
     val captionGap: Dp = 10.dp,
+    /** The frame beside an episode's name on a show page. */
+    val episodeFrame: Dp = 128.dp,
+    /** The square of a library's or a file's glyph in a row. */
+    val rowGlyph: Dp = 40.dp,
     val progressHeight: Dp = 4.dp,
     val placeholderIcon: Dp = 22.dp,
+)
+
+/**
+ * Home's continue-watching carousel (android/DESIGN.md, Home): each card is the
+ * gutter-to-gutter width minus [peek], so the next card shows at the edge, [gap] apart.
+ */
+@Immutable
+data class CarouselTokens(
+    val peek: Dp = 32.dp,
+    val gap: Dp = 12.dp,
+    /** Width over height of the card's frame. */
+    val frameRatio: Float = 16f / 9f,
 )
 
 /** Lucide stroke widths (android/DESIGN.md, Touch and icons). */

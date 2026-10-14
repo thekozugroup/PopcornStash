@@ -14,6 +14,7 @@ val LocalPopcornShapes = staticCompositionLocalOf { DefaultPopcornShapes }
 val LocalPopcornSpacing = staticCompositionLocalOf { PopcornSpacing() }
 val LocalToolbarTokens = staticCompositionLocalOf { ToolbarTokens() }
 val LocalMediaTokens = staticCompositionLocalOf { MediaTokens() }
+val LocalCarouselTokens = staticCompositionLocalOf { CarouselTokens() }
 
 /** The Popcorn tokens for the current theme: `Popcorn.colors.accent`, `Popcorn.type.title`, ... */
 object Popcorn {
@@ -29,6 +30,8 @@ object Popcorn {
         @Composable @ReadOnlyComposable get() = LocalToolbarTokens.current
     val media: MediaTokens
         @Composable @ReadOnlyComposable get() = LocalMediaTokens.current
+    val carousel: CarouselTokens
+        @Composable @ReadOnlyComposable get() = LocalCarouselTokens.current
     val reduceMotion: Boolean
         @Composable @ReadOnlyComposable get() = LocalReduceMotion.current
 }

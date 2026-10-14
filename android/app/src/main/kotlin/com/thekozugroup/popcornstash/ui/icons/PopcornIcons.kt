@@ -26,4 +26,10 @@ object PopcornIcons {
     val Phone = LucideGlyphs.Smartphone
     val StartAgain = LucideGlyphs.RotateCcw
     val Brand = LucideGlyphs.Popcorn
+    val SaveOriginal = LucideGlyphs.Download
+    val Details = LucideGlyphs.Info
+    val Sort = LucideGlyphs.ArrowUpDown
+    val Archive = LucideGlyphs.FileArchive
+    val Audio = LucideGlyphs.Music
+    val EditLibrary = LucideGlyphs.Settings
 }
