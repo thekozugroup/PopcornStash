@@ -20,6 +20,7 @@ import type {
   DownloadList,
   ErrorCode,
   HealthResponse,
+  HomeResponse,
   InboxDecision,
   InboxResponse,
   Invite,
@@ -32,7 +33,11 @@ import type {
   ItemQuery,
   Item,
   JobAccepted,
-  LibrarySummary,
+  Library,
+  LibraryCreateRequest,
+  LibraryEditRequest,
+  LibraryIcon,
+  LibraryList,
   LoginFinishRequest,
   LoginFinishResponse,
   NordVpnCountry,
@@ -67,6 +72,7 @@ import type {
   Token,
   TokenCreateRequest,
   TrashEntry,
+  UnassignedFolder,
   UploadCreateRequest,
   UploadCreated,
   UploadReceived,
@@ -89,12 +95,15 @@ export class ApiError extends Error {
   readonly status: number;
   /** Parsed response body, when there was one (for example `{received}` on a 409 upload). */
   readonly body: unknown;
+  /** The one request field the server blamed (`name`, `folder.name`, `library_id`), if any. */
+  readonly field: string | null;
 
-  constructor(code: ClientErrorCode, message: string, status: number, body?: unknown) {
+  constructor(code: ClientErrorCode, message: string, status: number, body?: unknown, field?: string | null) {
     super(message);
     this.code = code;
     this.status = status;
     this.body = body;
+    this.field = field ?? null;
   }
 
   get isUnauthorized(): boolean {
@@ -127,7 +136,7 @@ export const FALLBACK_MESSAGES: Partial<Record<ClientErrorCode, string>> = {
   unknown: 'Something went wrong.',
 };
 
-export function isErrorEnvelope(value: unknown): value is {error: {code: ErrorCode; message: string}} {
+export function isErrorEnvelope(value: unknown): value is {error: {code: ErrorCode; message: string; field?: string}} {
   if (typeof value !== 'object' || value === null || !('error' in value)) return false;
   const error = (value as {error: unknown}).error;
   return (
@@ -247,7 +256,8 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const message = isErrorEnvelope(parsed)
     ? parsed.error.message
     : (FALLBACK_MESSAGES[code] ?? FALLBACK_MESSAGES.unknown ?? '');
-  const error = new ApiError(code, message, response.status, parsed);
+  const field = isErrorEnvelope(parsed) && typeof parsed.error.field === 'string' ? parsed.error.field : null;
+  const error = new ApiError(code, message, response.status, parsed, field);
   if (response.status === 401 && !skipAuthRefresh) {
     unauthorizedHandler?.(error);
   }
@@ -353,8 +363,39 @@ export const tokens = {
 };
 
 export const library = {
-  summary: (signal?: AbortSignal) => get<LibrarySummary>('/api/library/summary', undefined, signal),
   rescan: () => post<JobAccepted>('/api/library/rescan', {}),
+};
+
+export const home = {
+  /** Continue watching, a shelf per library the caller sees, and counts. */
+  get: (signal?: AbortSignal) => get<HomeResponse>('/api/home', undefined, signal),
+};
+
+export const libraries = {
+  /** The libraries the caller sees, in order. */
+  list: (signal?: AbortSignal) => get<LibraryList>('/api/libraries', undefined, signal),
+  /** 404 for a library the caller cannot see. */
+  get: (id: string, signal?: AbortSignal) => get<Library>(`/api/libraries/${enc(id)}`, undefined, signal),
+  /** Owner. Errors carry `field`. */
+  create: (body: LibraryCreateRequest) => post<Library>('/api/libraries', body),
+  /** Owner. Only the fields sent change. */
+  update: (id: string, body: LibraryEditRequest) => patch<Library>(`/api/libraries/${enc(id)}`, body),
+  /** Owner. Every library exactly once, in the new order. */
+  reorder: (ids: string[]) => put<LibraryList>('/api/libraries/order', {ids}),
+  /** Owner. Takes the library out of the app; its folder and files stay. */
+  remove: (id: string) => del(`/api/libraries/${enc(id)}`),
+  /** Owner: top-level folders that are not a library. */
+  folders: (signal?: AbortSignal) => get<{folders: UnassignedFolder[]}>('/api/libraries/folders', undefined, signal),
+  /** The curated icon names, in picker order. */
+  icons: (signal?: AbortSignal) => get<{icons: LibraryIcon[]}>('/api/libraries/icons', undefined, signal),
+  /** Episodes libraries only. */
+  shows: (id: string, signal?: AbortSignal) =>
+    get<ShowSummary[]>(`/api/libraries/${enc(id)}/shows`, undefined, signal),
+  show: (id: string, name: string, signal?: AbortSignal) =>
+    get<ShowDetail>(`/api/libraries/${enc(id)}/shows/${enc(name)}`, undefined, signal),
+  /** Photos libraries only. `limit` is a photo budget. */
+  timeline: (id: string, params?: PageParams, signal?: AbortSignal) =>
+    get<PhotoTimeline>(`/api/libraries/${enc(id)}/timeline`, pageQuery(params), signal),
 };
 
 export const items = {
@@ -362,6 +403,8 @@ export const items = {
     get<Page<Item>>(
       '/api/items',
       {
+        library_id: query.library_id,
+        place: query.place,
         category: query.category,
         q: query.q,
         sort: query.sort,
@@ -394,16 +437,6 @@ export const items = {
 export const stream = {
   playlistUrl: (sessionId: string) => `/api/stream/${enc(sessionId)}/index.m3u8`,
   end: (sessionId: string) => del(`/api/stream/${enc(sessionId)}`),
-};
-
-export const shows = {
-  list: (signal?: AbortSignal) => get<ShowSummary[]>('/api/shows', undefined, signal),
-  get: (name: string, signal?: AbortSignal) => get<ShowDetail>(`/api/shows/${enc(name)}`, undefined, signal),
-};
-
-export const photos = {
-  timeline: (params?: PageParams, signal?: AbortSignal) =>
-    get<PhotoTimeline>('/api/photos/timeline', pageQuery(params), signal),
 };
 
 export const inbox = {
@@ -507,10 +540,10 @@ export const api = {
   me,
   tokens,
   library,
+  home,
+  libraries,
   items,
   stream,
-  shows,
-  photos,
   inbox,
   trash,
   downloads,

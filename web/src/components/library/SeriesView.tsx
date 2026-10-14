@@ -1,22 +1,23 @@
 /**
- * Shows: every series as its poster (the server's choice, the same picture
- * Home and the show's page use), most recently updated first. The list is
- * small enough to search and sort in the browser.
+ * A series library: every show as its poster (the server's choice, the same
+ * picture Home and the show's page use), most recently updated first. The
+ * list is small enough to search and sort in the browser. The page header
+ * belongs to the library page.
  */
 import {Button} from '@astryxdesign/core/Button';
-import {Tv} from 'lucide-react';
+import type {LucideIcon} from 'lucide-react';
 import {useCallback, useEffect, useMemo, useState, type ReactNode} from 'react';
 import {useSearchParams} from 'react-router';
-import {shows as showsApi} from '../api/client';
-import type {ShowSummary} from '../api/types';
-import {EmptyPanel} from '../components/EmptyPanel';
-import {LibraryToolbar} from '../components/library/LibraryToolbar';
-import {LoadError} from '../components/library/LoadError';
-import {posterSources, showHref, showMeta} from '../components/library/libraryFormat';
-import {useLibraryEvents} from '../components/library/useLibraryEvents';
-import {MediaGrid, MediaGridSkeleton} from '../components/MediaGrid';
-import {MediaTile} from '../components/MediaTile';
-import {PageHeader} from '../components/PageHeader';
+import {libraries as librariesApi} from '../../api/client';
+import type {ShowSummary} from '../../api/types';
+import {libraryShowHref} from '../../lib/libraries';
+import {EmptyPanel} from '../EmptyPanel';
+import {MediaGrid, MediaGridSkeleton} from '../MediaGrid';
+import {MediaTile} from '../MediaTile';
+import {LibraryToolbar} from './LibraryToolbar';
+import {LoadError} from './LoadError';
+import {posterSources, showMeta} from './libraryFormat';
+import {useLibraryEvents} from './useLibraryEvents';
 
 type ShowSort = 'added' | 'title';
 
@@ -34,7 +35,16 @@ function sortKey(name: string): string {
   return name.toLocaleLowerCase().replace(/^(the|a|an) /, '');
 }
 
-export default function ShowsPage() {
+export interface SeriesViewProps {
+  libraryId: string;
+  libraryName: string;
+  /** The library's icon, for shows without a picture yet. */
+  icon: LucideIcon;
+  /** What the library shows when it holds no shows. */
+  empty: ReactNode;
+}
+
+export function SeriesView({libraryId, libraryName, icon, empty}: SeriesViewProps) {
   const [params, setParams] = useSearchParams();
   const q = params.get('q') ?? '';
   const sort: ShowSort = params.get('sort') === 'title' ? 'title' : 'added';
@@ -44,14 +54,14 @@ export default function ShowsPage() {
 
   useEffect(() => {
     const controller = new AbortController();
-    showsApi.list(controller.signal).then(
+    librariesApi.shows(libraryId, controller.signal).then(
       shows => setState({shows, error: null}),
       (error: unknown) => {
         if (!controller.signal.aborted) setState(s => ({shows: s.shows, error}));
       },
     );
     return () => controller.abort();
-  }, [nonce]);
+  }, [libraryId, nonce]);
 
   useLibraryEvents({
     onAdded: () => setNonce(n => n + 1),
@@ -96,16 +106,9 @@ export default function ShowsPage() {
   if (isLoading) {
     body = <MediaGridSkeleton shape="poster" count={12} />;
   } else if (state.error && !state.shows) {
-    body = <LoadError title="Shows could not be loaded" error={state.error} onRetry={() => setNonce(n => n + 1)} />;
+    body = <LoadError title={`${libraryName} could not be loaded`} error={state.error} onRetry={() => setNonce(n => n + 1)} />;
   } else if (!hasShows) {
-    body = (
-      <EmptyPanel
-        title="No shows yet"
-        icon={<Tv size={28} strokeWidth={1.5} />}
-        description="Episodes named like “Show Name S01E02” are grouped into shows and seasons automatically. Add a link or magnet in Downloads, or drop episode files anywhere in this window."
-        actions={<Button label="Add a link" variant="primary" href="/downloads" />}
-      />
-    );
+    body = empty;
   } else if (visible.length === 0) {
     body = (
       <EmptyPanel
@@ -116,18 +119,19 @@ export default function ShowsPage() {
     );
   } else {
     body = (
-      <MediaGrid shape="poster" label="Shows">
+      <MediaGrid shape="poster" label={libraryName}>
         {visible.map(show => {
           const poster = posterSources(show.poster_item_id, version);
           return (
             <MediaTile
               key={show.show_name}
-              href={showHref(show.show_name)}
+              href={libraryShowHref(libraryId, show.show_name)}
               title={show.show_name}
               meta={showMeta(show)}
               imageSrc={poster?.src}
               imageSrcSet={poster?.srcSet}
               shape="poster"
+              placeholderIcon={icon}
             />
           );
         })}
@@ -137,10 +141,9 @@ export default function ShowsPage() {
 
   return (
     <>
-      <PageHeader title="Shows" subtitle="Series grouped by show and season." />
       {hasShows ? (
         <LibraryToolbar
-          searchLabel="Search shows"
+          searchLabel={`Search ${libraryName}`}
           query={q}
           onQueryChange={onQueryChange}
           sort={sort}

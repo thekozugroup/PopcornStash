@@ -1,8 +1,10 @@
 /**
  * The signed-in app shell: Astryx AppShell with a sticky 228px SideNav on
- * desktop; under 800px a compact top bar with a menu drawer, plus the five
- * most used destinations one tap away. Owns route-change focus, the skip
- * link (AppShell's), and the window-wide file drop overlay.
+ * desktop (Home, every library the person can see with its own icon, Other
+ * files, Inbox, Downloads, Settings); under 800px a compact top bar with a
+ * menu drawer, plus Home, the first three libraries and Downloads one tap
+ * away. Owns the libraries list for every page below it, route-change focus,
+ * the skip link (AppShell's), and the window-wide file drop overlay.
  */
 import * as stylex from '@stylexjs/stylex';
 import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
@@ -21,7 +23,8 @@ import {FileDropOverlay} from '../components/FileDropOverlay';
 import {VpnStatusTag} from '../components/VpnStatusTag';
 import {useFileDrop} from '../hooks/useFileDrop';
 import {useInboxCount} from '../hooks/useInboxCount';
-import {NAV_GROUPS, NAV_ICON_SIZE, NAV_ICON_STROKE, QUICK_DESTINATIONS, isActive} from './navigation';
+import {LibrariesProvider, useLibraries} from './LibrariesProvider';
+import {NAV_ICON_SIZE, NAV_ICON_STROKE, isActive, navGroups, quickDestinations} from './navigation';
 
 const MAIN_ID = 'astryx-app-shell-main';
 
@@ -70,7 +73,6 @@ const styles = stylex.create({
   },
   quickNav: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
     // Room between cells so a long label's pill ("Downloads") never touches its neighbour.
     columnGap: 4,
     maxWidth: 560,
@@ -122,6 +124,13 @@ const styles = stylex.create({
   },
 });
 
+const columnStyles = stylex.create({
+  // Fewer libraries, fewer cells: the row always fills its width.
+  columns: (count: number) => ({
+    gridTemplateColumns: `repeat(${count}, minmax(0, 1fr))`,
+  }),
+});
+
 /** A destination's line icon; it takes the colour of the label beside it. */
 function NavIcon({icon: Icon}: {icon: LucideIcon}) {
   return (
@@ -137,15 +146,18 @@ function NavIcon({icon: Icon}: {icon: LucideIcon}) {
 function QuickNav() {
   const {isMobile} = useAppShellMobile();
   const {pathname} = useLocation();
+  const {libraries} = useLibraries();
   if (!isMobile) return null;
+  const destinations = quickDestinations(libraries ?? []);
   return (
-    <nav aria-label="Quick links" {...stylex.props(styles.quickNav)}>
-      {QUICK_DESTINATIONS.map(destination => {
+    <nav aria-label="Quick links" {...stylex.props(styles.quickNav, columnStyles.columns(destinations.length))}>
+      {destinations.map(destination => {
         const active = isActive(destination, pathname);
         return (
           <Link
             key={destination.path}
             to={destination.path}
+            title={destination.libraryId ? destination.label : undefined}
             aria-current={active ? 'page' : undefined}
             {...stylex.props(styles.quickLink, active && styles.quickLinkActive)}>
             <NavIcon icon={destination.icon} />
@@ -162,6 +174,7 @@ function PopcornSideNav() {
   const {isMobile} = useAppShellMobile();
   const {user, signOut} = useAuth();
   const inboxCount = useInboxCount();
+  const {libraries} = useLibraries();
 
   return (
     <SideNav
@@ -183,12 +196,15 @@ function PopcornSideNav() {
           </div>
         </div>
       }>
-      {NAV_GROUPS.map(group => (
+      {navGroups(libraries ?? []).map(group => (
         <SideNavSection key={group.title} title={group.title} isHeaderHidden>
           {group.items.map(item => (
             <SideNavItem
               key={item.path}
               label={item.label}
+              // A long library name ends in an ellipsis; the whole name stays in the
+              // native tooltip (SideNavItem passes other attributes to its link).
+              {...(item.libraryId ? {title: item.label} : {})}
               icon={<NavIcon icon={item.icon} />}
               href={item.path}
               isSelected={isActive(item, pathname)}
@@ -226,7 +242,7 @@ export function AppLayout() {
   const {isDragging} = useFileDrop({onFiles});
 
   return (
-    <>
+    <LibrariesProvider>
       <AppShell height="auto" variant="section" sideNav={<PopcornSideNav />}>
         <div {...stylex.props(styles.main)}>
           <QuickNav />
@@ -234,6 +250,6 @@ export function AppLayout() {
         </div>
       </AppShell>
       <FileDropOverlay isVisible={isDragging} />
-    </>
+    </LibrariesProvider>
   );
 }

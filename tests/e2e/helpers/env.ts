@@ -35,6 +35,10 @@ export const env = {
   get setupCode() {
     return required('E2E_SETUP_CODE');
   },
+  /** The server's public address (the tests' baseURL). */
+  get publicUrl() {
+    return `http://localhost:${process.env.E2E_PORT ?? 8788}`;
+  },
   /** Cookie of the owner's first session (saved by the first-run test). */
   get ownerState() {
     return path.join(this.work, 'owner-state.json');
@@ -46,6 +50,24 @@ export const env = {
 };
 
 export const OWNER_NAME = 'Robin Example';
+
+/** The four libraries every stash starts with (docs/architecture.md section 6, fixed ids). */
+export const LIBRARY = {
+  movies: '0192a000-0000-7000-8000-000000000001',
+  shows: '0192a000-0000-7000-8000-000000000002',
+  homeVideos: '0192a000-0000-7000-8000-000000000003',
+  photos: '0192a000-0000-7000-8000-000000000004',
+} as const;
+
+/** A library's page. */
+export function libraryPath(id: string): string {
+  return `/libraries/${id}`;
+}
+
+/** A show's page inside a series library. */
+export function showPath(libraryId: string, show: string): string {
+  return `${libraryPath(libraryId)}/shows/${encodeURIComponent(show)}`;
+}
 
 /** A file inside the sample stash. */
 export function stashPath(rel: string): string {
@@ -105,6 +127,39 @@ export async function findItem(request: APIRequestContext, title: string, query 
   const item = page.items.find(candidate => candidate.title === title);
   if (!item) throw new Error(`No item titled ${title}; found ${page.items.map(i => i.title).join(', ')}`);
   return item;
+}
+
+/**
+ * Invites a member (as the owner, through the API) who joins with a passkey on a
+ * fresh browser context; answers that signed-in context and the member's id.
+ */
+export async function joinAsMember(
+  browser: Browser,
+  name: string,
+): Promise<{context: BrowserContext; page: Page; id: string}> {
+  const owner = await ownerContext(browser);
+  const ownerPage = await owner.newPage();
+  const created = await ownerPage.request.post('/api/invites', {
+    data: {role: 'member', expires_in_hours: 24},
+    headers: {Origin: new URL(env.publicUrl).origin},
+  });
+  expect(created.status(), await created.text()).toBe(200);
+  const invite = (await created.json()) as {url: string};
+  await owner.close();
+
+  // A device of their own: nobody signed in (a spec's storageState would sign in the owner).
+  const context = await browser.newContext({storageState: {cookies: [], origins: []}});
+  const page = await context.newPage();
+  const authenticator = await VirtualAuthenticator.attach(page);
+  await page.goto(new URL(invite.url).pathname);
+  await page.getByLabel('Your name').fill(name);
+  await page.getByRole('button', {name: 'Create passkey and join'}).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole('heading', {level: 1, name: 'Home'})).toBeVisible();
+  expect(await authenticator.credentials()).toHaveLength(1);
+  const me = (await (await page.request.get('/api/me')).json()) as {id: string; role: string};
+  expect(me.role).toBe('member');
+  return {context, page, id: me.id};
 }
 
 /** Runs `popcornstash admin ...` against the test server's folders, as `docker exec` would. */

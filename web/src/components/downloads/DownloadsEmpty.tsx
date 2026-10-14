@@ -86,13 +86,13 @@ interface Step {
 const OWNER_STEPS: Step[] = [
   {title: 'Arriving', folder: 'Downloads/In Progress', text: 'Torrents, web links and uploads land here while they come in.'},
   {title: 'Finished', folder: 'Downloads/Completed', text: 'Complete files wait here for a moment before sorting.'},
-  {title: 'Sorted', folder: 'Movies, Shows, Home Videos, Photos', text: 'Each file moves to its place. Anything unclear waits in Inbox.'},
+  {title: 'Sorted', folder: 'A library’s folder, or Other', text: 'Each file moves to the library that takes its kind. Anything unclear waits in Inbox.'},
 ];
 
 const MEMBER_STEPS: Step[] = [
   {title: 'Arriving', folder: null, text: 'Torrents, web links and uploads show up under In progress while they come in.'},
   {title: 'Finished', folder: null, text: 'Complete files move under Finished and wait a moment before sorting.'},
-  {title: 'Sorted', folder: 'Movies, Shows, Home Videos, Photos', text: 'Each file moves to its place. Anything unclear waits in Inbox.'},
+  {title: 'Sorted', folder: null, text: 'Each file moves to the library that takes its kind. Anything unclear waits in Inbox.'},
 ];
 
 export function DownloadsEmpty({isOwner}: {isOwner: boolean}) {

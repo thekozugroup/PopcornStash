@@ -14,7 +14,7 @@ import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {expect, test, type Page} from '@playwright/test';
-import {env, findItem} from '../helpers/env';
+import {LIBRARY, env, findItem, showPath} from '../helpers/env';
 
 test.use({storageState: async ({}, use) => use(env.ownerState)});
 
@@ -191,7 +191,7 @@ test('a show offers Resume only when the player will pick up part-way', async ({
     headers: {Origin: baseURL ?? ''},
   });
   expect(saved.status()).toBe(204);
-  await page.goto('/shows/The%20Lantern%20Keepers');
+  await page.goto(showPath(LIBRARY.shows, 'The Lantern Keepers'));
   await expect(page.getByRole('button', {name: 'Play S01E01'})).toBeVisible();
   await expect(page.getByRole('button', {name: /^Resume/})).toHaveCount(0);
   // The line under the button names the episode without promising time left.

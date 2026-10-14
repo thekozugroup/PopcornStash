@@ -4,7 +4,7 @@
  * section has its own address (`/settings/vpn`, `/settings/system`).
  *
  * The navigation is a tab strip. On phones an owner's six tabs would scroll
- * sideways and hide Library and System, so below 640px it becomes one
+ * sideways and hide Libraries and System, so below 640px it becomes one
  * full-width section picker that lists every section; a member's two tabs
  * fit and stay tabs. Both are rendered and swapped by a media query, so the
  * right one is there on the first paint.
@@ -27,7 +27,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   {path: 'devices', label: 'Devices', ownerOnly: false},
   {path: 'people', label: 'People', ownerOnly: true},
   {path: 'security', label: 'Security', ownerOnly: false},
-  {path: 'library', label: 'Library', ownerOnly: true},
+  {path: 'libraries', label: 'Libraries', ownerOnly: true},
   {path: 'system', label: 'System', ownerOnly: true},
 ];
 

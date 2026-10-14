@@ -1,7 +1,10 @@
 /**
- * Inbox items (status needs_review) with live updates: the `inbox` event
- * carries the current count, and a different count than the list holds
- * means something arrived or was decided elsewhere, so the list reloads.
+ * Inbox items with live updates: the waiting ones (status needs_review) and
+ * the ignored ones still in Inbox or Downloads/Completed. The `inbox` event
+ * carries the current count of waiting items, and a different count than the
+ * list holds means something arrived or was decided elsewhere, so the list
+ * reloads; so does a change to the person's libraries, which can re-point
+ * every suggestion.
  */
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {inbox as inboxApi} from '../../api/client';
@@ -15,6 +18,8 @@ export interface InboxData {
   status: InboxStatus;
   error: string | null;
   items: ItemDetail[];
+  /** Ignored files, still where they arrived. */
+  ignored: ItemDetail[];
   reload: () => void;
   /** Drops an item that was just decided. */
   removeItem: (id: string) => void;
@@ -26,6 +31,7 @@ export function useInbox(): InboxData {
   const [status, setStatus] = useState<InboxStatus>('loading');
   const [error, setError] = useState<string | null>(null);
   const [items, setItems] = useState<ItemDetail[]>([]);
+  const [ignored, setIgnored] = useState<ItemDetail[]>([]);
   const generation = useRef(0);
   const countRef = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -39,6 +45,7 @@ export function useInbox(): InboxData {
       .then(result => {
         if (current !== generation.current) return;
         setItems(result.items);
+        setIgnored(result.ignored ?? []);
         countRef.current = result.items.length;
         setStatus('ready');
         setError(null);
@@ -76,8 +83,9 @@ export function useInbox(): InboxData {
       if (event.count !== countRef.current) scheduleReload();
     },
     library: event => {
-      if (event.type !== 'added' && items.some(item => item.id === event.item_id)) scheduleReload();
+      if (event.type !== 'added' && [...items, ...ignored].some(item => item.id === event.item_id)) scheduleReload();
     },
+    libraries: () => scheduleReload(),
   });
 
   const removeItem = useCallback((id: string) => {
@@ -86,7 +94,8 @@ export function useInbox(): InboxData {
       countRef.current = next.length;
       return next;
     });
+    setIgnored(current => current.filter(item => item.id !== id));
   }, []);
 
-  return {status, error, items, reload, removeItem};
+  return {status, error, items, ignored, reload, removeItem};
 }

@@ -93,7 +93,11 @@ export function useDownloads(): DownloadsData {
     };
   }, [load]);
 
-  const streamStatus = useStashEvent('download', item => dispatch({type: 'upsert', item}));
+  // A download that leaves this person's view (sorted somewhere they cannot see,
+  // its files gone) arrives as `{id, removed: true}` and drops out without a word.
+  const streamStatus = useStashEvent('download', item =>
+    dispatch('removed' in item ? {type: 'remove', id: item.id} : {type: 'upsert', item}),
+  );
 
   // Reload after a reconnect: events sent while the stream was down are gone.
   const wasDown = useRef(false);

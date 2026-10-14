@@ -1,7 +1,11 @@
 /**
- * Settings, Library (owner): auto-sort, how the folder is laid out (with the
- * real folder from system info), a rescan, and the trash with restore,
- * retention and Empty trash.
+ * Settings, Libraries (owner): the libraries in the sidebar's order (open
+ * one to edit it; move it up or down, or delete it, from its More menu),
+ * the top-level folders that are not a library yet with "Make a library",
+ * then sorting, the folder layout, a rescan and the trash.
+ *
+ * Nothing here moves, renames or deletes a file: libraries are views of
+ * folders (docs/architecture.md section 3.1).
  */
 import * as stylex from '@stylexjs/stylex';
 import {colorVars, typographyVars} from '@astryxdesign/core/theme/tokens.stylex';
@@ -9,24 +13,31 @@ import {Button} from '@astryxdesign/core/Button';
 import {Code} from '@astryxdesign/core/Code';
 import {ListItem} from '@astryxdesign/core/List';
 import {MetadataList, MetadataListItem} from '@astryxdesign/core/MetadataList';
+import {MoreMenu} from '@astryxdesign/core/MoreMenu';
 import {NumberInput} from '@astryxdesign/core/NumberInput';
 import {Switch} from '@astryxdesign/core/Switch';
 import {Text} from '@astryxdesign/core/Text';
 import {Thumbnail} from '@astryxdesign/core/Thumbnail';
 import {useToast} from '@astryxdesign/core/Toast';
 import {useMediaQuery} from '@astryxdesign/core/hooks';
-import {useState} from 'react';
-import {library, system, trash} from '../../api/client';
+import {Folder} from 'lucide-react';
+import {useEffect, useRef, useState} from 'react';
+import {libraries as librariesApi, library, system, trash, users as usersApi} from '../../api/client';
 import {useStashEvent} from '../../api/events';
+import type {Library, UnassignedFolder, User} from '../../api/types';
+import {useLibraries} from '../../app/LibrariesProvider';
 import {OwnerOnly} from '../../components/settings/OwnerOnly';
-import {EmptyRows, LoadError, LoadingRows, RowsPanel, PanelList} from '../../components/settings/SectionStates';
+import {EmptyRows, LoadError, LoadingRows, PanelList, RowsPanel} from '../../components/settings/SectionStates';
 import {SettingsGroup} from '../../components/settings/SettingsGroup';
 import {listTrash, type TrashRow} from '../../components/settings/settingsApi';
 import {useConfirm} from '../../components/settings/useConfirm';
 import {useResource} from '../../components/settings/useResource';
 import {useSettingsDraft} from '../../components/settings/useSettingsDraft';
+import {StatusTag} from '../../components/StatusTag';
 import {errorMessage} from '../../lib/errors';
 import {formatCount, formatRelative} from '../../lib/format';
+import {kindLine, takesLine, whoSeesLine} from '../../lib/libraries';
+import {LibraryGlyph} from '../../lib/libraryIcons';
 import {SettingsSectionHeader} from './SettingsSectionHeader';
 
 const styles = stylex.create({
@@ -57,10 +68,6 @@ const styles = stylex.create({
     gap: 2,
     minWidth: 0,
   },
-  note: {
-    lineHeight: 1.55,
-    maxWidth: '64ch',
-  },
   facts: {
     paddingBlock: 12,
     paddingInline: 20,
@@ -70,6 +77,9 @@ const styles = stylex.create({
     flexDirection: 'column',
     gap: 2,
     minWidth: 0,
+  },
+  refusal: {
+    overflowWrap: 'anywhere',
   },
   inline: {
     display: 'flex',
@@ -96,14 +106,40 @@ const styles = stylex.create({
     flexShrink: 0,
     backgroundColor: colorVars['--color-background-muted'],
   },
+  // A library's icon at 20px on a 40px quiet square, as in the sidebar's family.
+  iconSquare: {
+    display: 'grid',
+    placeItems: 'center',
+    width: 40,
+    height: 40,
+    flexShrink: 0,
+    borderRadius: 8,
+    backgroundColor: colorVars['--color-background-muted'],
+    color: colorVars['--color-icon-primary'],
+  },
+  // Facts spaced 16px apart, wrapping on narrow screens.
+  strip: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    columnGap: 16,
+    rowGap: 4,
+    minWidth: 0,
+  },
+  folderName: {
+    fontFamily: typographyVars['--font-family-code'],
+    fontSize: '0.875rem',
+    overflowWrap: 'anywhere',
+  },
 });
 
-const FOLDERS: {name: string; what: string; example: string}[] = [
-  {name: 'Movies', what: 'One folder per film.', example: 'Movies/Harbor Lights (2019)/Harbor Lights (2019).mkv'},
-  {name: 'Shows', what: 'By show and season.', example: 'Shows/Garden Tales/Season 02/Garden Tales - S02E04.mkv'},
-  {name: 'Home Videos', what: 'By the month they were filmed.', example: 'Home Videos/2025/07/IMG_4410.MOV'},
-  {name: 'Photos', what: 'By the month they were taken.', example: 'Photos/2025/06/IMG_20250614_183022.jpg'},
-  {name: 'Other', what: 'Anything that is not one of the above.', example: 'Other/recipe-cards.pdf'},
+/** How a sorted file is laid out inside any library's folder, and the fixed places. */
+const LAYOUT: {name: string; what: string; example: string}[] = [
+  {name: 'Movies', what: 'One folder per film, in the library’s folder.', example: 'Harbor Lights (2019)/Harbor Lights (2019).mkv'},
+  {name: 'TV episodes', what: 'By show and season.', example: 'Garden Tales/Season 02/Garden Tales - S02E04.mkv'},
+  {name: 'Camera videos', what: 'By the month they were filmed.', example: '2025/07/IMG_4410.MOV'},
+  {name: 'Photos', what: 'By the month they were taken.', example: '2025/06/IMG_20250614_183022.jpg'},
+  {name: 'Other', what: 'Music, documents and anything else.', example: 'Other/recipe-cards.pdf'},
   {name: 'Inbox', what: 'Copy files here and they are sorted for you.', example: 'Inbox/'},
   {
     name: 'Downloads',
@@ -118,6 +154,195 @@ function folderOf(path: string): string {
   return parts.length > 1 ? parts.slice(0, -1).join('/') : (parts[0] ?? path);
 }
 
+function editorHref(id: string): string {
+  return `/settings/libraries/${encodeURIComponent(id)}`;
+}
+
+/** "124 videos  12 photos  3 other files" for a folder that is not a library. */
+export function folderCounts(folder: UnassignedFolder): string[] {
+  const counts = [
+    folder.video_count ? formatCount(folder.video_count, 'video') : null,
+    folder.photo_count ? formatCount(folder.photo_count, 'photo') : null,
+    folder.other_count ? formatCount(folder.other_count, 'other file') : null,
+  ].filter((entry): entry is string => Boolean(entry));
+  return counts.length > 0 ? counts : ['Nothing indexed yet'];
+}
+
+function LibraryRow({
+  library,
+  people,
+  index,
+  total,
+  onMove,
+  onDelete,
+}: {
+  library: Library;
+  people: User[];
+  index: number;
+  total: number;
+  onMove: (library: Library, step: -1 | 1) => void;
+  onDelete: (library: Library) => void;
+}) {
+  const folderProblem =
+    library.folder_state === 'missing' ? 'Folder missing' : library.folder_state === 'read_only' ? 'Folder read-only' : null;
+  return (
+    <ListItem
+      label={library.name}
+      href={editorHref(library.id)}
+      startContent={
+        <span aria-hidden="true" {...stylex.props(styles.iconSquare)}>
+          <LibraryGlyph name={library.icon} size={20} />
+        </span>
+      }
+      description={
+        <span {...stylex.props(styles.strip)}>
+          <span>{kindLine(library)}</span>
+          <span>{takesLine(library.claims)}</span>
+          <span>{whoSeesLine(library.visibility, library.member_ids, people)}</span>
+          {folderProblem ? <StatusTag tone="warning">{folderProblem}</StatusTag> : null}
+        </span>
+      }
+      endContent={
+        <span data-library-more={library.id}>
+          <MoreMenu
+            label={`More for ${library.name}`}
+            alignment="end"
+            items={[
+              {label: 'Move up', isDisabled: index === 0, onClick: () => onMove(library, -1)},
+              {label: 'Move down', isDisabled: index === total - 1, onClick: () => onMove(library, 1)},
+              {type: 'divider'},
+              {label: 'Delete…', variant: 'destructive', onClick: () => onDelete(library)},
+            ]}
+          />
+        </span>
+      }
+    />
+  );
+}
+
+function LibrariesGroup({people}: {people: User[]}) {
+  const showToast = useToast();
+  const {libraries, status, error, reload} = useLibraries();
+  const {ask, dialog} = useConfirm();
+  const [order, setOrder] = useState<Library[] | null>(null);
+  /** The row whose More button keeps focus once the moved list has re-rendered. */
+  const focusId = useRef<string | null>(null);
+  const list = order ?? libraries;
+
+  useEffect(() => {
+    const id = focusId.current;
+    if (!id) return;
+    document.querySelector<HTMLElement>(`[data-library-more="${CSS.escape(id)}"] button`)?.focus();
+  }, [list]);
+
+  const move = async (target: Library, step: -1 | 1) => {
+    const ids = (list ?? []).map(entry => entry.id);
+    const from = ids.indexOf(target.id);
+    const to = from + step;
+    if (from < 0 || to < 0 || to >= ids.length) return;
+    ids.splice(from, 1);
+    ids.splice(to, 0, target.id);
+    const optimistic = ids
+      .map(id => list?.find(entry => entry.id === id))
+      .filter((entry): entry is Library => Boolean(entry));
+    focusId.current = target.id;
+    setOrder(optimistic);
+    try {
+      const result = await librariesApi.reorder(ids);
+      setOrder(result.libraries);
+      await reload();
+      setOrder(null);
+    } catch (cause) {
+      setOrder(null);
+      showToast({type: 'error', body: errorMessage(cause, 'The order was not saved. Try again.')});
+    }
+  };
+
+  const remove = (target: Library) =>
+    ask({
+      title: `Delete ${target.name}?`,
+      description: `Takes ${target.name} out of the app. Its files stay in ${target.folder ?? 'its folder'}/ and only owners will see them.`,
+      actionLabel: 'Delete library',
+      failure: 'The library was not deleted. Try again.',
+      run: async () => {
+        await librariesApi.remove(target.id);
+        await reload();
+        showToast({body: `${target.name} is no longer in the app. Its files stay in ${target.folder ?? 'its folder'}/.`});
+      },
+    });
+
+  return (
+    <SettingsGroup
+      title="Libraries"
+      description="What the sidebar and Home show, in this order."
+      actions={<Button label="Make a library" variant="primary" href="/settings/libraries/new" />}>
+      {status === 'loading' ? (
+        <LoadingRows rows={4} label="Loading libraries" />
+      ) : status === 'error' && !libraries ? (
+        <LoadError title="Libraries did not load" error={error} onRetry={() => void reload()} />
+      ) : !list || list.length === 0 ? (
+        <EmptyRows>No libraries yet. Make one to give the family something to browse.</EmptyRows>
+      ) : (
+        <PanelList density="spacious">
+          {list.map((entry, index) => (
+            <LibraryRow
+              key={entry.id}
+              library={entry}
+              people={people}
+              index={index}
+              total={list.length}
+              onMove={(target, step) => void move(target, step)}
+              onDelete={remove}
+            />
+          ))}
+        </PanelList>
+      )}
+      {dialog}
+    </SettingsGroup>
+  );
+}
+
+function UnassignedFoldersGroup() {
+  const {libraries} = useLibraries();
+  const folders = useResource(signal => librariesApi.folders(signal), {key: `folders:${libraries?.length ?? 0}`});
+  const rows = folders.data?.folders ?? [];
+  if (folders.isLoading || rows.length === 0) return null;
+  return (
+    <SettingsGroup
+      title="Folders not in a library"
+      description="Only owners see what is in them. Make one a library to share it.">
+      <PanelList density="spacious">
+        {rows.map(folder => (
+          <ListItem
+            key={folder.name}
+            label={<span {...stylex.props(styles.folderName)}>{`${folder.name}/`}</span>}
+            startContent={
+              <span aria-hidden="true" {...stylex.props(styles.iconSquare)}>
+                <Folder size={20} strokeWidth={1.5} />
+              </span>
+            }
+            description={
+              <span {...stylex.props(styles.strip)}>
+                {folderCounts(folder).map(count => (
+                  <span key={count}>{count}</span>
+                ))}
+              </span>
+            }
+            endContent={
+              <Button
+                label="Make a library"
+                variant="secondary"
+                href={`/settings/libraries/new?folder=${encodeURIComponent(folder.name)}`}
+                aria-label={`Make a library from ${folder.name}`}
+              />
+            }
+          />
+        ))}
+      </PanelList>
+    </SettingsGroup>
+  );
+}
+
 function SortingGroup() {
   const showToast = useToast();
   const form = useSettingsDraft(settings => settings.auto_sort);
@@ -125,7 +350,7 @@ function SortingGroup() {
   return (
     <SettingsGroup
       title="Sorting"
-      description="New files from Downloads and Inbox go into the right folder on their own.">
+      description="New files from Downloads and Inbox go to the library that takes their kind.">
       {form.isLoading ? (
         <LoadingRows rows={1} label="Loading sorting settings" />
       ) : value === null ? (
@@ -133,7 +358,7 @@ function SortingGroup() {
       ) : (
         <Switch
           label="Sort new files automatically"
-          description="Files that clearly are a movie, an episode, a home video or a photo move straight into the library. Anything uncertain waits in Inbox for you to check."
+          description="Files that clearly are a movie, an episode, a camera video or a photo move straight into the library that takes them. Anything uncertain, or a kind no library takes, waits in Inbox for you to check."
           value={value}
           changeAction={async next => {
             try {
@@ -179,7 +404,7 @@ function FoldersGroup() {
     <>
       <SettingsGroup
         title="Folder layout"
-        description="Everything lives in one folder. PopcornStash only moves files that arrive through Inbox or Downloads. Files you put in the other folders yourself stay exactly where they are.">
+        description="Everything lives in one folder, with a folder for each library. A sorted file is laid out by what it is. PopcornStash only moves files that arrive through Inbox or Downloads; files you put anywhere else stay exactly where they are.">
         <div {...stylex.props(styles.root)}>
           <Text type="label">Your PopcornStash folder</Text>
           {info.isLoading ? (
@@ -197,7 +422,7 @@ function FoldersGroup() {
         <RowsPanel>
           <div {...stylex.props(styles.facts)}>
             <MetadataList label={isNarrow ? {position: 'top'} : {position: 'start', width: 132}}>
-              {FOLDERS.map(folder => (
+              {LAYOUT.map(folder => (
                 <MetadataListItem key={folder.name} label={folder.name}>
                   <span {...stylex.props(styles.folderValue)}>
                     <Text>{folder.what}</Text>
@@ -224,7 +449,7 @@ function FoldersGroup() {
           <span aria-live="polite">
             <Text type="supporting" color="secondary">
               {scan === 'running'
-                ? 'Looking for new and moved files. They appear in the library as they are found.'
+                ? 'Looking for new and moved files. They appear in their libraries as they are found.'
                 : scan === 'done'
                   ? 'Scan finished.'
                   : ''}
@@ -251,9 +476,15 @@ function TrashRowItem({row, onRestore}: {row: TrashRow; onRestore: (row: TrashRo
         <span {...stylex.props(styles.trashMeta)}>
           <span>Moved to trash {formatRelative(row.trashedAt).toLowerCase()}</span>
           <span {...stylex.props(styles.example)}>From {folderOf(row.originalPath)}</span>
+          {/* Its library would no longer show it: no Restore, and the server says why. */}
+          {row.restoreRefusal ? <span {...stylex.props(styles.refusal)}>{row.restoreRefusal}</span> : null}
         </span>
       }
-      endContent={<Button label="Restore" variant="secondary" clickAction={async () => onRestore(row)} />}
+      endContent={
+        row.restoreRefusal ? undefined : (
+          <Button label="Restore" variant="secondary" clickAction={async () => onRestore(row)} />
+        )
+      }
     />
   );
 }
@@ -273,6 +504,7 @@ function TrashGroup() {
       showToast({body: `${row.title} is back in ${folderOf(row.originalPath)}.`});
     } catch (cause) {
       showToast({type: 'error', body: errorMessage(cause, 'It was not restored. Try again.')});
+      items.reload();
     }
   };
 
@@ -351,11 +583,17 @@ function TrashGroup() {
   );
 }
 
-function LibrarySettings() {
+function LibrariesSettings() {
+  const people = useResource(signal => usersApi.list(signal), {key: 'users'});
   return (
     <>
-      <SettingsSectionHeader title="Library" subtitle="Sorting, the folder layout and the trash." />
+      <SettingsSectionHeader
+        title="Libraries"
+        subtitle="Your libraries and who sees each one, folders that are not a library yet, sorting and the trash."
+      />
       <div {...stylex.props(styles.groups)}>
+        <LibrariesGroup people={people.data ?? []} />
+        <UnassignedFoldersGroup />
         <SortingGroup />
         <FoldersGroup />
         <TrashGroup />
@@ -364,10 +602,10 @@ function LibrarySettings() {
   );
 }
 
-export default function LibrarySettingsPage() {
+export default function LibrariesSettingsPage() {
   return (
     <OwnerOnly>
-      <LibrarySettings />
+      <LibrariesSettings />
     </OwnerOnly>
   );
 }

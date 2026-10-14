@@ -83,7 +83,7 @@ const WAYS: {icon: LucideIcon; title: string; body: string}[] = [
   {
     icon: Upload,
     title: 'Drop files anywhere in this window',
-    body: 'They upload to Downloads first, then move into Movies, Shows, Home Videos or Photos.',
+    body: 'They upload to Downloads first, then move into the library that takes them.',
   },
   {
     icon: FolderInput,

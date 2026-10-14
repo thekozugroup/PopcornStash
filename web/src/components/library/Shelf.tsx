@@ -1,8 +1,9 @@
 /**
- * A titled horizontal row of tiles (Home: continue watching, recently
- * added). The row scrolls sideways with snap points; on wide screens with a
- * mouse, quiet arrow buttons page through it. Keyboard users tab through the
- * tiles and the row follows focus.
+ * A titled horizontal row of tiles (Home: continue watching, one shelf per
+ * library). The row scrolls sideways with snap points; on wide screens with
+ * a mouse, quiet arrow buttons page through it. Keyboard users tab through
+ * the tiles and the row follows focus. A library shelf leads with the
+ * library's own icon; one with nothing yet keeps its heading and says so.
  */
 import * as stylex from '@stylexjs/stylex';
 import {Heading} from '@astryxdesign/core/Heading';
@@ -10,7 +11,8 @@ import {IconButton} from '@astryxdesign/core/IconButton';
 import {Button} from '@astryxdesign/core/Button';
 import {Skeleton} from '@astryxdesign/core/Skeleton';
 import {Text} from '@astryxdesign/core/Text';
-import {ChevronLeft, ChevronRight} from 'lucide-react';
+import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
+import {ChevronLeft, ChevronRight, type LucideIcon} from 'lucide-react';
 import {Children, isValidElement, useCallback, useEffect, useId, useState, type ReactNode} from 'react';
 import {MediaTileSkeleton, type MediaShape} from '../MediaTile';
 
@@ -35,6 +37,24 @@ const styles = stylex.create({
     columnGap: 10,
     rowGap: 2,
     minWidth: 0,
+  },
+  // Icon, name and count share one baseline row; the icon sits on the name's line.
+  iconTitle: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 8,
+    minWidth: 0,
+  },
+  titleIcon: {
+    flexShrink: 0,
+    color: colorVars['--color-icon-secondary'],
+    alignSelf: 'center',
+  },
+  nothing: {
+    margin: 0,
+    minHeight: 44,
+    display: 'flex',
+    alignItems: 'center',
   },
   trailing: {
     display: 'flex',
@@ -98,6 +118,10 @@ const styles = stylex.create({
 
 export interface ShelfProps {
   title: string;
+  /** A library's icon, drawn before its name. */
+  icon?: LucideIcon;
+  /** Nothing to show yet: the heading stays, with this sentence in place of the row. */
+  emptyText?: string;
   /** Quiet text after the title ("3 new"). */
   note?: string;
   headingLevel?: 2 | 3;
@@ -107,10 +131,21 @@ export interface ShelfProps {
   shape: MediaShape;
   /** One or two tiles: no scrolling, sized to its content. */
   isCompact?: boolean;
-  children: ReactNode;
+  children?: ReactNode;
 }
 
-export function Shelf({title, note, headingLevel = 3, href, linkLabel = 'See all', shape, isCompact = false, children}: ShelfProps) {
+export function Shelf({
+  title,
+  icon: Icon,
+  emptyText,
+  note,
+  headingLevel = 3,
+  href,
+  linkLabel = 'See all',
+  shape,
+  isCompact = false,
+  children,
+}: ShelfProps) {
   const headingId = useId();
   const [row, setRow] = useState<HTMLUListElement | null>(null);
   const [edges, setEdges] = useState({start: true, end: true});
@@ -143,9 +178,18 @@ export function Shelf({title, note, headingLevel = 3, href, linkLabel = 'See all
     <section {...stylex.props(styles.section, isCompact && styles.compactSection)} aria-labelledby={headingId}>
       <div {...stylex.props(styles.header)}>
         <div {...stylex.props(styles.titleGroup)}>
-          <Heading level={headingLevel} id={headingId}>
-            {title}
-          </Heading>
+          {Icon ? (
+            <span {...stylex.props(styles.iconTitle)}>
+              <Icon size={18} strokeWidth={1.5} aria-hidden="true" {...stylex.props(styles.titleIcon)} />
+              <Heading level={headingLevel} id={headingId}>
+                {title}
+              </Heading>
+            </span>
+          ) : (
+            <Heading level={headingLevel} id={headingId}>
+              {title}
+            </Heading>
+          )}
           {note ? (
             <Text type="supporting" color="secondary">
               {note}
@@ -176,11 +220,17 @@ export function Shelf({title, note, headingLevel = 3, href, linkLabel = 'See all
           {href ? <Button label={linkLabel} variant="ghost" href={href} /> : null}
         </div>
       </div>
-      <ul ref={setRow} {...stylex.props(styles.row, styles[shape], isCompact && styles.compactRow)}>
-        {Children.map(children, child =>
-          isValidElement(child) ? <li {...stylex.props(styles.cell)}>{child}</li> : null,
-        )}
-      </ul>
+      {emptyText ? (
+        <Text as="p" type="supporting" color="secondary" xstyle={styles.nothing}>
+          {emptyText}
+        </Text>
+      ) : (
+        <ul ref={setRow} {...stylex.props(styles.row, styles[shape], isCompact && styles.compactRow)}>
+          {Children.map(children, child =>
+            isValidElement(child) ? <li {...stylex.props(styles.cell)}>{child}</li> : null,
+          )}
+        </ul>
+      )}
     </section>
   );
 }

@@ -1,51 +1,18 @@
 /**
- * Plain-word labels for library items: where a category lives, the one
- * metadata line under a tile, codec summaries in metadata style, and the
- * folder an item would move to when organized (architecture section 3).
+ * Plain-word labels for library items: where "back" goes from an item, the
+ * one metadata line under a tile, and codec summaries in metadata style.
  */
 import {items as itemsApi} from '../../api/client';
 import type {
   Item,
-  ItemCategory,
-  ItemKind,
+  Library,
   MediaAudioStream,
   MediaSubtitleStream,
   MediaSummary,
   MediaVideoStream,
 } from '../../api/types';
 import {formatBytes, formatCount, formatDate, formatDuration, formatEpisodeCode} from '../../lib/format';
-
-export const CATEGORY_PATH: Record<ItemCategory, string> = {
-  movie: '/movies',
-  episode: '/shows',
-  home_video: '/home-videos',
-  photo: '/photos',
-  other: '/other',
-};
-
-export const CATEGORY_LABEL: Record<ItemCategory, string> = {
-  movie: 'Movies',
-  episode: 'Shows',
-  home_video: 'Home Videos',
-  photo: 'Photos',
-  other: 'Other',
-};
-
-/** Top-level folders of the library (architecture section 3). */
-export const CATEGORY_FOLDER: Record<ItemCategory, string> = {
-  movie: 'Movies',
-  episode: 'Shows',
-  home_video: 'Home Videos',
-  photo: 'Photos',
-  other: 'Other',
-};
-
-const LIBRARY_FOLDERS = new Set(Object.values(CATEGORY_FOLDER));
-
-/** True when the file already sits in one of the five library folders. */
-export function isInLibraryFolder(relPath: string): boolean {
-  return LIBRARY_FOLDERS.has(relPath.split('/')[0] ?? '');
-}
+import {libraryHref, libraryShowHref} from '../../lib/libraries';
 
 /** "2 seasons · 14 episodes", or just the episodes for a single season. */
 export function showMeta(show: {season_count: number; item_count: number}): string {
@@ -57,16 +24,22 @@ export function itemHref(item: Pick<Item, 'id'>): string {
   return `/item/${encodeURIComponent(item.id)}`;
 }
 
-export function showHref(showName: string): string {
-  return `/shows/${encodeURIComponent(showName)}`;
-}
-
-/** Where "back" goes from an item: its show, or its category page. */
-export function itemParent(item: Pick<Item, 'category' | 'show_name'>): {href: string; label: string} {
-  if (item.category === 'episode' && item.show_name) {
-    return {href: showHref(item.show_name), label: item.show_name};
+/**
+ * Where "back" goes from an item: its show in its library, its library, Other
+ * files, or Home for anything else (a file in a folder that is not a library).
+ */
+export function itemParent(
+  item: Pick<Item, 'category' | 'show_name' | 'library_id' | 'place'>,
+  library: Pick<Library, 'id' | 'name' | 'layout'> | undefined,
+): {href: string; label: string} {
+  if (library && item.library_id === library.id) {
+    if (library.layout === 'series' && item.category === 'episode' && item.show_name) {
+      return {href: libraryShowHref(library.id, item.show_name), label: item.show_name};
+    }
+    return {href: libraryHref(library.id), label: library.name};
   }
-  return {href: CATEGORY_PATH[item.category], label: CATEGORY_LABEL[item.category]};
+  if (item.place === 'other_files') return {href: '/other', label: 'Other files'};
+  return {href: '/', label: 'Home'};
 }
 
 /**
@@ -360,77 +333,4 @@ export function containerName(media: MediaSummary | null, relPath: string): stri
   const type = fileType(relPath);
   if (type) return type;
   return media?.container?.split(',')[0]?.toUpperCase() || null;
-}
-
-// ---------------------------------------------------------------------------
-// Organize destinations (architecture section 3)
-// ---------------------------------------------------------------------------
-
-/** Categories an item of this kind can be organized into. */
-export function organizeCategories(kind: ItemKind): ItemCategory[] {
-  if (kind === 'video') return ['movie', 'episode', 'home_video', 'other'];
-  if (kind === 'photo') return ['photo', 'other'];
-  return ['other'];
-}
-
-export const CATEGORY_SINGULAR: Record<ItemCategory, string> = {
-  movie: 'Movie',
-  episode: 'Episode',
-  home_video: 'Home video',
-  photo: 'Photo',
-  other: 'Other',
-};
-
-/** Characters that cannot appear in a file or folder name on common systems. */
-function safeName(value: string): string {
-  return value
-    .replace(/[\\/:*?"<>|]/g, ' ')
-    .replace(/\p{Cc}/gu, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-export interface OrganizeFields {
-  category: ItemCategory;
-  title: string;
-  year: number | null;
-  show_name: string;
-  season: number | null;
-  episode: number | null;
-}
-
-/**
- * The relative path an item moves to, following the folder layout in
- * architecture section 3. Returns null until the required fields are filled.
- */
-export function destinationFor(
-  fields: OrganizeFields,
-  item: Pick<Item, 'rel_path' | 'taken_at' | 'added_at'>,
-): string | null {
-  const name = fileName(item.rel_path);
-  const type = fileType(item.rel_path)?.toLowerCase();
-  const ext = type ? `.${type}` : '';
-  const pad = (value: number) => String(value).padStart(2, '0');
-  switch (fields.category) {
-    case 'movie': {
-      const title = safeName(fields.title);
-      if (!title) return null;
-      const folder = fields.year ? `${title} (${fields.year})` : title;
-      return `Movies/${folder}/${folder}${ext}`;
-    }
-    case 'episode': {
-      const show = safeName(fields.show_name);
-      if (!show || fields.season === null || fields.episode === null) return null;
-      return `Shows/${show}/Season ${pad(fields.season)}/${show} - S${pad(fields.season)}E${pad(fields.episode)}${ext}`;
-    }
-    case 'home_video':
-    case 'photo': {
-      const when = new Date((item.taken_at ?? item.added_at) * 1000);
-      const folder = fields.category === 'photo' ? 'Photos' : 'Home Videos';
-      return `${folder}/${when.getFullYear()}/${pad(when.getMonth() + 1)}/${name}`;
-    }
-    case 'other':
-    default:
-      return `Other/${name}`;
-  }
 }

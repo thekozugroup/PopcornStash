@@ -1,8 +1,10 @@
 /**
- * Browsing the sample library: Home, Movies, Shows, Home Videos, Photos and Other.
+ * Browsing the sample stash through its four starting libraries (Movies, Shows,
+ * Home Videos, Photos), Home's shelf per library, Other files, and the old
+ * fixed-category addresses that now lead to the library that takes that kind.
  */
 import {expect, test, type Locator} from '@playwright/test';
-import {env} from '../helpers/env';
+import {LIBRARY, env, libraryPath, showPath} from '../helpers/env';
 
 /** WCAG contrast ratio of two computed CSS colours (rgb() or oklch()). */
 function contrast(a: string, b: string): number {
@@ -25,45 +27,80 @@ function contrast(a: string, b: string): number {
 
 test.use({storageState: async ({}, use) => use(env.ownerState)});
 
-test('Home shows the library counts and what was recently added', async ({page}) => {
+test('Home has a shelf for each library, in order, each with its icon', async ({page}) => {
   await page.goto('/');
   await expect(page.getByRole('heading', {level: 1, name: 'Home'})).toBeVisible();
-  const counts = page.getByRole('list', {name: 'Your library'});
-  for (const label of ['4 movies', '2 shows', '2 home videos', '3 photos', '3 other files']) {
-    await expect(counts.getByRole('link', {name: label})).toBeVisible();
-  }
   // The ambiguous Inbox file is waiting, and the sidebar says so.
   await expect(page.getByRole('link', {name: /^1 file needs a quick look before it is sorted\./})).toBeVisible();
   const nav = page.getByRole('navigation', {name: 'Main navigation'});
   await expect(nav.getByRole('link', {name: 'Inbox 1'})).toBeVisible();
-  // Every destination has its line icon, the same one as its category's tiles and empty state.
+  // Home, then every library with the icon its owner chose, then the fixed places with theirs.
   const icons: [RegExp, string][] = [
     [/^Home$/, 'house'], [/^Movies$/, 'film'], [/^Shows$/, 'tv'], [/^Home Videos$/, 'clapperboard'],
-    [/^Photos$/, 'image'], [/^Other$/, 'file-text'], [/^Inbox/, 'inbox'], [/^Downloads$/, 'arrow-down-to-line'],
+    [/^Photos$/, 'image'], [/^Other files$/, 'file-text'], [/^Inbox/, 'inbox'], [/^Downloads$/, 'arrow-down-to-line'],
     [/^Settings$/, 'settings'],
   ];
   for (const [name, icon] of icons) {
     await expect(nav.getByRole('link', {name}).locator(`svg.lucide-${icon}`)).toBeVisible();
   }
+  // The brand (a link to Home) leads the sidebar; the places follow.
+  const order = await nav.getByRole('link').filter({hasNotText: 'Popcorn'}).allInnerTexts();
+  expect(order.map(text => text.trim().split('\n')[0])).toEqual([
+    'Home', 'Movies', 'Shows', 'Home Videos', 'Photos', 'Other files', 'Inbox', 'Downloads', 'Settings',
+  ]);
 
-  const recent = page.getByRole('region', {name: 'Recently added'});
-  await expect(recent.getByRole('link', {name: /^Harbor Lights 2019/})).toBeVisible();
-  await expect(recent.getByRole('link', {name: /^IMG_1234 /})).toBeVisible();
-  await expect(recent.getByRole('link', {name: /^Quiet Meadow/})).toBeVisible();
-  // Files without a picture show what they are, as on the Other page (not a film clapperboard).
-  await expect(recent.getByRole('link', {name: /^Recipe Card PDF/}).locator('svg.lucide-file-text')).toBeVisible();
-  await expect(recent.getByRole('link', {name: /^Morning Notes MP3/}).locator('svg.lucide-music')).toBeVisible();
-  // Every kind keeps its shelf (the newest of each kind, not the newest overall), photos included.
-  await expect(recent.getByRole('region', {name: 'Photos'}).getByRole('listitem')).toHaveCount(3);
-  await expect(recent.getByRole('region', {name: 'Home Videos'}).getByRole('listitem')).toHaveCount(2);
+  // One shelf per library in the same order, its icon before its name, its count beside it.
+  const names = await page.getByRole('main').getByRole('heading', {level: 2}).allInnerTexts();
+  expect(names.filter(name => ['Movies', 'Shows', 'Home Videos', 'Photos'].includes(name))).toEqual([
+    'Movies', 'Shows', 'Home Videos', 'Photos',
+  ]);
+  const movies = page.getByRole('region', {name: 'Movies', exact: true});
+  await expect(movies.locator('svg.lucide-film').first()).toBeVisible();
+  await expect(movies.getByText('4 videos')).toBeVisible();
+  await expect(movies.getByRole('link', {name: /^Harbor Lights 2019/})).toBeVisible();
+  const shows = page.getByRole('region', {name: 'Shows', exact: true});
+  await expect(shows.getByText('2 shows, 4 episodes')).toBeVisible();
+  await expect(shows.getByRole('link', {name: /^Quiet Meadow/})).toBeVisible();
+  // Every library keeps its shelf (its own newest items, not the newest overall), photos included.
+  await expect(page.getByRole('region', {name: 'Photos', exact: true}).getByRole('listitem')).toHaveCount(3);
+  const homeVideos = page.getByRole('region', {name: 'Home Videos', exact: true});
+  await expect(homeVideos.getByRole('listitem')).toHaveCount(2);
+  await expect(homeVideos.getByRole('link', {name: /^IMG_1234 /})).toBeVisible();
+  // Other files is not a library: a quiet heading with its count and the way in.
+  const other = page.getByRole('region', {name: 'Other files', exact: true});
+  await expect(other.getByText('2 files')).toBeVisible();
 
-  // Counts link to their pages.
-  await counts.getByRole('link', {name: '4 movies'}).click();
-  await expect(page).toHaveURL(/\/movies$/);
+  // "See all" opens the library.
+  await movies.getByRole('link', {name: 'See all'}).click();
+  await expect(page).toHaveURL(new RegExp(`${libraryPath(LIBRARY.movies)}$`));
+  await expect(page.getByRole('heading', {level: 1, name: 'Movies'})).toBeVisible();
+  await expect(page.getByText('4 videos', {exact: true})).toBeVisible();
+});
+
+test('the old addresses lead to the library that takes that kind', async ({page}) => {
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const [old, target] of [
+    ['/movies?sort=title', `${libraryPath(LIBRARY.movies)}?sort=title`],
+    ['/shows', libraryPath(LIBRARY.shows)],
+    ['/shows/The%20Lantern%20Keepers', showPath(LIBRARY.shows, 'The Lantern Keepers')],
+    ['/home-videos', libraryPath(LIBRARY.homeVideos)],
+    ['/photos', libraryPath(LIBRARY.photos)],
+    ['/settings/library', '/settings/libraries'],
+  ] as const) {
+    await page.goto(old);
+    await expect(page, old).toHaveURL(new RegExp(`${escape(target)}$`));
+    await expect(page.getByRole('heading', {level: 1}).first()).toBeVisible();
+  }
+  // Replaced, not pushed: Back does not bounce through the old address.
+  await page.goto('/');
+  await page.goto('/photos');
+  await expect(page).toHaveURL(new RegExp(`${libraryPath(LIBRARY.photos)}$`));
+  await page.goBack();
+  await expect(page).toHaveURL(/\/$/);
 });
 
 test('Movies lists the films, with thumbnails, and opens a movie', async ({page}) => {
-  await page.goto('/movies');
+  await page.goto(libraryPath(LIBRARY.movies));
   const grid = page.getByRole('list', {name: 'Movies'});
   for (const title of ['Paper Boats', 'Glass Orchard', 'Tin Lighthouse', 'Harbor Lights']) {
     await expect(grid.getByRole('link', {name: new RegExp(`^${title} \\d{4}`)})).toBeVisible();
@@ -77,7 +114,7 @@ test('Movies lists the films, with thumbnails, and opens a movie', async ({page}
     .toBeGreaterThan(0);
 
   // The subtitle does not promise an order the sort menu can change.
-  await page.goto('/movies?sort=title');
+  await page.goto(`${libraryPath(LIBRARY.movies)}?sort=title`);
   await expect(grid.getByRole('link', {name: /^Glass Orchard/})).toBeVisible();
   await expect(page.getByText(/most recently added first/)).toHaveCount(0);
 
@@ -87,13 +124,16 @@ test('Movies lists the films, with thumbnails, and opens a movie', async ({page}
 });
 
 test('Shows lists each show and the show page lists its seasons', async ({page}) => {
-  await page.goto('/shows');
+  await page.goto(libraryPath(LIBRARY.shows));
+  await expect(page.getByText('2 shows, 4 episodes', {exact: true})).toBeVisible();
   const shows = page.getByRole('list', {name: 'Shows'});
   await expect(shows.getByRole('link', {name: 'The Lantern Keepers 2 seasons · 3 episodes'})).toBeVisible();
   await expect(shows.getByRole('link', {name: /^Quiet Meadow 1 episode/})).toBeVisible();
 
   await shows.getByRole('link', {name: /^The Lantern Keepers/}).click();
-  await expect(page).toHaveURL(/\/shows\/The%20Lantern%20Keepers$/);
+  await expect(page).toHaveURL(new RegExp(`${showPath(LIBRARY.shows, 'The Lantern Keepers')}$`));
+  // The back link names the library.
+  await expect(page.getByRole('main').getByRole('link', {name: 'Shows', exact: true})).toBeVisible();
   await expect(page.getByRole('heading', {level: 1, name: 'The Lantern Keepers'})).toBeVisible();
   await expect(page.getByText('2 seasons · 3 episodes')).toBeVisible();
   const episodes = page.getByRole('region', {name: 'Episodes'});
@@ -109,7 +149,7 @@ test('Shows lists each show and the show page lists its seasons', async ({page})
 });
 
 test('a show has the same picture on Home, on Shows and on its own page', async ({page}) => {
-  const show = '/api/shows/The%20Lantern%20Keepers';
+  const show = `/api/libraries/${LIBRARY.shows}/shows/The%20Lantern%20Keepers`;
   // Wait until every episode has a thumbnail, so the poster choice is settled.
   await expect
     .poll(async () => {
@@ -122,21 +162,21 @@ test('a show has the same picture on Home, on Shows and on its own page', async 
   const pictured = async (image: Locator) => /\/api\/items\/([^/]+)\/thumb/.exec((await image.getAttribute('src')) ?? '')?.[1];
 
   await page.goto('/');
-  const shelf = page.getByRole('region', {name: 'Recently added'}).getByRole('region', {name: 'Shows'});
+  const shelf = page.getByRole('region', {name: 'Shows', exact: true});
   expect(await pictured(shelf.getByRole('link', {name: /^The Lantern Keepers/}).locator('img'))).toBe(poster);
 
-  await page.goto('/shows');
+  await page.goto(libraryPath(LIBRARY.shows));
   const grid = page.getByRole('list', {name: 'Shows'});
   expect(await pictured(grid.getByRole('link', {name: /^The Lantern Keepers/}).locator('img'))).toBe(poster);
 
-  await page.goto('/shows/The%20Lantern%20Keepers');
+  await page.goto(showPath(LIBRARY.shows, 'The Lantern Keepers'));
   await expect(page.getByRole('heading', {level: 1, name: 'The Lantern Keepers'})).toBeVisible();
   // The poster is the first picture on the page, ahead of the episode frames.
   expect(await pictured(page.getByRole('main').locator('img').first())).toBe(poster);
 });
 
 test('Home Videos shows the phone clip with the date it was filmed', async ({page}) => {
-  await page.goto('/home-videos');
+  await page.goto(libraryPath(LIBRARY.homeVideos));
   const grid = page.getByRole('list', {name: 'Home Videos'});
   // Dated from the QuickTime creation time, not the file's modified time.
   await expect(grid.getByRole('link', {name: /^IMG_1234 Jun 13, 2024/})).toBeVisible();
@@ -148,7 +188,7 @@ test('Home Videos shows the phone clip with the date it was filmed', async ({pag
 });
 
 test('the Photos timeline opens the viewer and the arrow keys move between photos', async ({page}) => {
-  await page.goto('/photos');
+  await page.goto(libraryPath(LIBRARY.photos));
   const month = page.getByRole('region', {name: 'May 2022'});
   await expect(month.getByRole('heading', {name: 'May 2022'})).toBeVisible();
   await expect(month.getByText('3 photos')).toBeVisible();
@@ -205,11 +245,15 @@ test('the Photos timeline opens the viewer and the arrow keys move between photo
   await expect(viewer).toBeHidden();
 });
 
-test('Other lists the audio file and the document', async ({page}) => {
+test('Other files lists the audio file and the document, each with its own icon', async ({page}) => {
   await page.goto('/other');
-  const grid = page.getByRole('list', {name: 'Other'});
+  await expect(page.getByRole('heading', {level: 1, name: 'Other files'})).toBeVisible();
+  await expect(page.getByText('Each file is seen by the person who added it and the owners.', {exact: false})).toBeVisible();
+  const grid = page.getByRole('list', {name: 'Other files'});
   await expect(grid.getByRole('link', {name: 'Morning Notes MP3 · 3 s'})).toBeVisible();
-  await expect(grid.getByRole('link', {name: /^Recipe Card PDF/})).toBeVisible();
+  // Files without a picture show what they are, not a film or a library icon.
+  await expect(grid.getByRole('link', {name: /^Recipe Card PDF/}).locator('svg.lucide-file-text')).toBeVisible();
+  await expect(grid.getByRole('link', {name: /^Morning Notes MP3/}).locator('svg.lucide-music')).toBeVisible();
 });
 
 test.describe('on a phone', () => {
@@ -217,13 +261,30 @@ test.describe('on a phone', () => {
 
   test('every main page fits the screen without sideways scrolling', async ({page}) => {
     await page.goto('/');
-    // The five most used destinations stay one tap away.
+    // Home, the first three libraries and Downloads stay one tap away.
     const quick = page.getByRole('navigation', {name: 'Quick links'});
-    for (const [label, icon] of [['Home', 'house'], ['Movies', 'film'], ['Shows', 'tv'], ['Photos', 'image'], ['Downloads', 'arrow-down-to-line']]) {
+    await expect(quick.getByRole('link')).toHaveCount(5);
+    for (const [label, icon] of [['Home', 'house'], ['Movies', 'film'], ['Shows', 'tv'], ['Home Videos', 'clapperboard'], ['Downloads', 'arrow-down-to-line']]) {
       // The same icon as in the sidebar, above the label.
       await expect(quick.getByRole('link', {name: label, exact: true}).locator(`svg.lucide-${icon}`)).toBeVisible();
     }
-    for (const path of ['/', '/movies', '/shows', '/shows/The%20Lantern%20Keepers', '/home-videos', '/photos', '/other', '/inbox', '/downloads', '/settings/vpn', '/settings/security', '/pair']) {
+    for (const path of [
+      '/',
+      libraryPath(LIBRARY.movies),
+      libraryPath(LIBRARY.shows),
+      showPath(LIBRARY.shows, 'The Lantern Keepers'),
+      libraryPath(LIBRARY.homeVideos),
+      libraryPath(LIBRARY.photos),
+      '/other',
+      '/inbox',
+      '/downloads',
+      '/settings/vpn',
+      '/settings/security',
+      '/settings/libraries',
+      '/settings/libraries/new',
+      `/settings/libraries/${LIBRARY.movies}`,
+      '/pair',
+    ]) {
       await page.goto(path);
       await expect(page.getByRole('heading', {level: 1}).first()).toBeVisible();
       // Let lazy content (thumbnails, lists) settle; the event stream keeps the network busy.
@@ -238,7 +299,7 @@ test.describe('on a phone', () => {
     const picker = page.getByRole('navigation', {name: 'Settings sections'}).getByRole('combobox', {name: 'Section'});
     await expect(picker).toHaveText('VPN');
     await picker.click();
-    for (const name of ['VPN', 'Devices', 'People', 'Security', 'Library', 'System']) {
+    for (const name of ['VPN', 'Devices', 'People', 'Security', 'Libraries', 'System']) {
       await expect(page.getByRole('option', {name})).toBeVisible();
     }
     await page.getByRole('option', {name: 'System'}).click();

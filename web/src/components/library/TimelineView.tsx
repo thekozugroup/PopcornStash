@@ -1,28 +1,27 @@
 /**
- * Photos: a month-by-month timeline of square tiles, newest first, loaded a
- * page at a time as you scroll. A tile opens the photo viewer in place; the
- * tile is still a real link, so it also opens in a new tab.
+ * A photos library: a month-by-month timeline of square tiles, newest first,
+ * loaded a page at a time as you scroll. A tile opens the photo viewer in
+ * place; the tile is still a real link, so it also opens in a new tab. The
+ * page header belongs to the library page.
  */
 import * as stylex from '@stylexjs/stylex';
 import {Button} from '@astryxdesign/core/Button';
 import {Heading} from '@astryxdesign/core/Heading';
 import {Skeleton} from '@astryxdesign/core/Skeleton';
 import {Text} from '@astryxdesign/core/Text';
-import {ImageIcon} from 'lucide-react';
-import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {items as itemsApi, photos as photosApi} from '../api/client';
-import type {PhotoMonth} from '../api/types';
-import {EmptyPanel} from '../components/EmptyPanel';
-import {LoadError} from '../components/library/LoadError';
-import {itemHref, thumbSources} from '../components/library/libraryFormat';
-import {PhotoViewer} from '../components/library/PhotoViewer';
-import {useInfiniteScroll} from '../components/library/useInfiniteScroll';
-import {useLibraryEvents} from '../components/library/useLibraryEvents';
-import {pickItem} from '../components/library/usePagedItems';
-import {MediaGrid, MediaGridSkeleton} from '../components/MediaGrid';
-import {MediaTile} from '../components/MediaTile';
-import {PageHeader} from '../components/PageHeader';
-import {formatCount, formatDate, formatMonth} from '../lib/format';
+import type {LucideIcon} from 'lucide-react';
+import {useCallback, useEffect, useMemo, useRef, useState, type ReactNode} from 'react';
+import {items as itemsApi, libraries as librariesApi} from '../../api/client';
+import type {PhotoMonth} from '../../api/types';
+import {formatCount, formatDate, formatMonth} from '../../lib/format';
+import {MediaGrid, MediaGridSkeleton} from '../MediaGrid';
+import {MediaTile} from '../MediaTile';
+import {LoadError} from './LoadError';
+import {itemHref, thumbSources} from './libraryFormat';
+import {PhotoViewer} from './PhotoViewer';
+import {useInfiniteScroll} from './useInfiniteScroll';
+import {useLibraryEvents} from './useLibraryEvents';
+import {pickItem} from './usePagedItems';
 
 const styles = stylex.create({
   timeline: {
@@ -90,7 +89,16 @@ function MonthSkeleton({index}: {index: number}) {
   );
 }
 
-export default function PhotosPage() {
+export interface TimelineViewProps {
+  libraryId: string;
+  libraryName: string;
+  /** The library's icon, for photos without a thumbnail yet. */
+  icon: LucideIcon;
+  /** What the library shows when it holds no photos. */
+  empty: ReactNode;
+}
+
+export function TimelineView({libraryId, libraryName, icon, empty}: TimelineViewProps) {
   const [nonce, setNonce] = useState(0);
   const [state, setState] = useState<TimelineState>({
     nonce: -1,
@@ -114,7 +122,7 @@ export default function PhotosPage() {
   useEffect(() => {
     const controller = new AbortController();
     loadingMore.current = false;
-    photosApi.timeline({limit: PAGE_SIZE}, controller.signal).then(
+    librariesApi.timeline(libraryId, {limit: PAGE_SIZE}, controller.signal).then(
       page =>
         setState({
           nonce,
@@ -131,7 +139,7 @@ export default function PhotosPage() {
       },
     );
     return () => controller.abort();
-  }, [nonce]);
+  }, [libraryId, nonce]);
 
   const loadMore = useCallback(() => {
     const current = stateRef.current;
@@ -139,8 +147,8 @@ export default function PhotosPage() {
     loadingMore.current = true;
     setState(s => ({...s, isLoadingMore: true, loadMoreError: null}));
     const requestNonce = current.nonce;
-    photosApi
-      .timeline({limit: PAGE_SIZE, cursor: current.cursor})
+    librariesApi
+      .timeline(libraryId, {limit: PAGE_SIZE, cursor: current.cursor})
       .then(
         page =>
           setState(s =>
@@ -153,7 +161,7 @@ export default function PhotosPage() {
       .finally(() => {
         loadingMore.current = false;
       });
-  }, []);
+  }, [libraryId]);
 
   useLibraryEvents({
     onChanged: ids => {
@@ -162,9 +170,18 @@ export default function PhotosPage() {
         itemsApi.get(id).then(
           detail => {
             const fresh = pickItem(detail);
+            // A photo organized into another library leaves this timeline.
+            const stays = fresh.status === 'ready' && fresh.library_id === libraryId;
             setState(s => ({
               ...s,
-              months: s.months.map(month => ({...month, items: month.items.map(item => (item.id === id ? fresh : item))})),
+              months: s.months
+                .map(month => {
+                  const items = stays
+                    ? month.items.map(item => (item.id === id ? fresh : item))
+                    : month.items.filter(item => item.id !== id);
+                  return {...month, items, count: month.count - (month.items.length - items.length)};
+                })
+                .filter(month => month.items.length > 0),
             }));
             setVersions(v => ({...v, [id]: Date.now()}));
           },
@@ -217,14 +234,11 @@ export default function PhotosPage() {
     if (index !== null && index >= flat.length - 4) loadMore();
   };
 
-  const header = <PageHeader title="Photos" subtitle="Your photos by month, newest first." />;
-
   if (!state.loaded) {
     return (
       <>
-        {header}
         {state.error ? (
-          <LoadError title="Photos could not be loaded" error={state.error} onRetry={() => setNonce(n => n + 1)} />
+          <LoadError title={`${libraryName} could not be loaded`} error={state.error} onRetry={() => setNonce(n => n + 1)} />
         ) : (
           <div {...stylex.props(styles.timeline)} role="status" aria-busy="true" aria-label="Loading photos">
             <MonthSkeleton index={0} />
@@ -235,23 +249,10 @@ export default function PhotosPage() {
     );
   }
 
-  if (flat.length === 0) {
-    return (
-      <>
-        {header}
-        <EmptyPanel
-          title="No photos yet"
-          icon={<ImageIcon size={28} strokeWidth={1.5} />}
-          description="Photos are sorted by the month they were taken, using the date your camera saved. Drop them anywhere in this window, or copy a folder of photos into the Inbox folder on the server."
-          actions={<Button label="Add photos" variant="primary" href="/downloads" />}
-        />
-      </>
-    );
-  }
+  if (flat.length === 0) return <>{empty}</>;
 
   return (
     <>
-      {header}
       <div {...stylex.props(styles.timeline)}>
         {state.months.map(month => {
           const offset = offsets.get(month.month) ?? 0;
@@ -278,6 +279,7 @@ export default function PhotosPage() {
                       imageSrc={thumb?.src}
                       imageSrcSet={thumb?.srcSet}
                       shape="square"
+                      placeholderIcon={icon}
                       isTextHidden
                       onActivate={() => openViewer(offset + index)}
                     />
@@ -299,7 +301,7 @@ export default function PhotosPage() {
         </div>
       ) : null}
       {state.error && state.loaded ? (
-        <LoadError title="Photos could not be refreshed" error={state.error} onRetry={() => setNonce(n => n + 1)} />
+        <LoadError title={`${libraryName} could not be refreshed`} error={state.error} onRetry={() => setNonce(n => n + 1)} />
       ) : null}
       <PhotoViewer photos={flat} index={viewerIndex} onIndexChange={openViewer} />
     </>

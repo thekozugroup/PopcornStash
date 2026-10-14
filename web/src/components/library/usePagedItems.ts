@@ -6,16 +6,18 @@
  */
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {items as itemsApi} from '../../api/client';
-import type {Item, ItemCategory, ItemSort, SortOrder} from '../../api/types';
+import type {Item, ItemPlace, ItemSort, SortOrder} from '../../api/types';
 import {useLibraryEvents} from './useLibraryEvents';
 
-export interface PagedItemsQuery {
-  category: ItemCategory;
+/** One library's items, or every item in one kind of place (Other files). */
+export type PagedItemsScope = {library_id: string; place?: undefined} | {place: ItemPlace; library_id?: undefined};
+
+export type PagedItemsQuery = PagedItemsScope & {
   q?: string;
   sort: ItemSort;
   order: SortOrder;
   favorite?: boolean;
-}
+};
 
 interface PagedState {
   key: string;
@@ -51,9 +53,12 @@ export interface PagedItems {
 }
 
 export function usePagedItems(query: PagedItemsQuery): PagedItems {
-  const {category, q = '', sort, order, favorite = false} = query;
+  const {library_id: libraryId, place, q = '', sort, order, favorite = false} = query;
   const [nonce, setNonce] = useState(0);
-  const key = JSON.stringify([category, q, sort, order, favorite, nonce]);
+  const key = JSON.stringify([libraryId, place, q, sort, order, favorite, nonce]);
+  /** Whether an item still belongs on this page after a live update. */
+  const belongs = (item: Item) =>
+    item.status === 'ready' && (libraryId ? item.library_id === libraryId : item.place === place);
   const [state, setState] = useState<PagedState>(EMPTY);
   const [versions, setVersions] = useState<Record<string, number>>({});
   const loadingMore = useRef(false);
@@ -67,7 +72,10 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
     const controller = new AbortController();
     loadingMore.current = false;
     itemsApi
-      .list({category, q: q || undefined, sort, order, favorite: favorite || undefined, limit: PAGE_SIZE}, controller.signal)
+      .list(
+        {library_id: libraryId, place, q: q || undefined, sort, order, favorite: favorite || undefined, limit: PAGE_SIZE},
+        controller.signal,
+      )
       .then(
         page => setState({...EMPTY, key, items: page.items, cursor: page.next_cursor}),
         (error: unknown) => {
@@ -76,7 +84,7 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
         },
       );
     return () => controller.abort();
-  }, [key, category, q, sort, order, favorite]);
+  }, [key, libraryId, place, q, sort, order, favorite]);
 
   const isCurrent = state.key === key;
 
@@ -88,7 +96,8 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
     setState(s => ({...s, isLoadingMore: true, loadMoreError: null}));
     itemsApi
       .list({
-        category,
+        library_id: libraryId,
+        place,
         q: q || undefined,
         sort,
         order,
@@ -109,7 +118,7 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
       .finally(() => {
         loadingMore.current = false;
       });
-  }, [key, category, q, sort, order, favorite]);
+  }, [key, libraryId, place, q, sort, order, favorite]);
 
   const retry = useCallback(() => setNonce(n => n + 1), []);
 
@@ -119,7 +128,7 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
     if ((sort !== 'added' && sort !== 'taken') || order !== 'desc' || q || favorite) return;
     const requestKey = key;
     const dateOf = (item: Item) => (sort === 'taken' ? (item.taken_at ?? item.added_at) : item.added_at);
-    itemsApi.list({category, sort, order, limit: 20}).then(
+    itemsApi.list({library_id: libraryId, place, sort, order, limit: 20}).then(
       page =>
         setState(s =>
           s.key !== requestKey
@@ -140,7 +149,7 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
               ...s,
               items: s.items
                 .map(item => (item.id === id ? {...item, ...pickItem(detail)} : item))
-                .filter(item => item.status === 'ready' && item.category === category),
+                .filter(belongs),
             }));
             setVersions(v => ({...v, [id]: Date.now()}));
           },
@@ -150,7 +159,7 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
     },
     onRemoved: id => setState(s => ({...s, items: s.items.filter(item => item.id !== id)})),
     onAdded: () => mergeNewest(),
-    // An item accepted from Inbox or organized into this category arrives as an update
+    // An item accepted from Inbox or organized into this library arrives as an update
     // to an item this page has never shown.
     onUpdated: ids => {
       const shown = new Set(stateRef.current.items.map(item => item.id));
@@ -198,5 +207,7 @@ export function pickItem(detail: Item): Item {
     favorite: detail.favorite,
     added_at: detail.added_at,
     progress: detail.progress,
+    library_id: detail.library_id,
+    place: detail.place,
   };
 }

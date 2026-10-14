@@ -1,8 +1,10 @@
 /**
- * A finished download and where its files went: "Sorted into Movies" with a
- * link to the film, "Waiting for a decision" with a link to Inbox, or the
- * failure in words with Retry when the source can be fetched again (Upload
- * again for a failed browser upload).
+ * A finished download and where its files went, from the server's
+ * destinations: "In Kids" with a link to the library, "In Other files",
+ * "2 files waiting in Inbox" with a link to Inbox, or just "Sorted" when what
+ * it brought in is somewhere this person cannot look; or the failure in words
+ * with Retry when the source can be fetched again (Upload again for a failed
+ * browser upload).
  *
  * Under 560px the text column keeps its place beside the thumbnail and the
  * recovery button moves under the outcome, so the file name keeps its width.
@@ -14,7 +16,9 @@ import {Link} from '@astryxdesign/core/Link';
 import {MoreMenu} from '@astryxdesign/core/MoreMenu';
 import {Text} from '@astryxdesign/core/Text';
 import {CircleCheck, CircleDashed, CircleX, Inbox, LoaderCircle, CircleMinus, type LucideIcon} from 'lucide-react';
+import {Fragment} from 'react';
 import type {Download, ItemDetail} from '../../api/types';
+import {useLibraries} from '../../app/LibrariesProvider';
 import {formatBytes, formatRelative} from '../../lib/format';
 import {BreakableName} from '../BreakableName';
 import {KIND_ICON} from './DownloadRow';
@@ -132,19 +136,22 @@ function OutcomeLine({outcome}: {outcome: FinishedOutcome}) {
   let content;
   switch (outcome.kind) {
     case 'sorted':
-      content = (
-        <>
-          {outcome.text}
-          {outcome.linkLabel && outcome.href ? (
-            <>
-              {': '}
-              <Link href={outcome.href} size="base">
-                {outcome.linkLabel}
-              </Link>
-            </>
-          ) : null}
-        </>
-      );
+      content =
+        outcome.places.length === 0 ? (
+          outcome.text
+        ) : (
+          <>
+            {`${outcome.text} `}
+            {outcome.places.map((place, index) => (
+              <Fragment key={place.href}>
+                {index === 0 ? null : index === outcome.places.length - 1 ? ' and ' : ', '}
+                <Link href={place.href} size="base">
+                  {place.label}
+                </Link>
+              </Fragment>
+            ))}
+          </>
+        );
       break;
     case 'review':
       content = (
@@ -173,8 +180,9 @@ function OutcomeLine({outcome}: {outcome: FinishedOutcome}) {
 }
 
 export function FinishedRow({download, items, isOwner, isRetrying, onRetry, onUploadAgain, onRemove}: FinishedRowProps) {
+  const {find} = useLibraries();
   const loaded = download.item_ids.map(id => items.get(id));
-  const outcome = finishedOutcome(download, loaded, isOwner);
+  const outcome = finishedOutcome(download, find, isOwner);
   const thumbItem = loaded.find(item => item?.thumb);
   const isPoster = thumbItem?.category === 'movie';
   const finishedAt = download.completed_at ?? download.created_at;
