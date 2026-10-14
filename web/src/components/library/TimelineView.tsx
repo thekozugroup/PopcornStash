@@ -14,6 +14,7 @@ import {useCallback, useEffect, useMemo, useRef, useState, type ReactNode} from 
 import {items as itemsApi, libraries as librariesApi} from '../../api/client';
 import type {PhotoMonth} from '../../api/types';
 import {formatCount, formatMonth, formatTakenDate} from '../../lib/format';
+import {placeInTimeline} from '../../lib/order';
 import {MediaGrid, MediaGridSkeleton} from '../MediaGrid';
 import {MediaTile} from '../MediaTile';
 import {LoadError} from './LoadError';
@@ -170,18 +171,19 @@ export function TimelineView({libraryId, libraryName, icon, empty}: TimelineView
         itemsApi.get(id).then(
           detail => {
             const fresh = pickItem(detail);
-            // A photo organized into another library leaves this timeline.
+            // A photo organized into another library leaves this timeline; one whose
+            // capture time changed moves to its month and its place in it.
             const stays = fresh.status === 'ready' && fresh.library_id === libraryId;
             setState(s => ({
               ...s,
-              months: s.months
-                .map(month => {
-                  const items = stays
-                    ? month.items.map(item => (item.id === id ? fresh : item))
-                    : month.items.filter(item => item.id !== id);
-                  return {...month, items, count: month.count - (month.items.length - items.length)};
-                })
-                .filter(month => month.items.length > 0),
+              months: stays
+                ? placeInTimeline(s.months, fresh, Boolean(s.cursor))
+                : s.months
+                    .map(month => {
+                      const items = month.items.filter(item => item.id !== id);
+                      return {...month, items, count: month.count - (month.items.length - items.length)};
+                    })
+                    .filter(month => month.items.length > 0),
             }));
             setVersions(v => ({...v, [id]: Date.now()}));
           },

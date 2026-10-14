@@ -38,6 +38,7 @@ import {SettingsSectionHeader} from './SettingsSectionHeader';
 
 const EXTENSION_DOCS = 'https://github.com/thekozugroup/PopcornStash/blob/main/docs/extension.md';
 const ANDROID_DOCS = 'https://github.com/thekozugroup/PopcornStash/blob/main/docs/android.md';
+const ANDROID_PASSKEY_DOCS = `${ANDROID_DOCS}#sign-in-with-a-passkey`;
 const PENDING_POLL_MS = 5000;
 
 const styles = stylex.create({
@@ -167,7 +168,7 @@ function TokenRow({token, onRevoke}: {token: Token; onRevoke: (token: Token) => 
 }
 
 export default function DevicesSettingsPage() {
-  const {state} = useAuth();
+  const {state, isOwner} = useAuth();
   const showToast = useToast();
   const pending = useResource(signal => pairing.pending(signal), {key: 'pairing-pending'});
   const tokenList = useResource(signal => tokens.list(signal), {key: 'tokens'});
@@ -251,16 +252,33 @@ export default function DevicesSettingsPage() {
           title="Android app"
           description="Watch your libraries, follow downloads and share links, photos and videos from any app on the phone.">
           <Steps label="How to connect the Android app">
-            <>
-              Install the app.{' '}
-              <Link href={ANDROID_DOCS} isExternalLink type="inherit">
-                How to install it
-              </Link>
-            </>
+            {isOwner ? (
+              <>
+                Install the app. It is not in a store, so you build it once.{' '}
+                <Link href={ANDROID_DOCS} isExternalLink type="inherit">
+                  How to build and install it
+                </Link>
+              </>
+            ) : (
+              <>Get the app from whoever runs this server. It is not in a store.</>
+            )}
             <>
               Open it and enter this address: <span {...stylex.props(styles.url)}>{address}</span>
             </>
-            <>Sign in with a passkey, or choose Pair with a code and approve it on the page it opens, or here.</>
+            {/* Pairing always works; passkeys in the app need STASH_ANDROID_ASSETLINKS and a public https address. */}
+            <>
+              Choose Pair with a code and approve it on the page it opens, or here.{' '}
+              {isOwner ? (
+                <>
+                  Once you set the server up for it, you can sign in with your passkey instead.{' '}
+                  <Link href={ANDROID_PASSKEY_DOCS} isExternalLink type="inherit">
+                    How to set it up
+                  </Link>
+                </>
+              ) : (
+                <>Once the owner sets the server up for it, you can sign in with your passkey instead.</>
+              )}
+            </>
           </Steps>
         </SettingsGroup>
 
@@ -282,8 +300,8 @@ export default function DevicesSettingsPage() {
         </SettingsGroup>
 
         <SettingsGroup
-          title="Sharing from a phone without the app"
-          description="Install PopcornStash from Chrome instead to share links, photos and videos to it.">
+          title="Share without the app"
+          description="Install PopcornStash from Chrome on the phone instead to share links, photos and videos to it.">
           <Steps label="How to share from a phone without the app">
             <>
               Open <span {...stylex.props(styles.url)}>{address}</span> in Chrome on the phone and sign in.

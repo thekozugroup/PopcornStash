@@ -67,7 +67,8 @@ export function SettingsGroup({title, description, actions, children, isStacked 
   return (
     <section aria-labelledby={headingId} {...stylex.props(styles.group, isStacked && styles.stacked)}>
       <div {...stylex.props(styles.intro)}>
-        <Heading level={3} id={headingId}>
+        {/* Balanced, so a heading that wraps in the narrow intro column never leaves one word behind. */}
+        <Heading level={3} id={headingId} textWrap="balance">
           {title}
         </Heading>
         {description ? (

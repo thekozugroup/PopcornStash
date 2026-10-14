@@ -105,7 +105,8 @@ const localTokens: Record<string, TokenValue> = {
   '--popcorn-status-neutral': zinc[500],
   // An off switch: its 2px ring and its knob. At least 3:1 against the page, a panel and
   // the track's own fill in both themes (WCAG 1.4.11), and in dark the knob is lighter
-  // than the track, so "off" reads without the blue of "on" to compare with.
+  // than the track, so "off" reads without the blue of "on" to compare with. Unchecked
+  // checkboxes and radios take the same colour for their edge.
   '--popcorn-switch-off': [zinc[500], zinc[400]],
   // The on knob keeps the surface colour (white, Zinc Ink in dark) on the blue track.
   '--popcorn-switch-on-knob': [white, zinc[900]],
@@ -315,6 +316,18 @@ export const popcornTheme = defineTheme({
     'switch-thumb': {
       base: {'--color-background-surface': 'var(--popcorn-switch-off)'},
       checked: {'--color-background-surface': 'var(--popcorn-switch-on-knob)'},
+    },
+
+    // An unchecked checkbox or radio has the off switch's edge, so every control that is
+    // off or not chosen on a page reads the same and at 3:1 or more (WCAG 1.4.11): its
+    // border is --color-border-emphasized, set here on the indicator alone (zinc-300 and
+    // zinc-700 elsewhere are only 1.4:1 and 1.9:1). Checked ones keep the Action Blue
+    // fill; disabled ones keep Astryx's own faint border.
+    'checkbox-indicator': {
+      base: {'--color-border-emphasized': 'var(--popcorn-switch-off)'},
+    },
+    'radio-indicator': {
+      base: {'--color-border-emphasized': 'var(--popcorn-switch-off)'},
     },
 
     'status-dot': {

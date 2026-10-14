@@ -7,7 +7,7 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {items as itemsApi} from '../../api/client';
 import type {Item, ItemPlace, ItemSort, SortOrder} from '../../api/types';
-import {newestAddedFirst, newestTakenFirst} from '../../lib/order';
+import {newestAddedFirst, newestTakenFirst, placeInOrder} from '../../lib/order';
 import {useLibraryEvents} from './useLibraryEvents';
 
 /** One library's items, or every item in one kind of place (Other files). */
@@ -144,12 +144,18 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
       for (const id of ids.filter(candidate => shown.has(candidate)).slice(0, 24)) {
         itemsApi.get(id).then(
           detail => {
-            setState(s => ({
-              ...s,
-              items: s.items
-                .map(item => (item.id === id ? {...item, ...pickItem(detail)} : item))
-                .filter(belongs),
-            }));
+            setState(s => {
+              const current = s.items.find(item => item.id === id);
+              if (!current) return s;
+              const fresh = {...current, ...pickItem(detail)};
+              if (!belongs(fresh)) return {...s, items: s.items.filter(item => item.id !== id)};
+              // Sorted by when it was filmed: a new capture time moves it to its place.
+              if (sort === 'taken') {
+                const compare = order === 'desc' ? newestTakenFirst : (a: Item, b: Item) => newestTakenFirst(b, a);
+                return {...s, items: placeInOrder(s.items, fresh, compare, Boolean(s.cursor))};
+              }
+              return {...s, items: s.items.map(item => (item.id === id ? fresh : item))};
+            });
             setVersions(v => ({...v, [id]: Date.now()}));
           },
           () => undefined,

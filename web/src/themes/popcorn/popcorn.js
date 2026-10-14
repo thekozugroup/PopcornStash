@@ -593,6 +593,16 @@ export const popcornTheme = {
         "--color-background-surface": "var(--popcorn-switch-on-knob)"
       }
     },
+    "checkbox-indicator": {
+      "base": {
+        "--color-border-emphasized": "var(--popcorn-switch-off)"
+      }
+    },
+    "radio-indicator": {
+      "base": {
+        "--color-border-emphasized": "var(--popcorn-switch-off)"
+      }
+    },
     "progress-bar-track": {
       "base": {
         "borderRadius": "var(--popcorn-radius-progress)"

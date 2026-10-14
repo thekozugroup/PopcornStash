@@ -127,16 +127,20 @@ const styles = stylex.create({
     rowGap: 4,
     minWidth: 0,
   },
-  // A folder's name is one line: a short one ("Grandma's Slides/") never breaks, and a
-  // long one ends in an ellipsis with the whole name in its tooltip.
+  // A folder's name is shown whole, on phones and between 1100 and 1200px too, where
+  // a tooltip would never be seen: a short one ("Grandma's Slides/") fits its line, and a
+  // long one wraps at its spaces and separators instead of being cut off.
   folderName: {
     display: 'block',
     minWidth: 0,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
+    overflowWrap: 'break-word',
     fontFamily: typographyVars['--font-family-code'],
     fontSize: '0.875rem',
+  },
+  // On phones the button sits under the name and counts: the icon stays with the name
+  // at the top of the row instead of centring on all three lines.
+  folderRowTop: {
+    alignItems: 'flex-start',
   },
   folderText: {
     display: 'flex',
@@ -348,10 +352,11 @@ function UnassignedFoldersGroup() {
             <ListItem
               key={folder.name}
               label={
-                <span {...stylex.props(styles.folderName)} title={`${folder.name}/`}>
-                  {`${folder.name}/`}
+                <span {...stylex.props(styles.folderName)}>
+                  <BreakableAddress address={`${folder.name}/`} />
                 </span>
               }
+              xstyle={isNarrow ? styles.folderRowTop : undefined}
               startContent={
                 <span aria-hidden="true" {...stylex.props(styles.iconSquare)}>
                   <Folder size={20} strokeWidth={1.5} />

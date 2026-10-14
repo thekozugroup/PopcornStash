@@ -731,6 +731,14 @@
     --color-background-surface: var(--popcorn-switch-on-knob);
   }
 
+  .astryx-checkbox-indicator {
+    --color-border-emphasized: var(--popcorn-switch-off);
+  }
+
+  .astryx-radio-indicator {
+    --color-border-emphasized: var(--popcorn-switch-off);
+  }
+
   .astryx-progress-bar-track {
     border-radius: var(--popcorn-radius-progress);
   }

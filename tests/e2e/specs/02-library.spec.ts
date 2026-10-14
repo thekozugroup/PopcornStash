@@ -3,8 +3,24 @@
  * Home Videos, Photos), Home's shelf per library, Other files, and the old
  * fixed-category addresses that now lead to the library that takes that kind.
  */
+import {execFileSync} from 'node:child_process';
 import {expect, test, type Locator} from '@playwright/test';
-import {LIBRARY, env, libraryPath, showPath} from '../helpers/env';
+import {LIBRARY, env, libraryPath, showPath, stashPath} from '../helpers/env';
+
+/** Whether exiftool can rewrite a photo's date (the sample photos carry EXIF only with it). */
+function hasExiftool(): boolean {
+  try {
+    execFileSync('exiftool', ['-ver'], {stdio: 'ignore'});
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Rewrite a sample photo's EXIF date, as a camera or an editing app would. */
+function setPhotoDate(rel: string, when: string): void {
+  execFileSync('exiftool', ['-q', '-overwrite_original', `-DateTimeOriginal=${when}`, `-CreateDate=${when}`, stashPath(rel)]);
+}
 
 /** WCAG contrast ratio of two computed CSS colours (rgb() or oklch()). */
 function contrast(a: string, b: string): number {
@@ -288,7 +304,80 @@ test.describe('for a viewer west of UTC', () => {
   });
 });
 
-test('an off switch reads in light and dark: ring and knob 3:1 or more', async ({page}) => {
+test('a photo whose date changes moves to its month on the open page', async ({page}) => {
+  test.skip(!hasExiftool(), 'the sample photos carry EXIF dates only when exiftool is installed');
+  const rel = 'Photos/2022/05/DSC_0101.jpg';
+  await page.goto(libraryPath(LIBRARY.photos));
+  const may = page.getByRole('region', {name: 'May 2022'});
+  await expect(may.getByText('3 photos')).toBeVisible();
+  await expect(page.getByRole('region', {name: 'April 2022'})).toHaveCount(0);
+  // A reload would forget this.
+  await page.evaluate(() => Object.assign(window, {stillOpen: true}));
+  try {
+    // A minute before May: the server reads the new EXIF and the open page follows.
+    setPhotoDate(rel, '2022:04:30 23:59:00');
+    const april = page.getByRole('region', {name: 'April 2022'});
+    await expect(april.getByRole('link', {name: 'Photo from Apr 30, 2022, Fujifilm X-T30'})).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(april.getByText('1 photo', {exact: true})).toBeVisible();
+    await expect(may.getByText('2 photos')).toBeVisible();
+    await expect(may.getByRole('list', {name: 'May 2022'}).getByRole('link')).toHaveCount(2);
+    // Months stay newest first.
+    await expect(page.locator('section[aria-labelledby^="month-"] h2')).toHaveText(['May 2022', 'April 2022']);
+    expect(await page.evaluate(() => (window as unknown as {stillOpen?: boolean}).stillOpen)).toBe(true);
+  } finally {
+    setPhotoDate(rel, '2022:05:21 14:03:00');
+  }
+  // And back, in its place: the oldest of May, after 14:05:30 on May 21.
+  await expect(may.getByText('3 photos')).toBeVisible({timeout: 20_000});
+  await expect(page.getByRole('region', {name: 'April 2022'})).toHaveCount(0);
+  const found = await page.request.get(`/api/items?library_id=${LIBRARY.photos}&q=DSC_0101`);
+  const [moved] = ((await found.json()) as {items: {id: string}[]}).items;
+  const tiles = may.getByRole('list', {name: 'May 2022'}).getByRole('link');
+  await expect(tiles).toHaveCount(3);
+  await expect(tiles.last()).toHaveAttribute('href', new RegExp(`${moved?.id ?? 'missing'}$`));
+  expect(await page.evaluate(() => (window as unknown as {stillOpen?: boolean}).stillOpen)).toBe(true);
+});
+
+/**
+ * Runs in the page: the contrast of an unchecked checkbox's or radio's edge (its border)
+ * against the page and against the panel it sits on, from the colours the browser
+ * paints, read back through a canvas (sRGB). Self-contained, so Playwright can send it.
+ */
+function indicatorEdge(indicator: Element): {page: number; panel: number} {
+  const ctx = document.createElement('canvas').getContext('2d', {willReadFrequently: true}) as CanvasRenderingContext2D;
+  const rgb = (color: string) => {
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, 1, 1);
+    return Array.from(ctx.getImageData(0, 0, 1, 1).data.slice(0, 4));
+  };
+  const lum = (c: number[]) =>
+    c
+      .slice(0, 3)
+      .map(v => v / 255)
+      .map(v => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4))
+      .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i]!, 0);
+  const ratio = (a: number[], b: number[]) => {
+    const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x) as [number, number];
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const edge = rgb(getComputedStyle(indicator).borderTopColor);
+  const page = rgb(getComputedStyle(document.body).backgroundColor);
+  // The first opaque background behind the control: the panel it sits on, else the page.
+  let panel = page;
+  for (let node = indicator.parentElement; node && node !== document.body; node = node.parentElement) {
+    const fill = rgb(getComputedStyle(node).backgroundColor);
+    if (fill[3] === 255) {
+      panel = fill;
+      break;
+    }
+  }
+  return {page: ratio(edge, page), panel: ratio(edge, panel)};
+}
+
+test('off and unchosen controls read in light and dark: 3:1 or more', async ({page}) => {
   // Shown off without saving anything: this browser's settings answer says auto-sort is off.
   await page.route('**/api/settings', async route => {
     if (route.request().method() !== 'GET') return route.continue();
@@ -326,6 +415,21 @@ test('an off switch reads in light and dark: ring and knob 3:1 or more', async (
     expect(ratios.ring, `${colorScheme}: the edge against the page`).toBeGreaterThanOrEqual(3);
     expect(ratios.knob, `${colorScheme}: knob against its track`).toBeGreaterThanOrEqual(3);
     if (colorScheme === 'dark') expect(ratios.knobLighter, 'dark: the knob is lighter than its track').toBe(true);
+
+    // An unchosen radio and an unchecked checkbox beside it have the same edge, as strong.
+    await page.goto('/settings/libraries/new');
+    const radio = page.getByRole('radio', {checked: false}).first();
+    const checkbox = page.getByRole('checkbox', {checked: false}).first();
+    await expect(radio).toBeAttached();
+    await expect(checkbox).toBeAttached();
+    for (const [name, control, indicator] of [
+      ['radio', radio, '.astryx-radio-indicator'],
+      ['checkbox', checkbox, '.astryx-checkbox-indicator'],
+    ] as const) {
+      const edge = await control.locator('xpath=..').locator(indicator).evaluate(indicatorEdge);
+      expect(edge.page, `${colorScheme}: an unchecked ${name} against the page`).toBeGreaterThanOrEqual(3);
+      expect(edge.panel, `${colorScheme}: an unchecked ${name} against its panel`).toBeGreaterThanOrEqual(3);
+    }
   }
 });
 
@@ -367,7 +471,7 @@ test.describe('on a phone', () => {
     }
   });
 
-  test('a date stays whole in a sentence, and a folder name keeps one line', async ({page, baseURL}) => {
+  test('a date stays whole in a sentence, and a folder name is shown whole', async ({page, baseURL}) => {
     const origin = {Origin: baseURL ?? ''};
     const created = (await (
       await page.request.post('/api/tokens', {data: {name: 'Living room TV', scopes: ['library:read']}, headers: origin})
@@ -382,11 +486,38 @@ test.describe('on a phone', () => {
     } finally {
       await page.request.delete(`/api/tokens/${created.id}`, {headers: origin});
     }
+    // A name longer than the row, beside the sample's own folder.
+    const long = "Grandma's Slides from the 1970s";
+    await page.route('**/api/libraries/folders', async route => {
+      const response = await route.fetch();
+      const body = (await response.json()) as {folders: {name: string}[]};
+      await route.fulfill({response, json: {...body, folders: [...body.folders, {...body.folders[0], name: long}]}});
+    });
     await page.goto('/settings/libraries');
-    const folder = page.getByRole('region', {name: 'Folders not in a library'}).getByText('Family 2019/');
+    const region = page.getByRole('region', {name: 'Folders not in a library'});
+    const folder = region.getByText('Family 2019/');
     await expect(folder).toBeVisible();
+    // A short name keeps one line.
     const lines = await folder.evaluate(el => el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight));
     expect(lines).toBeLessThan(1.5);
+    // A long one wraps at its spaces and is never cut off: nothing a phone could not show.
+    const longName = region.getByText(`${long}/`);
+    await expect(longName).toBeVisible();
+    const cut = await longName.evaluate(el => ({
+      overflow: el.scrollWidth - el.clientWidth,
+      ellipsis: getComputedStyle(el).textOverflow === 'ellipsis' && getComputedStyle(el).whiteSpace === 'nowrap',
+    }));
+    expect(cut).toEqual({overflow: 0, ellipsis: false});
+    // The icon stays with the name and its count; the button sits under all of them.
+    const row = region.getByRole('listitem').filter({hasText: 'Family 2019/'});
+    const icon = await row.locator('svg').first().boundingBox();
+    const name = await folder.boundingBox();
+    const button = await row.getByRole('link', {name: /^Make a library from/}).boundingBox();
+    expect(icon && name && button).toBeTruthy();
+    if (icon && name && button) {
+      expect(Math.abs(icon.y + icon.height / 2 - (name.y + name.height))).toBeLessThan(12);
+      expect(icon.y + icon.height).toBeLessThanOrEqual(button.y);
+    }
   });
 
   test('Settings offers every section without sideways scrolling, each at its own address', async ({page}) => {

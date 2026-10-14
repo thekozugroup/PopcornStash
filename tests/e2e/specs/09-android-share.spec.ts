@@ -203,10 +203,21 @@ test('Settings and the share page explain how to share from an Android phone', a
   // The Android app leads: what it does, where to get it, and how it signs in or pairs here.
   const app = page.getByRole('region', {name: 'Android app'});
   await expect(app).toContainText('links, photos and videos');
-  await expect(app.getByRole('link', {name: /How to install it/})).toHaveAttribute('href', /docs\/android\.md$/);
-  await expect(app).toContainText('Pair with a code');
+  await expect(app).toContainText('not in a store');
+  await expect(app.getByRole('link', {name: /How to build and install it/})).toHaveAttribute(
+    'href',
+    /docs\/android\.md$/,
+  );
+  // Pairing works on every server, so it comes first; the passkey only once the server is set up for it.
+  const steps = app.getByRole('list', {name: 'How to connect the Android app'}).getByRole('listitem');
+  await expect(steps.last()).toContainText(/^Choose Pair with a code/);
+  await expect(steps.last()).toContainText('Once you set the server up for it, you can sign in with your passkey');
+  await expect(steps.last().getByRole('link', {name: /How to set it up/})).toHaveAttribute(
+    'href',
+    /docs\/android\.md#sign-in-with-a-passkey$/,
+  );
   // Without the app, installing the web app from Chrome still adds PopcornStash to the share sheet.
-  const web = page.getByRole('region', {name: 'Sharing from a phone without the app'});
+  const web = page.getByRole('region', {name: 'Share without the app'});
   await expect(web).toContainText('Install app');
   await expect(web).toContainText('Add to Home screen');
   await expect(web).toContainText('Share, then PopcornStash');
@@ -216,7 +227,13 @@ test('Settings and the share page explain how to share from an Android phone', a
   const extensionTop = await top('Chrome extension');
   expect(appTop).toBeGreaterThan(0);
   expect(appTop).toBeLessThan(extensionTop);
-  expect(extensionTop).toBeLessThan(await top('Sharing from a phone without the app'));
+  expect(extensionTop).toBeLessThan(await top('Share without the app'));
+  // Every group heading sits on one line in the intro column.
+  for (const heading of await page.locator('section[aria-labelledby] h3').all()) {
+    const box = await heading.boundingBox();
+    const lineHeight = await heading.evaluate(element => parseFloat(getComputedStyle(element).lineHeight));
+    expect(box?.height ?? 0, (await heading.textContent()) ?? '').toBeLessThan(lineHeight * 1.5);
+  }
 
   // Opened with nothing shared, the share page says the same.
   await page.goto('/share');

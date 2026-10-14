@@ -55,6 +55,12 @@ test('an invited family member joins with a passkey and cannot open owner settin
   for (const owners of ['VPN', 'People', 'Libraries', 'System']) {
     await expect(tabs.getByRole('link', {name: owners})).toHaveCount(0);
   }
+  // Devices tells a member where the app comes from and how to get in without building anything.
+  await tabs.getByRole('link', {name: 'Devices'}).click();
+  const app = page.getByRole('region', {name: 'Android app'});
+  await expect(app).toContainText('Get the app from whoever runs this server.');
+  await expect(app.getByRole('link')).toHaveCount(0);
+  await expect(app).toContainText('Once the owner sets the server up for it, you can sign in with your passkey instead.');
   for (const path of ['/settings/vpn', '/settings/people', '/settings/system', '/settings/libraries', '/settings/libraries/new']) {
     await page.goto(path);
     await expect(page.getByRole('heading', {name: 'Only the owner can change this'})).toBeVisible();
