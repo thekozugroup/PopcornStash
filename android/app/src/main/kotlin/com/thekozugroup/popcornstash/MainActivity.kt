@@ -38,6 +38,7 @@ import com.thekozugroup.popcornstash.feature.library.LibraryServices
 import com.thekozugroup.popcornstash.feature.library.connectionLost
 import com.thekozugroup.popcornstash.feature.library.reconnects
 import com.thekozugroup.popcornstash.feature.settings.SettingsTab
+import com.thekozugroup.popcornstash.feature.settings.rememberSettingsServices
 import com.thekozugroup.popcornstash.feature.signin.SignInFlow
 import com.thekozugroup.popcornstash.feature.signin.SignInViewModel
 import com.thekozugroup.popcornstash.navigation.AppShell
@@ -135,6 +136,7 @@ fun SignedInApp(
         )
     }
     val readyToImport by session.data.readyToImport.collectAsStateWithLifecycle()
+    val settings = rememberSettingsServices(session)
     var version by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(session) {
         session.data.refreshHome()
@@ -169,6 +171,7 @@ fun SignedInApp(
                     serverVersion = version,
                     onOpenWeb = { web -> openUrl(session.api.url("/${web.path}").toString()) },
                     onSignOut = onSignOut,
+                    services = settings,
                 )
             }
         }
