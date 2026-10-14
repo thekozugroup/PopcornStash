@@ -50,6 +50,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import com.thekozugroup.popcornstash.ui.components.ConfirmDialog
 import com.thekozugroup.popcornstash.ui.components.IconPickerTokens
 import androidx.compose.ui.unit.dp
 import com.thekozugroup.popcornstash.data.api.Category
@@ -200,39 +201,47 @@ private fun WhatItHolds(state: LibraryEditorUi, draft: LibraryDraft, actions: Li
         },
         modifier,
     ) {
-        Column(Modifier.selectableGroup()) {
-            RadioRow(
-                "Videos",
-                selected = draft.contentType == ContentType.Video,
-                onClick = { actions.setType(ContentType.Video, draft.structure ?: Structure.OneOffs) },
-                enabled = enabled,
-            )
-            RadioRow(
-                "Photos",
-                description = "Photos and the short clips phones take with them",
-                selected = draft.contentType == ContentType.Photos,
-                onClick = { actions.setType(ContentType.Photos, null) },
-                enabled = enabled,
-            )
-        }
-        if (draft.contentType == ContentType.Video) {
-            Spacer(Modifier.height(Popcorn.spacing.s))
-            FieldLabel("Arranged as")
+        if (locked) {
+            // What it holds is a fact now, not a choice: said in the page's text colour, like the folder.
+            Column(Modifier.semantics(mergeDescendants = true) { }.testTag("holds fact")) {
+                FieldLabel("Holds")
+                Text(holdsLine(draft.contentType, draft.structure), style = Popcorn.type.body, color = Popcorn.colors.text)
+            }
+        } else {
             Column(Modifier.selectableGroup()) {
                 RadioRow(
-                    "Series",
-                    description = "Shows with seasons and episodes",
-                    selected = draft.structure == Structure.Episodes,
-                    onClick = { actions.setType(ContentType.Video, Structure.Episodes) },
+                    "Videos",
+                    selected = draft.contentType == ContentType.Video,
+                    onClick = { actions.setType(ContentType.Video, draft.structure ?: Structure.OneOffs) },
                     enabled = enabled,
                 )
                 RadioRow(
-                    "One-offs",
-                    description = "Films and clips that stand on their own",
-                    selected = draft.structure != Structure.Episodes,
-                    onClick = { actions.setType(ContentType.Video, Structure.OneOffs) },
+                    "Photos",
+                    description = "Photos and the short clips phones take with them",
+                    selected = draft.contentType == ContentType.Photos,
+                    onClick = { actions.setType(ContentType.Photos, null) },
                     enabled = enabled,
                 )
+            }
+            if (draft.contentType == ContentType.Video) {
+                Spacer(Modifier.height(Popcorn.spacing.s))
+                FieldLabel("Arranged as")
+                Column(Modifier.selectableGroup()) {
+                    RadioRow(
+                        "Series",
+                        description = "Shows with seasons and episodes",
+                        selected = draft.structure == Structure.Episodes,
+                        onClick = { actions.setType(ContentType.Video, Structure.Episodes) },
+                        enabled = enabled,
+                    )
+                    RadioRow(
+                        "One-offs",
+                        description = "Films and clips that stand on their own",
+                        selected = draft.structure != Structure.Episodes,
+                        onClick = { actions.setType(ContentType.Video, Structure.OneOffs) },
+                        enabled = enabled,
+                    )
+                }
             }
         }
         FieldError(state.errors[EditorField.Type])

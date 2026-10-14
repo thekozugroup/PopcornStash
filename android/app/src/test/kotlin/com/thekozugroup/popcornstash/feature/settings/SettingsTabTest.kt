@@ -36,8 +36,10 @@ import com.thekozugroup.popcornstash.navigation.Tab
 import com.thekozugroup.popcornstash.navigation.TabPage
 import com.thekozugroup.popcornstash.navigation.ViewModelStores
 import com.thekozugroup.popcornstash.testing.bodyText
+import com.thekozugroup.popcornstash.testing.drawnTextColor
 import com.thekozugroup.popcornstash.testing.path
 import com.thekozugroup.popcornstash.ui.components.IconPicker
+import com.thekozugroup.popcornstash.ui.theme.LightPopcornColors
 import com.thekozugroup.popcornstash.ui.theme.PopcornTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -125,6 +127,10 @@ class SettingsTabTest {
         waitFor("save library")
         compose.onNodeWithText("Save changes").assertExists()
         compose.onNodeWithText("The type can change only while the library is empty.").assertExists()
+        // A library with files says what it holds as a fact in the text colour, not as greyed choices.
+        compose.onNodeWithTag("holds fact").assertExists()
+        compose.onNodeWithText("Videos, arranged as one-offs", useUnmergedTree = true).assertExists()
+        assertEquals(LightPopcornColors.text, compose.onNodeWithText("Videos, arranged as one-offs", useUnmergedTree = true).drawnTextColor())
         back()
         waitFor("library row Movies")
         waitGone("library editor")

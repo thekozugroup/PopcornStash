@@ -96,7 +96,7 @@ private sealed class Entry(val key: String) {
 
 private fun entries(state: DownloadsUiState, ignoredOpen: Boolean): List<Entry> = buildList {
     if (state.connectionLost) add(Entry.Connection)
-    add(Entry.Vpn)
+    if (state.vpn != null) add(Entry.Vpn)
     when {
         state.loading -> add(Entry.Placeholder)
         state.loadError != null -> add(Entry.Failed(state.loadError))
@@ -255,7 +255,7 @@ private fun EntryView(
 ) {
     when (entry) {
         Entry.Connection -> ConnectionLostRow()
-        Entry.Vpn -> VpnLineRow(state.vpn, actions.onOpenVpnSettings)
+        Entry.Vpn -> state.vpn?.let { VpnLineRow(it, actions.onOpenVpnSettings) }
         Entry.Placeholder -> DownloadsPlaceholder()
         is Entry.Failed -> LoadFailed(entry.message, onRetry = onRetryLoad, title = "Downloads could not be loaded")
         Entry.Empty -> EmptyState(

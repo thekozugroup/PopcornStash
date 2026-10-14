@@ -5,7 +5,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
-/** The app's library icons are the server's curated list (stash-core LIBRARY_ICONS), in the same order. */
+/**
+ * The app's library icons are the server's curated list (stash-core LIBRARY_ICONS), in the same
+ * order, with the same plain names as the web's (web/src/lib/libraryIcons.ts). Gradle declares both
+ * files as inputs of the unit tests, so a change to either runs this again.
+ */
 class LibraryIconsTest {
     private val repoRoot = File(System.getProperty("popcornstash.repoRoot") ?: "../..")
 
@@ -15,11 +19,33 @@ class LibraryIconsTest {
         return Regex("\"([a-z0-9-]+)\"").findAll(block).map { it.groupValues[1] }.toList()
     }
 
+    /** `film: {icon: Film, label: 'Film'}` and `'party-popper': {icon: PartyPopper, label: 'Party popper'}`. */
+    private fun webLabels(): List<Pair<String, String>> {
+        val web = repoRoot.resolve("web/src/lib/libraryIcons.ts").readText()
+        val table = web.substringAfter("const ICONS: Record<string, IconEntry> = {").substringBefore("};")
+        return Regex("""'?([a-z0-9-]+)'?: \{icon: \w+, label: '([^']+)'\}""").findAll(table)
+            .map { it.groupValues[1] to it.groupValues[2] }
+            .toList()
+    }
+
     @Test
     fun sameNamesInTheSameOrderAsTheServer() {
         val server = serverIcons()
-        assertEquals(32, server.size)
+        assertEquals(31, server.size)
         assertEquals(server, LibraryIcons.names)
+    }
+
+    @Test
+    fun samePlainNamesAsTheWeb() {
+        assertEquals(webLabels(), LibraryIcons.entries.map { it.name to it.label })
+    }
+
+    @Test
+    fun aFolderIsNeverAChosenIcon() {
+        // The folder glyph means "not a library" and "an icon this app does not know".
+        assertTrue("folder" !in serverIcons())
+        assertTrue("folder" !in LibraryIcons.names)
+        assertEquals(LucideGlyphs.Folder, LibraryIcons.fallback.glyph)
     }
 
     @Test

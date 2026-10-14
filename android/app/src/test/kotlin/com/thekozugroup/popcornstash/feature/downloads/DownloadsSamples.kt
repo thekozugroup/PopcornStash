@@ -177,6 +177,6 @@ object DownloadsSamples {
         loading = false,
         loadError = "PopcornStash did not answer. Check the connection and try again.",
         connectionLost = true,
-        vpn = vpnLine(null, unavailable = true, isOwner = false),
+        vpn = pageVpnLine(null, asked = true, serverQuiet = true, isOwner = false),
     )
 }

@@ -19,6 +19,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalDensity
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
@@ -164,6 +165,7 @@ fun <R : Any> PageStackHost(
 ) {
     val holder = rememberSaveableStateHolder()
     val density = LocalDensity.current
+    val layoutDirection = LocalLayoutDirection.current
     val reduceMotion = Popcorn.reduceMotion
     fun keyOf(entry: PageEntry<R>) = "$name/${entry.id}"
 
@@ -176,7 +178,7 @@ fun <R : Any> PageStackHost(
         targetState = stack.top,
         contentKey = { it.id },
         transitionSpec = {
-            transition?.invoke(this, stack.forward) ?: pushTransition(stack.forward, density, reduceMotion)
+            transition?.invoke(this, stack.forward) ?: pushTransition(stack.forward, density, reduceMotion, layoutDirection)
         },
         label = "$name pages",
         modifier = modifier.fillMaxSize(),

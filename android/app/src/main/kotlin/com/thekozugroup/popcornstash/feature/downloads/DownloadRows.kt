@@ -226,7 +226,7 @@ fun VpnLineRow(line: VpnLine, onOpenSettings: (() -> Unit)?, modifier: Modifier 
         Spacer(Modifier.width(Popcorn.spacing.s))
         Column(Modifier.weight(1f)) {
             Text(line.label, style = Popcorn.type.item, color = words)
-            Text(line.detail, style = Popcorn.type.metadata, color = colors.textMuted)
+            if (line.detail.isNotEmpty()) Text(line.detail, style = Popcorn.type.metadata, color = colors.textMuted)
         }
         if (opens) {
             Spacer(Modifier.width(Popcorn.spacing.s))

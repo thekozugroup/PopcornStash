@@ -135,14 +135,12 @@ class OtherFilesViewModel(
         loadJob = viewModelScope.launch {
             val before = _ui.value.files.valueOrNull
             if (before == null) _ui.update { it.copy(files = Loadable.Loading) }
-            val limit = if (keepLoaded && before != null) {
-                before.items.size.coerceIn(LibraryViewModel.PAGE, LibraryViewModel.MAX_PAGE)
-            } else {
-                LibraryViewModel.PAGE
-            }
+            // As many as were shown, so a live event never drops what the person scrolled through.
+            val loaded = if (keepLoaded && before != null) before.items.size else 0
             try {
-                val page = api.items(query(_ui.value.sort, limit, null))
-                _ui.update { it.copy(files = Loadable.Ready(Paged(page.items, page.nextCursor))) }
+                val sort = _ui.value.sort
+                val files = reloadItems(loaded) { limit, cursor -> api.items(query(sort, limit, cursor)) }
+                _ui.update { it.copy(files = Loadable.Ready(files)) }
             } catch (e: ApiException) {
                 _ui.update { it.copy(files = if (keepLoaded && before != null) Loadable.Ready(before) else Loadable.Failed(e.message)) }
             }

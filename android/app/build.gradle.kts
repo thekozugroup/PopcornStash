@@ -104,6 +104,27 @@ android {
     }
 }
 
+// Files outside this project that the unit tests read. Gradle only knows about a test task's
+// declared inputs, so without these a changed server, icon list or fixture script would let
+// the build cache answer "passed" without running a single test.
+tasks.withType<Test>().configureEach {
+    // LibraryIconsTest: the server's and the web's icon lists.
+    inputs.file(repoRoot.resolve("crates/stash-core/src/library/defs.rs"))
+        .withPropertyName("serverIconList").withPathSensitivity(PathSensitivity.NONE)
+    inputs.file(repoRoot.resolve("web/src/lib/libraryIcons.ts"))
+        .withPropertyName("webIconList").withPathSensitivity(PathSensitivity.NONE)
+    // The real-server tests: the stash they build and the server they run.
+    inputs.file(repoRoot.resolve("scripts/dev-fixture.sh"))
+        .withPropertyName("devFixture").withPathSensitivity(PathSensitivity.NONE)
+    if (serverBinary != null) {
+        inputs.file(serverBinary).withPropertyName("serverBinary").withPathSensitivity(PathSensitivity.NONE)
+        // A run against a real server is never taken from the cache or skipped as up to date:
+        // the server's behaviour is more than its binary (the fixture's media, ffmpeg, the clock).
+        outputs.cacheIf("runs against a real server") { false }
+        outputs.upToDateWhen { false }
+    }
+}
+
 roborazzi {
     // Screenshots are reviewed and committed; verifyRoborazziDebug compares against them.
     outputDir.set(file("src/test/screenshots"))
@@ -177,9 +198,10 @@ val lucideIconNames = listOf(
     "users", "baby", "heart", "cake", "party-popper", "graduation-cap", "gift",
     "plane", "tree-palm", "mountain-snow", "tent", "sun", "snowflake",
     "gamepad-2", "music", "book-open", "trophy", "paw-print", "bike",
-    "star", "folder",
-    // Fixed places and actions (android/DESIGN.md, Touch and icons).
-    "house", "arrow-down-to-line", "settings", "file-text", "inbox",
+    "star",
+    // Fixed places and actions (android/DESIGN.md, Touch and icons); `folder` also draws a
+    // library icon the app does not know.
+    "folder", "house", "arrow-down-to-line", "settings", "file-text", "inbox",
     "plus", "pause", "play", "ellipsis-vertical", "arrow-left", "external-link", "x",
     "server", "log-out", "chevron-right", "chevron-down", "check", "key-round", "link",
     "smartphone", "rotate-ccw",

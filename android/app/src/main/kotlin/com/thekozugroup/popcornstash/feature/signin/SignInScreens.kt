@@ -33,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -73,10 +74,11 @@ fun SignInFlow(
     val state by controller.state.collectAsStateWithLifecycle()
     BackHandler(enabled = state.step != SignInStep.Server) { controller.onBack() }
     val density = LocalDensity.current
+    val layoutDirection = LocalLayoutDirection.current
     val reduceMotion = Popcorn.reduceMotion
     AnimatedContent(
         targetState = state.step,
-        transitionSpec = { pushTransition(targetState.ordinal > initialState.ordinal, density, reduceMotion) },
+        transitionSpec = { pushTransition(targetState.ordinal > initialState.ordinal, density, reduceMotion, layoutDirection) },
         label = "sign-in steps",
         modifier = Modifier.fillMaxSize().background(Popcorn.colors.page),
     ) { step ->

@@ -22,7 +22,8 @@ use crate::paths::{self, StashLayout};
 use crate::{CoreError, Rejection, Result, new_id, now};
 
 /// The curated icon names, in picker order (section 8, Icons). Lucide names (kebab case)
-/// from the release the web app pins; web and Android draw the same glyphs.
+/// from the release the web app pins; web and Android draw the same glyphs. `folder` is
+/// not one: it marks a folder that is not in a library and a name a client does not know.
 pub const LIBRARY_ICONS: &[&str] = &[
     "film",
     "clapperboard",
@@ -55,7 +56,6 @@ pub const LIBRARY_ICONS: &[&str] = &[
     "paw-print",
     "bike",
     "star",
-    "folder",
 ];
 
 /// The most libraries a stash can have.
@@ -1530,16 +1530,19 @@ mod tests {
         for icon in LIBRARY_ICONS {
             assert!(seen.insert(icon), "{icon}");
         }
+        // The fixed places' glyphs, and `folder` (a folder not in a library, or an icon a
+        // client does not know), never stand for a library the owner gave an icon.
         for fixed in [
             "house",
             "file-text",
             "inbox",
             "arrow-down-to-line",
             "settings",
+            "folder",
         ] {
-            assert!(!LIBRARY_ICONS.contains(&fixed));
+            assert!(!LIBRARY_ICONS.contains(&fixed), "{fixed}");
         }
-        assert_eq!(LIBRARY_ICONS.len(), 32);
+        assert_eq!(LIBRARY_ICONS.len(), 31);
     }
 
     #[test]

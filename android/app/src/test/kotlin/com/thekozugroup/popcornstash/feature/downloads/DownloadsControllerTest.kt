@@ -98,7 +98,7 @@ class DownloadsControllerTest {
     private fun DownloadsController.loaded(): DownloadsUiState = eventually {
         refreshNow()
         // Every row has its place once the libraries are in (the state follows the loads a moment later).
-        state.first { !it.loading && it.imports.size == 4 && it.vpn.label.startsWith("Protected") }
+        state.first { !it.loading && it.imports.size == 4 && it.vpn?.label?.startsWith("Protected") == true }
     }
 
     private fun sent(method: String, path: String): RecordedRequest =
@@ -115,7 +115,7 @@ class DownloadsControllerTest {
         assertEquals(listOf("Movies", "Shows", "Photos", "Other files"), state.imports.map { it.target?.name })
         assertEquals("Not sure this is a movie.", state.imports.first().reason)
         assertEquals(1, state.ignored.size)
-        assertEquals("Protected · NordVPN · Netherlands", state.vpn.label)
+        assertEquals("Protected · NordVPN · Netherlands", state.vpn?.label)
         assertEquals(4, state.readyToAccept.size)
         assertTrue(state.isOwner)
     }
@@ -321,7 +321,7 @@ class DownloadsControllerTest {
         val episode = state.imports.first { it.item.id == "i-puddle" }
         assertEquals(listOf("Shows"), episode.choices.map { it.name })
         assertTrue(!state.isOwner)
-        assertTrue(!state.vpn.opensSettings)
+        assertTrue(state.vpn?.opensSettings == false)
     }
 
     @Test
@@ -340,7 +340,38 @@ class DownloadsControllerTest {
         answers["GET /api/vpn/status"] = { error(500, "internal", "PopcornStash ran into a problem.") }
         val controller = controller()
         eventually { controller.refreshNow() }
-        eventually { controller.state.first { it.vpn.label == "VPN status unavailable" } }
+        val state = eventually { controller.state.first { it.vpn?.label == "VPN status unavailable" } }
+        // The server answered, so links and uploads do still work.
+        assertEquals("Web links and uploads still work.", state.vpn?.detail)
+        assertEquals(null, state.loadError)
+    }
+
+    @Test
+    fun aServerThatDoesNotAnswerIsSaidOnceWithoutAVpnLine() {
+        val routes = listOf("GET /api/downloads", "GET /api/inbox", "GET /api/vpn/status", "GET /api/libraries")
+        val working = routes.associateWith { answers.getValue(it) }
+        for (route in routes) answers[route] = { error(503, "unavailable", "PopcornStash did not answer.") }
+        val controller = controller()
+        eventually { controller.refreshNow() }
+        val failed = eventually { controller.state.first { it.loadError != null } }
+        assertEquals(null, failed.vpn)
+
+        // The live events cut off with nothing known about the VPN: no line either.
+        // The page loads again, but the VPN status still cannot be read.
+        routes.filter { it != "GET /api/vpn/status" }.forEach { answers[it] = working.getValue(it) }
+        eventually { controller.refreshNow() }
+        connection.value = EventStream.Status.Waiting
+        val cutOff = eventually { controller.state.first { it.connectionLost && it.loadError == null } }
+        assertEquals(null, cutOff.vpn)
+    }
+
+    @Test
+    fun aKnownVpnStatusStaysWhileTheEventsReconnect() {
+        val controller = controller()
+        controller.loaded()
+        connection.value = EventStream.Status.Waiting
+        val state = eventually { controller.state.first { it.connectionLost } }
+        assertEquals("Protected · NordVPN · Netherlands", state.vpn?.label)
     }
 
     @Test

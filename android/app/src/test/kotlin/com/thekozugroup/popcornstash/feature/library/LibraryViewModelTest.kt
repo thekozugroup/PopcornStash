@@ -228,6 +228,61 @@ class LibraryViewModelTest {
     }
 
     @Test
+    fun anEventPastTheServersLargestPageLoadsEveryItemShownAgain() = runTest {
+        val all = List(260) { SampleMedia.paperBoats.copy(id = "m$it") }
+        respondLibrary(SampleMedia.movies)
+        respondItems(all.take(60), next = "c2")
+        val model = model(SampleMedia.movies)
+        model.ui.awaitUntil { it.content is Content.Items }
+        server.next()
+        server.next()
+        respondItems(all.subList(60, 250), next = "c3")
+        model.loadMore()
+        model.ui.awaitUntil { (it.content as? Content.Items)?.page?.items?.size == 250 }
+        server.next()
+
+        // 250 shown: the reload asks for the server's largest page (200), then the 50 after it.
+        respondLibrary(SampleMedia.movies)
+        respondItems(all.take(200), next = "r2")
+        respondItems(all.subList(200, 250), next = "r3")
+        events.emit(StashEvent.LibraryChanged("updated", "m3", SampleMedia.movies.id))
+        val ui = model.ui.awaitUntil { (it.content as? Content.Items)?.page?.nextCursor == "r3" }
+        assertEquals("/api/libraries/lib-movies", server.next().target)
+        assertEquals("/api/items?library_id=lib-movies&sort=added&order=desc&limit=200", server.next().target)
+        assertEquals("/api/items?library_id=lib-movies&sort=added&order=desc&cursor=r2&limit=50", server.next().target)
+        assertEquals(all.take(250).map { it.id }, (ui.content as Content.Items).page.items.map { it.id })
+    }
+
+    @Test
+    fun aTimelinePastTheServersLargestPageLoadsEveryPhotoShownAgain() = runTest {
+        val photo = SampleMedia.timeline[0].items[0]
+        fun month(name: String, from: Int, count: Int) = PhotoMonth(name, count.toLong(), List(count) { photo.copy(id = "p${from + it}") })
+        respondLibrary(SampleMedia.photos)
+        server.respond(json(PhotoTimeline.serializer(), PhotoTimeline(listOf(month("2026-09", 0, 200)), nextCursor = "p2")))
+        val model = model(SampleMedia.photos)
+        model.ui.awaitUntil { it.content is Content.Timeline }
+        server.next()
+        server.next()
+        server.respond(json(PhotoTimeline.serializer(), PhotoTimeline(listOf(month("2026-09", 200, 100), month("2026-08", 300, 400)), nextCursor = "p3")))
+        model.loadMore()
+        model.ui.awaitUntil { (it.content as? Content.Timeline)?.photos?.size == 700 }
+        server.next()
+
+        // 700 photos shown: 500 (the server's largest page), then the 200 after them, September joined across pages.
+        respondLibrary(SampleMedia.photos)
+        server.respond(json(PhotoTimeline.serializer(), PhotoTimeline(listOf(month("2026-09", 0, 300), month("2026-08", 300, 200)), nextCursor = "q2")))
+        server.respond(json(PhotoTimeline.serializer(), PhotoTimeline(listOf(month("2026-08", 500, 200)), nextCursor = "q3")))
+        events.emit(StashEvent.LibraryChanged("updated", "p3", SampleMedia.photos.id))
+        val ui = model.ui.awaitUntil { (it.content as? Content.Timeline)?.page?.nextCursor == "q3" }
+        assertEquals("/api/libraries/lib-photos", server.next().target)
+        assertEquals("/api/libraries/lib-photos/timeline?limit=500", server.next().target)
+        assertEquals("/api/libraries/lib-photos/timeline?cursor=q2&limit=200", server.next().target)
+        val timeline = ui.content as Content.Timeline
+        assertEquals(listOf("2026-09", "2026-08"), timeline.page.items.map { it.month })
+        assertEquals(700, timeline.photos.size)
+    }
+
+    @Test
     fun aRemovalMattersOnlyForAnItemOnThePage() = runTest {
         respondLibrary(SampleMedia.movies)
         respondItems(SampleMedia.recentMovies)

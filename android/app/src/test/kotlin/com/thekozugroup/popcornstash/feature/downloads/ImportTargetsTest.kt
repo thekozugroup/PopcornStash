@@ -146,6 +146,26 @@ class ImportTargetsTest {
     }
 
     @Test
+    fun whatIsMissingIsSaidOnceBesideItsField() {
+        val shows = ImportTarget(s.shows)
+        val noEpisode = initialMoveForm(s.episode, shows).copy(episode = "")
+        val preview = previewMove(shows, noEpisode, s.episode, true)
+        assertEquals("Add the episode number to see where it goes.", preview.hint)
+        assertEquals(MoveField.Episode, preview.asksFor)
+        // Until the person tries to save, the preview says what is missing.
+        assertEquals(preview.hint, preview.hintBeside(emptyMap()))
+        // Then the field says it, and the preview does not repeat it; another field's error leaves it.
+        val check = validateMove(noEpisode, listOf(shows))
+        assertEquals("Enter the episode number.", check.errors[MoveField.Episode])
+        assertNull(preview.hintBeside(check.errors))
+        assertEquals(preview.hint, preview.hintBeside(mapOf(MoveField.Season to "Enter the season as a number.")))
+        val untitled = previewMove(ImportTarget(s.movies), initialMoveForm(s.lowConfidence, ImportTarget(s.movies)).copy(title = ""), s.lowConfidence, true)
+        assertNull(untitled.hintBeside(mapOf(MoveField.Title to "Enter the movie title.")))
+        val noShow = previewMove(shows, noEpisode.copy(show = ""), s.episode, true)
+        assertEquals(MoveField.Show, noShow.asksFor)
+    }
+
+    @Test
     fun serverFieldsMapOntoTheForm() {
         assertEquals(MoveField.Target, fieldOfServerError("library_id"))
         assertEquals(MoveField.Show, fieldOfServerError("show_name"))

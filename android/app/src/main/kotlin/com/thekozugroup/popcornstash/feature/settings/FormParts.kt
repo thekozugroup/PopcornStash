@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
@@ -30,7 +29,6 @@ import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarData
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,7 +44,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.DialogProperties
 import com.thekozugroup.popcornstash.ui.theme.Popcorn
 import com.thekozugroup.popcornstash.ui.theme.PopcornPalette
 
@@ -254,50 +251,6 @@ fun DangerButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifie
         }
         Text(text, style = Popcorn.type.action)
     }
-}
-
-/**
- * A decision that must interrupt: what will happen in plain words, the action named by what it
- * does, and Cancel. [destructive] draws the action in the error colour.
- */
-@Composable
-fun ConfirmDialog(
-    title: String,
-    text: String,
-    confirm: String,
-    onConfirm: () -> Unit,
-    onDismiss: () -> Unit,
-    destructive: Boolean = false,
-) {
-    val colors = Popcorn.colors
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = { Text(text) },
-        confirmButton = {
-            TextButton(
-                onClick = onConfirm,
-                shape = Popcorn.shapes.control,
-                colors = ButtonDefaults.textButtonColors(contentColor = if (destructive) colors.error else colors.text),
-                modifier = Modifier.defaultMinSize(minHeight = 48.dp),
-            ) { Text(confirm, style = Popcorn.type.action) }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = onDismiss,
-                shape = Popcorn.shapes.control,
-                colors = ButtonDefaults.textButtonColors(contentColor = colors.text),
-                modifier = Modifier.defaultMinSize(minHeight = 48.dp),
-            ) { Text("Cancel", style = Popcorn.type.action) }
-        },
-        containerColor = colors.surface,
-        titleContentColor = colors.text,
-        textContentColor = colors.textMuted,
-        shape = Popcorn.shapes.panel,
-        // The dialog keeps 24dp from the screen's edges on every phone, whatever the window theme does.
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-        modifier = Modifier.padding(horizontal = Popcorn.spacing.l),
-    )
 }
 
 /** A status in words with the dot beside them ("Folder missing"); never colour alone. */

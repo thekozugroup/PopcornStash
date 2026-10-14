@@ -374,7 +374,9 @@ mod tests {
         let (status, json) = app.json("/api/libraries/icons", &member).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["icons"][0], "film");
-        assert_eq!(json["icons"].as_array().unwrap().len(), 32);
+        assert_eq!(json["icons"].as_array().unwrap().len(), 31);
+        // The folder glyph marks folders that are not a library; it is never a chosen icon.
+        assert!(!json["icons"].as_array().unwrap().contains(&"folder".into()));
 
         // Only owners write.
         refused(
@@ -426,17 +428,20 @@ mod tests {
         )
         .await;
         body["name"] = "Kids".into();
-        body["icon"] = "house".into();
-        refused(
-            &app,
-            "POST",
-            "/api/libraries",
-            &owner,
-            body.clone(),
-            StatusCode::BAD_REQUEST,
-            Some("icon"),
-        )
-        .await;
+        // A fixed place's glyph, and the folder glyph (not a library), are never a library's icon.
+        for icon in ["house", "folder"] {
+            body["icon"] = icon.into();
+            refused(
+                &app,
+                "POST",
+                "/api/libraries",
+                &owner,
+                body.clone(),
+                StatusCode::BAD_REQUEST,
+                Some("icon"),
+            )
+            .await;
+        }
         body["icon"] = "baby".into();
         body["structure"] = serde_json::Value::Null;
         refused(

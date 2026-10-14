@@ -9,8 +9,8 @@ import androidx.compose.runtime.staticCompositionLocalOf
 
 /**
  * Pages that want the floating toolbar out of the way while they show: the photo viewer
- * and the player (android/DESIGN.md, Floating toolbar). The toolbar leaves while at least
- * one page asks and comes back when the last one is gone.
+ * (android/DESIGN.md, Floating toolbar; the player is its own activity). The toolbar leaves
+ * while at least one page asks and comes back when the last one is gone.
  */
 @Stable
 class ToolbarRequests {

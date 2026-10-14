@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.thekozugroup.popcornstash.data.api.ApiClient
 import com.thekozugroup.popcornstash.data.api.ApiException
 import com.thekozugroup.popcornstash.data.api.Item
+import com.thekozugroup.popcornstash.data.api.ItemPage
 import com.thekozugroup.popcornstash.data.api.ItemQuery
 import com.thekozugroup.popcornstash.data.api.Layout
 import com.thekozugroup.popcornstash.data.api.Library
@@ -36,6 +37,22 @@ enum class ItemSort(val label: String, val wire: String, val order: String) {
 
         val otherFiles = listOf(Added, Name, Size)
     }
+}
+
+/**
+ * A list read again from its start after a live event: as many items as were [loaded] (at
+ * least [LibraryViewModel.PAGE]), with the cursor for what follows. Past the server's largest
+ * page ([LibraryViewModel.MAX_PAGE]) it follows the cursor, so nothing the person had scrolled
+ * through is dropped. A first load ([loaded] 0) is one page.
+ */
+suspend fun reloadItems(loaded: Int, page: suspend (limit: Int, cursor: String?) -> ItemPage): Paged<Item> {
+    var next = page(loaded.coerceIn(LibraryViewModel.PAGE, LibraryViewModel.MAX_PAGE), null)
+    var items = next.items
+    while (items.size < loaded && next.nextCursor != null) {
+        next = page((loaded - items.size).coerceIn(1, LibraryViewModel.MAX_PAGE), next.nextCursor)
+        items = items + next.items
+    }
+    return Paged(items, next.nextCursor)
 }
 
 /** A list read page by page with the server's cursor (docs/architecture.md section 8, Lists). */
@@ -176,7 +193,7 @@ class LibraryViewModel(
         else -> false
     }
 
-    /** A burst of events becomes one reload, of as much as was loaded. */
+    /** A burst of events becomes one reload, of as much as was loaded (several pages past the server's largest). */
     private fun settleThenReload() {
         settleJob?.cancel()
         settleJob = viewModelScope.launch {
@@ -209,17 +226,21 @@ class LibraryViewModel(
             val content = when (library.layout) {
                 Layout.Series -> Content.Shows(api.shows(libraryId))
                 Layout.Timeline -> {
-                    val loaded = (current as? Content.Timeline)?.photos?.size ?: 0
-                    val limit = if (keepLoaded) loaded.coerceIn(PHOTO_PAGE, MAX_PHOTO_PAGE) else PHOTO_PAGE
-                    val timeline = api.timeline(libraryId, null, limit)
-                    Content.Timeline(Paged(timeline.months, timeline.nextCursor))
+                    val loaded = if (keepLoaded) (current as? Content.Timeline)?.photos?.size ?: 0 else 0
+                    var timeline = api.timeline(libraryId, null, loaded.coerceIn(PHOTO_PAGE, MAX_PHOTO_PAGE))
+                    var months = timeline.months
+                    // Past the server's largest page, follow the cursor until as many photos are in as were shown.
+                    while (months.sumOf { it.items.size } < loaded && timeline.nextCursor != null) {
+                        val more = (loaded - months.sumOf { it.items.size }).coerceIn(1, MAX_PHOTO_PAGE)
+                        timeline = api.timeline(libraryId, timeline.nextCursor, more)
+                        months = mergeMonths(months, timeline.months)
+                    }
+                    Content.Timeline(Paged(months, timeline.nextCursor))
                 }
                 else -> {
                     val sort = sortFor(library)
-                    val loaded = (current as? Content.Items)?.takeIf { it.sort == sort }?.page?.items?.size ?: 0
-                    val limit = if (keepLoaded) loaded.coerceIn(PAGE, MAX_PAGE) else PAGE
-                    val page = api.items(query(library, sort, limit, null))
-                    Content.Items(sort, Paged(page.items, page.nextCursor))
+                    val loaded = if (keepLoaded) (current as? Content.Items)?.takeIf { it.sort == sort }?.page?.items?.size ?: 0 else 0
+                    Content.Items(sort, reloadItems(loaded) { limit, cursor -> api.items(query(library, sort, limit, cursor)) })
                 }
             }
             setContent(content)
@@ -256,8 +277,10 @@ class LibraryViewModel(
 
     companion object {
         const val PAGE = 60
+        /** The server's largest page of items (`GET /api/items`, `limit` at most 200). */
         const val MAX_PAGE = 200
         const val PHOTO_PAGE = 200
+        /** The server's largest page of photos (`GET /api/libraries/:id/timeline`, `limit` at most 500). */
         const val MAX_PHOTO_PAGE = 500
 
         /** A busy month can continue on the next page: its photos join the month already shown. */

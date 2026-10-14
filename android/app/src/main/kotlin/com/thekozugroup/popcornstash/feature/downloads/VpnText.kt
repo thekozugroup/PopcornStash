@@ -13,6 +13,7 @@ data class VpnLine(
     val tone: VpnTone,
     /** "Protected · NordVPN · Netherlands", "Torrents paused: VPN connecting". */
     val label: String,
+    /** What it means for torrents; empty while the status is being checked (the label says it). */
     val detail: String,
     /** For the owner: the line opens the web VPN settings. */
     val opensSettings: Boolean,
@@ -54,16 +55,27 @@ private fun offReason(status: VpnStatus): String? =
 private fun offDetail(status: VpnStatus): String = listOfNotNull(offReason(status), STILL_WORK).joinToString(" ")
 
 /**
- * The VPN line for this person. [unavailable] is true when the status could not be read at
- * all. Owners get the owner's sentences and a way into the VPN settings; members get what
- * still works.
+ * The Downloads page's VPN line, or null to leave it out. When the server does not answer
+ * ([serverQuiet]: the page failed to load, or the live events are cut off) and nothing is known
+ * about the VPN, the page already says so once; a line would only repeat it, or claim that links
+ * and uploads still work when nothing does. A status read before stays. [asked]: the page has
+ * asked for the status at least once, so a missing one could not be read.
+ */
+fun pageVpnLine(status: VpnStatus?, asked: Boolean, serverQuiet: Boolean, isOwner: Boolean): VpnLine? =
+    if (status == null && serverQuiet) null else vpnLine(status, unavailable = asked && status == null, isOwner = isOwner)
+
+/**
+ * The VPN line for this person. [unavailable] is true when the server answered but its VPN
+ * status could not be read (when the server itself does not answer, see [pageVpnLine]). Owners get the owner's sentences and a way into the VPN settings;
+ * members get what still works.
  */
 fun vpnLine(status: VpnStatus?, unavailable: Boolean, isOwner: Boolean): VpnLine {
     if (status == null) {
+        // Each state is named once: the label says what is wrong, the detail what still works.
         return if (unavailable) {
-            VpnLine(VpnTone.Neutral, "VPN status unavailable", "The VPN status could not be read. $STILL_WORK", isOwner)
+            VpnLine(VpnTone.Neutral, "VPN status unavailable", STILL_WORK, isOwner)
         } else {
-            VpnLine(VpnTone.Neutral, "Checking VPN", "Checking the VPN connection.", false)
+            VpnLine(VpnTone.Neutral, "Checking VPN", "", false)
         }
     }
     if (isNoVpnMode(status)) {

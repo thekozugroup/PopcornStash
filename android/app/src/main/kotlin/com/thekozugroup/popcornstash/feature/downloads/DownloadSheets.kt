@@ -18,7 +18,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -44,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import com.thekozugroup.popcornstash.data.api.Category
 import com.thekozugroup.popcornstash.data.api.Download
 import com.thekozugroup.popcornstash.data.api.Structure
+import com.thekozugroup.popcornstash.ui.components.ConfirmDialog
 import com.thekozugroup.popcornstash.ui.components.PrimaryButton
 import com.thekozugroup.popcornstash.ui.components.QuietButton
 import com.thekozugroup.popcornstash.ui.icons.LucideIcon
@@ -243,7 +243,7 @@ fun EditImportContent(
     }
 
     Spacer(Modifier.height(Popcorn.spacing.m))
-    Preview(target?.let { previewMove(it, form, row.item, showFolder = isOwner) })
+    Preview(target?.let { previewMove(it, form, row.item, showFolder = isOwner) }, edit.errors)
     if (edit.error != null) {
         Spacer(Modifier.height(Popcorn.spacing.s))
         Text(
@@ -334,9 +334,12 @@ private fun KindChoice(selected: Category, enabled: Boolean, onSelect: (Category
     }
 }
 
-/** The live preview, above a thin rule: "Will move to Kids", the folder for owners, and the new name or what is missing. */
+/**
+ * The live preview, above a thin rule: "Will move to Kids", the folder for owners, and the new
+ * name or what is missing (unless the field that is missing already says so under it).
+ */
 @Composable
-private fun Preview(preview: MovePreview?) {
+private fun Preview(preview: MovePreview?, errors: Map<MoveField, String>) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -351,7 +354,7 @@ private fun Preview(preview: MovePreview?) {
             Column {
                 Text(preview?.title ?: "Choose where it goes", style = Popcorn.type.item, color = Popcorn.colors.text)
                 preview?.folder?.let { Text(it, style = Popcorn.type.metadata, color = Popcorn.colors.textMuted) }
-                val last = preview?.hint ?: preview?.fileName?.let { "Renamed to $it" }
+                val last = if (preview?.hint != null) preview.hintBeside(errors) else preview?.fileName?.let { "Renamed to $it" }
                 last?.let { Text(it, style = Popcorn.type.metadata, color = Popcorn.colors.textMuted) }
             }
         }
@@ -360,25 +363,23 @@ private fun Preview(preview: MovePreview?) {
 
 // --------------------------------------------------------------- dialogs ----
 
-/** "Remove this download?" with what happens to its files. */
+/** "Remove this download?" with what happens to its files; Remove is destructive. */
 @Composable
 fun RemoveDownloadDialog(download: Download, busy: Boolean, onConfirm: () -> Unit, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Remove this download?") },
-        text = {
-            Column {
-                Text(breakableName(download.name), style = Popcorn.type.item, color = Popcorn.colors.text)
-                Spacer(Modifier.height(Popcorn.spacing.xs))
-                Text(removeExplanation(download))
-            }
-        },
-        confirmButton = { QuietButton(if (busy) "Removing" else "Remove", onClick = onConfirm, enabled = !busy) },
-        dismissButton = { QuietButton("Cancel", onClick = onDismiss, enabled = !busy) },
-        containerColor = Popcorn.colors.surface,
-        titleContentColor = Popcorn.colors.text,
-        textContentColor = Popcorn.colors.textMuted,
-    )
+    ConfirmDialog(
+        title = "Remove this download?",
+        confirm = if (busy) "Removing" else "Remove",
+        onConfirm = onConfirm,
+        onDismiss = onDismiss,
+        destructive = true,
+        enabled = !busy,
+    ) {
+        Column {
+            Text(breakableName(download.name), style = Popcorn.type.item, color = Popcorn.colors.text)
+            Spacer(Modifier.height(Popcorn.spacing.xs))
+            Text(removeExplanation(download))
+        }
+    }
 }
 
 /** "Accept all 4 suggestions?", then "Moving 2 of 4". */
@@ -392,14 +393,13 @@ fun AcceptAllDialog(state: AcceptAllState, onConfirm: () -> Unit, onDismiss: () 
             if (state.unchosen > 0) "Choose a library for ${countOf(state.unchosen.toLong(), "file")} afterwards." else null,
         ).joinToString(" ")
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Accept all ${state.total} suggestions?") },
-        text = { Text(body, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }) },
-        confirmButton = { QuietButton("Accept all", onClick = onConfirm, enabled = !state.running) },
-        dismissButton = { QuietButton("Cancel", onClick = onDismiss, enabled = !state.running) },
-        containerColor = Popcorn.colors.surface,
-        titleContentColor = Popcorn.colors.text,
-        textContentColor = Popcorn.colors.textMuted,
-    )
+    ConfirmDialog(
+        title = "Accept all ${state.total} suggestions?",
+        confirm = "Accept all",
+        onConfirm = onConfirm,
+        onDismiss = onDismiss,
+        enabled = !state.running,
+    ) {
+        Text(body, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+    }
 }

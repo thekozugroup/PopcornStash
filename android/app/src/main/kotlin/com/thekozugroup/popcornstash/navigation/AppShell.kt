@@ -30,6 +30,7 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import com.thekozugroup.popcornstash.ui.components.FloatingNavToolbar
@@ -54,9 +55,9 @@ data class TabPage(
  * - Each tab keeps its state and scroll position while another tab shows (one saveable
  *   state holder entry per tab).
  * - System Back on another tab returns to Home; on Home it leaves the app.
- * - The toolbar floats over the pages and leaves when [toolbarVisible] is false, while a
- *   page asks it to ([HideToolbarWhileShown]: the photo viewer, the player) and while the
- *   keyboard is open.
+ * - The toolbar floats over the pages and leaves while a page asks it to
+ *   ([HideToolbarWhileShown]: the photo viewer) and while the keyboard is open. The player
+ *   is its own activity, so the shell is not on screen while it plays.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -64,7 +65,6 @@ fun AppShell(
     modifier: Modifier = Modifier,
     initialTab: Tab = Tab.Start,
     readyToImport: Int = 0,
-    toolbarVisible: Boolean = true,
     /** A tab asked for from outside (a notification, the share sheet): shown once, then [onOpenedTab]. */
     openTab: Tab? = null,
     onOpenedTab: () -> Unit = {},
@@ -81,6 +81,7 @@ fun AppShell(
     val holder = rememberSaveableStateHolder()
     val toolbarRequests = remember { ToolbarRequests() }
     val reduceMotion = Popcorn.reduceMotion
+    val layoutDirection = LocalLayoutDirection.current
     val toolbar = Popcorn.toolbar
     val navigationBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val clearance = toolbar.clearance + navigationBar
@@ -91,7 +92,7 @@ fun AppShell(
         CompositionLocalProvider(LocalToolbarRequests provides toolbarRequests) {
             AnimatedContent(
                 targetState = current,
-                transitionSpec = { tabTransition(initialState, targetState, reduceMotion) },
+                transitionSpec = { tabTransition(initialState, targetState, reduceMotion, layoutDirection) },
                 label = "tab pages",
                 modifier = Modifier.fillMaxSize(),
             ) { tab ->
@@ -109,7 +110,7 @@ fun AppShell(
         }
 
         AnimatedVisibility(
-            visible = toolbarVisible && !toolbarRequests.hidden && !WindowInsets.isImeVisible,
+            visible = !toolbarRequests.hidden && !WindowInsets.isImeVisible,
             enter = slideInVertically(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) { it / 2 } +
                 fadeIn(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)),
             exit = slideOutVertically(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) { it / 2 } +

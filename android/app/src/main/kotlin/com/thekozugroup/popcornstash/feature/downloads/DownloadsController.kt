@@ -80,7 +80,8 @@ data class DownloadsUiState(
     /** Downloads could not be loaded and there is nothing to show. */
     val loadError: String? = null,
     val refreshing: Boolean = false,
-    val vpn: VpnLine = vpnLine(null, unavailable = false, isOwner = false),
+    /** The VPN line; null while the server does not answer and its VPN status is unknown. */
+    val vpn: VpnLine? = vpnLine(null, unavailable = false, isOwner = false),
     /** Torrents run without a VPN on this server (the add sheet's sentence changes). */
     val noVpnMode: Boolean = false,
     val connectionLost: Boolean = false,
@@ -465,15 +466,18 @@ class DownloadsController(
         // Rows wait for the libraries: before they arrive a video would offer only Other files.
         val librariesReady = s.libraries.valueOrNull != null
         val librariesFailed = (s.libraries as? Loadable.Failed)?.takeIf { it.previous == null }?.message
+        val loadError = (s.downloads as? Loadable.Failed)?.takeIf { it.previous == null }?.message
+        // The server did not answer: the page failed to load, or the live events are cut off.
+        val serverQuiet = loadError != null || status == EventStream.Status.Waiting
         val all = downloads.orEmpty()
         val finished = all.filterNot { it.isActive() }
             .sortedByDescending { it.completedAt ?: it.createdAt }
         return DownloadsUiState(
             isOwner = isOwner,
             loading = downloads == null && (s.downloads is Loadable.Idle || s.downloads is Loadable.Loading),
-            loadError = (s.downloads as? Loadable.Failed)?.takeIf { it.previous == null }?.message,
+            loadError = loadError,
             refreshing = (s.downloads as? Loadable.Ready)?.refreshing == true || (s.inbox as? Loadable.Ready)?.refreshing == true,
-            vpn = vpnLine(s.vpn, unavailable = l.vpnAsked && s.vpn == null, isOwner = isOwner),
+            vpn = pageVpnLine(s.vpn, asked = l.vpnAsked, serverQuiet = serverQuiet, isOwner = isOwner),
             noVpnMode = isNoVpnMode(s.vpn),
             connectionLost = status == EventStream.Status.Waiting,
             uploads = running,

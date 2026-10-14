@@ -13,15 +13,17 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.systemBarsIgnoringVisibility
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -50,7 +52,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -70,11 +71,13 @@ import com.thekozugroup.popcornstash.feature.library.MediaFormat
 import com.thekozugroup.popcornstash.feature.library.OtherFilesViewModel
 import com.thekozugroup.popcornstash.feature.library.displayTitle
 import com.thekozugroup.popcornstash.navigation.HideToolbarWhileShown
+import com.thekozugroup.popcornstash.ui.components.MediaDisc
 import com.thekozugroup.popcornstash.ui.icons.LucideGlyph
 import com.thekozugroup.popcornstash.ui.icons.LucideIcon
 import com.thekozugroup.popcornstash.ui.icons.PopcornIcons
 import com.thekozugroup.popcornstash.ui.media.LocalPictures
 import com.thekozugroup.popcornstash.ui.media.StashImage
+import com.thekozugroup.popcornstash.ui.theme.LocalPlayerTokens
 import com.thekozugroup.popcornstash.ui.theme.Popcorn
 import com.thekozugroup.popcornstash.ui.theme.PopcornMotion
 
@@ -143,6 +146,7 @@ fun PhotoViewerOverlay(
  * and the plate with the date, the camera, "Save the original" and "Details" (and the system
  * bars with them). Back closes it.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PhotoViewer(
     photos: List<Item>,
@@ -177,6 +181,7 @@ fun PhotoViewer(
     val current = photos.getOrNull(pager.currentPage)
     val decode = decodeSize()
     val pictures = LocalPictures.current
+    val tokens = LocalPlayerTokens.current
 
     Box(
         modifier
@@ -202,7 +207,7 @@ fun PhotoViewer(
                     contentAlignment = Alignment.Center,
                 ) {
                     StashImage(pictures.thumb(photo, large = true), contentDescription = label, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
-                    Disc(PopcornIcons.Play, "Play", size = 64, iconSize = 28) { onPlay(photo) }
+                    MediaDisc(PopcornIcons.Play, "Play", onClick = { onPlay(photo) }, size = tokens.playDisc, iconSize = tokens.playIcon)
                 }
             } else {
                 val zoom = zooms.getOrPut(photo.id) { ZoomState() }
@@ -222,28 +227,33 @@ fun PhotoViewer(
         }
 
         val fade = tween<Float>(if (reduceMotion) 0 else PopcornMotion.FAST_MS)
-        AnimatedVisibility(
-            visible = controls,
-            enter = fadeIn(fade),
-            exit = fadeOut(fade),
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .windowInsetsPadding(WindowInsets.statusBars)
-                .padding(start = Popcorn.spacing.xs, top = Popcorn.spacing.xs),
+        // The player's chrome rules: every control the same edge inside insets that do not
+        // move when the system bars come and go with the controls.
+        val safe = WindowInsets.systemBarsIgnoringVisibility.union(WindowInsets.displayCutout)
+        Box(
+            Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(safe)
+                .testTag("viewer chrome")
+                .padding(tokens.edge),
         ) {
-            Disc(PopcornIcons.Close, "Close", onClick = onClose)
-        }
-        if (current != null) {
             AnimatedVisibility(
                 visible = controls,
                 enter = fadeIn(fade),
                 exit = fadeOut(fade),
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .windowInsetsPadding(WindowInsets.navigationBars)
-                    .padding(horizontal = Popcorn.spacing.s, vertical = Popcorn.spacing.m),
+                modifier = Modifier.align(Alignment.TopStart),
             ) {
-                Plate(current, saving = savingId == current.id, format, onSaveOriginal, onDetails)
+                MediaDisc(PopcornIcons.Close, "Close", onClick = onClose)
+            }
+            if (current != null) {
+                AnimatedVisibility(
+                    visible = controls,
+                    enter = fadeIn(fade),
+                    exit = fadeOut(fade),
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                ) {
+                    Plate(current, saving = savingId == current.id, format, onSaveOriginal, onDetails)
+                }
             }
         }
     }
@@ -257,6 +267,7 @@ private fun Plate(item: Item, saving: Boolean, format: MediaFormat, onSave: (Ite
     Row(
         Modifier
             .fillMaxWidth()
+            .testTag("viewer plate")
             .background(Popcorn.colors.mediaControl, Popcorn.shapes.panel)
             .padding(start = Popcorn.spacing.m, end = Popcorn.spacing.xxs, top = Popcorn.spacing.xxs, bottom = Popcorn.spacing.xxs),
         verticalAlignment = Alignment.CenterVertically,
@@ -291,28 +302,6 @@ private fun PlateAction(glyph: LucideGlyph, label: String, onClick: () -> Unit) 
     ) {
         IconButton(onClick = onClick) {
             LucideIcon(glyph, contentDescription = label, tint = Popcorn.colors.onMedia)
-        }
-    }
-}
-
-/** A control laid over a picture: a round `mediaControl` disc with the glyph in `onMedia`. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun Disc(glyph: LucideGlyph, label: String, size: Int = 48, iconSize: Int = 24, onClick: () -> Unit) {
-    TooltipBox(
-        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
-        tooltip = { PlainTooltip { Text(label) } },
-        state = rememberTooltipState(),
-    ) {
-        Box(
-            Modifier
-                .size(size.dp)
-                .background(Popcorn.colors.mediaControl, Popcorn.shapes.avatar)
-                .clickable(role = Role.Button, onClickLabel = label, onClick = onClick)
-                .semantics { contentDescription = label },
-            contentAlignment = Alignment.Center,
-        ) {
-            LucideIcon(glyph, contentDescription = null, tint = Popcorn.colors.onMedia, size = iconSize.dp)
         }
     }
 }

@@ -59,6 +59,13 @@ fun takesLine(claims: List<Category>): String {
     return if (known.isEmpty()) "Takes nothing new" else "Takes ${joinWords(known.map(::claimWords))}"
 }
 
+/** "Videos, arranged as series": what a library that holds files is, said as a fact (it cannot change). */
+fun holdsLine(contentType: ContentType, structure: Structure?): String = when {
+    contentType == ContentType.Photos -> "Photos"
+    structure == Structure.Episodes -> "Videos, arranged as series"
+    else -> "Videos, arranged as one-offs"
+}
+
 /** "Series", "One-offs" or "Photos": what a library is. */
 fun kindLine(contentType: ContentType, structure: Structure?): String = when {
     contentType == ContentType.Photos -> "Photos"

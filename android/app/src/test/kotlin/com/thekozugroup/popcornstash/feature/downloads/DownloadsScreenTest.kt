@@ -24,6 +24,8 @@ import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.thekozugroup.popcornstash.navigation.Tab
 import com.thekozugroup.popcornstash.navigation.TabPage
+import com.thekozugroup.popcornstash.testing.drawnTextColor
+import com.thekozugroup.popcornstash.ui.theme.LightPopcornColors
 import com.thekozugroup.popcornstash.ui.theme.PopcornTheme
 import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
@@ -97,6 +99,9 @@ class DownloadsScreenTest {
         show(s.content().copy(removing = s.downloading))
         compose.onNodeWithText("Remove this download?").assertIsDisplayed()
         compose.onNodeWithText("What was downloaded so far is deleted.").assertIsDisplayed()
+        // Destructive, like every action that removes or deletes (android/DESIGN.md).
+        assertEquals(LightPopcornColors.error, compose.onNodeWithText("Remove", useUnmergedTree = true).drawnTextColor())
+        assertEquals(LightPopcornColors.text, compose.onNodeWithText("Cancel", useUnmergedTree = true).drawnTextColor())
         compose.onNodeWithText("Remove").performClick()
         assertEquals(listOf("confirm remove"), calls)
     }
@@ -151,6 +156,17 @@ class DownloadsScreenTest {
         scrollTo("import i-clip")
         compose.onNodeWithText("Add details").performClick()
         assertEquals(listOf("accept i-clip"), calls)
+    }
+
+    @Test
+    fun aMissingEpisodeIsSaidOnce() {
+        val row = s.content().imports.first()
+        val form = initialMoveForm(row.item, ImportTarget(s.kids)).copy(show = "Puddle Club", season = "1", episode = "")
+        show(s.content().copy(edit = EditState(row.item.id, form)))
+        compose.onNodeWithText("Add the episode number to see where it goes.").assertExists()
+        show(s.content().copy(edit = EditState(row.item.id, form, errors = mapOf(MoveField.Episode to "Enter the episode number."))))
+        compose.onNodeWithText("Enter the episode number.").assertExists()
+        compose.onNodeWithText("Add the episode number", substring = true).assertDoesNotExist()
     }
 
     @Test
@@ -235,6 +251,9 @@ class DownloadsScreenTest {
         show(s.failedToLoad)
         compose.onNodeWithText("Downloads could not be loaded").assertIsDisplayed()
         compose.onNodeWithText("Not connected to the server. Trying again.").assertIsDisplayed()
+        // Said once: no VPN line repeating it, and no claim that links and uploads still work.
+        compose.onNodeWithTag("vpn line").assertDoesNotExist()
+        compose.onNodeWithText("Web links and uploads still work.", substring = true).assertDoesNotExist()
         compose.onNodeWithText("Try again").assertIsDisplayed()
     }
 }

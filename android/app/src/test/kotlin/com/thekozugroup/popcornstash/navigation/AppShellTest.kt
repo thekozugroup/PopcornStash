@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -14,6 +15,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -34,6 +36,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.thekozugroup.popcornstash.ui.theme.PopcornTheme
@@ -199,8 +202,6 @@ class AppShellTest {
         assertEquals(0f, bounds("page Home").left, 0.5f)
         advanceFrames(14)
         page(Tab.Home).assertDoesNotExist()
-        // The selection square jumps instead of travelling.
-        assertEquals(bounds("tab Settings").left, bounds("toolbar indicator").left, 0.5f)
     }
 
     @Test
@@ -254,20 +255,86 @@ class AppShellTest {
     }
 
     @Test
-    fun theToolbarLeavesForThePlayer() {
-        var visible by mutableIntStateOf(1)
+    fun theToolbarLeavesWhilePagesAskAndReturnsWhenTheLastIsGone() {
+        var viewers by mutableIntStateOf(0)
         compose.setContent {
             PopcornTheme(darkTheme = false, reduceMotion = false) {
-                AppShell(toolbarVisible = visible == 1) { page -> TestPage(page) }
+                AppShell { page ->
+                    TestPage(page)
+                    // Stand-ins for the photo viewer, on Home: each one shown asks the toolbar to leave.
+                    if (page.tab == Tab.Home) repeat(viewers) { HideToolbarWhileShown() }
+                }
             }
         }
         compose.onNodeWithTag("toolbar").assertExists()
-        visible = 0
+        viewers = 2
         compose.waitForIdle()
         compose.onNodeWithTag("toolbar").assertDoesNotExist()
-        visible = 1
+        viewers = 1
+        compose.waitForIdle()
+        compose.onNodeWithTag("toolbar").assertDoesNotExist()
+        viewers = 0
         compose.waitForIdle()
         compose.onNodeWithTag("toolbar").assertExists()
+    }
+
+    @Test
+    fun theSelectionSquareTravelsToTheTappedSquare() {
+        showShell()
+        val from = bounds("tab Home").left
+        val to = bounds("tab Settings").left
+        compose.mainClock.autoAdvance = false
+        tab(Tab.Settings).performClick()
+        advanceFrames(3)
+        val moving = bounds("toolbar indicator").left
+        assertTrue("The square is on its way, at $moving between $from and $to", moving > from + 0.5f && moving < to - 0.5f)
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        assertEquals(to, bounds("toolbar indicator").left, 0.5f)
+    }
+
+    @Test
+    fun underRemoveAnimationsTheSelectionSquareJumps() {
+        showShell(reduceMotion = true)
+        compose.mainClock.autoAdvance = false
+        tab(Tab.Settings).performClick()
+        advanceFrames(3)
+        // Already under the tapped square while the pages are still crossfading.
+        page(Tab.Home).assertExists()
+        assertEquals(bounds("tab Settings").left, bounds("toolbar indicator").left, 0.5f)
+    }
+
+    @Test
+    fun rightToLeftMirrorsTheToolbarAndTheSlides() {
+        compose.setContent {
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                PopcornTheme(darkTheme = false, reduceMotion = false) {
+                    AppShell { page -> TestPage(page) }
+                }
+            }
+        }
+        // Settings is on the left now, Downloads on the right.
+        assertTrue(bounds("tab Settings").right <= bounds("tab Home").left + 0.5f)
+        assertTrue(bounds("tab Home").right <= bounds("tab Downloads").left + 0.5f)
+        compose.mainClock.autoAdvance = false
+        tab(Tab.Settings).performClick()
+        advanceFrames(6)
+        val incoming = bounds("page Settings")
+        val outgoing = bounds("page Home")
+        assertTrue("Settings enters from the left, its side, at ${incoming.left}", incoming.left < 0f)
+        assertTrue("Home leaves to the right, at ${outgoing.left}", outgoing.left > 0f)
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        assertEquals(0f, bounds("page Settings").left, 0.5f)
+        assertEquals(bounds("tab Settings").left, bounds("toolbar indicator").left, 0.5f)
+    }
+
+    @Test
+    fun theSlideDirectionFollowsTheLayoutDirection() {
+        assertEquals(1, slideDirection(Tab.Home, Tab.Settings))
+        assertEquals(-1, slideDirection(Tab.Home, Tab.Settings, LayoutDirection.Rtl))
+        assertEquals(1, slideDirection(Tab.Home, Tab.Downloads, LayoutDirection.Rtl))
+        assertEquals(0, slideDirection(Tab.Home, Tab.Home, LayoutDirection.Rtl))
     }
 }
 

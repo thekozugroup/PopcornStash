@@ -86,6 +86,27 @@ class OtherFilesViewModelTest {
     }
 
     @Test
+    fun anEventPastTheServersLargestPageLoadsEveryFileShownAgain() = runTest {
+        val all = List(230) { SampleMedia.otherFiles[0].copy(id = "o-$it") }
+        server.respond(json(ItemPage.serializer(), ItemPage(all.take(60), "c2")))
+        val model = model()
+        model.ui.awaitUntil { it.files is Loadable.Ready }
+        server.respond(json(ItemPage.serializer(), ItemPage(all.subList(60, 230), "c3")))
+        model.loadMore()
+        model.ui.awaitUntil { it.files.valueOrNull?.items?.size == 230 }
+        server.next()
+        server.next()
+
+        server.respond(json(ItemPage.serializer(), ItemPage(all.take(200), "r2")))
+        server.respond(json(ItemPage.serializer(), ItemPage(all.subList(200, 230), "r3")))
+        events.emit(StashEvent.LibraryChanged("updated", "o-4", null))
+        val ui = model.ui.awaitUntil { it.files.valueOrNull?.nextCursor == "r3" }
+        assertEquals("/api/items?place=other_files&sort=added&order=desc&limit=200", server.next().target)
+        assertEquals("/api/items?place=other_files&sort=added&order=desc&cursor=r2&limit=30", server.next().target)
+        assertEquals(all.map { it.id }, ui.files.valueOrNull?.items?.map { it.id })
+    }
+
+    @Test
     fun openingFetchesAPrivateCopyWithTheSessionClient() = runTest {
         server.respond(json(ItemPage.serializer(), ItemPage(SampleMedia.otherFiles)))
         val model = model()

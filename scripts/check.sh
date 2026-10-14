@@ -186,9 +186,10 @@ gradle() {
 
 # The app's own client against a real `popcornstash serve` on a scripts/dev-fixture.sh
 # stash: pairing, passkey sign-in, libraries, Home and live events (android/README.md, Tests).
+# app/build.gradle.kts never takes such a run from the build cache; --rerun makes sure of it.
 android_integration() {
   cargo build -p popcornstash --locked || return 1
-  gradle :app:testDebugUnitTest --tests '*ServerIntegrationTest*' -PpopcornstashServer=../target/debug/popcornstash
+  gradle :app:testDebugUnitTest --rerun --tests '*ServerIntegrationTest*' -PpopcornstashServer=../target/debug/popcornstash
 }
 
 # --------------------------------------------------------------- secrets ----

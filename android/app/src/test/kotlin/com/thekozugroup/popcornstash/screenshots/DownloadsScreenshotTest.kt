@@ -57,10 +57,12 @@ class DownloadsScreenshotTest {
     private fun Page(state: DownloadsUiState, list: LazyListState?) {
         WithSampleImages {
             AppShell(initialTab = Tab.Downloads, readyToImport = state.imports.size) { page ->
+                // As the app wires it: a finished row's library opens (MainActivity).
+                val actions = DownloadsActions(onOpenPlace = {})
                 if (list != null) {
-                    DownloadsPage(page, state, DownloadsActions(), s.NOW, listState = list)
+                    DownloadsPage(page, state, actions, s.NOW, listState = list)
                 } else {
-                    DownloadsPage(page, state, DownloadsActions(), s.NOW)
+                    DownloadsPage(page, state, actions, s.NOW)
                 }
             }
         }

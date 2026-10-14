@@ -197,9 +197,9 @@ class DownloadsServerIntegrationTest {
     @Test
     fun aServerWithoutTorrentsSaysSoOnTheVpnLine() = withController { controller ->
         controller.refreshNow()
-        val state = controller.state.first { it.vpn.label != "Checking VPN" }
-        assertEquals("Torrents off", state.vpn.label)
-        assertTrue(state.vpn.detail.endsWith("Web links and uploads still work."))
+        val state = controller.state.first { it.vpn != null && it.vpn.label != "Checking VPN" }
+        assertEquals("Torrents off", state.vpn?.label)
+        assertTrue(state.vpn!!.detail.endsWith("Web links and uploads still work."))
     }
 
     @Test

@@ -89,10 +89,21 @@ class VpnTextTest {
     }
 
     @Test
-    fun anUnreadableStatusIsSaidPlainly() {
-        assertEquals("Checking VPN", vpnLine(null, unavailable = false, isOwner = true).label)
+    fun aServerThatDoesNotAnswerHasNoVpnLineUnlessTheStatusIsKnown() {
+        assertEquals(null, pageVpnLine(null, asked = true, serverQuiet = true, isOwner = true))
+        assertEquals("VPN status unavailable", pageVpnLine(null, asked = true, serverQuiet = false, isOwner = true)?.label)
+        assertEquals("Checking VPN", pageVpnLine(null, asked = false, serverQuiet = false, isOwner = true)?.label)
+        val connected = VpnStatus(state = VpnState.Connected, provider = "nordvpn", country = "Netherlands")
+        assertEquals("Protected · NordVPN · Netherlands", pageVpnLine(connected, asked = true, serverQuiet = true, isOwner = true)?.label)
+    }
+
+    @Test
+    fun anUnreadableStatusIsSaidPlainlyAndOnce() {
+        val checking = vpnLine(null, unavailable = false, isOwner = true)
+        assertEquals("Checking VPN", checking.label)
+        assertEquals("The label says it all while checking.", "", checking.detail)
         val unavailable = vpnLine(null, unavailable = true, isOwner = true)
         assertEquals("VPN status unavailable", unavailable.label)
-        assertEquals("The VPN status could not be read. Web links and uploads still work.", unavailable.detail)
+        assertEquals("Web links and uploads still work.", unavailable.detail)
     }
 }

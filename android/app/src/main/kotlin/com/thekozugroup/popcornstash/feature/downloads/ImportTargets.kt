@@ -147,7 +147,17 @@ fun categoryAt(target: ImportTarget, form: MoveForm): Category =
     target.library?.let { categoryIn(it, form.category) } ?: Category.Other
 
 /** The live preview: "Will move to Kids", where it lands (owners) and what is still missing. */
-data class MovePreview(val title: String, val folder: String?, val fileName: String?, val hint: String?)
+data class MovePreview(
+    val title: String,
+    val folder: String?,
+    val fileName: String?,
+    val hint: String?,
+    /** The field [hint] asks for; while that field shows its own error, the hint is left out. */
+    val asksFor: MoveField? = null,
+) {
+    /** The hint, unless the field it asks for already says so under it (said once: DESIGN.md). */
+    fun hintBeside(errors: Map<MoveField, String>): String? = hint?.takeIf { asksFor == null || asksFor !in errors }
+}
 
 private fun cleanName(value: String): String =
     value.replace(Regex("[\\\\/:*?\"<>|]+"), " ").replace(Regex("\\s+"), " ").trim()
@@ -163,15 +173,16 @@ fun previewMove(target: ImportTarget, form: MoveForm, item: ItemDetail, showFold
     return when (categoryAt(target, form)) {
         Category.Movie -> {
             val clean = cleanName(form.title)
-            if (clean.isEmpty()) return MovePreview(title, null, null, "Add a title to see where it goes.")
+            if (clean.isEmpty()) return MovePreview(title, null, null, "Add a title to see where it goes.", MoveField.Title)
             val year = number(form.year)
             val folder = if (year != null) "$clean ($year)" else clean
             MovePreview(title, folderOf(listOf(folder)), "$folder$extension", null)
         }
         Category.Episode -> {
             val show = cleanName(form.show)
-            if (show.isEmpty()) return MovePreview(title, null, null, "Add the show name to see where it goes.")
-            val episode = number(form.episode) ?: return MovePreview(title, null, null, "Add the episode number.")
+            if (show.isEmpty()) return MovePreview(title, null, null, "Add the show name to see where it goes.", MoveField.Show)
+            val episode = number(form.episode)
+                ?: return MovePreview(title, null, null, "Add the episode number to see where it goes.", MoveField.Episode)
             val season = number(form.season) ?: 1
             MovePreview(
                 title,

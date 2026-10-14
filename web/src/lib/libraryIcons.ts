@@ -7,7 +7,10 @@
  *
  * The order here is the picker's fallback order; the server's
  * `GET /api/libraries/icons` order wins when it has loaded. A name this build
- * does not know (a newer server) draws `folder`.
+ * does not know (a newer server) draws `folder`, which is not in the list:
+ * it also marks folders that are not in a library, so it never stands for an
+ * icon the owner chose. The plain names are the Android app's too
+ * (`LibraryIcons.kt`); its unit tests compare the two tables.
  */
 import {
   Aperture,
@@ -86,7 +89,6 @@ const ICONS: Record<string, IconEntry> = {
   'paw-print': {icon: PawPrint, label: 'Paw print'},
   bike: {icon: Bike, label: 'Bike'},
   star: {icon: Star, label: 'Star'},
-  folder: {icon: Folder, label: 'Folder'},
 };
 
 /** Every name this build can draw, in picker order. */
