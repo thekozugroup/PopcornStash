@@ -84,18 +84,30 @@ const localTokens: Record<string, TokenValue> = {
   '--astryx-theme-neutral-color-status-fill-success': emerald[500],
   '--astryx-theme-neutral-color-status-fill-warning': amber[500],
   '--astryx-theme-neutral-color-status-fill-error': red[500],
+  // A Banner's tint (the info one here, the others under `banner` below). A button in a
+  // Banner draws its Action Blue focus ring on the tint, so in dark the tint stays faint
+  // enough for the ring to keep 3:1 whether the Banner sits on the page or on a panel:
+  // info 3.1:1 on a panel at 12% (it was 2.7:1 at 24%). Light keeps its tints (4.1:1 or more).
   '--astryx-theme-neutral-color-status-muted-accent': [
     alpha(blue[600], 0.14),
-    alpha(blue[600], 0.24),
+    alpha(blue[600], 0.12),
   ],
+  // Warning 7% (the ring was 2.2:1 on a panel at 22%), error 12% (2.7:1 at 22%), success 8%
+  // (2.3:1 at 22%): each is 3.0:1 or more on a panel and 3.5:1 on the page. The Banner's
+  // coloured title, text and icon still say which kind it is (8:1 or more on the tint).
+  '--popcorn-banner-warning': [alpha(amber[500], 0.18), alpha(amber[500], 0.07)],
+  '--popcorn-banner-error': [alpha(red[500], 0.14), alpha(red[500], 0.12)],
+  '--popcorn-banner-success': [alpha(emerald[500], 0.16), alpha(emerald[500], 0.08)],
   // A primary button hovered and pressed: darker steps of Action Blue, so its white label
   // keeps 4.5:1 or more (6.8:1 and 8.8:1). A light overlay would take it under 4.5:1.
   '--popcorn-accent-hover': blue[700],
   '--popcorn-accent-pressed': blue[800],
-  // A checked box, radio or switch mixes 15% of this into its Action Blue on hover: a darker
-  // blue in both themes, so the white mark keeps 5.7:1 and the fill keeps 3:1 against a dark
-  // panel (Astryx tints toward white in dark; zinc-950 would leave the fill at 2.7:1).
-  '--popcorn-accent-hover-tint': blue[800],
+  // A checked box, radio or switch mixes 15% of this into its Action Blue on hover, darker in
+  // both themes so the white mark keeps 4.5:1 or more (Astryx tints toward white in dark).
+  // Light mixes in Zinc Black, a visible step (1.26:1) with the mark at 6.6:1. Dark mixes in
+  // blue-800 (mark 5.7:1): the fill must keep 3:1 against a dark panel, which Zinc Black
+  // would take to 2.7:1, so the step stays small there (1.08:1).
+  '--popcorn-accent-hover-tint': [zinc[950], blue[800]],
   // The track behind an Action Blue progress fill. In dark it is Zinc Black, a groove in the
   // panel: zinc-700 left the fill at 2.0:1 against it, Zinc Black gives 3.8:1.
   '--popcorn-progress-track': [zinc[300], zinc[950]],
@@ -316,6 +328,15 @@ export const popcornTheme = defineTheme({
       base: {borderRadius: 'var(--popcorn-radius-tag)'},
     },
 
+    // Banner tints that keep the Action Blue focus ring of a button inside at 3:1 in dark
+    // (see --popcorn-banner-warning above). Only the Banner's fill changes: badges and the
+    // destructive button keep the theme's own muted fills.
+    banner: {
+      'status:warning': {'--color-warning-muted': 'var(--popcorn-banner-warning)'},
+      'status:error': {'--color-error-muted': 'var(--popcorn-banner-error)'},
+      'status:success': {'--color-success-muted': 'var(--popcorn-banner-success)'},
+    },
+
     // Disclosure rows ("Use a WireGuard or OpenVPN file instead") are targets
     // too: the whole row keeps the 44px control height, not just its text line.
     'collapsible-trigger': {
@@ -376,9 +397,27 @@ export const popcornTheme = defineTheme({
 
   // Over media (MediaTheme: the player stage, the photo viewer) Astryx turns the accent into
   // the surface's own on-colour, zinc-50 on a dark picture. Whatever sits on that fill takes
-  // the opposite one, as it did before the on-accent became white.
-  onDark: {tokens: {'--color-on-accent': 'var(--color-on-light)'}},
-  onLight: {tokens: {'--color-on-accent': 'var(--color-on-dark)'}},
+  // the opposite one, as it did before the on-accent became white. Its hover and press steps
+  // are zinc too (zinc-200 and zinc-300 on a dark picture, zinc-800 and zinc-700 on a light
+  // one), so a primary button there keeps its label at 4.5:1 or more: the Action Blue steps
+  // would put zinc-950 on blue-700, 2.9:1. A checked control there tints toward the other
+  // end of the zinc ramp on hover, not toward blue.
+  onDark: {
+    tokens: {
+      '--color-on-accent': 'var(--color-on-light)',
+      '--popcorn-accent-hover': zinc[200],
+      '--popcorn-accent-pressed': zinc[300],
+      '--popcorn-accent-hover-tint': zinc[950],
+    },
+  },
+  onLight: {
+    tokens: {
+      '--color-on-accent': 'var(--color-on-dark)',
+      '--popcorn-accent-hover': zinc[800],
+      '--popcorn-accent-pressed': zinc[700],
+      '--popcorn-accent-hover-tint': white,
+    },
+  },
 
   adaptations: {
     // Popcorn SR's compact-navigation breakpoint is 800px; AppShell's mobile

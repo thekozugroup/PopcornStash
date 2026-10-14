@@ -127,6 +127,8 @@ describe('the styles paint Action Blue with the tokens measured below', () => {
     expect(declarations(base, '.progress')).toContain('var(--track)');
     expect(declarations(base, '.progress-fill')).toContain('var(--accent)');
     expect(declarations(base, '.notice')).toContain('var(--notice-fill)');
+    expect(declarations(base, '.notice-error')).toContain('var(--error-fill)');
+    expect(declarations(base, '.notice-text')).toContain('var(--text)');
   });
 });
 
@@ -150,6 +152,13 @@ describe.each(['light', 'dark'] as const)('Action Blue in %s', scheme => {
     // Focus rings: the page, a panel, and a notice that holds a button.
     for (const behind of ['--page', '--surface', '--notice-fill']) {
       expect(contrast(accent, token(behind)), behind).toBeGreaterThanOrEqual(3);
+    }
+    // An error notice holds a button too ("Try again", "Allow access to <host>"): its
+    // translucent fill over the page or a panel.
+    for (const [name, behind] of Object.entries({page, surface})) {
+      const fill = over(token('--error-fill'), behind);
+      expect(contrast(accent, fill), `error notice on the ${name}`).toBeGreaterThanOrEqual(3);
+      expect(contrast(token('--text'), fill), `notice text on the ${name}`).toBeGreaterThanOrEqual(4.5);
     }
     // A download's progress fill against its track.
     expect(contrast(accent, token('--track'))).toBeGreaterThanOrEqual(3);

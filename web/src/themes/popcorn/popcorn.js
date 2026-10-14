@@ -205,15 +205,18 @@ export const popcornTheme = {
     "--astryx-theme-neutral-color-status-fill-success": "oklch(69.6% 0.17 162.48)",
     "--astryx-theme-neutral-color-status-fill-warning": "oklch(76.9% 0.188 70.08)",
     "--astryx-theme-neutral-color-status-fill-error": "oklch(63.7% 0.237 25.331)",
-    "--astryx-theme-neutral-color-status-muted-accent": "light-dark(oklch(54.6% 0.245 262.881 / 0.14), oklch(54.6% 0.245 262.881 / 0.24))",
+    "--astryx-theme-neutral-color-status-muted-accent": "light-dark(oklch(54.6% 0.245 262.881 / 0.14), oklch(54.6% 0.245 262.881 / 0.12))",
     "--astryx-theme-neutral-color-on-tint-neutral": "light-dark(#fafafa4D, #0a0a0a4D)",
     "--astryx-theme-neutral-color-on-tint-overlay-hover": "light-dark(#fafafa1A, #0a0a0a1A)",
     "--astryx-theme-neutral-color-on-tint-overlay-pressed": "light-dark(#fafafa33, #0a0a0a33)",
     "--astryx-theme-neutral-color-destructive-overlay-hover": "light-dark(#ff7f770D, #ee736c0D)",
     "--astryx-theme-neutral-color-destructive-overlay-pressed": "light-dark(#ff7f771A, #ee736c1A)",
+    "--popcorn-banner-warning": "light-dark(oklch(76.9% 0.188 70.08 / 0.18), oklch(76.9% 0.188 70.08 / 0.07))",
+    "--popcorn-banner-error": "light-dark(oklch(63.7% 0.237 25.331 / 0.14), oklch(63.7% 0.237 25.331 / 0.12))",
+    "--popcorn-banner-success": "light-dark(oklch(69.6% 0.17 162.48 / 0.16), oklch(69.6% 0.17 162.48 / 0.08))",
     "--popcorn-accent-hover": "oklch(48.8% 0.243 264.376)",
     "--popcorn-accent-pressed": "oklch(42.4% 0.199 265.638)",
-    "--popcorn-accent-hover-tint": "oklch(42.4% 0.199 265.638)",
+    "--popcorn-accent-hover-tint": "light-dark(oklch(14.1% 0.005 285.823), oklch(42.4% 0.199 265.638))",
     "--popcorn-progress-track": "light-dark(oklch(87.1% 0.006 286.286), oklch(14.1% 0.005 285.823))",
     "--popcorn-control-well": "light-dark(oklch(96.7% 0.001 286.375), oklch(14.1% 0.005 285.823))",
     "--popcorn-radius-media": "10px",
@@ -241,6 +244,9 @@ export const popcornTheme = {
     "--astryx-theme-neutral-color-on-tint-overlay-pressed": "neutral",
     "--astryx-theme-neutral-color-destructive-overlay-hover": "neutral",
     "--astryx-theme-neutral-color-destructive-overlay-pressed": "neutral",
+    "--popcorn-banner-warning": "popcorn",
+    "--popcorn-banner-error": "popcorn",
+    "--popcorn-banner-success": "popcorn",
     "--popcorn-accent-hover": "popcorn",
     "--popcorn-accent-pressed": "popcorn",
     "--popcorn-accent-hover-tint": "popcorn",
@@ -507,17 +513,20 @@ export const popcornTheme = {
       "status:success": {
         "--color-text-primary": "var(--color-text-green)",
         "--color-text-secondary": "var(--color-text-green)",
-        "--color-success": "var(--color-text-green)"
+        "--color-success": "var(--color-text-green)",
+        "--color-success-muted": "var(--popcorn-banner-success)"
       },
       "status:warning": {
         "--color-text-primary": "var(--color-text-yellow)",
         "--color-text-secondary": "var(--color-text-yellow)",
-        "--color-warning": "var(--color-text-yellow)"
+        "--color-warning": "var(--color-text-yellow)",
+        "--color-warning-muted": "var(--popcorn-banner-warning)"
       },
       "status:error": {
         "--color-text-primary": "var(--color-text-red)",
         "--color-text-secondary": "var(--color-text-red)",
-        "--color-error": "var(--color-text-red)"
+        "--color-error": "var(--color-text-red)",
+        "--color-error-muted": "var(--popcorn-banner-error)"
       }
     },
     "step-indicator": {
@@ -640,7 +649,10 @@ export const popcornTheme = {
       "--color-text-primary": "var(--color-on-dark)",
       "--color-icon-primary": "var(--color-on-dark)",
       "--color-accent": "var(--color-on-dark)",
-      "--color-on-accent": "var(--color-on-light)"
+      "--color-on-accent": "var(--color-on-light)",
+      "--popcorn-accent-hover": "oklch(92% 0.004 286.32)",
+      "--popcorn-accent-pressed": "oklch(87.1% 0.006 286.286)",
+      "--popcorn-accent-hover-tint": "oklch(14.1% 0.005 285.823)"
     }
   },
   __onLight: {
@@ -649,7 +661,10 @@ export const popcornTheme = {
       "--color-text-primary": "var(--color-on-light)",
       "--color-icon-primary": "var(--color-on-light)",
       "--color-accent": "var(--color-on-light)",
-      "--color-on-accent": "var(--color-on-dark)"
+      "--color-on-accent": "var(--color-on-dark)",
+      "--popcorn-accent-hover": "oklch(27.4% 0.006 286.033)",
+      "--popcorn-accent-pressed": "oklch(37% 0.013 285.805)",
+      "--popcorn-accent-hover-tint": "oklch(100% 0 0)"
     }
   },
   __adaptations: {

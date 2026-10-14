@@ -5,8 +5,10 @@
  * - White on Action Blue, and on every hovered or pressed Action Blue fill,
  *   at 4.5:1 or more: button labels, checkbox marks, the switch's on knob.
  * - Thin Action Blue indicators at 3:1 or more against what they sit on:
- *   focus rings, the caret, progress fills against their track, checked
- *   boxes and on switches against the page and a panel.
+ *   focus rings (on the page, a panel, a dialog, the Inbox form's fill and
+ *   every Banner tint), the caret, progress fills against their track,
+ *   checked boxes and on switches against the page and a panel.
+ * - Over media, the zinc accent Astryx substitutes and its hover and press.
  *
  * DESIGN.md (Colors, Action Blue) records the same numbers.
  */
@@ -186,6 +188,15 @@ describe.each(['light', 'dark'] as const)('Action Blue in %s', scheme => {
     expect(contrast(knob, accent)).toBeGreaterThanOrEqual(4.5);
   });
 
+  it('keeps the white mark and knob at 3:1 or more while a checked control is pressed', () => {
+    // Astryx lays its own press overlay over a checked box, radio or on switch (Zinc Black in
+    // light, white in dark, set on the row for a touch press, out of the theme's reach). A
+    // mark or knob is a graphic, so its bar is 3:1; the label of a pressed button is held to
+    // 4.5:1 above.
+    const pressed = over(token('--color-overlay-pressed', scheme), accent);
+    expect(contrast(white, pressed)).toBeGreaterThanOrEqual(3);
+  });
+
   it('keeps thin Action Blue indicators at 3:1 or more against what they sit on', () => {
     // Focus rings, the caret, checked boxes and on switches: page, panel, dialog.
     for (const [name, surface] of Object.entries({page, panel, popover})) {
@@ -206,6 +217,24 @@ describe.each(['light', 'dark'] as const)('Action Blue in %s', scheme => {
     const tint = over(token('--color-accent-muted', scheme), panel);
     expect(contrast(token('--color-text-primary', scheme), tint)).toBeGreaterThanOrEqual(4.5);
   });
+
+  it('keeps the focus ring of a button in a Banner at 3:1 or more on its tint', () => {
+    // The Banner paints its status tint behind its buttons (PasskeyNotice's "Open <host>",
+    // "Try again", "Open VPN settings"), and the ring's 3px offset lands on that tint. A
+    // Banner sits on the page or inside a panel or dialog.
+    const tints = {info: '--color-accent-muted', warning: '--color-warning-muted', error: '--color-error-muted', success: '--color-success-muted'};
+    for (const [status, tintName] of Object.entries(tints)) {
+      const banner = [tokens, rule('.astryx-banner'), rule(`.astryx-banner[data-status="${status}"]`)];
+      const ring = token('--focus-outline-color', scheme, banner);
+      expect(ring, status).toEqual(accent);
+      for (const [name, surface] of Object.entries({page, panel, popover})) {
+        const tint = over(token(tintName, scheme, banner), surface);
+        expect(contrast(ring, tint), `${status} on the ${name}`).toBeGreaterThanOrEqual(3);
+        // Its title and text, in the status colour, stay well above 4.5:1.
+        expect(contrast(token('--color-text-primary', scheme, banner), tint), `${status} text`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
 });
 
 describe('Action Blue over media', () => {
@@ -213,7 +242,23 @@ describe('Action Blue over media', () => {
     for (const [media, scheme] of [['dark', 'dark'], ['light', 'light']] as const) {
       const surface = [tokens, rule(`[data-astryx-media="${media}"]`)];
       const fill = token('--color-accent', scheme, surface);
-      expect(contrast(token('--color-on-accent', scheme, surface), fill), media).toBeGreaterThanOrEqual(4.5);
+      const onFill = token('--color-on-accent', scheme, surface);
+      expect(contrast(onFill, fill), media).toBeGreaterThanOrEqual(4.5);
+      // A primary button there, hovered and pressed: zinc steps, not Action Blue ones.
+      const primary = [...surface, rule('.astryx-button[data-variant="primary"]')];
+      for (const state of ['--color-overlay-hover', '--color-overlay-pressed']) {
+        const stepped = over(token(state, scheme, primary), fill);
+        expect(contrast(onFill, stepped), `${media} ${state}`).toBeGreaterThanOrEqual(4.5);
+      }
+      // A checked box, radio or on switch there, hovered.
+      for (const selector of [
+        '.astryx-switch[data-checked="checked"]',
+        '.astryx-checkbox-indicator[data-checked="checked"]',
+        '.astryx-radio-indicator[data-checked="checked"]',
+      ]) {
+        const hovered = mix(fill, token('--color-tint-hover', scheme, [...surface, rule(selector)]), 0.15);
+        expect(contrast(onFill, hovered), `${media} ${selector}`).toBeGreaterThanOrEqual(4.5);
+      }
     }
   });
 });

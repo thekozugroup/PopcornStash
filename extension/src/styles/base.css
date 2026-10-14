@@ -49,9 +49,9 @@
   --accent: var(--blue-600);
   --accent-hover: var(--blue-700);
   --on-accent: var(--white);
-  /* An on switch hovered: 15% toward blue-800, so the white knob keeps 5.7:1 and the track
-     keeps 3:1 against the dark page (blue-700 would be 2.9:1 there). */
-  --switch-on-hover: color-mix(in srgb, var(--accent), var(--blue-800) 15%);
+  /* An on switch hovered goes darker, so the white knob keeps 4.5:1 or more: 15% toward Zinc
+     Black here, a visible step (1.26:1) with the knob at 6.6:1. Dark mixes in blue-800. */
+  --switch-on-hover: color-mix(in srgb, var(--accent), var(--zinc-950) 15%);
   --text-accent: var(--blue-600);
   --error-text: oklch(50.5% 0.213 27.518);
   --error-fill: oklch(63.7% 0.237 25.331 / 10%);
@@ -94,12 +94,19 @@
     --notice-fill: var(--surface);
     --fill-hover: oklch(100% 0 0 / 6%);
     --fill-pressed: oklch(100% 0 0 / 12%);
-    /* Zinc Ink, not Zinc Dark Divider: the fill keeps 3.4:1 against it (2.8:1 before). */
-    --track: var(--zinc-900);
+    /* Halfway between Zinc Ink and Zinc Dark Divider: the fill keeps 3.1:1 against it (Zinc
+       Dark Divider was 2.8:1), and the empty part of the bar still shows on the Zinc Black
+       page at 1.22:1 (Zinc Ink alone was 1.12:1). */
+    --track: color-mix(in srgb, var(--zinc-900), var(--zinc-800));
     --switch-off-hover: var(--zinc-400);
+    /* 15% toward blue-800: the knob keeps 5.7:1 and the track 3.5:1 against the dark page
+       (Zinc Black would leave it at 3.0:1, blue-700 at 2.9:1). */
+    --switch-on-hover: color-mix(in srgb, var(--accent), var(--blue-800) 15%);
     --text-accent: var(--blue-400);
     --error-text: oklch(70.4% 0.191 22.216);
-    --error-fill: oklch(63.7% 0.237 25.331 / 14%);
+    /* 12%: an error notice can hold a button, and its Action Blue focus ring keeps 3:1 on
+       this fill over the page (3.5:1) or a panel (3.05:1); at 14% it was 2.98:1 on a panel. */
+    --error-fill: oklch(63.7% 0.237 25.331 / 12%);
     --error-line: oklch(63.7% 0.237 25.331 / 40%);
     --mark-tile: var(--zinc-50);
     --mark-glyph: var(--zinc-900);
