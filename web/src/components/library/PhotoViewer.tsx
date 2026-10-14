@@ -15,7 +15,7 @@ import {Download, Info} from 'lucide-react';
 import {useMemo, useRef, type TouchEvent} from 'react';
 import {items as itemsApi} from '../../api/client';
 import type {Item} from '../../api/types';
-import {formatDateTime} from '../../lib/format';
+import {formatTakenDateTime} from '../../lib/format';
 import {fileName, itemHref} from './libraryFormat';
 import './PhotoViewer.css';
 
@@ -60,12 +60,12 @@ const styles = stylex.create({
 const SWIPE_MIN_PX = 48;
 
 function photoAlt(photo: Item): string {
-  const when = photo.taken_at ? formatDateTime(photo.taken_at) : null;
+  const when = photo.taken_local ? formatTakenDateTime(photo.taken_local) : null;
   return when ? `Photo taken ${when}` : `Photo ${photo.title}`;
 }
 
 function Caption({photo, hasDetailsLink}: {photo: Item; hasDetailsLink: boolean}) {
-  const when = photo.taken_at ? formatDateTime(photo.taken_at) : null;
+  const when = photo.taken_local ? formatTakenDateTime(photo.taken_local) : null;
   return (
     <div {...stylex.props(styles.caption)}>
       <div {...stylex.props(styles.facts)}>

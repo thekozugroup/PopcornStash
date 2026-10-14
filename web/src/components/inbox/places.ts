@@ -157,10 +157,13 @@ function cleanName(value: string): string {
     .trim();
 }
 
-function monthFolders(takenAt: number | null | undefined): string[] | null {
-  if (takenAt === null || takenAt === undefined) return null;
-  const date = new Date(takenAt * 1000);
-  return [String(date.getFullYear()), String(date.getMonth() + 1).padStart(2, '0')];
+/**
+ * The `YYYY/MM/` folder a photo or camera video is filed in: the year and month on the
+ * camera's clock, as written ("2024-07-01T00:20:00" files under 2024/07 in every time zone).
+ */
+export function monthFolders(takenLocal: string | null | undefined): string[] | null {
+  const match = takenLocal ? /^(\d{4})-(\d{2})-/.exec(takenLocal) : null;
+  return match ? [match[1] as string, match[2] as string] : null;
 }
 
 export interface MovePreview {
@@ -215,7 +218,7 @@ export function previewMove(target: Target, draft: MoveDraft, item: ItemDetail, 
     }
     case 'home_video':
     case 'photo': {
-      const month = monthFolders(item.suggestion?.taken_at ?? item.taken_at);
+      const month = monthFolders(item.suggestion?.taken_local ?? item.taken_local);
       return {
         title,
         folder: month ? folderOfParts(month) : null,

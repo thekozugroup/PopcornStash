@@ -22,6 +22,8 @@ import {useLocation, useNavigate, useParams} from 'react-router';
 import {ApiError, items as itemsApi} from '../api/client';
 import type {ItemDetail} from '../api/types';
 import {useLibraries} from '../app/LibrariesProvider';
+import {useNavPlace} from '../app/navPlace';
+import {itemNavPath} from '../app/navigation';
 import {useAuth} from '../auth/AuthProvider';
 import {DeleteItemDialog} from '../components/library/DeleteItemDialog';
 import {EditDetailsDialog} from '../components/library/EditDetailsDialog';
@@ -29,19 +31,12 @@ import {ItemFacts} from '../components/library/ItemFacts';
 import {FileStage, PhotoStage} from '../components/library/ItemStages';
 import {LoadError} from '../components/library/LoadError';
 import {OrganizeDialog} from '../components/library/OrganizeDialog';
-import {
-  displayTitle,
-  fileType,
-  formatTime,
-  hasFileNameTitle,
-  itemHref,
-  itemParent,
-} from '../components/library/libraryFormat';
+import {displayTitle, fileType, hasFileNameTitle, itemHref, itemParent} from '../components/library/libraryFormat';
 import {useLibraryEvents} from '../components/library/useLibraryEvents';
 import {PageHeader, useDocumentTitle} from '../components/PageHeader';
 import {VideoPlayer} from '../components/player/VideoPlayer';
 import {errorMessage} from '../lib/errors';
-import {formatBytes, formatDate, formatDateTime, formatDuration} from '../lib/format';
+import {formatBytes, formatDate, formatDuration, formatTakenDateTime, formatTakenTime} from '../lib/format';
 
 const styles = stylex.create({
   back: {
@@ -140,13 +135,15 @@ function metaLine(item: ItemDetail): string {
       return [where, duration].filter(Boolean).join(' · ');
     }
     case 'home_video':
-      return [item.taken_at ? `Recorded ${formatDateTime(item.taken_at)}` : `Added ${formatDate(item.added_at)}`, duration]
+      return [item.taken_local ? `Recorded ${formatTakenDateTime(item.taken_local)}` : `Added ${formatDate(item.added_at)}`, duration]
         .filter(Boolean)
         .join(' · ');
     case 'photo':
-      if (!item.taken_at) return `Added ${formatDate(item.added_at)}`;
+      if (!item.taken_local) return `Added ${formatDate(item.added_at)}`;
       // A camera-named photo's heading is already its date.
-      return hasFileNameTitle(item) ? `Taken at ${formatTime(item.taken_at)}` : `Taken ${formatDateTime(item.taken_at)}`;
+      return hasFileNameTitle(item)
+        ? `Taken at ${formatTakenTime(item.taken_local)}`
+        : `Taken ${formatTakenDateTime(item.taken_local)}`;
     default:
       return [fileType(item.rel_path), duration || formatBytes(item.size)].filter(Boolean).join(' · ');
   }
@@ -193,7 +190,7 @@ export default function ItemPage() {
   const navigate = useNavigate();
   const showToast = useToast();
   const {user} = useAuth();
-  const {find} = useLibraries();
+  const {find, libraries} = useLibraries();
   const [nonce, setNonce] = useState(0);
   const [state, setState] = useState<ItemState>({id: '', item: null, error: null});
   const [dialog, setDialog] = useState<{kind: 'edit' | 'organize' | 'delete'; key: number} | null>(null);
@@ -214,6 +211,8 @@ export default function ItemPage() {
   const item = state.id === id ? state.item : null;
   const error = state.id === id ? state.error : null;
   useDocumentTitle(item ? displayTitle(item) : 'Loading');
+  // The sidebar and quick links mark the item's library (or Other files, or Inbox) current.
+  useNavPlace(item ? itemNavPath(item, libraries ?? []) : null);
 
   // Set when this page moved the item to Trash: the page is on its way out, so the
   // server's "removed" event (which can arrive before the answer, while the dialog is

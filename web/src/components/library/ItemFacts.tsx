@@ -12,7 +12,7 @@ import {Text} from '@astryxdesign/core/Text';
 import {ChevronDown, ChevronUp} from 'lucide-react';
 import {useId, useState} from 'react';
 import type {ItemDetail} from '../../api/types';
-import {formatBytes, formatDateTime, formatRelative} from '../../lib/format';
+import {formatBytes, formatDateTime, formatRelative, formatTakenDateTime, formatUtcOffset} from '../../lib/format';
 import {
   audioSummary,
   audioTrackDetail,
@@ -61,6 +61,16 @@ const styles = stylex.create({
     gap: 2,
   },
 });
+
+/**
+ * When it was taken, on the camera's clock as written, with the UTC offset the
+ * camera wrote beside it when it wrote one: "Jun 14, 2024, 8:18 PM (UTC+01:00)".
+ */
+function takenLine(item: ItemDetail): string {
+  const offset = formatUtcOffset(item.taken_offset);
+  const when = formatTakenDateTime(item.taken_local);
+  return offset ? `${when} (${offset})` : when;
+}
 
 function videoDetail(item: ItemDetail): string | null {
   const video = item.media?.video;
@@ -164,8 +174,8 @@ export function ItemFacts({item}: {item: ItemDetail}) {
               </MetadataListItem>
             ) : null}
             {bitrateName(media?.bitrate) ? <MetadataListItem label="Bit rate">{bitrateName(media?.bitrate)}</MetadataListItem> : null}
-            {item.taken_at ? (
-              <MetadataListItem label={item.kind === 'photo' ? 'Taken' : 'Recorded'}>{formatDateTime(item.taken_at)}</MetadataListItem>
+            {item.taken_local ? (
+              <MetadataListItem label={item.kind === 'photo' ? 'Taken' : 'Recorded'}>{takenLine(item)}</MetadataListItem>
             ) : null}
             {tagCamera && tagCamera !== item.camera ? <MetadataListItem label="Device">{tagCamera}</MetadataListItem> : null}
             <MetadataListItem label="Added">{`${formatDateTime(item.added_at)} (${formatRelative(item.added_at).toLocaleLowerCase()})`}</MetadataListItem>

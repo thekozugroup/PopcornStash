@@ -1,9 +1,9 @@
 /**
  * Settings, Devices (everyone): pairing requests waiting for approval, the
  * devices and tokens connected to this account, a way to create a token by
- * hand, how to install the Chrome extension, and how to add PopcornStash to
- * an Android phone's share sheet (installing the web app from Chrome; it
- * needs no token).
+ * hand, how to connect the Android app and the Chrome extension, and, for a
+ * phone without the app, how to add PopcornStash to its share sheet by
+ * installing the web app from Chrome (it needs no token).
  */
 import * as stylex from '@stylexjs/stylex';
 import {colorVars, typographyVars} from '@astryxdesign/core/theme/tokens.stylex';
@@ -17,7 +17,15 @@ import {pairing, tokens} from '../../api/client';
 import type {PendingPairing, Token} from '../../api/types';
 import {useAuth} from '../../auth/AuthProvider';
 import {accessSentence, clientKindName, pairingAccess, scopesInWords} from '../../components/settings/describe';
-import {EmptyRows, LoadError, LoadingRows, RowsPanel, PanelList} from '../../components/settings/SectionStates';
+import {
+  EmptyRows,
+  KeepTogether,
+  LoadError,
+  LoadingRows,
+  PanelList,
+  RowsPanel,
+} from '../../components/settings/SectionStates';
+import {BreakableAddress} from '../../components/BreakableName';
 import {SettingsGroup} from '../../components/settings/SettingsGroup';
 import {Steps} from '../../components/settings/Steps';
 import {useConfirm} from '../../components/settings/useConfirm';
@@ -29,6 +37,7 @@ import {CreateTokenDialog} from './devices/CreateTokenDialog';
 import {SettingsSectionHeader} from './SettingsSectionHeader';
 
 const EXTENSION_DOCS = 'https://github.com/thekozugroup/PopcornStash/blob/main/docs/extension.md';
+const ANDROID_DOCS = 'https://github.com/thekozugroup/PopcornStash/blob/main/docs/android.md';
 const PENDING_POLL_MS = 5000;
 
 const styles = stylex.create({
@@ -83,7 +92,7 @@ const styles = stylex.create({
     fontFamily: typographyVars['--font-family-code'],
     fontSize: '0.8125rem',
     color: colorVars['--color-text-primary'],
-    overflowWrap: 'anywhere',
+    overflowWrap: 'break-word',
   },
 });
 
@@ -149,7 +158,7 @@ function TokenRow({token, onRevoke}: {token: Token; onRevoke: (token: Token) => 
         <>
           {clientKindName(token.client_kind)}. {scopesInWords(token.scopes)}.
           <br />
-          {lastUsed}. Added {formatDate(token.created_at)}. Starts with {token.prefix}.
+          {lastUsed}. Added <KeepTogether>{formatDate(token.created_at)}</KeepTogether>. Starts with {token.prefix}.
         </>
       }
       endContent={<Button label="Revoke" variant="secondary" onClick={() => onRevoke(token)} />}
@@ -168,6 +177,7 @@ export default function DevicesSettingsPage() {
   usePolling(pending.reload, PENDING_POLL_MS);
 
   const serverAddress = state?.public_url ?? window.location.origin;
+  const address = <BreakableAddress address={serverAddress} isUnit />;
 
   const revoke = (token: Token) =>
     ask({
@@ -188,7 +198,7 @@ export default function DevicesSettingsPage() {
     <>
       <SettingsSectionHeader
         title="Devices"
-        subtitle="The Chrome extension, phones and other apps connected to your account."
+        subtitle="The Android app, the Chrome extension and other apps connected to your account."
       />
       <div {...stylex.props(styles.groups)}>
         {pendingRequests.length > 0 ? (
@@ -223,7 +233,7 @@ export default function DevicesSettingsPage() {
             <LoadError title="Devices did not load" error={tokenList.error} onRetry={tokenList.reload} />
           ) : (tokenList.data ?? []).length === 0 ? (
             <EmptyRows>
-              No devices yet. Pair the Chrome extension, or create a token for a script.
+              No devices yet. Pair the Android app or the Chrome extension, or create a token for a script.
             </EmptyRows>
           ) : (
             <PanelList density="spacious">
@@ -238,6 +248,23 @@ export default function DevicesSettingsPage() {
         </SettingsGroup>
 
         <SettingsGroup
+          title="Android app"
+          description="Watch your libraries, follow downloads and share links, photos and videos from any app on the phone.">
+          <Steps label="How to connect the Android app">
+            <>
+              Install the app.{' '}
+              <Link href={ANDROID_DOCS} isExternalLink type="inherit">
+                How to install it
+              </Link>
+            </>
+            <>
+              Open it and enter this address: <span {...stylex.props(styles.url)}>{address}</span>
+            </>
+            <>Sign in with a passkey, or choose Pair with a code and approve it on the page it opens, or here.</>
+          </Steps>
+        </SettingsGroup>
+
+        <SettingsGroup
           title="Chrome extension"
           description="Send links, magnets and files from Chrome straight to Downloads.">
           <Steps label="How to connect the Chrome extension">
@@ -248,18 +275,18 @@ export default function DevicesSettingsPage() {
               </Link>
             </>
             <>
-              Open it and enter this address: <span {...stylex.props(styles.url)}>{serverAddress}</span>
+              Open it and enter this address: <span {...stylex.props(styles.url)}>{address}</span>
             </>
             <>It shows a code. Approve it on the page it opens, or here, once the codes match.</>
           </Steps>
         </SettingsGroup>
 
         <SettingsGroup
-          title="Android phones"
-          description="Share links, photos and videos to PopcornStash from any app on the phone.">
-          <Steps label="How to share from an Android phone">
+          title="Sharing from a phone without the app"
+          description="Install PopcornStash from Chrome instead to share links, photos and videos to it.">
+          <Steps label="How to share from a phone without the app">
             <>
-              Open <span {...stylex.props(styles.url)}>{serverAddress}</span> in Chrome on the phone and sign in.
+              Open <span {...stylex.props(styles.url)}>{address}</span> in Chrome on the phone and sign in.
             </>
             <>In Chrome’s menu, choose Install app or Add to Home screen.</>
             <>In any app, choose Share, then PopcornStash.</>

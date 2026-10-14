@@ -117,13 +117,81 @@ export function formatRelative(unixSeconds: number | null | undefined, now: numb
   return formatDate(unixSeconds);
 }
 
-/** "2024-06" -> "June 2024". */
+// ---------------------------------------------------------------------------
+// The camera's clock (docs/architecture.md section 4, Capture time)
+//
+// A photo or home video carries `taken_local`, "YYYY-MM-DDTHH:MM:SS": the time
+// on the camera's clock where it was taken. It is shown exactly as written in
+// every time zone, so its fields are put into a Date as if they were UTC and
+// formatted in UTC: nothing is converted to the viewer's zone. `taken_at` (the
+// moment) is never formatted; it is only for "how long ago" and ordering.
+// ---------------------------------------------------------------------------
+
+const CLOCK = /^(\d{4})-(\d{2})(?:-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?)?$/;
+
+/**
+ * A camera clock ("2024-06-14T20:18:33") or month ("2024-06") as a Date that holds
+ * those fields in UTC, or null when the text is not one. Format it only with
+ * `timeZone: 'UTC'`.
+ */
+export function clockDate(text: string | null | undefined): Date | null {
+  const match = text ? CLOCK.exec(text) : null;
+  if (!match) return null;
+  const [year, month, day = 1, hour = 0, minute = 0, second = 0] = match.slice(1).map(part => (part ? Number(part) : undefined));
+  if (!year || !month || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) return null;
+  const date = new Date(0);
+  // setUTCFullYear keeps years below 100 as written (Date.UTC would read 24 as 1924).
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second, 0);
+  // A day the month does not have (June 31) rolls over: refuse it rather than show another date.
+  return date.getUTCDate() === day ? date : null;
+}
+
+function clockFormat(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  return new Intl.DateTimeFormat(undefined, {...options, timeZone: 'UTC'});
+}
+
+/** The camera's date: "Jun 14, 2024" (locale order), whatever the viewer's time zone. */
+export function formatTakenDate(takenLocal: string | null | undefined): string {
+  const date = clockDate(takenLocal);
+  return date ? clockFormat({dateStyle: 'medium'}).format(date) : '';
+}
+
+/** The camera's date and time: "Jun 14, 2024, 8:18 PM" (locale order and clock style). */
+export function formatTakenDateTime(takenLocal: string | null | undefined): string {
+  const date = clockDate(takenLocal);
+  return date ? clockFormat({dateStyle: 'medium', timeStyle: 'short'}).format(date) : '';
+}
+
+/** The camera's time of day: "8:18 PM" in the viewer's clock style. */
+export function formatTakenTime(takenLocal: string | null | undefined): string {
+  const date = clockDate(takenLocal);
+  return date ? clockFormat({timeStyle: 'short'}).format(date) : '';
+}
+
+/** The offset a camera wrote beside its clock, in minutes east of UTC: 60 -> "UTC+01:00", -420 -> "UTC-07:00". */
+export function formatUtcOffset(minutes: number | null | undefined): string {
+  if (minutes === null || minutes === undefined || !Number.isFinite(minutes)) return '';
+  const sign = minutes < 0 ? '-' : '+';
+  const total = Math.abs(Math.round(minutes));
+  const hours = String(Math.floor(total / 60)).padStart(2, '0');
+  return `UTC${sign}${hours}:${String(total % 60).padStart(2, '0')}`;
+}
+
+/** "2024-06" -> "June 2024": the month as written, never moved by the viewer's time zone. */
 export function formatMonth(month: string): string {
-  const [year, monthIndex] = month.split('-').map(Number);
-  if (!year || !monthIndex) return month;
-  return new Intl.DateTimeFormat(undefined, {month: 'long', year: 'numeric'}).format(
-    new Date(Date.UTC(year, monthIndex - 1, 1)),
-  );
+  const date = /^\d{4}-\d{2}$/.test(month) ? clockDate(month) : null;
+  return date ? clockFormat({month: 'long', year: 'numeric'}).format(date) : month;
+}
+
+/**
+ * What `sort=taken` orders by, as the server does: the camera's clock, else when the
+ * item was added read in UTC, both as "YYYY-MM-DDTHH:MM:SS" text (section 4, Rules for clients).
+ */
+export function takenSortKey(item: {taken_local: string | null; added_at: number}): string {
+  if (item.taken_local) return item.taken_local;
+  const added = new Date(item.added_at * 1000);
+  return Number.isNaN(added.getTime()) ? '' : added.toISOString().slice(0, 19);
 }
 
 /** 0.423 -> "42%". */

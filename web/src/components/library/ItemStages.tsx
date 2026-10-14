@@ -13,7 +13,7 @@ import {Download, FileArchive, FileText, Maximize2, Music} from 'lucide-react';
 import {useState} from 'react';
 import {items as itemsApi} from '../../api/client';
 import type {ItemDetail} from '../../api/types';
-import {formatDateTime} from '../../lib/format';
+import {formatTakenDateTime} from '../../lib/format';
 import {fileType} from './libraryFormat';
 import {PhotoViewer} from './PhotoViewer';
 
@@ -113,7 +113,7 @@ const sizeStyles = stylex.create({
 export function PhotoStage({item}: {item: ItemDetail}) {
   const [index, setIndex] = useState<number | null>(null);
   const ratio = item.width && item.height ? `${item.width} / ${item.height}` : null;
-  const alt = item.taken_at ? `Photo taken ${formatDateTime(item.taken_at)}` : item.title;
+  const alt = item.taken_local ? `Photo taken ${formatTakenDateTime(item.taken_local)}` : item.title;
   return (
     <div {...stylex.props(styles.stage)}>
       <div {...stylex.props(styles.frame)}>

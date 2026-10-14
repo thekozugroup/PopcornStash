@@ -27,6 +27,11 @@ Libraries the owner defines, each with its own icon and its own audience, and th
 - A library that holds files shows what it holds as a plain fact in its settings ("Holds  Videos, arranged as series") instead of greyed choices.
 - Messages say each thing once: "Checking VPN" alone while it checks, "VPN status unavailable" with what still works, no VPN line while the server does not answer at all, and no "Add the episode number" under a form field that already says so.
 - The web app has unit tests (vitest) for its library and VPN rules, run by `npm --prefix web run check`.
+- Photo months and capture times read the same wherever you are: west of UTC a month no longer showed as the one before it, and a camera's time no longer moved to your own time zone. The tests run the dates in eight time zones.
+- On a photo's, video's or file's page the sidebar and quick links show which library it is in (or Other files, or Inbox).
+- On phones, short folder names ("Grandma's Slides/") and dates ("Oct 14, 2026") keep to one line, and a shared link wraps after its slashes and hyphens instead of anywhere.
+- Switches are easy to see when they are off, in light and dark (a ring and knob with at least 3:1 contrast). In the library editor the checkboxes line up with the choices above them.
+- Settings, Devices starts with the Android app: what it does, where to get it, and how to sign in or pair it. Installing PopcornStash from Chrome stays as the way to share from a phone without the app.
 
 ### Android app
 

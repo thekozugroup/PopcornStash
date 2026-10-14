@@ -200,15 +200,28 @@ test('a link shared from another app still opens the link flow', async ({page, b
 
 test('Settings and the share page explain how to share from an Android phone', async ({page}) => {
   await page.goto('/settings/devices');
-  const android = page.getByRole('region', {name: 'Android phones'});
-  await expect(android).toContainText('links, photos and videos');
-  await expect(android).toContainText('Install app');
-  await expect(android).toContainText('Add to Home screen');
-  await expect(android).toContainText('Share, then PopcornStash');
+  // The Android app leads: what it does, where to get it, and how it signs in or pairs here.
+  const app = page.getByRole('region', {name: 'Android app'});
+  await expect(app).toContainText('links, photos and videos');
+  await expect(app.getByRole('link', {name: /How to install it/})).toHaveAttribute('href', /docs\/android\.md$/);
+  await expect(app).toContainText('Pair with a code');
+  // Without the app, installing the web app from Chrome still adds PopcornStash to the share sheet.
+  const web = page.getByRole('region', {name: 'Sharing from a phone without the app'});
+  await expect(web).toContainText('Install app');
+  await expect(web).toContainText('Add to Home screen');
+  await expect(web).toContainText('Share, then PopcornStash');
+  // In that order: the app, the Chrome extension, then the way without the app.
+  const top = async (name: string) => (await page.getByRole('region', {name}).boundingBox())?.y ?? -1;
+  const appTop = await top('Android app');
+  const extensionTop = await top('Chrome extension');
+  expect(appTop).toBeGreaterThan(0);
+  expect(appTop).toBeLessThan(extensionTop);
+  expect(extensionTop).toBeLessThan(await top('Sharing from a phone without the app'));
 
   // Opened with nothing shared, the share page says the same.
   await page.goto('/share');
   const note = page.getByRole('region', {name: 'On Android'});
+  await expect(note).toContainText('Android app');
   await expect(note).toContainText('Install app');
   await expect(note).toContainText('links, photos and videos');
 });

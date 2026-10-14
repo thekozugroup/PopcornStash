@@ -4,6 +4,7 @@
  */
 import {items as itemsApi} from '../../api/client';
 import type {
+  HomeShow,
   Item,
   Library,
   MediaAudioStream,
@@ -11,13 +12,30 @@ import type {
   MediaSummary,
   MediaVideoStream,
 } from '../../api/types';
-import {formatBytes, formatCount, formatDate, formatDuration, formatEpisodeCode} from '../../lib/format';
+import {
+  formatBytes,
+  formatCount,
+  formatDate,
+  formatDuration,
+  formatEpisodeCode,
+  formatTakenDate,
+} from '../../lib/format';
 import {libraryHref, libraryShowHref} from '../../lib/libraries';
 
 /** "2 seasons · 14 episodes", or just the episodes for a single season. */
 export function showMeta(show: {season_count: number; item_count: number}): string {
   const episodes = formatCount(show.item_count, 'episode');
   return show.season_count > 1 ? `${formatCount(show.season_count, 'season')} · ${episodes}` : episodes;
+}
+
+/**
+ * What a show's tile on Home says under its name: the one new episode's code, how many
+ * are new, or, with nothing new in the last 30 days, how many episodes it has.
+ */
+export function showTileMeta(show: Pick<HomeShow, 'item_count' | 'new_count' | 'latest'>): string {
+  if (show.new_count === 1) return `New: ${formatEpisodeCode(show.latest.season, show.latest.episode)}`;
+  if (show.new_count > 1) return formatCount(show.new_count, 'new episode');
+  return formatCount(show.item_count, 'episode');
 }
 
 export function itemHref(item: Pick<Item, 'id'>): string {
@@ -46,8 +64,8 @@ export function itemParent(
  * True when a photo's title is still its camera file name ("PXL_20240613_…"),
  * which means nothing to the family; the date it was taken says more.
  */
-export function hasFileNameTitle(item: Pick<Item, 'title' | 'rel_path' | 'category' | 'taken_at'>): boolean {
-  if (item.category !== 'photo' || !item.taken_at) return false;
+export function hasFileNameTitle(item: Pick<Item, 'title' | 'rel_path' | 'category' | 'taken_local'>): boolean {
+  if (item.category !== 'photo' || !item.taken_local) return false;
   const name = fileName(item.rel_path);
   const dot = name.lastIndexOf('.');
   return item.title === (dot > 0 ? name.slice(0, dot) : name);
@@ -55,10 +73,10 @@ export function hasFileNameTitle(item: Pick<Item, 'title' | 'rel_path' | 'catego
 
 /** The name people know an item by: episode titles for episodes, the date for camera-named photos. */
 export function displayTitle(
-  item: Pick<Item, 'title' | 'episode_title' | 'category' | 'rel_path' | 'taken_at'>,
+  item: Pick<Item, 'title' | 'episode_title' | 'category' | 'rel_path' | 'taken_local'>,
 ): string {
   if (item.category === 'episode' && item.episode_title) return item.episode_title;
-  if (hasFileNameTitle(item)) return `Photo from ${formatDate(item.taken_at)}`;
+  if (hasFileNameTitle(item)) return `Photo from ${formatTakenDate(item.taken_local)}`;
   return item.title;
 }
 
@@ -73,11 +91,6 @@ export function episodeName(item: Pick<Item, 'title' | 'episode_title' | 'season
   return item.season === 0 ? `Special ${item.episode}` : `Episode ${item.episode}`;
 }
 
-/** "3:28 PM" in the viewer's own clock style. */
-export function formatTime(unixSeconds: number): string {
-  return new Intl.DateTimeFormat(undefined, {timeStyle: 'short'}).format(new Date(unixSeconds * 1000));
-}
-
 /** File extension in capitals ("PDF", "MP3"), or null. */
 export function fileType(relPath: string): string | null {
   const name = relPath.split('/').pop() ?? '';
@@ -90,6 +103,14 @@ export function fileName(relPath: string): string {
   return relPath.split('/').pop() ?? relPath;
 }
 
+/**
+ * The day a photo or home video was taken on the camera's clock, else the day it was
+ * added (a moment, shown in the viewer's time zone).
+ */
+export function takenOrAddedDate(item: Pick<Item, 'taken_local' | 'added_at'>): string {
+  return item.taken_local ? formatTakenDate(item.taken_local) : formatDate(item.added_at);
+}
+
 /** One metadata line for a tile: year and runtime, date, or type and size. */
 export function itemMeta(item: Item): string {
   switch (item.category) {
@@ -98,10 +119,10 @@ export function itemMeta(item: Item): string {
     case 'episode':
       return [formatEpisodeCode(item.season, item.episode), formatDuration(item.duration_s)].filter(Boolean).join(' · ');
     case 'home_video':
-      return [formatDate(item.taken_at ?? item.added_at), formatDuration(item.duration_s)].filter(Boolean).join(' · ');
+      return [takenOrAddedDate(item), formatDuration(item.duration_s)].filter(Boolean).join(' · ');
     case 'photo':
       // A camera-named photo already shows its date as the title.
-      return hasFileNameTitle(item) ? (item.camera ?? '') : formatDate(item.taken_at ?? item.added_at);
+      return hasFileNameTitle(item) ? (item.camera ?? '') : takenOrAddedDate(item);
     case 'other':
     default: {
       const type = fileType(item.rel_path);

@@ -2,9 +2,10 @@
  * Home (`GET /api/home`): anything that needs a look (Inbox review,
  * downloads in progress), Continue watching, then one shelf per library the
  * person can see, in the owner's order, each led by the library's own icon
- * and holding its newest items. A series library shows one tile per show,
- * pictured by the show's poster. A library with nothing yet keeps its
- * heading, so the order stays readable. Short shelves sit side by side.
+ * and holding its newest items. A series library shows one tile per show
+ * (up to 12, the most recently added first), pictured by the show's poster.
+ * A library with nothing yet keeps its heading, so the order stays readable.
+ * Short shelves sit side by side.
  *
  * An empty stash gets the first-run panel; a person who sees no library at
  * all is told so (and the owner is offered "Make a library").
@@ -28,6 +29,7 @@ import {
   itemHref,
   itemMeta,
   posterSources,
+  showTileMeta,
   thumbSources,
   timeLeft,
 } from '../components/library/libraryFormat';
@@ -81,12 +83,13 @@ interface ShelfModel {
 }
 
 /**
- * One library's shelf. Episodes collapse into one tile per show, pictured by
- * the show's poster in this library, so a show looks the same on Home, on its
+ * One library's shelf. A series library has one tile per show (the server's `shows`,
+ * the most recently added first), pictured by the show's poster in this library, so the
+ * shelf agrees with the heading's counts and a show looks the same on Home, on its
  * library page and on its own page.
  */
 function shelfFor(entry: HomeLibrary, versionOf: (id: string) => number | undefined): ShelfModel {
-  const {library, recent, show_posters: posters} = entry;
+  const {library, recent, shows} = entry;
   const icon = libraryIcon(library.icon);
   const shape = layoutShape(library.layout);
   const base = {key: library.id, title: library.name, icon, note: libraryCountLine(library), href: libraryHref(library.id), shape};
@@ -105,28 +108,20 @@ function shelfFor(entry: HomeLibrary, versionOf: (id: string) => number | undefi
     };
   }
 
-  const shows = new Map<string, Item[]>();
-  for (const item of recent) {
-    const name = item.show_name ?? item.title;
-    shows.set(name, [...(shows.get(name) ?? []), item]);
-  }
-  const tiles: TileModel[] = [];
-  for (const [name, episodes] of shows) {
-    const sorted = [...episodes].sort((a, b) => (a.season ?? 0) - (b.season ?? 0) || (a.episode ?? 0) - (b.episode ?? 0));
-    const newest = episodes.reduce((latest, episode) => (episode.added_at > latest.added_at ? episode : latest));
-    const only = sorted.length === 1 ? sorted[0] : undefined;
-    // Episodes without a show name have no poster; their newest frame stands in.
-    const posterId = posters[name];
-    tiles.push({
-      key: `show:${name}`,
-      href: libraryShowHref(library.id, name),
-      title: name,
-      meta: only ? `New: ${formatEpisodeCode(only.season, only.episode)}` : formatCount(episodes.length, 'new episode'),
-      image: posterId ? posterSources(posterId, versionOf(posterId)) : thumbSources(newest, versionOf(newest.id)),
+  return {
+    ...base,
+    tiles: shows.map(show => ({
+      key: `show:${show.show_name}`,
+      href: libraryShowHref(library.id, show.show_name),
+      title: show.show_name,
+      meta: showTileMeta(show),
+      // A show without a poster yet: its newest episode's frame stands in.
+      image: show.poster_item_id
+        ? posterSources(show.poster_item_id, versionOf(show.poster_item_id))
+        : thumbSources(show.latest, versionOf(show.latest.id)),
       icon,
-    });
-  }
-  return {...base, tiles};
+    })),
+  };
 }
 
 function continueTile(item: Item, version?: number): TileModel {

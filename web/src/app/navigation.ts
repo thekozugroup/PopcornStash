@@ -10,7 +10,7 @@
  * the curated list).
  */
 import {ArrowDownToLine, FileText, House, Inbox, Settings, type LucideIcon} from 'lucide-react';
-import type {Library} from '../api/types';
+import type {Item, Library} from '../api/types';
 import {libraryHref} from '../lib/libraries';
 import {libraryIcon} from '../lib/libraryIcons';
 
@@ -61,7 +61,26 @@ export function quickDestinations(libraries: Library[]): NavDestination[] {
   return [HOME, ...libraries.slice(0, QUICK_LIBRARIES).map(libraryDestination), DOWNLOADS];
 }
 
+/**
+ * Whether `destination` is current for `pathname`: the address itself or anything under
+ * it (a show's page is inside its library). An item's page passes its place instead of
+ * its own address (`navPath`, app/navPlace.ts), so its library stays marked.
+ */
 export function isActive(destination: NavDestination, pathname: string): boolean {
   if (destination.exact) return pathname === destination.path;
   return pathname === destination.path || pathname.startsWith(`${destination.path}/`);
+}
+
+/**
+ * The destination an item belongs to, marked current on the item's page: its library when
+ * the person sees it, Other files, or Inbox for a file waiting there. A file in a folder
+ * that is not a library (or in the trash) belongs to none of them.
+ */
+export function itemNavPath(item: Pick<Item, 'library_id' | 'place'>, libraries: Pick<Library, 'id'>[]): string | null {
+  if (item.place === 'library' && item.library_id && libraries.some(library => library.id === item.library_id)) {
+    return libraryHref(item.library_id);
+  }
+  if (item.place === 'other_files') return OTHER_FILES.path;
+  if (item.place === 'incoming') return INBOX.path;
+  return null;
 }

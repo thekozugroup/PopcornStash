@@ -13,7 +13,7 @@ import type {LucideIcon} from 'lucide-react';
 import {useCallback, useEffect, useMemo, useRef, useState, type ReactNode} from 'react';
 import {items as itemsApi, libraries as librariesApi} from '../../api/client';
 import type {PhotoMonth} from '../../api/types';
-import {formatCount, formatDate, formatMonth} from '../../lib/format';
+import {formatCount, formatMonth, formatTakenDate} from '../../lib/format';
 import {MediaGrid, MediaGridSkeleton} from '../MediaGrid';
 import {MediaTile} from '../MediaTile';
 import {LoadError} from './LoadError';
@@ -274,7 +274,7 @@ export function TimelineView({libraryId, libraryName, icon, empty}: TimelineView
                     <MediaTile
                       key={photo.id}
                       href={itemHref(photo)}
-                      title={photo.taken_at ? `Photo from ${formatDate(photo.taken_at)}` : photo.title}
+                      title={photo.taken_local ? `Photo from ${formatTakenDate(photo.taken_local)}` : photo.title}
                       meta={photo.camera ?? undefined}
                       imageSrc={thumb?.src}
                       imageSrcSet={thumb?.srcSet}

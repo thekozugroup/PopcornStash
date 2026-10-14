@@ -26,6 +26,7 @@ import {libraries as librariesApi, library, system, trash, users as usersApi} fr
 import {useStashEvent} from '../../api/events';
 import type {Library, UnassignedFolder, User} from '../../api/types';
 import {useLibraries} from '../../app/LibrariesProvider';
+import {BreakableAddress} from '../../components/BreakableName';
 import {OwnerOnly} from '../../components/settings/OwnerOnly';
 import {EmptyRows, LoadError, LoadingRows, PanelList, RowsPanel} from '../../components/settings/SectionStates';
 import {SettingsGroup} from '../../components/settings/SettingsGroup';
@@ -54,7 +55,7 @@ const styles = stylex.create({
     fontFamily: typographyVars['--font-family-code'],
     fontSize: '0.875rem',
     color: colorVars['--color-text-primary'],
-    overflowWrap: 'anywhere',
+    overflowWrap: 'break-word',
   },
   example: {
     fontFamily: typographyVars['--font-family-code'],
@@ -126,10 +127,23 @@ const styles = stylex.create({
     rowGap: 4,
     minWidth: 0,
   },
+  // A folder's name is one line: a short one ("Grandma's Slides/") never breaks, and a
+  // long one ends in an ellipsis with the whole name in its tooltip.
   folderName: {
+    display: 'block',
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
     fontFamily: typographyVars['--font-family-code'],
     fontSize: '0.875rem',
-    overflowWrap: 'anywhere',
+  },
+  folderText: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 12,
+    minWidth: 0,
   },
 });
 
@@ -304,6 +318,8 @@ function LibrariesGroup({people}: {people: User[]}) {
 
 function UnassignedFoldersGroup() {
   const {libraries} = useLibraries();
+  // On a phone the button goes under the name, so the name keeps the row's whole width.
+  const isNarrow = useMediaQuery('(max-width: 639px)');
   const folders = useResource(signal => librariesApi.folders(signal), {key: `folders:${libraries?.length ?? 0}`});
   const rows = folders.data?.folders ?? [];
   if (folders.isLoading || rows.length === 0) return null;
@@ -312,32 +328,49 @@ function UnassignedFoldersGroup() {
       title="Folders not in a library"
       description="Only owners see what is in them. Make one a library to share it.">
       <PanelList density="spacious">
-        {rows.map(folder => (
-          <ListItem
-            key={folder.name}
-            label={<span {...stylex.props(styles.folderName)}>{`${folder.name}/`}</span>}
-            startContent={
-              <span aria-hidden="true" {...stylex.props(styles.iconSquare)}>
-                <Folder size={20} strokeWidth={1.5} />
-              </span>
-            }
-            description={
-              <span {...stylex.props(styles.strip)}>
-                {folderCounts(folder).map(count => (
-                  <span key={count}>{count}</span>
-                ))}
-              </span>
-            }
-            endContent={
-              <Button
-                label="Make a library"
-                variant="secondary"
-                href={`/settings/libraries/new?folder=${encodeURIComponent(folder.name)}`}
-                aria-label={`Make a library from ${folder.name}`}
-              />
-            }
-          />
-        ))}
+        {rows.map(folder => {
+          const make = (
+            <Button
+              label="Make a library"
+              variant="secondary"
+              href={`/settings/libraries/new?folder=${encodeURIComponent(folder.name)}`}
+              aria-label={`Make a library from ${folder.name}`}
+            />
+          );
+          const counts = (
+            <span {...stylex.props(styles.strip)}>
+              {folderCounts(folder).map(count => (
+                <span key={count}>{count}</span>
+              ))}
+            </span>
+          );
+          return (
+            <ListItem
+              key={folder.name}
+              label={
+                <span {...stylex.props(styles.folderName)} title={`${folder.name}/`}>
+                  {`${folder.name}/`}
+                </span>
+              }
+              startContent={
+                <span aria-hidden="true" {...stylex.props(styles.iconSquare)}>
+                  <Folder size={20} strokeWidth={1.5} />
+                </span>
+              }
+              description={
+                isNarrow ? (
+                  <span {...stylex.props(styles.folderText)}>
+                    {counts}
+                    {make}
+                  </span>
+                ) : (
+                  counts
+                )
+              }
+              endContent={isNarrow ? undefined : make}
+            />
+          );
+        })}
       </PanelList>
     </SettingsGroup>
   );
@@ -412,7 +445,9 @@ function FoldersGroup() {
               Looking it up
             </Text>
           ) : root ? (
-            <span {...stylex.props(styles.path)}>{root}</span>
+            <span {...stylex.props(styles.path)}>
+              <BreakableAddress address={root} />
+            </span>
           ) : (
             <Text type="supporting" color="secondary">
               The folder set by <Code>STASH_ROOT</Code> in the container (<Code>/stash</Code> unless you changed it).

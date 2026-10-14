@@ -43,7 +43,7 @@ import {useNavigate, useSearchParams} from 'react-router';
 import {ApiError, downloads as downloadsApi} from '../api/client';
 import type {Download} from '../api/types';
 import {useAuth} from '../auth/AuthProvider';
-import {BreakableName} from '../components/BreakableName';
+import {BreakableAddress, BreakableName} from '../components/BreakableName';
 import {findLink, isTorrentLink, type DetectedLink} from '../components/downloads/linkDetect';
 import {MediaThumb} from '../components/downloads/MediaThumb';
 import {VpnLine} from '../components/downloads/VpnLine';
@@ -112,7 +112,9 @@ const styles = stylex.create({
     color: colorVars['--color-text-secondary'],
     fontSize: 13,
     lineHeight: 1.5,
-    wordBreak: 'break-all',
+    // Breaks come from the address's own separators (BreakableAddress); only a long
+    // run without any (a magnet's hash) breaks where it must.
+    overflowWrap: 'break-word',
   },
   shared: {
     margin: 0,
@@ -288,8 +290,9 @@ function AndroidNote() {
         On Android
       </Heading>
       <Text as="p" type="supporting" color="secondary" xstyle={styles.noteText}>
-        Install PopcornStash from Chrome’s menu (Install app or Add to Home screen). Then, in any app, choose
-        Share, then PopcornStash, to send links, photos and videos.
+        The Android app adds PopcornStash to the share sheet. Without it, install PopcornStash from Chrome’s menu
+        (Install app or Add to Home screen). Then, in any app, choose Share, then PopcornStash, to send links, photos
+        and videos.
       </Text>
     </section>
   );
@@ -639,7 +642,7 @@ function SharedLink() {
               {words}
             </Text>
             <p {...stylex.props(styles.url)} title={link.url}>
-              {link.url}
+              <BreakableAddress address={link.url} />
             </p>
           </div>
         </div>
