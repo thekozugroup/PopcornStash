@@ -1,5 +1,13 @@
 # PopcornStash, iteration 1
 
+## Current repair: pending magnet pause and resume
+
+- Confirmed that pending magnets live outside librqbit's managed torrent list, so the old pause/resume lookup returns NotFound until metadata is fetched.
+- Persist the pending pause flag with a backward-compatible default; cancel individual lookups on pause/remove/session stop and retry on resume without bypassing VPN readiness.
+- Serialize the metadata handoff with controls and reject stale attempt results. Report paused file checks as paused.
+- Synthetic regression coverage uses isolated temporary directories with DHT, trackers and local discovery disabled; no real download details, credentials or personal media are used.
+- Validation: Linux workspace formatting, strict workspace clippy and all 534 workspace tests pass (stash-core 209, stash-server 239, stash-torrentd 86, including four new regressions). Tests ran offline without production app-data or media mounts. Web check/build passes (55 tests); extension check/zip passes (77 tests). Android lint, assembleDebug and checkLucideGlyphs pass; its unit/screenshot run has 609 passes, four skips and one unchanged `GlassScreenshotTest.photosAndroid11` snapshot mismatch; Android files are identical to the base. The native amd64 Docker image smoke passes all 63 checks. Its IPv4 echo fixture now binds IPv4 explicitly so BusyBox does not report an IPv6-mapped address for the IPv4 comparison. Real downloads and owner playback were not tested. Owner-only library-root access for the separate engine user remains a deployment issue; this patch does not relax permissions.
+
 ## Objective
 Ship the Docker server for PopcornStash: a passkey-gated, private family library for videos, photos and downloaded media, with built-in transcoding, torrents routed only through a VPN (NordVPN quick setup), a web download manager, resumable uploads, an Inbox folder, automatic sorting, a Chrome extension and a PWA share target for links, photos, videos and other files. The Android app is a later phase; the API and device pairing are ready for it.
 

@@ -245,10 +245,12 @@ enum Stop {
 struct PendingAdd {
     magnet: String,
     name: Option<String>,
+    #[serde(default)]
+    paused: bool,
     #[serde(skip)]
     error: Option<String>,
     #[serde(skip)]
-    resolving: bool,
+    resolving: Option<Arc<CancellationToken>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,6 +288,8 @@ pub struct Engine {
     allow_no_vpn: bool,
     ip_check: IpCheck,
     session: RwLock<Option<Live>>,
+    /// Serialize metadata handoff with pause, resume, remove and re-add.
+    pending_ops: tokio::sync::Mutex<()>,
     inner: Mutex<Inner>,
     running_tx: watch::Sender<bool>,
     /// The tunnel is up (or no VPN is required): the proxy may forward.
@@ -337,6 +341,7 @@ pub fn folder_name(name: Option<&str>, single_file: bool, fallback: &str) -> Str
 
 fn torrent_state(state: &TorrentStatsState, finished: bool) -> EngineTorrentState {
     match state {
+        TorrentStatsState::Initializing { paused: true } => EngineTorrentState::Paused,
         TorrentStatsState::Initializing { .. } => EngineTorrentState::Initializing,
         TorrentStatsState::Live if finished => EngineTorrentState::Seeding,
         TorrentStatsState::Live => EngineTorrentState::Downloading,
@@ -438,6 +443,7 @@ impl Engine {
             allow_no_vpn: options.allow_no_vpn,
             ip_check: IpCheck::default(),
             session: RwLock::new(None),
+            pending_ops: tokio::sync::Mutex::new(()),
             inner: Mutex::new(Inner {
                 tunnel: None,
                 running: false,
@@ -758,6 +764,7 @@ impl Engine {
     }
 
     async fn stop_session(&self) {
+        let _pending_op = self.pending_ops.lock().await;
         let live = self.session.write().await.take();
         if let Some(live) = live {
             let snapshot: Vec<EngineTorrent> = live
@@ -767,7 +774,9 @@ impl Engine {
                 let mut inner = lock(&self.inner);
                 inner.last_known = snapshot.into_iter().map(|t| (t.id.clone(), t)).collect();
                 for pending in inner.pending.values_mut() {
-                    pending.resolving = false;
+                    if let Some(cancel) = pending.resolving.take() {
+                        cancel.cancel();
+                    }
                 }
             }
             live.session.stop().await;
@@ -806,77 +815,103 @@ impl Engine {
         let Some(session) = self.live_session().await else {
             return;
         };
-        let todo: Vec<(String, String)> = {
+        let todo: Vec<_> = {
             let mut inner = lock(&self.inner);
             inner
                 .pending
                 .iter_mut()
-                .filter(|(_, p)| !p.resolving && p.error.is_none())
+                .filter(|(_, p)| !p.paused && p.resolving.is_none() && p.error.is_none())
                 .map(|(id, p)| {
-                    p.resolving = true;
-                    (id.clone(), p.magnet.clone())
+                    let cancel = Arc::new(CancellationToken::new());
+                    p.resolving = Some(cancel.clone());
+                    (id.clone(), p.magnet.clone(), cancel)
                 })
                 .collect()
         };
-        for (id, magnet) in todo {
+        for (id, magnet, cancel) in todo {
             let engine = self.clone();
             let session = session.clone();
             tokio::spawn(async move {
-                let cancel = session.cancellation_token().clone();
+                let session_cancel = session.cancellation_token();
                 let result = tokio::select! {
+                    _ = session_cancel.cancelled() => None,
                     _ = cancel.cancelled() => None,
-                    r = engine.resolve_and_add(&session, &id, &magnet) => Some(r),
+                    r = session.add_torrent(AddTorrent::from_url(&magnet), Some(AddTorrentOptions {
+                        list_only: true,
+                        ..Default::default()
+                    })) => Some(r),
                 };
-                let mut inner = lock(&engine.inner);
-                match result {
-                    None => {
-                        if let Some(p) = inner.pending.get_mut(&id) {
-                            p.resolving = false;
-                        }
-                    }
-                    Some(Ok(())) => {
-                        inner.pending.remove(&id);
-                        let pending = inner.pending.clone();
-                        drop(inner);
-                        engine.save_pending(&pending);
-                    }
-                    Some(Err(e)) => {
-                        tracing::warn!(id = %id, error = %format!("{e:#}"), "could not add a magnet link");
-                        if let Some(p) = inner.pending.get_mut(&id) {
-                            p.resolving = false;
-                            p.error = Some("The torrent's details could not be fetched.".into());
-                        }
-                    }
-                }
+                engine
+                    .finish_resolution(&session, &id, &magnet, &cancel, result)
+                    .await;
             });
         }
     }
 
-    async fn resolve_and_add(
+    async fn finish_resolution(
         &self,
         session: &Arc<Session>,
         id: &str,
         magnet: &str,
+        cancel: &Arc<CancellationToken>,
+        result: Option<anyhow::Result<RqAddResponse>>,
+    ) {
+        let _pending_op = self.pending_ops.lock().await;
+        {
+            let mut inner = lock(&self.inner);
+            let Some(pending) = inner.pending.get_mut(id) else {
+                return;
+            };
+            if !pending
+                .resolving
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, cancel))
+            {
+                return;
+            }
+            if pending.paused
+                || cancel.is_cancelled()
+                || session.cancellation_token().is_cancelled()
+                || result.is_none()
+            {
+                pending.resolving = None;
+                return;
+            }
+        }
+        let Some(result) = result else {
+            return;
+        };
+        let result = match result {
+            Ok(RqAddResponse::ListOnly(list)) => self.add_resolved(session, id, magnet, list).await,
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        };
+        let mut inner = lock(&self.inner);
+        match result {
+            Ok(()) => {
+                inner.pending.remove(id);
+                self.save_pending(&inner.pending);
+            }
+            Err(e) => {
+                tracing::warn!(id, error = %format!("{e:#}"), "could not add a magnet link");
+                if let Some(pending) = inner.pending.get_mut(id) {
+                    pending.resolving = None;
+                    pending.error = Some("The torrent's details could not be fetched.".into());
+                }
+            }
+        }
+    }
+
+    async fn add_resolved(
+        &self,
+        session: &Arc<Session>,
+        id: &str,
+        magnet: &str,
+        list: librqbit::ListOnlyResponse,
     ) -> anyhow::Result<()> {
         let trackers = Magnet::parse(magnet)
             .map(|m| m.trackers)
             .unwrap_or_default();
-        let response = session
-            .add_torrent(
-                AddTorrent::from_url(magnet),
-                Some(AddTorrentOptions {
-                    list_only: true,
-                    ..Default::default()
-                }),
-            )
-            .await?;
-        let RqAddResponse::ListOnly(list) = response else {
-            return Ok(());
-        };
-        if !lock(&self.inner).pending.contains_key(id) {
-            // Removed while we were fetching its details.
-            return Ok(());
-        }
         let name = list.info.name().map(|n| n.into_owned());
         let single = list.info.info().files.is_none();
         let folder = self.unique_folder(&folder_name(name.as_deref(), single, id));
@@ -1040,6 +1075,23 @@ impl Engine {
         }
     }
 
+    fn set_pending_paused(&self, id: &str, paused: bool) -> bool {
+        let mut inner = lock(&self.inner);
+        let Some(pending) = inner.pending.get_mut(id) else {
+            return false;
+        };
+        pending.paused = paused;
+        if paused {
+            if let Some(cancel) = pending.resolving.take() {
+                cancel.cancel();
+            }
+        } else {
+            pending.error = None;
+        }
+        self.save_pending(&inner.pending);
+        true
+    }
+
     fn pending_entries(&self, known: &HashSet<String>) -> Vec<EngineTorrent> {
         let inner = lock(&self.inner);
         inner
@@ -1050,7 +1102,9 @@ impl Engine {
                 id: id.clone(),
                 info_hash: id.clone(),
                 name: p.name.clone(),
-                state: if p.error.is_some() {
+                state: if p.paused {
+                    EngineTorrentState::Paused
+                } else if p.error.is_some() {
                     EngineTorrentState::Error
                 } else {
                     EngineTorrentState::Initializing
@@ -1162,6 +1216,7 @@ impl TorrentBackend for Engine {
     }
 
     async fn add(&self, torrent: NewTorrent) -> Result<AddTorrentResponse, BackendError> {
+        let _pending_op = self.pending_ops.lock().await;
         let Some(session) = self.live_session().await else {
             return Err(BackendError::Blocked(MSG_VPN_WAIT.into()));
         };
@@ -1230,8 +1285,9 @@ impl TorrentBackend for Engine {
                         .or_insert_with(|| PendingAdd {
                             magnet: link.clone(),
                             name: name.clone(),
+                            paused: false,
                             error: None,
-                            resolving: false,
+                            resolving: None,
                         });
                     // Retrying a failed magnet starts over.
                     entry.error = None;
@@ -1250,6 +1306,10 @@ impl TorrentBackend for Engine {
 
     async fn pause(&self, id: String) -> Result<(), BackendError> {
         let hash = parse_id(&id)?;
+        let _pending_op = self.pending_ops.lock().await;
+        if self.set_pending_paused(&id, true) {
+            return Ok(());
+        }
         match self.live_session().await {
             Some(session) => {
                 let handle = session
@@ -1274,6 +1334,10 @@ impl TorrentBackend for Engine {
 
     async fn resume(&self, id: String) -> Result<(), BackendError> {
         let hash = parse_id(&id)?;
+        let _pending_op = self.pending_ops.lock().await;
+        if self.set_pending_paused(&id, false) {
+            return Ok(());
+        }
         match self.live_session().await {
             Some(session) => {
                 let handle = session
@@ -1299,9 +1363,18 @@ impl TorrentBackend for Engine {
 
     async fn remove(&self, id: String, delete_files: bool) -> Result<(), BackendError> {
         let hash = parse_id(&id)?;
+        let _pending_op = self.pending_ops.lock().await;
         let was_pending = {
             let mut inner = lock(&self.inner);
-            let removed = inner.pending.remove(&id).is_some();
+            let removed = inner
+                .pending
+                .remove(&id)
+                .map(|pending| {
+                    if let Some(cancel) = pending.resolving {
+                        cancel.cancel();
+                    }
+                })
+                .is_some();
             if removed {
                 let pending = inner.pending.clone();
                 drop(inner);
@@ -1386,6 +1459,215 @@ mod tests {
             api_bind: "127.0.0.1:0".parse().unwrap(),
             proxy_bind: "127.0.0.1:0".parse().unwrap(),
         }
+    }
+
+    const PENDING_HASH: &str = "1111111111111111111111111111111111111111";
+
+    #[test]
+    fn paused_file_check_is_reported_as_paused() {
+        assert_eq!(
+            torrent_state(&TorrentStatsState::Initializing { paused: true }, false),
+            EngineTorrentState::Paused
+        );
+        assert_eq!(
+            torrent_state(&TorrentStatsState::Initializing { paused: false }, false),
+            EngineTorrentState::Initializing
+        );
+    }
+
+    fn pending_fixture(options: &EngineOptions) {
+        // Pre-existing pending.json files have no paused field.
+        let pending = serde_json::json!({PENDING_HASH: {
+            "magnet": format!("magnet:?xt=urn:btih:{PENDING_HASH}"),
+            "name": "Synthetic metadata fixture"
+        }});
+        std::fs::write(
+            options.state_dir.join(PENDING_FILE),
+            serde_json::to_vec(&pending).unwrap(),
+        )
+        .unwrap();
+    }
+
+    async fn offline_session(options: &EngineOptions) -> Arc<Session> {
+        Session::new_with_opts(
+            options.downloads_dir.clone(),
+            SessionOptions {
+                dht: None,
+                disable_trackers: true,
+                disable_local_service_discovery: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn pending_magnet_pause_survives_restart_and_blocked_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let opts = options(dir.path());
+        pending_fixture(&opts);
+        let engine = Arc::new(Engine::new(&opts));
+        let session = offline_session(&opts).await;
+        *engine.session.write().await = Some(Live {
+            session,
+            ifindex: None,
+        });
+        let cancel = Arc::new(CancellationToken::new());
+        lock(&engine.inner)
+            .pending
+            .get_mut(PENDING_HASH)
+            .unwrap()
+            .resolving = Some(cancel.clone());
+
+        engine.pause(PENDING_HASH.into()).await.unwrap();
+        engine.pause(PENDING_HASH.into()).await.unwrap();
+        assert!(cancel.is_cancelled());
+        assert_eq!(engine.list().await[0].state, EngineTorrentState::Paused);
+        engine.spawn_resolutions().await;
+        assert!(
+            lock(&engine.inner).pending[PENDING_HASH]
+                .resolving
+                .is_none()
+        );
+        engine.stop_session().await;
+
+        let restarted = Engine::new(&opts);
+        assert_eq!(restarted.list().await[0].state, EngineTorrentState::Paused);
+        lock(&restarted.inner)
+            .pending
+            .get_mut(PENDING_HASH)
+            .unwrap()
+            .error = Some("old failure".into());
+        restarted.resume(PENDING_HASH.into()).await.unwrap();
+        restarted.resume(PENDING_HASH.into()).await.unwrap();
+        assert!(lock(&restarted.inner).pending[PENDING_HASH].error.is_none());
+        assert_eq!(
+            Engine::new(&opts).list().await[0].state,
+            EngineTorrentState::Initializing
+        );
+        assert_eq!(
+            restarted
+                .resume("0000000000000000000000000000000000000000".into())
+                .await,
+            Err(BackendError::NotFound)
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_magnet_stale_resolution_cannot_replace_a_resumed_or_readded_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let opts = options(dir.path());
+        pending_fixture(&opts);
+        let engine = Engine::new(&opts);
+        let session = offline_session(&opts).await;
+        let old = Arc::new(CancellationToken::new());
+        lock(&engine.inner)
+            .pending
+            .get_mut(PENDING_HASH)
+            .unwrap()
+            .resolving = Some(old.clone());
+        engine.pause(PENDING_HASH.into()).await.unwrap();
+        engine.resume(PENDING_HASH.into()).await.unwrap();
+        let current = Arc::new(CancellationToken::new());
+        lock(&engine.inner)
+            .pending
+            .get_mut(PENDING_HASH)
+            .unwrap()
+            .resolving = Some(current.clone());
+        engine
+            .finish_resolution(
+                &session,
+                PENDING_HASH,
+                "",
+                &old,
+                Some(Err(anyhow::anyhow!("late failure"))),
+            )
+            .await;
+        {
+            let inner = lock(&engine.inner);
+            let pending = &inner.pending[PENDING_HASH];
+            assert!(pending.error.is_none());
+            assert!(Arc::ptr_eq(pending.resolving.as_ref().unwrap(), &current));
+        }
+        engine.remove(PENDING_HASH.into(), false).await.unwrap();
+        assert!(current.is_cancelled());
+        pending_fixture(&opts);
+        engine.load_saved_state();
+        engine
+            .finish_resolution(
+                &session,
+                PENDING_HASH,
+                "",
+                &current,
+                Some(Err(anyhow::anyhow!("late failure"))),
+            )
+            .await;
+        assert!(lock(&engine.inner).pending[PENDING_HASH].error.is_none());
+        session.stop().await;
+    }
+
+    #[tokio::test]
+    async fn pending_magnet_pause_before_and_after_metadata_handoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let opts = options(dir.path());
+        let engine = Engine::new(&opts);
+        let session = offline_session(&opts).await;
+        *engine.session.write().await = Some(Live {
+            session: session.clone(),
+            ifindex: None,
+        });
+        let bytes = b"d4:infod6:lengthi4e4:name11:fixture.bin12:piece lengthi16384e6:pieces20:11111111111111111111ee";
+        let metadata = || {
+            session.add_torrent(
+                AddTorrent::from_bytes(bytes.as_slice()),
+                Some(AddTorrentOptions {
+                    list_only: true,
+                    ..Default::default()
+                }),
+            )
+        };
+        let hash = librqbit::torrent_from_bytes(bytes)
+            .unwrap()
+            .info_hash
+            .as_string();
+        let magnet = format!("magnet:?xt=urn:btih:{hash}");
+        engine
+            .add(NewTorrent::Magnet(magnet.clone()))
+            .await
+            .unwrap();
+        let old = Arc::new(CancellationToken::new());
+        lock(&engine.inner)
+            .pending
+            .get_mut(&hash)
+            .unwrap()
+            .resolving = Some(old.clone());
+        let resolved = metadata().await;
+        engine.pause(hash.clone()).await.unwrap();
+        engine
+            .finish_resolution(&session, &hash, &magnet, &old, Some(resolved))
+            .await;
+        assert!(
+            session
+                .get(TorrentIdOrHash::Hash(parse_id(&hash).unwrap()))
+                .is_none()
+        );
+        assert_eq!(std::fs::read_dir(&opts.downloads_dir).unwrap().count(), 0);
+
+        engine.resume(hash.clone()).await.unwrap();
+        let current = Arc::new(CancellationToken::new());
+        lock(&engine.inner)
+            .pending
+            .get_mut(&hash)
+            .unwrap()
+            .resolving = Some(current.clone());
+        engine
+            .finish_resolution(&session, &hash, &magnet, &current, Some(metadata().await))
+            .await;
+        assert!(!lock(&engine.inner).pending.contains_key(&hash));
+        engine.pause(hash).await.unwrap();
+        assert_eq!(engine.list().await[0].state, EngineTorrentState::Paused);
+        engine.stop_session().await;
     }
 
     #[test]
