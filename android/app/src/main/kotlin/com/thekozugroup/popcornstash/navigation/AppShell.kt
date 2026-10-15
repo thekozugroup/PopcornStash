@@ -66,14 +66,14 @@ data class TabPage(
     /**
      * Padding a page leaves at its end (under its last row) so that, scrolled to the end, its last
      * row clears the bottom toolbar on phones and the system navigation bar. Wide layouts
-     * reserve a separate strip on the right for the rail.
+     * reserve a separate strip on the left for the rail.
      */
     val bottomClearance: Dp,
     /** Grows each time the person taps the tab they are already on: scroll to the top, or pop to the first page. */
     val reselections: Int,
     /**
      * Where the page's snackbars go ([com.thekozugroup.popcornstash.ui.components.TabSnackbarHost]):
-     * padding inside the page that keeps them above the phone toolbar or beside the right rail.
+     * padding inside the page that keeps them above the phone toolbar or beside the left rail.
      */
     val snackbarPadding: PaddingValues = PaddingValues(0.dp),
 )
@@ -83,7 +83,7 @@ data class TabPage(
  * (android/DESIGN.md, Navigation).
  *
  * - Phones use a horizontal toolbar at the bottom, including landscape. Windows at least
- *   600dp wide and 480dp tall use a physical right rail, with content beside it.
+ *   600dp wide and 480dp tall use a vertically centered physical left rail, with content beside it.
  * - Page transitions follow the toolbar axis; reduced motion uses crossfades.
  * - Each tab keeps its state and scroll position while another tab shows (one saveable
  *   state holder entry per tab).
@@ -121,8 +121,7 @@ fun AppShell(
     val toolbarRequests = remember { ToolbarRequests() }
     val reduceMotion = Popcorn.reduceMotion
     val toolbar = Popcorn.toolbar
-    // The bar keeps clear of the navigation bar under it and, with the phone turned, of the
-    // navigation bar and a display cutout on the right; snackbars of both, on either side.
+    // The bar and snackbars keep clear of navigation bars and display cutouts on either side.
     val edges = WindowInsets.navigationBars.union(WindowInsets.displayCutout)
     val density = LocalDensity.current
     val layoutDirection = LocalLayoutDirection.current
@@ -130,11 +129,11 @@ fun AppShell(
     val leftInset = with(density) { edges.getLeft(density, layoutDirection).toDp() }
     val rightInset = with(density) { edges.getRight(density, layoutDirection).toDp() }
     BoxWithConstraints(modifier.fillMaxSize().background(Popcorn.colors.page)) {
-        val vertical = navigationPlacement(maxWidth, maxHeight) == NavigationPlacement.Right
+        val vertical = navigationPlacement(maxWidth, maxHeight) == NavigationPlacement.Left
         val clearance = (if (vertical) toolbar.contentGap else toolbar.thickness + toolbar.margin + toolbar.contentGap) + bottomInset
         val snackbarPadding = PaddingValues.Absolute(
-            left = leftInset + toolbar.margin,
-            right = if (vertical) 0.dp else rightInset + toolbar.margin,
+            left = if (vertical) 0.dp else leftInset + toolbar.margin,
+            right = rightInset + toolbar.margin,
             bottom = bottomInset + if (vertical) toolbar.margin else toolbar.thickness + toolbar.margin + toolbar.contentGap,
         )
         val backdrop = rememberGlassBackdrop(glassTier)
@@ -153,7 +152,7 @@ fun AppShell(
                         Box(
                             Modifier
                                 .fillMaxSize()
-                                .padding(PaddingValues.Absolute(right = if (vertical && !toolbarRequests.hidden) rightInset + toolbar.besideClearance else 0.dp))
+                                .padding(PaddingValues.Absolute(left = if (vertical && !toolbarRequests.hidden) leftInset + toolbar.besideClearance else 0.dp))
                                 .background(Popcorn.colors.page)
                                 .testTag("page ${tab.name}"),
                         ) {
@@ -166,23 +165,22 @@ fun AppShell(
             // The platform's backdrop blur reads the window only when the bar is not drawn into a
             // layer of its own, so on that tier the fade is drawn per operation (ModulateAlpha).
             val fadeThroughLayer = glassTier != GlassTier.Backdrop
-            // Slide offsets are in screen pixels: the bar leaves towards the right edge, half its width.
+            // Slide offsets are in screen pixels: the rail leaves towards the left edge, half its width.
             AnimatedVisibility(
                 visible = !toolbarRequests.hidden && !WindowInsets.isImeVisible,
-                enter = (if (reduceMotion) EnterTransition.None else if (vertical) slideInHorizontally(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) { it / 2 }
+                enter = (if (reduceMotion) EnterTransition.None else if (vertical) slideInHorizontally(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) { -it / 2 }
                     else slideInVertically(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) { it / 2 }) +
                     if (fadeThroughLayer) fadeIn(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) else EnterTransition.None,
-                exit = (if (reduceMotion) ExitTransition.None else if (vertical) slideOutHorizontally(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) { it / 2 }
+                exit = (if (reduceMotion) ExitTransition.None else if (vertical) slideOutHorizontally(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) { -it / 2 }
                     else slideOutVertically(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) { it / 2 }) +
                     if (fadeThroughLayer) fadeOut(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) else ExitTransition.None,
                 // The column the bar may use: from under the status bar to above the navigation bar,
-                // in from the right edge. The bar sits at its bottom and shrinks only when the column is short.
+                // in from the left edge. The bar is centered in that safe height and only shrinks if needed.
                 modifier = (if (vertical) Modifier
-                    .align(AbsoluteAlignment.BottomRight)
+                    .align(AbsoluteAlignment.CenterLeft)
                     .fillMaxHeight()
-                    .windowInsetsPadding(WindowInsets.statusBars.only(WindowInsetsSides.Top))
-                    .windowInsetsPadding(edges.only(WindowInsetsSides.Right + WindowInsetsSides.Bottom))
-                    .padding(PaddingValues.Absolute(top = toolbar.margin, right = toolbar.margin, bottom = toolbar.margin))
+                    .windowInsetsPadding(WindowInsets.statusBars.union(edges).only(WindowInsetsSides.Top + WindowInsetsSides.Left + WindowInsetsSides.Bottom))
+                    .padding(PaddingValues.Absolute(top = toolbar.margin, left = toolbar.margin, bottom = toolbar.margin))
                     else Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
@@ -201,7 +199,7 @@ fun AppShell(
                         compositingStrategy = CompositingStrategy.ModulateAlpha
                     }
                 }
-                Box((if (vertical) Modifier.fillMaxHeight() else Modifier.fillMaxWidth()).then(fade), contentAlignment = Alignment.BottomCenter) {
+                Box((if (vertical) Modifier.fillMaxHeight() else Modifier.fillMaxWidth()).then(fade), contentAlignment = if (vertical) Alignment.Center else Alignment.BottomCenter) {
                     FloatingNavToolbar(
                         selected = current,
                         readyToImport = readyToImport,

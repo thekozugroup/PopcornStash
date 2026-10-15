@@ -33,7 +33,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * The shell as a phone shows it, light and dark: the upright toolbar on the right edge over
+ * The shell as a phone shows it, light and dark: the bottom toolbar over
  * each tab, a long page scrolled to its end clear of the bar, a snackbar beside it, the tab
  * slide and the phone turned on its side. Recorded with `./gradlew recordRoborazziDebug`,
  * compared with `verifyRoborazziDebug`.
@@ -240,7 +240,7 @@ class ShellScreenshotTest {
         compose.onRoot().captureRoboImage(screenshot("shell-snackbar-dark"))
     }
 
-    /** The phone on its side: the bar stays on the right edge, bottom-aligned the same way. */
+    /** The phone on its side: the bar stays centered at the bottom. */
     @Test
     @Config(qualifiers = PHONE_LANDSCAPE)
     fun landscapeHomeLight() {

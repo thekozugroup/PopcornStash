@@ -68,7 +68,7 @@ import kotlin.math.roundToInt
 import org.robolectric.annotation.Config
 
 /**
- * The shell (android/DESIGN.md, Navigation): the upright toolbar on the right edge, its
+ * The shell (android/DESIGN.md, Navigation): the upright toolbar centered on the left edge, its
  * selection square, the vertical tab slides, Back, the page clearance and the snackbars
  * beside the bar.
  */
@@ -115,7 +115,7 @@ class AppShellTest {
     }
 
     @Test
-    fun startsOnHomeInTheMiddleOfABarOnTheRightEdge() {
+    fun startsOnHomeInTheMiddleOfACenteredBarOnTheLeftEdge() {
         showShell()
         tab(Tab.Home).assertIsSelected()
         tab(Tab.Downloads).assertIsNotSelected()
@@ -128,11 +128,11 @@ class AppShellTest {
         assertTrue(downloads.bottom <= home.top + 0.5f && home.bottom <= settings.top + 0.5f)
         assertEquals(downloads.left, home.left, 0.5f)
         assertEquals(home.left, settings.left, 0.5f)
-        // The bar is the toolbar margin in from the right edge and above the bottom (no navigation bar here).
+        // The rail is inset from the physical left and centered in the safe height.
         val bar = bounds("toolbar")
         val screen = screen()
-        assertEquals(screen.right - tokens.margin.value, bar.right, 0.5f)
-        assertEquals(screen.bottom - tokens.margin.value, bar.bottom, 0.5f)
+        assertEquals(screen.left + tokens.margin.value, bar.left, 0.5f)
+        assertEquals(screen.center.y, bar.center.y, 0.5f)
         assertEquals(tokens.thickness.value, bar.width, 0.5f)
         assertEquals(tokens.length(3).value, bar.height, 0.5f)
     }
@@ -224,7 +224,7 @@ class AppShellTest {
         val outgoing = bounds("page Home")
         assertTrue("Settings rises from below, at ${incoming.top}", incoming.top > 0f && incoming.top < height)
         assertTrue("Home leaves upwards, at ${outgoing.top}", outgoing.top < 0f)
-        assertEquals("No sideways move", 0f, incoming.left, 0.5f)
+        assertEquals("No sideways move", tokens.besideClearance.value, incoming.left, 0.5f)
         compose.mainClock.autoAdvance = true
         compose.waitForIdle()
         assertEquals(0f, bounds("page Settings").top, 0.5f)
@@ -240,7 +240,7 @@ class AppShellTest {
         val outgoing = bounds("page Home")
         assertTrue("Downloads comes down from above, at ${incoming.top}", incoming.top < 0f)
         assertTrue("Home leaves downwards, at ${outgoing.top}", outgoing.top > 0f)
-        assertEquals("No sideways move", 0f, incoming.left, 0.5f)
+        assertEquals("No sideways move", tokens.besideClearance.value, incoming.left, 0.5f)
         compose.mainClock.autoAdvance = true
         compose.waitForIdle()
         assertEquals(0f, bounds("page Downloads").top, 0.5f)
@@ -272,19 +272,19 @@ class AppShellTest {
         // Both pages are on screen at once, neither moved: a crossfade.
         assertEquals(0f, bounds("page Settings").top, 0.5f)
         assertEquals(0f, bounds("page Home").top, 0.5f)
-        assertEquals(0f, bounds("page Settings").left, 0.5f)
+        assertEquals(tokens.besideClearance.value, bounds("page Settings").left, 0.5f)
         advanceFrames(14)
         page(Tab.Home).assertDoesNotExist()
     }
 
     @Test
-    fun longPressShowsTheTabNameToTheLeftOfTheBar() = tooltipToTheLeft(LayoutDirection.Ltr)
+    fun longPressShowsTheTabNameToTheRightOfTheBar() = tooltipToTheRight(LayoutDirection.Ltr)
 
-    /** Left is the physical side: in a right-to-left layout the bar is still on the right, so the name still opens to its left. */
+    /** The physical left rail keeps tooltips over the content to its right in every language. */
     @Test
-    fun theTooltipStaysLeftOfTheBarInARightToLeftLayout() = tooltipToTheLeft(LayoutDirection.Rtl)
+    fun theTooltipStaysRightOfTheBarInARightToLeftLayout() = tooltipToTheRight(LayoutDirection.Rtl)
 
-    private fun tooltipToTheLeft(layoutDirection: LayoutDirection) {
+    private fun tooltipToTheRight(layoutDirection: LayoutDirection) {
         showShell(layoutDirection = layoutDirection)
         compose.onAllNodesWithText("Downloads").assertCountEquals(0)
         tab(Tab.Downloads).performTouchInput { longClick() }
@@ -294,11 +294,11 @@ class AppShellTest {
         val bar = onScreen(compose.onNodeWithTag("toolbar").fetchSemanticsNode())
         val text = compose.onNodeWithText("Downloads").fetchSemanticsNode()
         val name = onScreen(text)
-        // The popup's root is the tooltip itself: its right edge is the gap left of the bar's edge.
+        // The popup's root is the tooltip itself, separated from the rail by the normal gap.
         val tooltip = onScreen(generateSequence(text) { it.parent }.last())
         val gap = tokens.tooltipGap.value * compose.density.density
-        assertEquals("The tooltip ends ${tokens.tooltipGap} left of the bar", bar.left - gap, tooltip.right, 1f)
-        assertTrue("The name ends left of the square, at ${name.right} for ${square.left}", name.right <= square.left)
+        assertEquals("The tooltip starts ${tokens.tooltipGap} right of the bar", bar.right + gap, tooltip.left, 1f)
+        assertTrue("The name starts right of the square", name.left >= square.right)
         assertTrue("The name is level with the square", name.center.y > square.top && name.center.y < square.bottom)
         // A long press only names the tab; it does not switch to it.
         tab(Tab.Home).assertIsSelected()
@@ -369,12 +369,11 @@ class AppShellTest {
         compose.waitForIdle()
         val last = bounds("row Home $LAST_ROW")
         val bar = bounds("toolbar")
-        assertTrue("The last row stays left of the rail", last.right <= bar.left - tokens.margin.value + 0.5f)
+        assertTrue("The last row stays right of the rail", last.left >= bar.right + tokens.margin.value - 0.5f)
     }
 
     /**
-     * A snackbar sits at the bottom beside the bar: level with its bottom edge, the margin to its
-     * left, never under it. Measured on the snackbar's visible surface, not on its host.
+     * A snackbar sits at the safe bottom beside the left rail gutter, never under the rail. Measured on the snackbar's visible surface, not on its host.
      */
     @Test
     fun aSnackbarSitsBesideTheBarNotUnderIt() {
@@ -396,9 +395,9 @@ class AppShellTest {
         val note = bounds("snackbar")
         val bar = bounds("toolbar")
         val screen = screen()
-        assertEquals("Level with the bar's bottom", bar.bottom, note.bottom, 0.5f)
-        assertEquals("The margin left of the bar", bar.left - tokens.margin.value, note.right, 0.5f)
-        assertTrue("The snackbar respects the left gutter and its tablet maximum width", note.left >= screen.left + tokens.margin.value)
+        assertEquals("At the safe bottom", screen.bottom - tokens.margin.value, note.bottom, 0.5f)
+        assertTrue("The snackbar stays right of the rail gutter", note.left >= bar.right + tokens.margin.value - 0.5f)
+        assertTrue("The snackbar respects the right gutter", note.right <= screen.right - tokens.margin.value + 0.5f)
         compose.onNodeWithText("Moved to Kids.").assertExists()
         // Those bounds are the visible surface, not space around it: 2dp inside each edge is the
         // snackbar's own zinc-900, where Material's 12dp of padding would show the page.
@@ -467,11 +466,11 @@ class AppShellTest {
         compose.onNodeWithTag("toolbar").assertExists()
         val shown = bounds("toolbar")
         viewers = 2
-        // Half way out it has moved towards the right edge, not down.
+        // Half way out it has moved towards the left edge, not down.
         compose.mainClock.autoAdvance = false
         advanceFrames(6)
         val leaving = bounds("toolbar")
-        assertTrue("The bar leaves to the right, at ${leaving.left} from ${shown.left}", leaving.left > shown.left + 1f)
+        assertTrue("The bar leaves to the left, at ${leaving.left} from ${shown.left}", leaving.left < shown.left - 1f)
         assertEquals("It does not move down", shown.top, leaving.top, 0.5f)
         compose.mainClock.autoAdvance = true
         compose.waitForIdle()
@@ -569,13 +568,14 @@ class AppShellTest {
 
     /**
      * Handedness does not change with the language: in a right-to-left layout the bar stays on
-     * the right edge with Downloads at the top, and the pages still slide up and down.
+     * the left edge with Downloads at the top, and the pages still slide up and down.
      */
     @Test
-    fun rightToLeftKeepsTheBarOnTheRightAndTheSlidesVertical() {
+    fun rightToLeftKeepsTheBarOnTheLeftAndTheSlidesVertical() {
         showShell(layoutDirection = LayoutDirection.Rtl)
         val bar = bounds("toolbar")
-        assertEquals(screen().right - tokens.margin.value, bar.right, 0.5f)
+        assertEquals(screen().left + tokens.margin.value, bar.left, 0.5f)
+        assertEquals(screen().center.y, bar.center.y, 0.5f)
         assertTrue(bounds("tab Downloads").bottom <= bounds("tab Home").top + 0.5f)
         assertTrue(bounds("tab Home").bottom <= bounds("tab Settings").top + 0.5f)
         compose.mainClock.autoAdvance = false
@@ -585,7 +585,7 @@ class AppShellTest {
         val outgoing = bounds("page Home")
         assertTrue("Settings rises from below, at ${incoming.top}", incoming.top > 0f)
         assertTrue("Home leaves upwards, at ${outgoing.top}", outgoing.top < 0f)
-        assertEquals(0f, incoming.left, 0.5f)
+        assertEquals(tokens.besideClearance.value, incoming.left, 0.5f)
         compose.mainClock.autoAdvance = true
         compose.waitForIdle()
         assertEquals(0f, bounds("page Settings").top, 0.5f)
@@ -602,12 +602,11 @@ class AppShellTest {
     }
 
     /**
-     * With the phone turned, the navigation bar (three-button) or a display cutout can be on the
-     * right: the bar keeps the toolbar margin from it, and the bottom clearance and the snackbar
-     * follow the navigation bar under the page.
+     * The rail clears a side navigation bar or cutout and centers between the top and bottom
+     * safe insets; bottom content clearance follows the navigation bar under the page.
      */
     @Test
-    fun theBarKeepsClearOfANavigationBarOnTheRight() {
+    fun theBarKeepsClearOfANavigationBarOnTheLeft() {
         var clearance = 0.dp
         compose.setContent {
             PopcornTheme(darkTheme = false, reduceMotion = true) {
@@ -618,16 +617,16 @@ class AppShellTest {
             }
         }
         compose.waitForIdle()
-        applyInsets(navigation = Insets.of(0, 0, dpToPx(48), 0))
+        applyInsets(navigation = Insets.of(dpToPx(48), 0, 0, 0))
         val screen = screen()
         val bar = bounds("toolbar")
-        assertEquals(screen.right - 48f - tokens.margin.value, bar.right, 0.5f)
-        assertEquals(screen.bottom - tokens.margin.value, bar.bottom, 0.5f)
+        assertEquals(screen.left + 48f + tokens.margin.value, bar.left, 0.5f)
+        assertEquals(screen.center.y, bar.center.y, 0.5f)
         assertEquals(tokens.contentGap.value, clearance.value, 0.5f)
     }
 
     @Test
-    fun theBarKeepsClearOfACutoutOnTheRightAndANavigationBarBelow() {
+    fun theBarCentersBetweenStatusAndNavigationBarsAndClearsALeftCutout() {
         var clearance = 0.dp
         compose.setContent {
             PopcornTheme(darkTheme = false, reduceMotion = true) {
@@ -638,11 +637,11 @@ class AppShellTest {
             }
         }
         compose.waitForIdle()
-        applyInsets(navigation = Insets.of(0, 0, 0, dpToPx(24)), cutout = Insets.of(0, 0, dpToPx(32), 0))
+        applyInsets(navigation = Insets.of(0, 0, 0, dpToPx(24)), cutout = Insets.of(dpToPx(32), 0, 0, 0), status = Insets.of(0, dpToPx(20), 0, 0))
         val screen = screen()
         val bar = bounds("toolbar")
-        assertEquals(screen.right - 32f - tokens.margin.value, bar.right, 0.5f)
-        assertEquals(screen.bottom - 24f - tokens.margin.value, bar.bottom, 0.5f)
+        assertEquals(screen.left + 32f + tokens.margin.value, bar.left, 0.5f)
+        assertEquals((screen.top + 20f + screen.bottom - 24f) / 2, bar.center.y, 0.5f)
         assertEquals(tokens.contentGap.value + 24f, clearance.value, 0.5f)
     }
 
@@ -651,11 +650,12 @@ class AppShellTest {
     private fun dpToPx(dp: Int): Int = (dp * compose.density.density).roundToInt()
 
     /** Hands the Compose view window insets, as the system does when the phone turns. */
-    private fun applyInsets(navigation: Insets = Insets.NONE, cutout: Insets = Insets.NONE) {
+    private fun applyInsets(navigation: Insets = Insets.NONE, cutout: Insets = Insets.NONE, status: Insets = Insets.NONE) {
         compose.runOnUiThread {
             // The content view passes them on to the Compose view inside it, which reads them.
             val content = compose.activity.findViewById<ViewGroup>(android.R.id.content)
             val insets = WindowInsetsCompat.Builder()
+                .setInsets(WindowInsetsCompat.Type.statusBars(), status)
                 .setInsets(WindowInsetsCompat.Type.navigationBars(), navigation)
                 .setInsets(WindowInsetsCompat.Type.displayCutout(), cutout)
                 .build()

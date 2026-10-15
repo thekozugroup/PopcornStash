@@ -92,7 +92,7 @@ Flat. Pages, panels and tiles have no shadow; tiles get the 1dp `mediaHairline` 
 | `pageSpring` | spring, no bounce, stiffness 500 (about 300 ms) | page slides: tabs up and down, pushes sideways |
 | `indicatorSpring` | spring, damping 0.85, stiffness 500 | the toolbar's selection square sliding up or down the bar |
 | `fast` | 150 ms | crossfades |
-| `toolbarShowHide` | 200 ms | the toolbar leaving (30dp towards the right edge, with a fade) for the photo viewer and the keyboard, and coming back |
+| `toolbarShowHide` | 200 ms | the toolbar leaving (30dp towards the navigation edge, with a fade) for the photo viewer and the keyboard, and coming back |
 | `push` | 30dp horizontal shift with a fade, `pageSpring` | opening and closing a page inside a tab (a library, a show, an item, the library editor) |
 
 When the system's "Remove animations" setting is on (`LocalReduceMotion`), tabs and pushed pages crossfade instead of sliding, the carousel snaps without gliding, and the selection square moves without travelling. Nothing loops.
@@ -131,13 +131,13 @@ Every target is at least 48dp. Icons are Lucide (the web's set, from the same Lu
 
 ### Floating toolbar (`ui/components/FloatingNavToolbar.kt`)
 
-The navigation adapts to the current window, including split screen. Phones use a bottom row, including landscape. A window at least 600dp wide and 480dp tall uses a physical right rail. Downloads, Home and Settings keep that order; Home is the start tab.
+The navigation adapts to the current window, including split screen. Phones use a bottom row, including landscape. A window at least 600dp wide and 480dp tall uses a vertically centered physical left rail. Downloads, Home and Settings keep that order; Home is the start tab.
 
 - Equal 52dp targets, never below 48dp, with 12dp corners, 4dp outer padding and 16dp outer corners. The three targets have the same spacing and selection treatment on both axes.
 - Bottom row: centered, 16dp above the system navigation inset and clear of both side cutouts. Pages reserve 92dp plus the bottom inset so the last row clears it.
-- Right rail: 16dp inside the physical right and bottom safe edges, regardless of language direction. Pages reserve 92dp plus the right inset across their full height. Rows, buttons and grid tiles stay beside the rail, including midway through a scroll.
+- Left rail: 16dp inside the physical left safe edge, regardless of language direction, vertically centered between the top and bottom safe insets. Pages reserve 92dp plus the left inset across their full height. Rows, buttons and grid tiles stay beside the rail, including midway through a scroll.
 - The blue selection and page transitions follow the navigation axis. Reduced motion uses crossfades. Tab state survives window resizing and folding.
-- TalkBack identifies each tab and its selected state, with the correct row or column collection semantics. Long-press tooltips appear above the bottom row or left of the rail.
+- TalkBack identifies each tab and its selected state, with the correct row or column collection semantics. Long-press tooltips appear above the bottom row or right of the rail.
 - Snackbars sit above the bottom row or beside the rail. The toolbar leaves toward its edge for a photo viewer and while the keyboard is open. A full-screen photo viewer reclaims the rail strip. The player has its own activity.
 
 ### Frosted glass (`ui/components/FrostedGlass.kt`)
@@ -180,7 +180,7 @@ One Action Blue square that lives behind the icons and slides along the bar to t
 
 ### Tab transitions (`navigation/PageTransitions.kt`)
 
-- On the right rail, tapping a tab slides the pages vertically, the way the selection moves on the bar: a square below the current one brings its page up from the bottom while the old page leaves through the top; a square above brings its page down from the top while the old one leaves through the bottom. Full height, `pageSpring` (about 300 ms). The rail's order is the same in every layout direction, and so are these slides. On phones the pages slide horizontally toward the selected square on the bottom bar; in right-to-left layouts both the bar and these slides mirror. Pages pushed inside a tab still move sideways (`push`); slide offsets are in screen pixels, so in a right-to-left layout a pushed page comes in from the end side (the left). `transition-1-light.png` to `transition-3-light.png` show Settings rising over Home early, half way and most of the way.
+- On the left rail, tapping a tab slides the pages vertically, the way the selection moves on the bar: a square below the current one brings its page up from the bottom while the old page leaves through the top; a square above brings its page down from the top while the old one leaves through the bottom. Full height, `pageSpring` (about 300 ms). The rail's order is the same in every layout direction, and so are these slides. On phones the pages slide horizontally toward the selected square on the bottom bar; in right-to-left layouts both the bar and these slides mirror. Pages pushed inside a tab still move sideways (`push`); slide offsets are in screen pixels, so in a right-to-left layout a pushed page comes in from the end side (the left). `transition-1-light.png` to `transition-3-light.png` show Settings rising over Home early, half way and most of the way.
 - Each tab keeps its own back stack, state and scroll position (a saveable state holder per tab, data in a view model per destination). Tapping the current tab again scrolls its first page to the top, or pops its stack to the first page. The stack is `navigation/PageStack.kt`: routes saved with the tab (they survive another tab, a rotation and a recreated process), one saveable state and one view model store per page; a page's view models live until it closes or the person's session ends.
 - Inside a tab, pages open and close with `push`. The toolbar stays while browsing.
 - System Back pops the current tab's stack first; at a tab's first page it returns to Home (following the toolbar's axis and the side of its Home square), and from Home it leaves the app. Back closes the viewer or player before anything else.

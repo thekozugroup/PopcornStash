@@ -83,10 +83,11 @@ with 24–32px outer padding. Compact web windows use a bottom row or the produc
 accessible mobile drawer; choose one navigation pattern consistently across its pages.
 
 Android: bottom navigation on phones, including landscape. A current window at least
-600dp wide and 480dp tall uses a physical right rail. Split-screen windows are classified
+600dp wide and 480dp tall uses a physical left rail, vertically centered within the safe
+height. Split-screen windows are classified
 by available size rather than device model. Keep three equal 52dp targets, 4dp outer padding,
 16dp edge margin and the same order. Reserve 92dp plus the bottom inset on phones, or a
-92dp strip plus the right inset beside the rail. Content and controls never sit underneath.
+92dp strip plus the left inset beside the rail. Content and controls never sit underneath.
 State and scroll position survive resizing, folding and tab changes. Tooltips and screen
 reader row/column semantics follow the axis. Reduced motion uses crossfades.
 

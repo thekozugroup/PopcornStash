@@ -104,13 +104,15 @@ class AdaptiveNavigationTest {
     fun tabletSplitScreenUsesBottomNavigation() { show(); assertBottom() }
 
     @Test @Config(qualifiers = "w673dp-h841dp-xxhdpi")
-    fun unfoldedDisplayUsesRightRailAndReservesContentSpace() {
+    fun unfoldedDisplayUsesCenteredLeftRailAndReservesContentSpace() {
         show()
         val bar = compose.onNodeWithTag("toolbar").getUnclippedBoundsInRoot().rect()
         val content = compose.onNodeWithTag("content Home").getUnclippedBoundsInRoot().rect()
         assertEquals(tokens.thickness.value, bar.width, .5f)
         assertEquals(tokens.length(3).value, bar.height, .5f)
-        assertTrue(content.right <= bar.left - tokens.margin.value)
+        assertEquals(tokens.margin.value, bar.left, .5f)
+        assertEquals(compose.onRoot().getUnclippedBoundsInRoot().rect().center.y, bar.center.y, .5f)
+        assertTrue(content.left >= bar.right + tokens.margin.value)
     }
 
     @Test @Config(qualifiers = "w1000dp-h1200dp-xxhdpi")
@@ -136,7 +138,7 @@ class AdaptiveNavigationTest {
 
     @Test fun breakpointsUseAvailableWidthAndHeight() {
         assertEquals(NavigationPlacement.Bottom, navigationPlacement(599.dp, 1000.dp))
-        assertEquals(NavigationPlacement.Right, navigationPlacement(600.dp, 480.dp))
+        assertEquals(NavigationPlacement.Left, navigationPlacement(600.dp, 480.dp))
         assertEquals(NavigationPlacement.Bottom, navigationPlacement(900.dp, 479.dp))
     }
 }

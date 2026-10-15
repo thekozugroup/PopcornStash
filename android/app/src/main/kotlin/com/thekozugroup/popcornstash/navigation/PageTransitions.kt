@@ -19,7 +19,7 @@ fun slideDirection(from: Tab, to: Tab): Int = to.ordinal.compareTo(from.ordinal)
 
 /**
  * A tab change follows the selection along the toolbar's axis. Bottom navigation mirrors
- * horizontally in RTL; the physical right rail keeps its vertical order. Under reduce
+ * horizontally in RTL; the physical left rail keeps its vertical order. Under reduce
  * motion the pages crossfade in 150 ms instead.
  */
 fun tabTransition(

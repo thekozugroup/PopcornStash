@@ -65,7 +65,7 @@ import com.thekozugroup.popcornstash.ui.theme.Popcorn
 import com.thekozugroup.popcornstash.ui.theme.PopcornMotion
 
 /**
- * Equal square targets in a bottom row or right rail, with an Action Blue square that follows
+ * Equal square targets in a bottom row or left rail, with an Action Blue square that follows
  * the selection. The outer radius is the square radius plus its padding. The physical order
  * stays Downloads, Home, Settings in either layout direction.
  *
@@ -193,12 +193,12 @@ private fun ToolbarSquare(
     }
     // A press on the blue square lightens it only as far as white keeps 4.5:1 (OnAccentRipple).
     val ripples = if (selected) OnAccentRipple else LocalRippleConfiguration.current
-    // The name opens to the left, over the page (the bar is on the right edge; Left is the
+    // The name opens to the right, over the page (the bar is on the left edge; Right is the
     // physical side in every layout direction), clear of the bar's edge: Material measures the
     // space from the square, which sits the bar's padding inside that edge.
     TooltipBox(
         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(
-            if (vertical) TooltipAnchorPosition.Left else TooltipAnchorPosition.Above,
+            if (vertical) TooltipAnchorPosition.Right else TooltipAnchorPosition.Above,
             spacingBetweenTooltipAndAnchor = tokens.padding + tokens.tooltipGap,
         ),
         tooltip = { PlainTooltip { Text(tab.label) } },
