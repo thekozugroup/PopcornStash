@@ -1,5 +1,14 @@
 # PopcornStash, iteration 1
 
+## Current continuation: download completion verification, 2026-10-15
+
+- Owner reports magnets remain at Fetching torrent details. Atlas starts this investigation with zero downloads in both the application database and engine; the reported failing magnet is not available to trace. Asked the owner to add one again while independent testing continues. Do not treat successful control downloads as a fix for that unobserved case.
+- The deployed image (656cb61, sha256:01e68e2b723ccc863d79f5f9dc2988d2bbbb832889ffd65ac98f5f39e87a1136) completed the official Debian netinst magnet without trackers: metadata within five seconds and all 792,723,456 bytes in 55 seconds. Completion paused transfer with seeding disabled. Removed its engine entry, payload, metadata and empty output folder.
+- Repeated that trackerless download with a separate, unprivileged engine using empty state and the production VPN tunnel: all 792,723,456 bytes completed in 45 seconds. Protection and kill switch were checked before adding; no saved DHT or peer cache was used. The process, private test state, logs and payload were removed in a finally block. This rules out reliance on the earlier test's warm discovery cache.
+- The isolated full-stack browser test on Atlas passed all six tests (script: 7 passed, 0 failed): magnet submission, moving progress, completion, sorting into Movies with correct ownership, engine removal, thumbnail generation, playback and VPN loss/recovery. Only synthetic media and temporary accounts were used; production app data and settings are untouched. Chromium required its own short temporary path in the copied test configuration; no application source changed.
+- No runtime change is justified by these passing controls alone. The owner's failing case remains unverified until it is present on Atlas. Current sanitized evidence: evidence/torrent-completion/.
+- Final cleanup: removed all work-owned test containers, networks, pulled images, browser/source/cache/scratch files and both public download payloads. All 20 original container IDs (including 19 unrelated services) match the initial snapshot. Production remains healthy, protected, with kill switch enabled and no VPN bypass; its database integrity is ok and its download queue is still empty. The existing deployment, rollback image and backup are preserved. This iteration changes only this evidence record; it does not claim a new torrent fix.
+
 ## Current continuation: stalled magnet diagnosis, 2026-10-15
 
 - Owner report: the active Atlas magnet shows Idle and never downloads; inspect the real torrent, fix verified defects, preserve its state and all unrelated services, keep VPN isolation, remove work-owned NAS test resources.
