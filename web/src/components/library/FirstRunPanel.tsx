@@ -20,7 +20,7 @@ const styles = stylex.create({
     borderWidth: 1,
     borderStyle: 'solid',
     borderColor: colorVars['--color-border'],
-    borderRadius: 16,
+    borderRadius: 'var(--radius-container)',
     backgroundColor: colorVars['--color-background-surface'],
   },
   intro: {
@@ -52,7 +52,7 @@ const styles = stylex.create({
     placeItems: 'center',
     width: 40,
     height: 40,
-    borderRadius: 10,
+    borderRadius: 'var(--popcorn-radius-media)',
     backgroundColor: colorVars['--color-background-muted'],
     color: colorVars['--color-icon-primary'],
   },

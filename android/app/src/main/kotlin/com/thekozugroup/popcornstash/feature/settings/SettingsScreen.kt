@@ -22,7 +22,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import com.thekozugroup.popcornstash.ui.components.PopcornMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MenuDefaults
@@ -358,7 +358,7 @@ private fun LibrarySettingsRow(
             DropdownMenu(
                 expanded = menu,
                 onDismissRequest = { menu = false },
-                shape = Popcorn.shapes.control,
+                shape = Popcorn.shapes.panel,
                 containerColor = colors.surface,
                 border = BorderStroke(1.dp, colors.divider),
                 shadowElevation = 4.dp,
@@ -384,7 +384,7 @@ private fun LibrarySettingsRow(
 @Composable
 private fun MenuEntry(text: String, enabled: Boolean = true, destructive: Boolean = false, onClick: () -> Unit) {
     val colors = Popcorn.colors
-    DropdownMenuItem(
+    PopcornMenuItem(
         text = { Text(text, style = Popcorn.type.item) },
         onClick = onClick,
         enabled = enabled,

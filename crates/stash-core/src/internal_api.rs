@@ -202,6 +202,9 @@ pub struct LimitsRequest {
     /// Permit uploading after completion. Older callers and saved limits default off.
     #[serde(default)]
     pub seed: bool,
+    /// Append the maintained public tracker list. Older callers remain opted out.
+    #[serde(default)]
+    pub add_public_trackers: bool,
 }
 
 /// One request line on the supervisor's adopt socket.

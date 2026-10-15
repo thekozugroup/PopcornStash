@@ -34,7 +34,7 @@ const styles = stylex.create({
     height: 44,
     minWidth: 44,
     paddingInline: 0,
-    borderRadius: 8,
+    borderRadius: 'var(--radius-element)',
     color: colorVars['--color-icon-secondary'],
   },
   chosen: {

@@ -48,3 +48,12 @@ Tests: `metadata_lookup_announces_missing_bytes_to_trackers` uses a tracker
 that withholds peers from completed clients; `metadata_lookup_retries_a_peer_that_comes_back`
 lists a paused seeder repeatedly, then resumes it. Both exercise real metadata
 exchange with DHT and local discovery disabled, and fail without these fixes.
+
+## Private torrents and session trackers
+
+`session.rs::make_peer_rx` excludes session-wide public trackers for every private torrent,
+including private torrents with zero or one original tracker. Previously only the case
+with multiple original trackers skipped the global list. The engine regression
+`private_torrents_never_announce_to_the_session_public_tracker` observes real local tracker
+requests for public/private metadata and asserts the private torrent only announces to
+its original tracker.

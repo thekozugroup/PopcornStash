@@ -18,7 +18,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import com.thekozugroup.popcornstash.ui.components.PopcornMenuItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -141,11 +141,11 @@ fun SortAction(current: ItemSort, options: List<ItemSort>, onSort: (ItemSort) ->
             expanded = open,
             onDismissRequest = { open = false },
             containerColor = Popcorn.colors.surface,
-            shape = Popcorn.shapes.control,
+            shape = Popcorn.shapes.panel,
             border = BorderStroke(1.dp, Popcorn.colors.divider),
         ) {
             options.forEach { option ->
-                DropdownMenuItem(
+                PopcornMenuItem(
                     text = { Text(option.label, style = Popcorn.type.body) },
                     trailingIcon = {
                         if (option == current) LucideIcon(PopcornIcons.Chosen, contentDescription = null, tint = Popcorn.colors.text, size = 20.dp)

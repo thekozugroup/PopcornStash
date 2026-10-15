@@ -1,5 +1,12 @@
 # PopcornStash, iteration 1
 
+## Current continuation: concentric UI and optional public trackers, 2026-10-15
+
+- Scope: consistent nested corners across web/Android/extension and the family handoff; align download percentage with rate/peer chips; owner setting to append ngosang's best public trackers through the existing protected engine. Preserve private torrents' supplied trackers, default opt-in off, retain the last valid list on fetch failure.
+- Read-only Atlas comparison: the working .torrent is a different torrent identity from the previously stalled magnet. Payload advanced from 12 MB to 29 MB with two peers. No user download was paused, removed or replaced for that comparison.
+- Implemented the opt-in setting for new and existing public torrents/magnets, bounded daily VPN fetch/cache with last-good fallback, safe removal on opt-out, and private-torrent exclusion (including a one-tracker vendor edge case). Standardized semantic web corner tokens, derived episode-row corners and inset Android menus; percentage shares rate/peer chips on both platforms. Family kit updated with reusable geometry and native references.
+- Validation: web check/build (57 tests), extension check/ZIP (78 tests), Android test/lint/debug/golden/glyph gates (800 tests, zero failures/errors, four integration skips), all 22 changed native goldens inspected, emulator install/launch/sign-in verified, desktop light/dark and 390px/320px browser alignment/overflow checks, settings enable/disable/save/reload journey and design detector pass. Clean Android snapshot excludes 19 preexisting untracked iCloud duplicates; originals preserved. Family ZIP has 38 verified checksums; SHA256 9cd1b758e5a13e497f5ba5a0063da0b7a755e8c1811291809e52f51bbef6f2d7. Native Linux fmt/strict clippy and all 561 Rust tests passed, including trackerless magnet discovery, private tracker exclusion, persisted opt-in, invalid-list fallback and paused file/magnet preservation across both tracker toggles. Exact-image Docker/deployment verification pending. Evidence: evidence/concentricity/.
+
 ## Current continuation: owner's re-added magnet, 2026-10-15
 
 - Owner added the failing magnet again. Confirmed one unpaused, initializing engine entry and one downloading application row, with no metadata, size or payload. NordVPN/WireGuard remains connected and protected, with kill switch enabled. No pause, deletion, replacement, settings change or restart was applied to the owner's download.

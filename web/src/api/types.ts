@@ -799,6 +799,7 @@ export interface Settings {
   http_via_vpn: HttpViaVpn;
   max_concurrent_downloads: number;
   torrent: {
+    add_public_trackers: boolean;
     seed_after_complete: boolean;
     seed_ratio: number;
     seed_hours: number;

@@ -343,6 +343,9 @@
     --popcorn-progress-track: light-dark(oklch(87.1% 0.006 286.286), oklch(14.1% 0.005 285.823));
     --popcorn-control-well: light-dark(oklch(96.7% 0.001 286.375), oklch(14.1% 0.005 285.823));
     --popcorn-radius-media: 10px;
+    --popcorn-radius-glyph: 12px;
+    --popcorn-media-row-inset: 8px;
+    --popcorn-radius-media-row: calc(var(--popcorn-radius-media) + var(--popcorn-media-row-inset));
     --popcorn-radius-tag: 6px;
     --popcorn-radius-progress: 4px;
     --popcorn-media-hairline: light-dark(oklch(14.1% 0.005 285.823 / 0.08), oklch(100% 0 0 / 0.08));

@@ -117,6 +117,9 @@ const localTokens: Record<string, TokenValue> = {
   '--popcorn-control-well': [zinc[100], zinc[950]],
   // Popcorn shape and media tokens that Astryx has no slot for.
   '--popcorn-radius-media': '10px',
+  '--popcorn-radius-glyph': '12px',
+  '--popcorn-media-row-inset': '8px',
+  '--popcorn-radius-media-row': 'calc(var(--popcorn-radius-media) + var(--popcorn-media-row-inset))',
   '--popcorn-radius-tag': '6px',
   '--popcorn-radius-progress': '4px',
   '--popcorn-media-hairline': [alpha(zinc[950], 0.08), alpha(white, 0.08)],

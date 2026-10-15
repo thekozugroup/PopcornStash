@@ -22,7 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenuItem
+import com.thekozugroup.popcornstash.ui.components.PopcornMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -358,13 +358,13 @@ private fun FolderPicker(state: LibraryEditorUi, draft: LibraryDraft, actions: L
         ExposedDropdownMenu(
             expanded = expanded && !state.busy,
             onDismissRequest = { expanded = false },
-            shape = Popcorn.shapes.control,
+            shape = Popcorn.shapes.panel,
             containerColor = colors.surface,
             border = BorderStroke(1.dp, colors.divider),
             shadowElevation = 4.dp,
         ) {
             state.folders.forEach { folder ->
-                DropdownMenuItem(
+                PopcornMenuItem(
                     text = {
                         Column(Modifier.padding(vertical = Popcorn.spacing.xxs)) {
                             Text("${folder.name}/", style = FolderNameStyle, color = colors.text)

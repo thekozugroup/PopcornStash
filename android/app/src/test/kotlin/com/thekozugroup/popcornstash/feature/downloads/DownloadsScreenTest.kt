@@ -86,6 +86,17 @@ class DownloadsScreenTest {
     }
 
     @Test
+    fun percentageAlignsWithTheNetworkIndicators() {
+        show(s.content())
+        val percent = compose.onNodeWithContentDescription("Progress: 64%").fetchSemanticsNode().boundsInRoot
+        val speed = compose.onNodeWithContentDescription("Download speed: ${formatBytes(s.downloading.downBps)}/s").fetchSemanticsNode().boundsInRoot
+        val name = compose.onNodeWithText(s.downloading.name).fetchSemanticsNode().boundsInRoot
+        assertEquals(speed.center.y, percent.center.y, 0.5f)
+        assertEquals(speed.height, percent.height, 0.5f)
+        assertTrue(percent.top >= name.bottom)
+    }
+
+    @Test
     fun pauseResumeAndRemoveNameTheDownload() {
         show(s.content())
         compose.onNodeWithContentDescription("Pause ${s.downloading.name}").performClick()

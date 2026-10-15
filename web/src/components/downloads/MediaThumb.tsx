@@ -15,7 +15,7 @@ const styles = stylex.create({
     placeItems: 'center',
     flexShrink: 0,
     overflow: 'hidden',
-    borderRadius: 8,
+    borderRadius: 'var(--radius-element)',
     backgroundColor: 'var(--popcorn-media-placeholder)',
     color: colorVars['--color-icon-secondary'],
   },

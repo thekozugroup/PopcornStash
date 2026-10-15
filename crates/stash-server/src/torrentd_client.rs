@@ -1071,6 +1071,7 @@ mod tests {
                 down_kbps: 100,
                 up_kbps: 50,
                 seed: false,
+                add_public_trackers: false,
             })
             .await
             .unwrap();
@@ -1080,6 +1081,7 @@ mod tests {
                 down_kbps: 100,
                 up_kbps: 50,
                 seed: false,
+                add_public_trackers: false,
             })
         );
         client.reload_vpn().await.unwrap();

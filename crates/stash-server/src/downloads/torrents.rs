@@ -542,6 +542,7 @@ async fn push_limits(manager: &DownloadManager, poller: &mut Poller) {
         down_kbps: settings.down_limit_kbps,
         up_kbps: settings.up_limit_kbps,
         seed: settings.seed_after_complete,
+        add_public_trackers: settings.add_public_trackers,
     };
     if poller.pushed_limits == Some(limits) {
         return;

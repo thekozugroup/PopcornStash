@@ -18,7 +18,7 @@ const styles = stylex.create({
     borderWidth: 1,
     borderStyle: 'solid',
     borderColor: colorVars['--color-border'],
-    borderRadius: 16,
+    borderRadius: 'var(--radius-container)',
     backgroundColor: colorVars['--color-background-surface'],
     minWidth: 0,
     overflow: 'hidden',

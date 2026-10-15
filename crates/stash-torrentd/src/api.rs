@@ -627,6 +627,7 @@ pub(crate) mod tests {
                 down_kbps: 500,
                 up_kbps: 0,
                 seed: false,
+                add_public_trackers: false,
             })
         );
         let (status, _) = call(

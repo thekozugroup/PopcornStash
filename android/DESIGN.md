@@ -362,3 +362,18 @@ Use the Apple HIG layout principles of clear hierarchy, alignment and adaptive s
 Download and upload rates and connected peers are quiet, noninteractive chips. Green denotes incoming bytes, blue outgoing bytes; arrows and accessible labels convey direction independently of color. Zero rates are neutral. Unknown peers say “Peers pending”; they are not reported as zero. Metadata waits say “Fetching torrent details”, known-size discovery says “Looking for peers”, and paused/queued reasons take precedence. No duplicated kind/status labels or “Idle” line. Keep errors visible below progress.
 
 References: [Apple layout](https://developer.apple.com/design/human-interface-guidelines/layout), [progress indicators](https://developer.apple.com/design/human-interface-guidelines/progress-indicators).
+
+### Concentric geometry and transfer metrics
+
+Use outer radius = inner radius + inset for closely nested surfaces. Menus use the 16dp
+panel shape and Material's 8dp vertical inset; `PopcornMenuItem` adds the same 8dp horizontal
+inset and clips feedback to an 8dp corner derived in `PopcornCorners`. Keep the existing
+12 + 4 = 16 toolbar geometry on both axes. Discs, selection rings and seek-thumb rings
+share their center; full-bleed media layers inherit the same clip. Form fields separated
+from the outer edge retain the normal 8dp control shape.
+
+The download percentage belongs in the network strip as its first neutral chip, with the
+same height and vertical center as rates and peers. It sits below the filename, never
+between the filename and its action buttons. Wrap whole chips for narrow windows or large
+text, preserving all 48dp action targets. The VPN settings web view exposes the owner's
+public-tracker switch with the same behavior as the browser.

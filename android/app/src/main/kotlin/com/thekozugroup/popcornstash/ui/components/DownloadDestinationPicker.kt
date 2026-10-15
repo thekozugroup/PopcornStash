@@ -8,7 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.DropdownMenuItem
+import com.thekozugroup.popcornstash.ui.components.PopcornMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -63,12 +63,12 @@ fun DownloadDestinationPicker(libraries: List<Library>, selected: String?, onCho
                 LucideIcon(PopcornIcons.Expand, contentDescription = null, tint = colors.textMuted, size = 20.dp)
             }
             ExposedDropdownMenu(expanded = open && enabled, onDismissRequest = { open = false },
-                containerColor = colors.surface, shape = Popcorn.shapes.control,
+                containerColor = colors.surface, shape = Popcorn.shapes.panel,
                 shadowElevation = 8.dp, border = BorderStroke(1.dp, colors.divider),
                 modifier = Modifier.heightIn(max = 320.dp)) {
-                DropdownMenuItem(text = { Text("Sorted automatically") }, onClick = { open = false; onChoose(null) })
+                PopcornMenuItem(text = { Text("Sorted automatically") }, onClick = { open = false; onChoose(null) })
                 libraries.forEach { item ->
-                    DropdownMenuItem(text = { Text(item.name) }, onClick = { open = false; onChoose(item.id) },
+                    PopcornMenuItem(text = { Text(item.name) }, onClick = { open = false; onChoose(item.id) },
                         leadingIcon = { LucideIcon(LibraryIcons.glyph(item.icon), contentDescription = null) })
                 }
             }

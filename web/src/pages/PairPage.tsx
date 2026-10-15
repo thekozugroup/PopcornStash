@@ -36,7 +36,7 @@ const styles = stylex.create({
     borderWidth: 1,
     borderStyle: 'solid',
     borderColor: colorVars['--color-border'],
-    borderRadius: 16,
+    borderRadius: 'var(--radius-container)',
     backgroundColor: colorVars['--color-background-surface'],
   },
   device: {
@@ -52,7 +52,7 @@ const styles = stylex.create({
     gap: 12,
     paddingBlock: 16,
     paddingInline: 18,
-    borderRadius: 10,
+    borderRadius: 'var(--popcorn-radius-media)',
     backgroundColor: colorVars['--color-background-muted'],
   },
   code: {

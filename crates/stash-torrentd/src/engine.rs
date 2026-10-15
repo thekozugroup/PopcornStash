@@ -39,6 +39,7 @@ use tokio_util::sync::CancellationToken;
 use crate::EngineOptions;
 use crate::api::{self, BackendError, MSG_VPN_WAIT, NewTorrent, TorrentBackend};
 use crate::proxy::{self, ProxyConfig};
+use crate::public_trackers::{self, PublicTrackers};
 use crate::status;
 use crate::sys::{self, now_unix};
 use crate::vpn::killswitch::{ENGINE_DHT_PORT, ENGINE_LISTEN_PORT};
@@ -289,6 +290,8 @@ pub struct Engine {
     tunnel_if: Option<String>,
     allow_no_vpn: bool,
     ip_check: IpCheck,
+    public_trackers: Mutex<PublicTrackers>,
+    restart_trackers: AtomicBool,
     session: RwLock<Option<Live>>,
     /// Serialize metadata handoff with pause, resume, remove and re-add.
     pending_ops: tokio::sync::Mutex<()>,
@@ -447,6 +450,8 @@ impl Engine {
             tunnel_if: options.tunnel_if.clone(),
             allow_no_vpn: options.allow_no_vpn,
             ip_check: IpCheck::default(),
+            public_trackers: Mutex::new(PublicTrackers::load(&options.state_dir)),
+            restart_trackers: AtomicBool::new(false),
             session: RwLock::new(None),
             pending_ops: tokio::sync::Mutex::new(()),
             inner: Mutex::new(Inner {
@@ -636,6 +641,15 @@ impl Engine {
                     // The tunnel is up but the last check said the address is not a VPN
                     // address: no torrents until a later check passes.
                     let unprotected = !self.allow_no_vpn && lock(&self.inner).unprotected;
+                    if !unprotected {
+                        self.refresh_public_trackers();
+                        if self.restart_trackers.swap(false, Ordering::SeqCst) {
+                            // Flush and restore all torrents with the new session-wide list.
+                            // Original tracker metadata is untouched; private torrents ignore it.
+                            self.stop_session().await;
+                            failed_start = None;
+                        }
+                    }
                     let current = self.session.read().await.as_ref().map(|live| live.ifindex);
                     let wait_retry = failed_start.is_some_and(|(failed, at)| {
                         failed == ifindex && at.elapsed() < START_RETRY
@@ -752,6 +766,11 @@ impl Engine {
             ratelimits: LimitsConfig {
                 download_bps: kbps_to_bps(limits.down_kbps),
                 upload_bps: kbps_to_bps(limits.up_kbps),
+            },
+            trackers: if limits.add_public_trackers {
+                lock(&self.public_trackers).trackers()
+            } else {
+                HashSet::new()
             },
             peer_limit: Some(PEERS_PER_TORRENT),
             ..Default::default()
@@ -1032,6 +1051,24 @@ impl Engine {
             self.watch_completion(session, handle);
         }
         Ok(())
+    }
+
+    /// Never ask the feed while opted out, blocked or outside the engine's tunnel policy.
+    fn refresh_public_trackers(self: &Arc<Self>) {
+        if !lock(&self.inner).limits.add_public_trackers
+            || !lock(&self.public_trackers).begin_refresh(now_unix())
+        {
+            return;
+        }
+        let engine = self.clone();
+        tokio::spawn(async move {
+            let result =
+                public_trackers::fetch(engine.tunnel_if.as_deref(), public_trackers::SOURCE).await;
+            let changed = lock(&engine.public_trackers).finish_refresh(&engine.state_dir, result);
+            if changed && lock(&engine.inner).limits.add_public_trackers {
+                engine.restart_trackers.store(true, Ordering::SeqCst);
+            }
+        });
     }
 
     async fn check_public_ip(&self, provider: Option<VpnProvider>) {
@@ -1547,7 +1584,15 @@ impl TorrentBackend for Engine {
     }
 
     async fn set_limits(&self, limits: LimitsRequest) -> Result<(), BackendError> {
-        lock(&self.inner).limits = limits;
+        let changed_trackers = {
+            let mut inner = lock(&self.inner);
+            let changed = inner.limits.add_public_trackers != limits.add_public_trackers;
+            inner.limits = limits;
+            changed
+        };
+        if changed_trackers {
+            self.restart_trackers.store(true, Ordering::SeqCst);
+        }
         self.seed_tx.send_replace(limits.seed);
         if let Ok(bytes) = serde_json::to_vec(&limits) {
             let _ = sys::write_atomic(&self.state_dir.join(LIMITS_FILE), &bytes, 0o600);
@@ -2080,6 +2125,7 @@ mod tests {
                 down_kbps: 100,
                 up_kbps: 5,
                 seed: false,
+                add_public_trackers: false,
             })
             .await
             .unwrap();
@@ -2090,6 +2136,7 @@ mod tests {
                 down_kbps: 100,
                 up_kbps: 5,
                 seed: false,
+                add_public_trackers: false,
             }
         );
         assert_eq!(kbps_to_bps(0), None);
@@ -2144,7 +2191,7 @@ mod tests {
 
     /// Metadata lookup must identify itself as a downloader, and must retry a peer
     /// that was unavailable when the tracker first listed it.
-    async fn metadata_tracker_fixture(require_left: bool, start_paused: bool) {
+    async fn metadata_tracker_fixture(require_left: bool, start_paused: bool, global_only: bool) {
         let dir = tempfile::tempdir().unwrap();
         let seed_dir = dir.path().join("seed");
         let leech_dir = dir.path().join("leech");
@@ -2238,15 +2285,24 @@ mod tests {
             leech_dir,
             SessionOptions {
                 listen: None,
+                trackers: if global_only {
+                    [url::Url::parse(&tracker).unwrap()].into()
+                } else {
+                    HashSet::new()
+                },
                 ..offline()
             },
         )
         .await
         .unwrap();
-        let magnet = format!(
-            "magnet:?xt=urn:btih:{}&tr={tracker}",
-            seeded.info_hash().as_string()
-        );
+        let magnet = if global_only {
+            format!("magnet:?xt=urn:btih:{}", seeded.info_hash().as_string())
+        } else {
+            format!(
+                "magnet:?xt=urn:btih:{}&tr={tracker}",
+                seeded.info_hash().as_string()
+            )
+        };
         let resolving = {
             let leecher = leecher.clone();
             tokio::spawn(async move {
@@ -2289,12 +2345,149 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn metadata_lookup_announces_missing_bytes_to_trackers() {
-        metadata_tracker_fixture(true, false).await;
+        metadata_tracker_fixture(true, false, false).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn metadata_lookup_retries_a_peer_that_comes_back() {
-        metadata_tracker_fixture(false, true).await;
+        metadata_tracker_fixture(false, true, false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn extra_tracker_resolves_a_magnet_without_its_own_tracker_or_dht() {
+        metadata_tracker_fixture(true, false, true).await;
+    }
+
+    #[tokio::test]
+    async fn public_tracker_policy_is_opt_in_and_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let opts = options(dir.path());
+        let engine = Engine::new(&opts);
+        lock(&engine.public_trackers).finish_refresh(
+            &opts.state_dir,
+            Ok(vec!["https://tracker.example/announce".into()]),
+        );
+        assert!(engine.session_options(None, false).trackers.is_empty());
+        engine
+            .set_limits(LimitsRequest {
+                add_public_trackers: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(engine.restart_trackers.load(Ordering::SeqCst));
+        assert_eq!(engine.session_options(None, false).trackers.len(), 1);
+        let restored = Engine::new(&opts);
+        assert_eq!(restored.session_options(None, false).trackers.len(), 1);
+        restored.set_limits(LimitsRequest::default()).await.unwrap();
+        assert!(restored.session_options(None, false).trackers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tracker_reconnect_preserves_paused_files_and_pending_magnets() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut opts = options(dir.path());
+        opts.allow_no_vpn = true;
+        let mut engine = Engine::new(&opts);
+        engine.offline_sessions = true;
+        engine.set_running(true, None);
+        let bytes = b"d4:infod6:lengthi4e4:name11:fixture.bin12:piece lengthi16384e6:pieces20:11111111111111111111ee";
+        let file = engine.add(NewTorrent::File(bytes.to_vec())).await.unwrap();
+        engine.pause(file.id.clone()).await.unwrap();
+        let magnet = engine
+            .add(NewTorrent::Magnet(format!(
+                "magnet:?xt=urn:btih:{PENDING_HASH}"
+            )))
+            .await
+            .unwrap();
+        engine.pause(magnet.id.clone()).await.unwrap();
+        for enabled in [true, false] {
+            engine
+                .set_limits(LimitsRequest {
+                    add_public_trackers: enabled,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert!(engine.restart_trackers.swap(false, Ordering::SeqCst));
+            engine.stop_session().await;
+            engine.start_session(None).await.unwrap();
+            let rows = engine.list().await;
+            assert_eq!(rows.len(), 2);
+            for id in [&file.id, &magnet.id] {
+                let row = rows.iter().find(|row| &row.id == id).unwrap();
+                assert_eq!(row.state, EngineTorrentState::Paused);
+                assert_eq!(row.done_bytes, 0);
+            }
+        }
+        engine.stop_session().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn private_torrents_never_announce_to_the_session_public_tracker() {
+        for private in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let original = Arc::new(AtomicU32::new(0));
+            let extra = Arc::new(AtomicU32::new(0));
+            let (a, b) = (original.clone(), extra.clone());
+            let app = axum::Router::new()
+                .route(
+                    "/original",
+                    axum::routing::get(move || {
+                        a.fetch_add(1, Ordering::SeqCst);
+                        std::future::ready("d8:intervali1e5:peers0:e")
+                    }),
+                )
+                .route(
+                    "/extra",
+                    axum::routing::get(move || {
+                        b.fetch_add(1, Ordering::SeqCst);
+                        std::future::ready("d8:intervali1e5:peers0:e")
+                    }),
+                );
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let task = tokio::spawn(async {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let tracker = format!("{base}/original");
+            let mut bytes = format!("d8:announce{}:{tracker}4:infod6:lengthi16384e4:name11:fixture.bin12:piece lengthi16384e6:pieces20:", tracker.len()).into_bytes();
+            bytes.extend_from_slice(&[0; 20]);
+            if private {
+                bytes.extend_from_slice(b"7:privatei1e");
+            }
+            bytes.extend_from_slice(b"ee");
+            let session = Session::new_with_opts(
+                dir.path().to_path_buf(),
+                SessionOptions {
+                    dht: None,
+                    listen: None,
+                    disable_local_service_discovery: true,
+                    ipv4_only: true,
+                    trackers: [url::Url::parse(&format!("{base}/extra")).unwrap()].into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            session
+                .add_torrent(AddTorrent::from_bytes(bytes), None)
+                .await
+                .unwrap();
+            let announced = tokio::time::timeout(Duration::from_secs(10), async {
+                while original.load(Ordering::SeqCst) == 0
+                    || (!private && extra.load(Ordering::SeqCst) == 0)
+                {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            })
+            .await;
+            session.stop().await;
+            task.abort();
+            announced.expect("original tracker (and public extra when allowed) must be contacted");
+            assert_eq!(extra.load(Ordering::SeqCst) > 0, !private);
+        }
     }
 
     /// A lone seeder that goes away and comes back is reconnected as soon as the tracker

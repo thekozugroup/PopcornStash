@@ -25,7 +25,7 @@ const styles = stylex.create({
     gap: 20,
     paddingBlock: 20,
     paddingInline: {default: 20, '@media (max-width: 559px)': 16},
-    borderRadius: 10,
+    borderRadius: 'var(--popcorn-radius-media)',
     // Zinc Subtle in light, Zinc Black in dark: the form's focus rings keep 3:1 on it.
     backgroundColor: 'var(--popcorn-control-well)',
   },

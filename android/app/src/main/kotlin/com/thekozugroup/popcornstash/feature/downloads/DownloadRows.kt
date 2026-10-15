@@ -20,7 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import com.thekozugroup.popcornstash.ui.components.PopcornMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MenuDefaults
@@ -181,12 +181,12 @@ fun RowMoreMenu(name: String, choices: List<MenuChoice>, enabled: Boolean = true
             expanded = open,
             onDismissRequest = { open = false },
             containerColor = Popcorn.colors.surface,
-            shape = Popcorn.shapes.control,
+            shape = Popcorn.shapes.panel,
             shadowElevation = 8.dp,
             border = androidx.compose.foundation.BorderStroke(1.dp, Popcorn.colors.divider),
         ) {
             choices.forEach { choice ->
-                DropdownMenuItem(
+                PopcornMenuItem(
                     text = { Text(choice.label, style = Popcorn.type.item) },
                     onClick = {
                         open = false
@@ -309,10 +309,6 @@ fun DownloadRow(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(download.name, style = Popcorn.type.item, color = Popcorn.colors.text,
                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                download.knownProgress()?.let {
-                    Spacer(Modifier.width(8.dp))
-                    Text(formatPercent(it), style = Popcorn.type.metadata, color = Popcorn.colors.textMuted, maxLines = 1)
-                }
                 Spacer(Modifier.width(Popcorn.spacing.xxs))
                 if (resumable || download.canPause()) {
                     RowIconButton(
@@ -336,6 +332,9 @@ fun DownloadRow(
 @Composable
 private fun NetworkChips(download: Download) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        download.knownProgress()?.let {
+            NetworkChip(formatPercent(it), null, Popcorn.colors.textMuted, "Progress")
+        }
         NetworkChip("${formatBytes(download.downBps)}/s", LucideGlyphs.ArrowDown,
             if (download.downBps > 0) Popcorn.colors.connected else Popcorn.colors.textMuted, "Download speed")
         if (download.kind == DownloadKind.Torrent) {
@@ -348,13 +347,13 @@ private fun NetworkChips(download: Download) {
 }
 
 @Composable
-private fun NetworkChip(text: String, icon: LucideGlyph, tint: Color, description: String) {
+private fun NetworkChip(text: String, icon: LucideGlyph?, tint: Color, description: String) {
     Row(
         Modifier.background(tint.copy(alpha = 0.10f), Popcorn.shapes.tag).padding(horizontal = 6.dp, vertical = 3.dp)
             .clearAndSetSemantics { contentDescription = "$description: $text" },
         horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically,
     ) {
-        LucideIcon(icon, contentDescription = null, size = 12.dp, tint = tint)
+        if (icon != null) LucideIcon(icon, contentDescription = null, size = 12.dp, tint = tint)
         Text(text, style = Popcorn.type.metadata, color = tint, maxLines = 1)
     }
 }

@@ -43,6 +43,8 @@ def main():
             "android/app/src/main/kotlin/com/thekozugroup/popcornstash/feature/downloads/DownloadRows.kt", "web/src/themes/popcorn/popcornTheme.ts",
             "web/src/themes/popcorn/popcorn.css", "web/src/index.css",
             "android/app/src/main/kotlin/com/thekozugroup/popcornstash/ui/theme/Type.kt",
+            "android/app/src/main/kotlin/com/thekozugroup/popcornstash/ui/theme/Shape.kt",
+            "android/app/src/main/kotlin/com/thekozugroup/popcornstash/ui/components/PopcornMenuItem.kt",
             "android/app/src/main/kotlin/com/thekozugroup/popcornstash/navigation/NavigationPlacement.kt",
             "android/app/src/main/kotlin/com/thekozugroup/popcornstash/navigation/AppShell.kt",
             "android/app/src/main/kotlin/com/thekozugroup/popcornstash/ui/components/FloatingNavToolbar.kt",

@@ -13,7 +13,7 @@ const styles = stylex.create({
     borderWidth: 1,
     borderStyle: 'solid',
     borderColor: colorVars['--color-border'],
-    borderRadius: 16,
+    borderRadius: 'var(--radius-container)',
     backgroundColor: colorVars['--color-background-surface'],
     paddingBlock: {default: 44, '@media (max-width: 520px)': 32},
     paddingInline: {default: 24, '@media (max-width: 520px)': 20},

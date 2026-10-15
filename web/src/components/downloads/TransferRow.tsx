@@ -7,6 +7,7 @@ import * as stylex from '@stylexjs/stylex';
 import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {ProgressBar} from '@astryxdesign/core/ProgressBar';
 import {Text} from '@astryxdesign/core/Text';
+import {Badge} from '@astryxdesign/core/Badge';
 import type {LucideIcon} from 'lucide-react';
 import type {ReactNode} from 'react';
 import {formatPercent} from '../../lib/format';
@@ -40,7 +41,7 @@ const styles = stylex.create({
     placeItems: 'center',
     width: {default: 64, '@media (max-width: 559px)': 40},
     height: {default: 64, '@media (max-width: 559px)': 40},
-    borderRadius: 12,
+    borderRadius: 'var(--popcorn-radius-glyph)',
     backgroundColor: colorVars['--color-background-muted'],
     color: colorVars['--color-icon-secondary'],
   },
@@ -153,13 +154,15 @@ export function TransferRow({icon: Icon, name, stateText, progress, tone = 'acti
       <div {...stylex.props(styles.body)} title={detail}>
         <div {...stylex.props(styles.titleLine)} title={name}>
           <Text type="label" as="p" maxLines={1} wordBreak="break-all" xstyle={styles.title}>{name}</Text>
-          {hasSize ? <Text type="supporting" color="secondary" xstyle={styles.percent}>{formatPercent(progress)}</Text> : null}
         </div>
         <div {...stylex.props(styles.stateLine)}>
           <Text type="supporting" color="secondary" xstyle={styles.stateText}>
             {stateText}
           </Text>
-          {telemetry ? <div {...stylex.props(styles.telemetry)}>{telemetry}</div> : null}
+          {hasSize || telemetry ? <div {...stylex.props(styles.telemetry)}>
+            {hasSize ? <span {...stylex.props(styles.percent)} aria-label={`${formatPercent(progress)} complete`}><Badge variant="neutral" label={formatPercent(progress)} /></span> : null}
+            {telemetry}
+          </div> : null}
           {entries.length > 0 ? <ul {...stylex.props(styles.meta)}>{entries.map(entry => <li key={entry}>{entry}</li>)}</ul> : null}
         </div>
         <div {...stylex.props(styles.progress)}><ProgressBar

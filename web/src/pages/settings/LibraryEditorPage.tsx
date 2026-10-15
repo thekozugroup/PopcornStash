@@ -94,7 +94,7 @@ const styles = stylex.create({
     maxWidth: '100%',
     minHeight: 44,
     paddingInline: 10,
-    borderRadius: 8,
+    borderRadius: 'var(--radius-element)',
     backgroundColor: colorVars['--color-neutral'],
     color: colorVars['--color-text-primary'],
     fontSize: 14,

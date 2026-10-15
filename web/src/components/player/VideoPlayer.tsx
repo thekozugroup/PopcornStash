@@ -39,7 +39,7 @@ const styles = stylex.create({
     minHeight: 200,
     marginInline: {default: 0, '@media (max-width: 799px)': -20},
     overflow: 'hidden',
-    borderRadius: {default: 16, '@media (max-width: 799px)': 0},
+    borderRadius: {default: 'var(--radius-container)', '@media (max-width: 799px)': 0},
     backgroundColor: 'var(--popcorn-stage)',
     colorScheme: 'dark',
   },

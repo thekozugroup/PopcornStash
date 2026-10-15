@@ -13,6 +13,7 @@ pub mod api;
 pub mod children;
 pub mod engine;
 pub mod proxy;
+mod public_trackers;
 pub mod status;
 pub mod supervisor;
 pub mod sys;

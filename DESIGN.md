@@ -393,3 +393,24 @@ Use the Apple HIG layout principles of clear hierarchy, alignment and adaptive s
 Download and upload rates and connected peers are quiet, noninteractive chips. Green denotes incoming bytes, blue outgoing bytes; arrows and accessible labels convey direction independently of color. Zero rates are neutral. Unknown peers say “Peers pending”; they are not reported as zero. Metadata waits say “Fetching torrent details”, known-size discovery says “Looking for peers”, and paused/queued reasons take precedence. No duplicated kind/status labels or “Idle” line. Keep errors visible below progress.
 
 References: [Apple layout](https://developer.apple.com/design/human-interface-guidelines/layout), [progress indicators](https://developer.apple.com/design/human-interface-guidelines/progress-indicators).
+
+### Concentric geometry
+
+Keep all custom corners on the shared semantic radius tokens: controls 8px, media 10px,
+large glyph wells 12px, panels 16px and tags 6px. When a surface closely frames another,
+use `outer radius = inner radius + inset` on every adjacent edge; include a real layout
+border in the inset. Astryx menus and segmented controls already derive their inner radius
+from their own padding; retain that behavior. A full-bleed layer inherits its parent's
+corners, circular controls share one center, and progress fills clip within their track.
+Separate form fields deep inside a panel retain the control radius rather than taking a
+negative corner. Episode hover surfaces use an equal 8px inset around 10px frames, hence
+an 18px derived outer corner. Do not give unrelated nested layers the same radius.
+
+The transfer percentage is the first neutral telemetry chip, beside the down/up/peer
+chips with the same height and vertical center. The filename owns its line; the percentage
+never floats at its trailing edge. Narrow windows may wrap complete chips, keeping icons
+and text centered; actions retain their full touch targets.
+
+The optional public-tracker setting lives with the existing torrent settings and Save
+action. State the daily refresh, VPN use, private-torrent exception and brief reconnect
+in the switch's description; link the maintained source, without showing a wall of URLs.

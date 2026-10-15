@@ -1554,12 +1554,14 @@ impl Session {
             trackers.clear();
         }
 
-        if is_private && trackers.len() > 1 {
-            warn!(
-                ?info_hash,
-                "private trackers are not fully implemented, so using only the first tracker"
-            );
-            trackers.truncate(1);
+        if is_private {
+            if trackers.len() > 1 {
+                warn!(
+                    ?info_hash,
+                    "private trackers are not fully implemented, so using only the first tracker"
+                );
+                trackers.truncate(1);
+            }
         } else if !self.disable_trackers {
             trackers.extend(self.trackers.iter().cloned());
         }

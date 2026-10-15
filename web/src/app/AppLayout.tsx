@@ -94,7 +94,7 @@ const styles = stylex.create({
     // No side padding: "Downloads" needs the whole cell on a 390px phone.
     paddingInline: 0,
     paddingBlock: 6,
-    borderRadius: 8,
+    borderRadius: 'var(--radius-element)',
     color: colorVars['--color-text-secondary'],
     fontSize: 12,
     fontWeight: 500,

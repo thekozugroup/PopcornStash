@@ -6,6 +6,7 @@
  */
 import * as stylex from '@stylexjs/stylex';
 import {Button} from '@astryxdesign/core/Button';
+import {Link} from '@astryxdesign/core/Link';
 import {NumberInput} from '@astryxdesign/core/NumberInput';
 import {RadioList, RadioListItem} from '@astryxdesign/core/RadioList';
 import {Switch} from '@astryxdesign/core/Switch';
@@ -44,6 +45,7 @@ const styles = stylex.create({
 });
 
 interface TorrentDraft {
+  add_public_trackers: boolean;
   seed_after_complete: boolean;
   seed_ratio: number | null;
   seed_hours: number | null;
@@ -133,6 +135,7 @@ export function TorrentSettings({isPrimary, isNoVpn = false}: TorrentSettingsPro
       await form.save({
         http_via_vpn: draft.http_via_vpn,
         torrent: {
+          add_public_trackers: draft.add_public_trackers,
           seed_after_complete: draft.seed_after_complete,
           seed_ratio: draft.seed_ratio ?? undefined,
           seed_hours: draft.seed_hours ?? undefined,
@@ -154,6 +157,13 @@ export function TorrentSettings({isPrimary, isNoVpn = false}: TorrentSettingsPro
       <SettingsGroup
         title="Torrents"
         description="Finished torrents move into your library. Seeding keeps sharing them for a while first.">
+        <Switch
+          label="Add public trackers"
+          description="Append ngosang’s 20 best trackers to public torrents and magnets. Updates daily through the VPN; private torrents keep their own trackers. Turning this on or off briefly reconnects active torrents."
+          value={draft.add_public_trackers}
+          onChange={value => set('add_public_trackers', value)}
+        />
+        <Text type="supporting" color="secondary">If the list cannot refresh, the last valid list stays in use. <Link href="https://github.com/ngosang/trackerslist" isExternalLink type="inherit">Tracker list source</Link></Text>
         <Switch
           label="Keep seeding after a download finishes"
           description="Seeding stops at the ratio or the time limit, whichever comes first."

@@ -23,6 +23,7 @@ pub enum HttpViaVpn {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TorrentSettings {
+    pub add_public_trackers: bool,
     pub seed_after_complete: bool,
     pub seed_ratio: f64,
     pub seed_hours: u32,
@@ -34,6 +35,7 @@ pub struct TorrentSettings {
 impl Default for TorrentSettings {
     fn default() -> Self {
         Self {
+            add_public_trackers: false,
             seed_after_complete: false,
             seed_ratio: 1.0,
             seed_hours: 24,
@@ -233,6 +235,27 @@ fn merge(base: &mut serde_json::Value, patch: serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn public_trackers_default_off_for_existing_settings_and_persist_when_enabled() {
+        let old: Settings = serde_json::from_str(r#"{"torrent":{"max_active":3}}"#).unwrap();
+        assert!(!old.torrent.add_public_trackers);
+        let db = crate::db::open_memory().await.unwrap();
+        let store = SettingsStore::load(db.clone(), None).await.unwrap();
+        store
+            .update(serde_json::json!({"torrent":{"add_public_trackers":true}}))
+            .await
+            .unwrap();
+        assert!(
+            SettingsStore::load(db, None)
+                .await
+                .unwrap()
+                .get()
+                .await
+                .torrent
+                .add_public_trackers
+        );
+    }
 
     #[tokio::test]
     async fn seeding_hours_are_bounded_and_persisted() {

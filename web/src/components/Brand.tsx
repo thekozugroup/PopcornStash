@@ -16,7 +16,7 @@ const styles = stylex.create({
     color: colorVars['--color-text-primary'],
     textDecoration: 'none',
     whiteSpace: 'nowrap',
-    borderRadius: 8,
+    borderRadius: 'var(--radius-element)',
     outlineOffset: 4,
   },
   mark: {

@@ -17,7 +17,7 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import com.thekozugroup.popcornstash.ui.components.PopcornMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.PlainTooltip
@@ -158,17 +158,17 @@ private fun ResumeCard(
                     expanded = menu,
                     onDismissRequest = { menu = false },
                     containerColor = colors.surface,
-                    shape = Popcorn.shapes.control,
+                    shape = Popcorn.shapes.panel,
                     border = BorderStroke(1.dp, colors.divider),
                 ) {
-                    DropdownMenuItem(
+                    PopcornMenuItem(
                         text = { Text("Details", style = Popcorn.type.body) },
                         onClick = {
                             menu = false
                             onDetails(item)
                         },
                     )
-                    DropdownMenuItem(
+                    PopcornMenuItem(
                         text = { Text("Start from the beginning", style = Popcorn.type.body) },
                         onClick = {
                             menu = false

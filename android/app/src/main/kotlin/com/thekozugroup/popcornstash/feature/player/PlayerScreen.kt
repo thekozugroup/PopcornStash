@@ -33,7 +33,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import com.thekozugroup.popcornstash.ui.components.PopcornMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Slider
@@ -557,7 +557,7 @@ private fun MenuHeading(text: String) {
 @Composable
 private fun MenuChoice(label: String, detail: String, selected: Boolean, onClick: () -> Unit) {
     val colors = Popcorn.colors
-    DropdownMenuItem(
+    PopcornMenuItem(
         text = {
             Column {
                 Text(label, style = Popcorn.type.item, color = colors.text)

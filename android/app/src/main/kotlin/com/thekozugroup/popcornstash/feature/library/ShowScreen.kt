@@ -19,7 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import com.thekozugroup.popcornstash.ui.components.PopcornMenuItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -213,11 +213,11 @@ private fun SeasonPicker(seasons: List<Int>, selected: Int, onSelect: (Int) -> U
                 expanded = open,
                 onDismissRequest = { open = false },
                 containerColor = colors.surface,
-                shape = Popcorn.shapes.control,
+                shape = Popcorn.shapes.panel,
                 border = BorderStroke(1.dp, colors.divider),
             ) {
                 seasons.forEach { season ->
-                    DropdownMenuItem(
+                    PopcornMenuItem(
                         text = { Text(MediaFormat.seasonName(season), style = Popcorn.type.body) },
                         trailingIcon = { if (season == selected) LucideIcon(PopcornIcons.Chosen, contentDescription = null, size = 20.dp) },
                         onClick = {

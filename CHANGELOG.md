@@ -4,6 +4,9 @@ Changes to PopcornStash, newest first. Version numbers follow [Semantic Versioni
 
 ## [Unreleased]
 
+- Optional public tracker list in VPN settings, using ngosang's maintained best list through the VPN, with daily refresh, last-good fallback and private-torrent exclusion.
+- Consistent nested menu and media corners; download percentages aligned with the speed/peer chips on web and Android.
+
 Libraries the owner defines, each with its own icon and its own audience, and the first Android app.
 
 ### Libraries

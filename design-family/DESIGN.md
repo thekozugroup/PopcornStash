@@ -1,7 +1,7 @@
 ---
 name: Popcorn family
 description: Quiet, private media tools with familiar controls and warm editorial headings.
-version: 2
+version: 3
 products: [PopcornStash, PopcornSR, PopcornBatch]
 ---
 
@@ -132,3 +132,18 @@ Check sidebar spacing, heading wrapping, long names, empty/error/loading states,
 keyboard focus and both themes. Android agents also check phone landscape, split screen,
 tablet, RTL, tabletop posture and picture-in-picture. Run the repository's required checks
 and preserve its release/signing process. Record what was actually verified.
+
+## Concentricity
+
+For closely nested shapes, derive the inner corner from the actual inset:
+`inner radius = max(0, outer radius - inset)`. Count layout borders in the inset.
+Use equal insets on adjacent edges; full-bleed layers inherit their parent clip. Menu
+rows inside a 16px surface with 8px padding use 8px corners; the Android navigation bar
+keeps 12px targets + 4px padding = 16px outside. Episode hover frames use 10px media
+corners + 8px equal padding = 18px outside. Circular indicators and their rings share
+one center. Deeply separated form controls retain their normal 8px corners.
+
+Use semantic radius variables rather than repeating numeric values in each screen.
+Keep transfer percentages beside rate/peer chips with equal height and vertical centers,
+not beside the filename. Check light/dark, narrow/wide, RTL and enlarged text against
+actual rendered bounds; don't force density by shrinking touch targets.

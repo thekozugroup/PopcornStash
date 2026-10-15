@@ -68,6 +68,7 @@ pub fn limits(settings: &Settings) -> LimitsRequest {
         down_kbps: settings.torrent.down_limit_kbps,
         up_kbps: settings.torrent.up_limit_kbps,
         seed: settings.torrent.seed_after_complete,
+        add_public_trackers: settings.torrent.add_public_trackers,
     }
 }
 
@@ -319,6 +320,7 @@ mod tests {
         let mut settings = Settings::default();
         settings.torrent.down_limit_kbps = 800;
         settings.torrent.up_limit_kbps = 100;
+        settings.torrent.add_public_trackers = true;
         push_limits(client, limits(&settings));
         for _ in 0..50 {
             if received.lock().unwrap().is_some() {
@@ -332,6 +334,7 @@ mod tests {
                 down_kbps: 800,
                 up_kbps: 100,
                 seed: false,
+                add_public_trackers: true,
             })
         );
     }

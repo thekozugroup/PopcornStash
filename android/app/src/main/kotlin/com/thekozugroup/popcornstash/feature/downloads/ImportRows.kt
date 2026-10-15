@@ -15,11 +15,10 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.DropdownMenuItem
+import com.thekozugroup.popcornstash.ui.components.PopcornMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MenuDefaults
@@ -240,14 +239,14 @@ fun LibraryPicker(
                 expanded = open,
                 onDismissRequest = { open = false },
                 containerColor = colors.surface,
-                shape = Popcorn.shapes.control,
+                shape = Popcorn.shapes.panel,
                 shadowElevation = 8.dp,
                 border = BorderStroke(1.dp, colors.divider),
             ) {
                 choices.forEachIndexed { index, choice ->
                     if (choice.library == null && index > 0) HorizontalDivider(color = colors.divider)
                     val chosen = choice.key == selected?.key
-                    DropdownMenuItem(
+                    PopcornMenuItem(
                         text = { Text(choice.name, style = Popcorn.type.item) },
                         leadingIcon = { LucideIcon(choice.glyph(), contentDescription = null, tint = colors.textMuted, size = 20.dp) },
                         trailingIcon = if (chosen) {
@@ -260,7 +259,6 @@ fun LibraryPicker(
                             onChoose(choice)
                         },
                         colors = MenuDefaults.itemColors(textColor = colors.text),
-                        contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
                         modifier = Modifier.heightIn(min = 48.dp),
                     )
                 }

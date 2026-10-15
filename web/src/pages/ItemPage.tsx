@@ -88,7 +88,7 @@ const styles = stylex.create({
     aspectRatio: '16 / 9',
     maxHeight: 'calc(100dvh - 200px)',
     marginInline: {default: 0, '@media (max-width: 799px)': -20},
-    borderRadius: {default: 16, '@media (max-width: 799px)': 0},
+    borderRadius: {default: 'var(--radius-container)', '@media (max-width: 799px)': 0},
     overflow: 'hidden',
   },
   skeletonText: {
