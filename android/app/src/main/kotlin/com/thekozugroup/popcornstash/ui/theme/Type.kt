@@ -4,13 +4,15 @@ import androidx.compose.material3.Typography
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import com.thekozugroup.popcornstash.R
 
 /**
- * The Popcorn type ramp (android/DESIGN.md, Type). One family, the device's system
- * sans; hierarchy comes from size and weight. Sizes are sp so they follow the
+ * The Popcorn type ramp: bundled Newsreader headings and the device's system
+ * sans for text and controls. Sizes are sp so they follow the
  * system font size.
  */
 @Immutable
@@ -26,24 +28,25 @@ data class PopcornType(
 )
 
 private val SystemSans = FontFamily.Default
+private val Newsreader = FontFamily(Font(R.font.newsreader, weight = FontWeight.SemiBold))
 
 val DefaultPopcornType = PopcornType(
     headline = TextStyle(
-        fontFamily = SystemSans,
+        fontFamily = Newsreader,
         fontWeight = FontWeight.SemiBold,
         fontSize = 28.sp,
         lineHeight = 34.sp,
         letterSpacing = (-0.025).em,
     ),
     title = TextStyle(
-        fontFamily = SystemSans,
+        fontFamily = Newsreader,
         fontWeight = FontWeight.SemiBold,
         fontSize = 20.sp,
         lineHeight = 28.sp,
         letterSpacing = (-0.025).em,
     ),
     section = TextStyle(
-        fontFamily = SystemSans,
+        fontFamily = Newsreader,
         fontWeight = FontWeight.SemiBold,
         fontSize = 16.sp,
         lineHeight = 24.sp,

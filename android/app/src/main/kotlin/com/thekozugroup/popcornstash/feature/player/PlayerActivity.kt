@@ -42,6 +42,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.compose.ContentFrame
 import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
+import androidx.window.layout.FoldingFeature
+import androidx.window.layout.WindowInfoTracker
+import androidx.window.layout.WindowLayoutInfo
 import com.thekozugroup.popcornstash.AppContainer
 import com.thekozugroup.popcornstash.MainActivity
 import com.thekozugroup.popcornstash.PopcornStashApplication
@@ -109,8 +112,10 @@ class PlayerActivity : ComponentActivity() {
 
         val container = (application as PopcornStashApplication).container
         setContent {
+            val layoutFlow = remember { WindowInfoTracker.getOrCreate(this).windowLayoutInfo(this) }
+            val layout by layoutFlow.collectAsStateWithLifecycle(initialValue = null)
             PlayerTheme {
-                PlayerHost(container, request.value, inPictureInPicture.value)
+                PlayerHost(container, request.value, inPictureInPicture.value, layout)
             }
         }
     }
@@ -151,8 +156,9 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /** Landscape either way round as the phone turns, or upright for a video taller than wide. */
-    internal fun orient(portrait: Boolean) {
-        val wanted = if (portrait) ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT else ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
+    internal fun orient(portrait: Boolean, foldable: Boolean = false) {
+        val wanted = if (foldable) ActivityInfo.SCREEN_ORIENTATION_USER
+            else if (portrait) ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT else ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
         if (requestedOrientation != wanted) requestedOrientation = wanted
     }
 
@@ -180,7 +186,7 @@ class PlayerActivity : ComponentActivity() {
 }
 
 @Composable
-private fun PlayerActivity.PlayerHost(container: AppContainer, request: PlayerRequest?, inPictureInPicture: Boolean) {
+private fun PlayerActivity.PlayerHost(container: AppContainer, request: PlayerRequest?, inPictureInPicture: Boolean, layout: WindowLayoutInfo?) {
     val sessions by container.sessions.state.collectAsStateWithLifecycle()
     when (val current = sessions) {
         SessionState.Restoring -> Box(Modifier.fillMaxSize().background(Popcorn.colors.stage))
@@ -194,23 +200,25 @@ private fun PlayerActivity.PlayerHost(container: AppContainer, request: PlayerRe
                 attach(model.controller)
                 onDispose { attach(null) }
             }
-            PlayerRoute(model, request, inPictureInPicture)
+            PlayerRoute(model, request, inPictureInPicture, layout)
         }
     }
 }
 
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-private fun PlayerActivity.PlayerRoute(model: PlayerViewModel, request: PlayerRequest?, inPictureInPicture: Boolean) {
+private fun PlayerActivity.PlayerRoute(model: PlayerViewModel, request: PlayerRequest?, inPictureInPicture: Boolean, layout: WindowLayoutInfo?) {
     val controller = model.controller
     if (request != null) LaunchedEffect(request) { controller.open(request) }
     val state by controller.state.collectAsStateWithLifecycle()
     var chromeVisible by rememberSaveable { mutableStateOf(true) }
     var videoBounds by remember { mutableStateOf<Rect?>(null) }
 
-    val barsShown = !inPictureInPicture && (chromeVisible || state.phase != PlayerPhase.Ready)
+    val flexHinge = layout?.flexHinge()
+    val foldable = layout?.displayFeatures?.any { it is FoldingFeature } == true
+    val barsShown = !inPictureInPicture && (flexHinge != null || chromeVisible || state.phase != PlayerPhase.Ready)
     LaunchedEffect(barsShown) { showSystemBars(barsShown) }
-    LaunchedEffect(state.portrait) { orient(state.portrait) }
+    LaunchedEffect(state.portrait, foldable) { orient(state.portrait, foldable) }
     LaunchedEffect(state.phase, state.playWhenReady, state.videoWidth, state.videoHeight, videoBounds) {
         updatePictureInPicture(state, videoBounds)
     }
@@ -237,6 +245,7 @@ private fun PlayerActivity.PlayerRoute(model: PlayerViewModel, request: PlayerRe
         chromeVisible = chromeVisible,
         onChromeVisibleChange = { chromeVisible = it },
         inPictureInPicture = inPictureInPicture,
+        flexHinge = flexHinge,
     ) { modifier ->
         ContentFrame(
             player = model.engine.player,

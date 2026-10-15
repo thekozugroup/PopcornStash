@@ -15,6 +15,7 @@ import com.thekozugroup.popcornstash.feature.player.PlayerSamples
 import com.thekozugroup.popcornstash.feature.player.PlayerScreen
 import com.thekozugroup.popcornstash.feature.player.PlayerTheme
 import com.thekozugroup.popcornstash.feature.player.PlayerUiState
+import com.thekozugroup.popcornstash.feature.player.FlexHinge
 import com.thekozugroup.popcornstash.feature.player.SampleFrame
 import org.junit.Rule
 import org.junit.Test
@@ -40,6 +41,7 @@ class PlayerScreenshotTest {
         ratio: Float = 16f / 9f,
         clock: PlayerClock = PlayerSamples.clock,
         inPictureInPicture: Boolean = false,
+        flexHinge: FlexHinge? = null,
     ) {
         // The waiting ring turns for ever: hold the clock so it is caught at the same place every run.
         compose.mainClock.autoAdvance = false
@@ -53,6 +55,7 @@ class PlayerScreenshotTest {
                     onChromeVisibleChange = {},
                     menuInitiallyOpen = menuOpen,
                     inPictureInPicture = inPictureInPicture,
+                    flexHinge = flexHinge,
                 ) { modifier -> if (frame) SampleFrame(modifier, ratio) else Box(modifier) }
             }
         }
@@ -61,6 +64,12 @@ class PlayerScreenshotTest {
     }
 
     private fun shoot(name: String) = compose.onRoot().captureRoboImage(screenshot(name))
+
+    @Test @Config(qualifiers = "w673dp-h841dp-mdpi")
+    fun tabletop() {
+        player(PlayerSamples.episode, flexHinge = FlexHinge(410, 430))
+        shoot("player-flex")
+    }
 
     @Test
     fun loading() {

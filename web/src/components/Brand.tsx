@@ -1,9 +1,9 @@
 /**
- * Popcorn series brand: a `p` mark followed by "Popcorn" and a small product
+ * Popcorn series brand: a popcorn mark followed by "Popcorn" and a small product
  * name, matching Popcorn SR's sidebar brand.
  */
 import * as stylex from '@stylexjs/stylex';
-import {colorVars, fontWeightVars} from '@astryxdesign/core/theme/tokens.stylex';
+import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {Link} from 'react-router';
 
 const styles = stylex.create({
@@ -19,24 +19,14 @@ const styles = stylex.create({
     outlineOffset: 4,
   },
   mark: {
-    display: 'grid',
-    placeItems: 'center',
+    display: 'block',
     flexShrink: 0,
     width: 32,
     height: 32,
-    borderRadius: 10,
-    backgroundColor: colorVars['--color-text-primary'],
-    color: colorVars['--color-background-surface'],
-    fontSize: 21,
-    fontWeight: fontWeightVars['--font-weight-semibold'],
-    lineHeight: 1,
-    paddingBottom: 3,
   },
   markLarge: {
     width: 40,
     height: 40,
-    borderRadius: 12,
-    fontSize: 26,
   },
   word: {
     fontSize: 19,
@@ -55,9 +45,7 @@ const styles = stylex.create({
 
 export function BrandMark({size = 'md'}: {size?: 'md' | 'lg'}) {
   return (
-    <span aria-hidden="true" {...stylex.props(styles.mark, size === 'lg' && styles.markLarge)}>
-      p
-    </span>
+    <img src="/icons/icon-192.png" alt="" width={32} height={32} aria-hidden="true" {...stylex.props(styles.mark, size === 'lg' && styles.markLarge)} />
   );
 }
 

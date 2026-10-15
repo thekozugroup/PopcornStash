@@ -1,5 +1,19 @@
 # PopcornStash, iteration 1
 
+## Local continuation, 2026-10-14
+
+- Owner scope: Atlas PR review/deployment, adaptive Android navigation, tabletop fold playback, Newsreader headings, one Icon Composer brand, and a separate PopcornSR/PopcornBatch design handoff ZIP. Emulator only. Gradients and flattened glass are confined to app icons.
+- PR #1 was already merged as 45995c5; local main started at d72113e. Atlas's deployment still starts at 45995c5. The remaining backend roadmap in docs/next-round.md is not certified by this visual iteration.
+- Implemented: bottom navigation on phones including landscape; physical right rail at >=600dp wide and >=480dp tall; equal 52dp targets, RTL selection, state across resize, content/snackbar clearances and reduced-motion transitions. Horizontal HALF_OPENED WindowManager hinges divide video above and persistent controls below, with hinge bounds excluded and PiP unsplit.
+- Brand: actual Apple Icon Composer documents and flattened PNG exports. Fixed the clipped popcorn contours by importing a merged transparent silhouette, then re-exporting the native material. Android, PWA/web, Docker's served assets and extension share this mark. PopcornSR uses violet; PopcornBatch orange. Editable sources, fonts/licenses, tokens, DESIGN.md, an interactive offline reference page and native integration references are packaged by scripts/package-design-family.py.
+- Bundled Newsreader (SIL OFL) for headings on web and Android; body/navigation retain system sans. Screen backgrounds retain their existing flat treatment.
+- Checks completed: Linux fmt, strict workspace clippy and all 534 Rust tests (209 core, 239 server, 86 torrentd); local web check/build (55 tests); extension check/ZIP (77 tests); Android test/lint/debug assembly, screenshot verification and Lucide check. Reviewed all 206 Android captures in seven contact sheets, including large text, themes, phone landscape, tablet, unfolded, tabletop, sign-in and icon. A debug-only synthetic playback fixture permits native emulator checks without account access or production media.
+- Linux check.sh stopped at web because Debian's Node 20 is below Astryx's >=22.13 requirement; those gates passed locally on supported Node. The Linux verification container, source directory and work-owned rust image were removed. Local Docker's existing disk is full; container build/smoke will use a scoped Atlas builder, without pruning other projects' resources.
+- Atlas health is good through private HTTPS. GPU render node is mapped and FFmpeg accelerators are present; no new hardware encode certification yet. The VPN is connected via WireGuard with kill switch enabled. No media files or unrelated services were changed.
+- Atlas torrent access repair: a named ACL gives engine UID 6881 traverse-only access to /mnt/user/F-Stash, preserving its owner-only root and existing per-download permissions. Verified the engine can traverse the root/Inbox and write Downloads/In Progress. No broad share access or root engine execution.
+- Android passkeys remain blocked by Google's inability to resolve the private Atlas hostname. Both Digital Asset Links checks returned ERROR_CODE_FETCH_ERROR. No exposure or .env changes. Code pairing remains the supported fallback. Release signing material and android/release-cert.sha256 are absent locally; signed Android publication cannot be completed without the existing key.
+- Pending for this milestone: native emulator hinge/playback confirmation; final Docker image smoke, Atlas rollout and resource cleanup; push and Android release-script result. Existing NAS backups and rollback image must be retained.
+
 ## Current repair: pending magnet pause and resume
 
 - Confirmed that pending magnets live outside librqbit's managed torrent list, so the old pause/resume lookup returns NotFound until metadata is fetched.

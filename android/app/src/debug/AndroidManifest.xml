@@ -3,5 +3,7 @@
     xmlns:tools="http://schemas.android.com/tools">
     <application
         android:networkSecurityConfig="@xml/network_security_config"
-        tools:ignore="UnusedAttribute" />
+        tools:ignore="UnusedAttribute">
+        <activity android:name=".qa.VisualQaActivity" android:exported="true" android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|density" />
+    </application>
 </manifest>

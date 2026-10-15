@@ -2,11 +2,15 @@
 
 PopcornStash for Android shows the family's libraries, the downloads and the owner's library settings on a phone. It talks only to your own server, with the same API and the same rules as the web app: a person sees only the libraries the owner shares with them.
 
-It is new. It has been tested on the build machine (unit tests, Compose UI tests on Robolectric, screenshots and runs against a real server), but not yet on a phone or an emulator. Read [What is not done yet](#what-is-not-done-yet) before you hand it to the family.
+It is new. It has been tested on the build machine (unit tests, Compose UI tests on Robolectric, screenshots and runs against a real server), with additional native layout checks on Android emulators. Physical phones have not been tested. Read [What is not done yet](#what-is-not-done-yet) before you hand it to the family.
 
 ## What it does
 
-Three tabs sit in a floating bar on the right edge of the screen, low down where your right thumb reaches it holding the phone in one hand: Downloads at the top, Home in the middle (where the app opens) and Settings at the bottom. It stays on the right whatever the phone's language, and when you turn the phone on its side. The bar shows icons only; hold one to see its name, which opens to its left. The selected tab's square is blue with a white icon, and the pages slide up or down the way the blue square moves (they fade instead when the phone's "Remove animations" setting is on). Each page ends with room to scroll its last row clear of the bar, and messages such as "Moved to Kids." appear at the bottom, beside the bar. On Android 12 and later the bar is frosted glass: the pages scroll under it blurred and tinted. On Android 9 to 11, and on any phone whose colour contrast setting is medium or high, it is a plain white bar (dark grey in dark mode).
+Three tabs sit in a floating bar: Downloads, Home (where the app opens), and Settings. On phones, including landscape and narrow split windows, the bar sits at the bottom. On tablets and unfolded windows at least 600dp wide and 480dp tall, it sits on the physical right edge with a separate content gutter. Targets are equally spaced. Hold an icon to see its name; the tooltip opens above the phone bar or to the left of the rail. The selected square is blue with a white icon. Pages move along the bar's axis, or fade when Remove animations is on. Content and messages keep clear of the controls. Android 12 and later uses the existing frosted treatment; Android 9–11 and higher contrast settings use an opaque surface.
+
+Page and section headings use bundled Newsreader; controls and body text use the system sans font. The blue popcorn icon is flattened from Apple Icon Composer. Its gradient and glass treatment stay inside the icon.
+
+On a foldable in tabletop mode (a horizontal, half-open hinge), playback shows the picture above the hinge and persistent media controls below. Both panes avoid the hinge bounds. Opening flat returns to the normal player; picture-in-picture keeps only the picture. The device must report its fold through Android's WindowManager API.
 
 - **Sign in:** type your server's address, then sign in with your passkey or pair the phone with a code that someone approves on the web.
 - **Home:** what you were watching, to carry on with one tap, then every library you can see with its icon, its name and its newest items.

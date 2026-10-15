@@ -57,8 +57,8 @@ class FrostedGlassTest {
     /** The glass at the top of the Downloads square, clear of its icon and the bar's edge. */
     private fun glass(): Color {
         val image = compose.onNodeWithTag("toolbar").captureToImage()
-        val y = with(compose.density) { 10.dp.roundToPx() }
-        return image.toPixelMap()[image.width / 2, y]
+        val x = with(compose.density) { 10.dp.roundToPx() }
+        return image.toPixelMap()[x, image.height / 2]
     }
 
     /** The pixel 1dp outside the selected square's left edge, half way down. */

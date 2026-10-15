@@ -9,6 +9,8 @@
 web/dist
 extension
 android
+brand
+design-family
 evidence
 test-results
 playwright-report

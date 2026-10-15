@@ -17,6 +17,10 @@ THIRD_PARTY_LICENSES        the Rust crates built into popcornstash and boringtu
 THIRD_PARTY_LICENSES-web    the npm packages bundled into the web app, with their
                             license texts (also served at /third-party-licenses.txt)
 
+Newsreader headings: Copyright 2020 The Newsreader Project Authors. Licensed under
+the SIL Open Font License 1.1; web/public/fonts/Newsreader-OFL.txt (served at
+/fonts/Newsreader-OFL.txt) and android/app/src/main/assets/Newsreader-OFL.txt.
+
 The Docker image is based on Debian. /usr/share/doc/popcornstash/debian-packages.txt
 lists every Debian package in it with its version; the license of each is in
 /usr/share/doc/<package>/copyright, and its source code, including that of the GPL

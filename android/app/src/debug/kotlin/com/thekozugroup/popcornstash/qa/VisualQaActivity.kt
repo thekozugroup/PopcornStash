@@ -1,0 +1,74 @@
+package com.thekozugroup.popcornstash.qa
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.compose.ContentFrame
+import androidx.window.layout.WindowInfoTracker
+import com.thekozugroup.popcornstash.R
+import com.thekozugroup.popcornstash.feature.player.*
+import com.thekozugroup.popcornstash.navigation.AppShell
+import com.thekozugroup.popcornstash.ui.components.PrimaryButton
+import com.thekozugroup.popcornstash.ui.theme.Popcorn
+import com.thekozugroup.popcornstash.ui.theme.PopcornTheme
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.onEach
+
+/** Debug-only native layout fixture. No account, token, server or family data is read. */
+@androidx.annotation.OptIn(UnstableApi::class)
+class VisualQaActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            val context = LocalContext.current
+            val player = remember { ExoPlayer.Builder(context).build().apply {
+                setMediaItem(MediaItem.fromUri("android.resource://${context.packageName}/${R.raw.qa_clip}"))
+                repeatMode = Player.REPEAT_MODE_ONE
+                prepare()
+            } }
+            DisposableEffect(player) { onDispose { player.release() } }
+            var showPlayer by remember { mutableStateOf(false) }
+            var playing by remember { mutableStateOf(false) }
+            var position by remember { mutableLongStateOf(0) }
+            var chrome by remember { mutableStateOf(true) }
+            LaunchedEffect(player) { while (true) { position = player.currentPosition; delay(250) } }
+            val flow = remember { WindowInfoTracker.getOrCreate(this).windowLayoutInfo(this)
+                .onEach { android.util.Log.i("PopcornLayoutQa", it.toString()) } }
+            val layout by flow.collectAsStateWithLifecycle(initialValue = null)
+            if (showPlayer) PlayerTheme {
+                PlayerScreen(
+                    PlayerUiState(title = "Playback preview", phase = PlayerPhase.Ready,
+                        playWhenReady = playing, durationMs = 12000, videoWidth = 640, videoHeight = 360),
+                    { PlayerClock(position, 12000) },
+                    PlayerActions(onClose = { player.pause(); playing = false; showPlayer = false },
+                        onTogglePlay = { playing = !playing; player.playWhenReady = playing }, onSeek = player::seekTo),
+                    chromeVisible = chrome, onChromeVisibleChange = { chrome = it }, flexHinge = layout?.flexHinge(),
+                ) { ContentFrame(player = player, modifier = it) }
+            } else PopcornTheme {
+                AppShell { page ->
+                    Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(Popcorn.spacing.l)) {
+                        Text(page.tab.label, style = Popcorn.type.headline, color = Popcorn.colors.text)
+                        Spacer(Modifier.height(Popcorn.spacing.l))
+                        Text("Native layout preview", style = Popcorn.type.title, color = Popcorn.colors.text)
+                        Spacer(Modifier.height(Popcorn.spacing.s))
+                        Text("Phone, tablet and foldable navigation share the same controls.", style = Popcorn.type.body, color = Popcorn.colors.textMuted)
+                        Spacer(Modifier.height(Popcorn.spacing.l))
+                        PrimaryButton("Open playback preview", onClick = { showPlayer = true })
+                    }
+                }
+            }
+        }
+    }
+}

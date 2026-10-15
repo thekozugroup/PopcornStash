@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Popcorn family design reference</title><link rel="stylesheet" href="popcorn.css"></head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><img id="brand-icon" src="icons/popcornstash.png" alt=""><strong>Popcorn<span id="suffix">Stash</span></strong></div>
+    <nav class="nav-group" aria-label="Main navigation">
+      <button aria-current="page" data-page="Home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z M9 21v-8h6v8"/></svg>Home</button>
+      <button data-page="Downloads"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 17v4h14v-4"/></svg>Downloads</button>
+      <button data-page="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="m10 3 4 0 1 3 3 1 3 3-2 3 0 3-3 3-3-1-3 1-3-3 0-3-2-3 3-3 3-1Z"/></svg>Settings</button>
+    </nav>
+    <div class="sidebar-footer"><span class="status">Connected</span><small>Popcorn family<br>Shared design reference</small></div>
+  </aside>
+  <main class="workspace"><div class="workspace-inner">
+    <div class="preview-tools"><label>Product <select id="product"><option value="stash">PopcornStash</option><option value="sr">PopcornSR</option><option value="batch">PopcornBatch</option></select></label><button id="theme" aria-pressed="false">Dark appearance</button></div>
+    <header class="page-header"><div><h1 id="title">Your library</h1><p id="description">A private home for the things you want to keep.</p></div><button class="primary" id="primary">Add files</button></header>
+    <section class="section" aria-labelledby="identity-title"><div class="section-head"><h2 id="identity-title">One family, three tools</h2></div><div class="identity-grid">
+      <div class="identity"><img src="icons/popcornstash.png" alt="PopcornStash blue popcorn icon"><div><strong>PopcornStash</strong><small>Blue gradient</small></div></div>
+      <div class="identity"><img src="icons/popcorn-sr.png" alt="PopcornSR violet popcorn icon"><div><strong>PopcornSR</strong><small>Violet gradient</small></div></div>
+      <div class="identity"><img src="icons/popcorn-batch.png" alt="PopcornBatch orange popcorn icon"><div><strong>PopcornBatch</strong><small>Orange gradient</small></div></div>
+    </div></section>
+    <section class="section" aria-labelledby="sample-title"><div class="section-head"><h2 id="sample-title">In progress</h2><span class="meta">Component examples</span></div><div class="sample-picker" aria-label="Preview state"><button data-state="ready" aria-pressed="true">Content</button><button data-state="empty" aria-pressed="false">Empty</button><button data-state="error" aria-pressed="false">Error</button><button data-state="loading" aria-pressed="false">Loading</button></div><div id="sample" class="panel" style="margin-top:16px" aria-live="polite"></div></section>
+    <section class="section" aria-labelledby="settings-title"><div class="section-head"><h2 id="settings-title">Preferences</h2></div><div class="panel">
+      <div class="settings-row"><div><strong>Check for updates automatically</strong><p>Keep the app current without interrupting your work.</p></div><input type="checkbox" class="toggle" checked aria-label="Check for updates automatically"></div>
+      <div class="settings-row"><div><strong>Reduce motion</strong><p>Use simple fades when changing pages.</p></div><input type="checkbox" class="toggle" id="motion" aria-label="Reduce motion"></div>
+    </div></section>
+    <p class="footer-note">Design reference only. Sample filenames and progress demonstrate the shared components.</p>
+  </div></main>
+</div>
+<script>
+const products={stash:{suffix:'Stash',icon:'popcornstash',title:'Your library',description:'A private home for the things you want to keep.'},sr:{suffix:'SR',icon:'popcorn-sr',title:'Process files',description:'Give every file the attention it needs.'},batch:{suffix:'Batch',icon:'popcorn-batch',title:'Your batches',description:'Keep the next step clear, from first file to finished work.'}};
+const root=document.documentElement,product=document.getElementById('product'),theme=document.getElementById('theme'),sample=document.getElementById('sample');
+root.dataset.theme=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';
+function syncTheme(){const dark=root.dataset.theme==='dark';theme.setAttribute('aria-pressed',String(dark));theme.textContent=dark?'Light appearance':'Dark appearance'}syncTheme();
+theme.onclick=()=>{root.dataset.theme=root.dataset.theme==='dark'?'light':'dark';syncTheme()};
+product.onchange=()=>{const p=products[product.value];document.getElementById('suffix').textContent=p.suffix;document.getElementById('brand-icon').src='icons/'+p.icon+'.png';document.getElementById('title').textContent=p.title;document.getElementById('description').textContent=p.description};
+const content='<div class="file-row"><div class="file-icon" aria-hidden="true">↧</div><div><div class="filename">Paper Boats (2011).mp4</div><small>Processing · 64% · 1 min remaining</small><div class="progress" role="progressbar" aria-label="Paper Boats progress" aria-valuenow="64" aria-valuemin="0" aria-valuemax="100"><span></span></div></div><button class="row-action" id="pause">Pause</button></div><div class="file-row"><div class="file-icon" aria-hidden="true">✓</div><div><div class="filename">The Lantern Keepers S01E02.mp4</div><small>Finished · 2 minutes ago</small></div><span class="status">Ready</span></div>';
+function render(state){sample.innerHTML=state==='ready'?content:state==='empty'?'<div class="empty"><h3>No files yet</h3><p>Add a file when you are ready to begin.</p><button class="primary" id="empty-add">Add files</button></div>':state==='error'?'<div class="empty"><h3>The file could not be opened</h3><p>Check the connection and try again. Your file stays where it is.</p><button id="retry">Try again</button></div>':'<div class="file-row"><div class="file-icon" aria-hidden="true">⋯</div><div><div class="filename">Loading your files</div><small>This layout stays in place while the list arrives.</small></div></div>';const pause=document.getElementById('pause');if(pause)pause.onclick=()=>{pause.textContent=pause.textContent==='Pause'?'Resume':'Pause'};const retry=document.getElementById('retry');if(retry)retry.onclick=()=>{render('ready');setState('ready')};const add=document.getElementById('empty-add');if(add)add.onclick=()=>{render('ready');setState('ready')}}
+function setState(state){document.querySelectorAll('[data-state]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.state===state)))}
+document.querySelectorAll('[data-state]').forEach(b=>b.onclick=()=>{setState(b.dataset.state);render(b.dataset.state)});
+document.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-page]').forEach(n=>n.removeAttribute('aria-current'));b.setAttribute('aria-current','page');document.getElementById('title').textContent=b.dataset.page==='Home'?products[product.value].title:b.dataset.page});
+document.getElementById('primary').onclick=()=>{setState('empty');render('empty')};document.getElementById('motion').checked=matchMedia('(prefers-reduced-motion: reduce)').matches;render('ready');
+</script>
+</body></html>

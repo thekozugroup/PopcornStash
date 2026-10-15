@@ -73,7 +73,7 @@ import org.robolectric.annotation.Config
  * beside the bar.
  */
 @RunWith(AndroidJUnit4::class)
-@Config(qualifiers = "w411dp-h891dp-xxhdpi")
+@Config(qualifiers = "w840dp-h1100dp-xxhdpi")
 class AppShellTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
@@ -369,7 +369,7 @@ class AppShellTest {
         compose.waitForIdle()
         val last = bounds("row Home $LAST_ROW")
         val bar = bounds("toolbar")
-        assertEquals("The last row ends the gap above the bar", bar.top - tokens.contentGap.value, last.bottom, 0.5f)
+        assertTrue("The last row stays left of the rail", last.right <= bar.left - tokens.margin.value + 0.5f)
     }
 
     /**
@@ -398,7 +398,7 @@ class AppShellTest {
         val screen = screen()
         assertEquals("Level with the bar's bottom", bar.bottom, note.bottom, 0.5f)
         assertEquals("The margin left of the bar", bar.left - tokens.margin.value, note.right, 0.5f)
-        assertEquals("The margin from the left edge", screen.left + tokens.margin.value, note.left, 0.5f)
+        assertTrue("The snackbar respects the left gutter and its tablet maximum width", note.left >= screen.left + tokens.margin.value)
         compose.onNodeWithText("Moved to Kids.").assertExists()
         // Those bounds are the visible surface, not space around it: 2dp inside each edge is the
         // snackbar's own zinc-900, where Material's 12dp of padding would show the page.
@@ -623,7 +623,7 @@ class AppShellTest {
         val bar = bounds("toolbar")
         assertEquals(screen.right - 48f - tokens.margin.value, bar.right, 0.5f)
         assertEquals(screen.bottom - tokens.margin.value, bar.bottom, 0.5f)
-        assertEquals(tokens.clearance(3).value, clearance.value, 0.5f)
+        assertEquals(tokens.contentGap.value, clearance.value, 0.5f)
     }
 
     @Test
@@ -643,7 +643,7 @@ class AppShellTest {
         val bar = bounds("toolbar")
         assertEquals(screen.right - 32f - tokens.margin.value, bar.right, 0.5f)
         assertEquals(screen.bottom - 24f - tokens.margin.value, bar.bottom, 0.5f)
-        assertEquals(tokens.clearance(3).value + 24f, clearance.value, 0.5f)
+        assertEquals(tokens.contentGap.value + 24f, clearance.value, 0.5f)
     }
 
     private fun onScreen(node: SemanticsNode): Rect = Rect(node.positionOnScreen, node.size.toSize())

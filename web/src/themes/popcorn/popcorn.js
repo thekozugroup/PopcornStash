@@ -84,7 +84,7 @@ export const popcornTheme = {
     "--duration-slow": "600ms",
     "--duration-slow-max": "750ms",
     "--font-family-body": "-apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
-    "--font-family-heading": "-apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+    "--font-family-heading": "Newsreader, Georgia, serif",
     "--font-family-code": "ui-monospace, \"SF Mono\", Menlo, Consolas, \"Liberation Mono\", monospace",
     "--color-syntax-keyword": "light-dark(#6b187c, #efa8ff)",
     "--color-syntax-string": "light-dark(#0b5615, #a4d6a3)",
@@ -699,8 +699,8 @@ export const popcornTheme = {
         "fallbacks": "BlinkMacSystemFont, \"Segoe UI\", sans-serif"
       },
       "heading": {
-        "family": "-apple-system",
-        "fallbacks": "BlinkMacSystemFont, \"Segoe UI\", sans-serif",
+        "family": "Newsreader",
+        "fallbacks": "Georgia, serif",
         "weight": "semibold"
       },
       "code": {

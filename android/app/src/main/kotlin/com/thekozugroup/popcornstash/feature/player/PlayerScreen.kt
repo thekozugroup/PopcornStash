@@ -11,6 +11,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsIgnoringVisibility
@@ -51,6 +53,9 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.LocalAccessibilityManager
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -122,6 +127,7 @@ fun PlayerScreen(
     modifier: Modifier = Modifier,
     inPictureInPicture: Boolean = false,
     menuInitiallyOpen: Boolean = false,
+    flexHinge: FlexHinge? = null,
     surface: @Composable (Modifier) -> Unit,
 ) {
     val colors = Popcorn.colors
@@ -140,7 +146,7 @@ fun PlayerScreen(
         containsText = true,
         containsControls = true,
     ) ?: tokens.hideAfterMs
-    val mayHide = playing && !menuOpen && !seeking && !inPictureInPicture
+    val mayHide = playing && !menuOpen && !seeking && !inPictureInPicture && flexHinge == null
     LaunchedEffect(chromeVisible, mayHide, touches) {
         if (chromeVisible && mayHide) {
             delay(hideAfter)
@@ -150,17 +156,38 @@ fun PlayerScreen(
     // Pausing by any route (headphones unplugged, the end, a failure) brings the chrome back.
     LaunchedEffect(playing) { if (!playing) onChromeVisibleChange(true) }
 
-    val chromeShown = chromeVisible || !ready
-    Box(
+    val chromeShown = chromeVisible || !ready || flexHinge != null
+    var windowTop by remember { mutableFloatStateOf(0f) }
+    val density = LocalDensity.current
+    BoxWithConstraints(
         modifier
             .fillMaxSize()
             .background(colors.stage)
+            .onGloballyPositioned { windowTop = it.positionInWindow().y }
             .testTag("player"),
     ) {
-        surface(Modifier.fillMaxSize())
+        val top = with(density) { ((flexHinge?.top ?: 0) - windowTop).toDp() }
+        val bottom = with(density) { ((flexHinge?.bottom ?: 0) - windowTop).toDp() }
+        val flex = !inPictureInPicture && flexHinge != null && top > 0.dp && bottom >= top && bottom < maxHeight
+        surface(if (flex) Modifier.fillMaxWidth().height(top).testTag("flex video") else Modifier.fillMaxSize())
         if (inPictureInPicture) {
             PictureInPictureOverlay(state)
-            return@Box
+            return@BoxWithConstraints
+        }
+        if (flex) {
+            Box(Modifier.offset(y = bottom).fillMaxWidth().height(maxHeight - bottom).background(colors.page).testTag("flex controls")) {
+                Chrome(
+                    state = state,
+                    clock = clock,
+                    actions = actions,
+                    waiting = phase == PlayerPhase.Loading || (ready && (state.buffering || state.switching)),
+                    menuOpen = menuOpen,
+                    onMenuOpen = { menuOpen = it },
+                    onSeeking = { seeking = it },
+                    touched = touched,
+                )
+            }
+            return@BoxWithConstraints
         }
         Box(
             Modifier

@@ -9,11 +9,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.selectable
@@ -43,6 +44,7 @@ import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.CollectionInfo
 import androidx.compose.ui.semantics.CollectionItemInfo
 import androidx.compose.ui.semantics.Role
@@ -54,6 +56,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.thekozugroup.popcornstash.navigation.Tab
 import com.thekozugroup.popcornstash.ui.icons.LucideIcon
@@ -62,12 +65,9 @@ import com.thekozugroup.popcornstash.ui.theme.Popcorn
 import com.thekozugroup.popcornstash.ui.theme.PopcornMotion
 
 /**
- * The app's navigation (android/DESIGN.md, Floating toolbar): one upright rounded bar of
- * square targets stacked top to bottom, icons only, with an Action Blue square behind the
- * selected one that slides up or down to the tapped square. The bar's outer radius is the
- * square radius plus its padding, so the selected square sits concentric in the end squares.
- * The shell puts it on the right edge of the screen; nothing in it follows the layout
- * direction, because which hand holds the phone does not change with the language.
+ * Equal square targets in a bottom row or right rail, with an Action Blue square that follows
+ * the selection. The outer radius is the square radius plus its padding. The physical order
+ * stays Downloads, Home, Settings in either layout direction.
  *
  * The square carries a thin `surface` ring, so its edge keeps 3:1 against whatever the glass
  * shows. Each icon is white where the square is under it and `textMuted` elsewhere, drawn
@@ -90,6 +90,7 @@ fun FloatingNavToolbar(
     tabs: List<Tab> = Tab.entries,
     glass: GlassTier = GlassTier.Opaque,
     backdrop: GlassBackdrop? = null,
+    vertical: Boolean = true,
 ) {
     val tokens = Popcorn.toolbar
     val colors = Popcorn.colors
@@ -107,9 +108,8 @@ fun FloatingNavToolbar(
     )
 
     BoxWithConstraints(modifier) {
-        // Shrink the squares when the height the shell gives the bar is short (a phone in
-        // landscape split screen), never below the 48dp touch minimum.
-        val room = maxHeight - tokens.padding * 2 - tokens.gap * (tabs.size - 1)
+        // Shrink the squares when the available axis is short (a narrow split window), never below the 48dp touch minimum.
+        val room = (if (vertical) maxHeight else maxWidth) - tokens.padding * 2 - tokens.gap * (tabs.size - 1)
         val square: Dp = (room / tabs.size).coerceIn(tokens.minSquare, tokens.square)
         val selectedIndex = tabs.indexOf(selected).coerceAtLeast(0)
         // From the bar's top edge; read only while placing and drawing, so a slide recomposes nothing.
@@ -126,12 +126,13 @@ fun FloatingNavToolbar(
                 .frostedGlass(glass, backdrop, barShape, glassStyle)
                 .border(tokens.border, if (frosted) colors.glassEdge else colors.divider, barShape)
                 .padding(tokens.padding)
-                .semantics { collectionInfo = CollectionInfo(rowCount = tabs.size, columnCount = 1) }
+                .semantics { collectionInfo = CollectionInfo(rowCount = if (vertical) tabs.size else 1, columnCount = if (vertical) 1 else tabs.size) }
                 .selectableGroup(),
         ) {
             Box(
                 Modifier
-                    .offset { IntOffset(0, indicatorOffset.value.roundToPx()) }
+                    .align(AbsoluteAlignment.TopLeft)
+                    .absoluteOffset { if (vertical) IntOffset(0, indicatorOffset.value.roundToPx()) else IntOffset(indicatorOffset.value.roundToPx(), 0) }
                     .testTag("toolbar indicator")
                     .size(square)
                     .drawBehind {
@@ -146,20 +147,25 @@ fun FloatingNavToolbar(
                     }
                     .background(colors.accent, squareShape),
             )
-            Column {
+            val squares: @Composable () -> Unit = {
                 tabs.forEachIndexed { index, tab ->
-                    if (index > 0) Spacer(Modifier.height(tokens.gap))
+                    if (index > 0) Spacer(if (vertical) Modifier.height(tokens.gap) else Modifier.width(tokens.gap))
                     ToolbarSquare(
                         tab = tab,
                         index = index,
                         count = tabs.size,
                         selected = tab == selected,
+                        vertical = vertical,
                         size = square,
                         indicatorTop = { indicatorOffset.value - (square + tokens.gap) * index },
                         badge = if (tab == Tab.Downloads) readyToImport else 0,
                         onClick = { onSelect(tab) },
                     )
                 }
+            }
+            // Keep physical tab order and indicator coordinates together in both languages.
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                if (vertical) Column(content = { squares() }) else Row(content = { squares() })
             }
         }
     }
@@ -172,6 +178,7 @@ private fun ToolbarSquare(
     index: Int,
     count: Int,
     selected: Boolean,
+    vertical: Boolean,
     size: Dp,
     /** Where the selection square's top is, measured from this square's top edge. */
     indicatorTop: () -> Dp,
@@ -191,7 +198,7 @@ private fun ToolbarSquare(
     // space from the square, which sits the bar's padding inside that edge.
     TooltipBox(
         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(
-            TooltipAnchorPosition.Left,
+            if (vertical) TooltipAnchorPosition.Left else TooltipAnchorPosition.Above,
             spacingBetweenTooltipAndAnchor = tokens.padding + tokens.tooltipGap,
         ),
         tooltip = { PlainTooltip { Text(tab.label) } },
@@ -214,18 +221,18 @@ private fun ToolbarSquare(
                         .semantics {
                             contentDescription = description
                             collectionItemInfo = CollectionItemInfo(
-                                rowIndex = index,
+                                rowIndex = if (vertical) index else 0,
                                 rowSpan = 1,
-                                columnIndex = 0,
+                                columnIndex = if (vertical) 0 else index,
                                 columnSpan = 1,
                             )
                         },
                 ) {
                     // The icon twice: muted beside the square, white over it.
-                    IconPart(indicatorTop, overSquare = false) {
+                    IconPart(indicatorTop, overSquare = false, vertical = vertical) {
                         LucideIcon(tab.glyph, contentDescription = null, tint = colors.textMuted, size = tokens.icon)
                     }
-                    IconPart(indicatorTop, overSquare = true) {
+                    IconPart(indicatorTop, overSquare = true, vertical = vertical) {
                         LucideIcon(tab.glyph, contentDescription = null, tint = colors.onAccent, size = tokens.icon)
                     }
                 }
@@ -250,13 +257,19 @@ private fun ToolbarSquare(
  * radius of space on every side, even at the 48dp minimum.
  */
 @Composable
-private fun BoxScope.IconPart(indicatorTop: () -> Dp, overSquare: Boolean, icon: @Composable () -> Unit) {
+private fun BoxScope.IconPart(indicatorTop: () -> Dp, overSquare: Boolean, vertical: Boolean, icon: @Composable () -> Unit) {
     Box(
         Modifier
             .matchParentSize()
             .drawWithContent {
                 val top = indicatorTop().toPx()
-                clipRect(0f, top, size.width, top + size.height, if (overSquare) ClipOp.Intersect else ClipOp.Difference) {
+                clipRect(
+                    left = if (vertical) 0f else top,
+                    top = if (vertical) top else 0f,
+                    right = if (vertical) size.width else top + size.width,
+                    bottom = if (vertical) top + size.height else size.height,
+                    clipOp = if (overSquare) ClipOp.Intersect else ClipOp.Difference,
+                ) {
                     this@drawWithContent.drawContent()
                 }
             },

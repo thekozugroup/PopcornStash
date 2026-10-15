@@ -1,5 +1,5 @@
 // Render the toolbar and store icons from the brand mark (assets/brand-mark.svg,
-// the same "p" mark as web/brand/icon.svg). Needs rsvg-convert (librsvg2-bin).
+// the same popcorn mark as web/brand/icon.svg). Needs rsvg-convert (librsvg2-bin).
 // The PNGs are committed, so building the extension does not need this tool.
 import {execFileSync} from 'node:child_process';
 import {mkdir} from 'node:fs/promises';

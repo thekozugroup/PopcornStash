@@ -12,14 +12,18 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBars
@@ -61,16 +65,15 @@ data class TabPage(
     val tab: Tab,
     /**
      * Padding a page leaves at its end (under its last row) so that, scrolled to the end, its last
-     * row sits above the floating toolbar on the right edge, clear of it and of the navigation
-     * bar. Mid-scroll the rows pass under the bar; at the end nothing is under it.
+     * row clears the bottom toolbar on phones and the system navigation bar. Wide layouts
+     * reserve a separate strip on the right for the rail.
      */
     val bottomClearance: Dp,
     /** Grows each time the person taps the tab they are already on: scroll to the top, or pop to the first page. */
     val reselections: Int,
     /**
      * Where the page's snackbars go ([com.thekozugroup.popcornstash.ui.components.TabSnackbarHost]):
-     * padding from the window's edges that puts them at the bottom, level with the toolbar's
-     * bottom edge and to its left, never under it.
+     * padding inside the page that keeps them above the phone toolbar or beside the right rail.
      */
     val snackbarPadding: PaddingValues = PaddingValues(0.dp),
 )
@@ -79,12 +82,9 @@ data class TabPage(
  * The signed-in app: three tab pages and the floating toolbar over them
  * (android/DESIGN.md, Navigation).
  *
- * - The toolbar is one upright bar on the right edge of the screen, physically right in every
- *   layout direction, its bottom where a thumb rests: the toolbar margin above the navigation
- *   bar and in from the right edge, clear of the navigation bar and a display cutout on that
- *   side when the phone is turned.
- * - Tapping a tab slides the pages up or down, the way the selection moves on the bar
- *   ([tabTransition]); under reduce motion they crossfade.
+ * - Phones use a horizontal toolbar at the bottom, including landscape. Windows at least
+ *   600dp wide and 480dp tall use a physical right rail, with content beside it.
+ * - Page transitions follow the toolbar axis; reduced motion uses crossfades.
  * - Each tab keeps its state and scroll position while another tab shows (one saveable
  *   state holder entry per tab).
  * - System Back on another tab returns to Home; on Home it leaves the app.
@@ -129,82 +129,94 @@ fun AppShell(
     val bottomInset = with(density) { edges.getBottom(density).toDp() }
     val leftInset = with(density) { edges.getLeft(density, layoutDirection).toDp() }
     val rightInset = with(density) { edges.getRight(density, layoutDirection).toDp() }
-    val clearance = toolbar.clearance(Tab.entries.size) + bottomInset
-    val snackbarPadding = PaddingValues.Absolute(
-        left = leftInset + toolbar.margin,
-        right = rightInset + toolbar.besideClearance,
-        bottom = bottomInset + toolbar.margin,
-    )
-    val backdrop = rememberGlassBackdrop(glassTier)
+    BoxWithConstraints(modifier.fillMaxSize().background(Popcorn.colors.page)) {
+        val vertical = navigationPlacement(maxWidth, maxHeight) == NavigationPlacement.Right
+        val clearance = (if (vertical) toolbar.contentGap else toolbar.thickness + toolbar.margin + toolbar.contentGap) + bottomInset
+        val snackbarPadding = PaddingValues.Absolute(
+            left = leftInset + toolbar.margin,
+            right = if (vertical) 0.dp else rightInset + toolbar.margin,
+            bottom = bottomInset + if (vertical) toolbar.margin else toolbar.thickness + toolbar.margin + toolbar.contentGap,
+        )
+        val backdrop = rememberGlassBackdrop(glassTier)
 
-    BackHandler(enabled = current != Tab.Start) { current = Tab.Start }
+        BackHandler(enabled = current != Tab.Start) { current = Tab.Start }
 
-    Box(modifier.fillMaxSize().background(Popcorn.colors.page)) {
-        CompositionLocalProvider(LocalToolbarRequests provides toolbarRequests) {
-            AnimatedContent(
-                targetState = current,
-                transitionSpec = { tabTransition(initialState, targetState, reduceMotion) },
-                label = "tab pages",
-                modifier = Modifier.fillMaxSize().glassSource(backdrop),
-            ) { tab ->
-                holder.SaveableStateProvider(tab.name) {
-                    Box(
-                        Modifier
-                            .fillMaxSize()
-                            .background(Popcorn.colors.page)
-                            .testTag("page ${tab.name}"),
-                    ) {
-                        page(TabPage(tab, clearance, reselections.getValue(tab).intValue, snackbarPadding))
+        Box(Modifier.fillMaxSize()) {
+            CompositionLocalProvider(LocalToolbarRequests provides toolbarRequests) {
+                AnimatedContent(
+                    targetState = current,
+                    transitionSpec = { tabTransition(initialState, targetState, reduceMotion, vertical) },
+                    label = "tab pages",
+                    modifier = Modifier.fillMaxSize().glassSource(backdrop),
+                ) { tab ->
+                    holder.SaveableStateProvider(tab.name) {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .padding(PaddingValues.Absolute(right = if (vertical && !toolbarRequests.hidden) rightInset + toolbar.besideClearance else 0.dp))
+                                .background(Popcorn.colors.page)
+                                .testTag("page ${tab.name}"),
+                        ) {
+                            page(TabPage(tab, clearance, reselections.getValue(tab).intValue, snackbarPadding))
+                        }
                     }
                 }
             }
-        }
 
-        // The platform's backdrop blur reads the window only when the bar is not drawn into a
-        // layer of its own, so on that tier the fade is drawn per operation (ModulateAlpha).
-        val fadeThroughLayer = glassTier != GlassTier.Backdrop
-        // Slide offsets are in screen pixels: the bar leaves towards the right edge, half its width.
-        AnimatedVisibility(
-            visible = !toolbarRequests.hidden && !WindowInsets.isImeVisible,
-            enter = slideInHorizontally(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) { it / 2 } +
-                if (fadeThroughLayer) fadeIn(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) else EnterTransition.None,
-            exit = slideOutHorizontally(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) { it / 2 } +
-                if (fadeThroughLayer) fadeOut(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) else ExitTransition.None,
-            // The column the bar may use: from under the status bar to above the navigation bar,
-            // in from the right edge. The bar sits at its bottom and shrinks only when the column is short.
-            modifier = Modifier
-                .align(AbsoluteAlignment.BottomRight)
-                .fillMaxHeight()
-                .windowInsetsPadding(WindowInsets.statusBars.only(WindowInsetsSides.Top))
-                .windowInsetsPadding(edges.only(WindowInsetsSides.Right + WindowInsetsSides.Bottom))
-                .padding(PaddingValues.Absolute(top = toolbar.margin, right = toolbar.margin, bottom = toolbar.margin)),
-        ) {
-            val fade = if (fadeThroughLayer) {
-                Modifier
-            } else {
-                val alpha by transition.animateFloat(
-                    transitionSpec = { tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS) },
-                    label = "toolbar fade",
-                ) { state -> if (state == EnterExitState.Visible) 1f else 0f }
-                Modifier.graphicsLayer {
-                    this.alpha = alpha
-                    compositingStrategy = CompositingStrategy.ModulateAlpha
+            // The platform's backdrop blur reads the window only when the bar is not drawn into a
+            // layer of its own, so on that tier the fade is drawn per operation (ModulateAlpha).
+            val fadeThroughLayer = glassTier != GlassTier.Backdrop
+            // Slide offsets are in screen pixels: the bar leaves towards the right edge, half its width.
+            AnimatedVisibility(
+                visible = !toolbarRequests.hidden && !WindowInsets.isImeVisible,
+                enter = (if (reduceMotion) EnterTransition.None else if (vertical) slideInHorizontally(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) { it / 2 }
+                    else slideInVertically(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) { it / 2 }) +
+                    if (fadeThroughLayer) fadeIn(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) else EnterTransition.None,
+                exit = (if (reduceMotion) ExitTransition.None else if (vertical) slideOutHorizontally(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) { it / 2 }
+                    else slideOutVertically(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) { it / 2 }) +
+                    if (fadeThroughLayer) fadeOut(tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS)) else ExitTransition.None,
+                // The column the bar may use: from under the status bar to above the navigation bar,
+                // in from the right edge. The bar sits at its bottom and shrinks only when the column is short.
+                modifier = (if (vertical) Modifier
+                    .align(AbsoluteAlignment.BottomRight)
+                    .fillMaxHeight()
+                    .windowInsetsPadding(WindowInsets.statusBars.only(WindowInsetsSides.Top))
+                    .windowInsetsPadding(edges.only(WindowInsetsSides.Right + WindowInsetsSides.Bottom))
+                    .padding(PaddingValues.Absolute(top = toolbar.margin, right = toolbar.margin, bottom = toolbar.margin))
+                    else Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .windowInsetsPadding(edges.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
+                        .padding(horizontal = toolbar.margin, vertical = toolbar.margin)),
+            ) {
+                val fade = if (fadeThroughLayer) {
+                    Modifier
+                } else {
+                    val alpha by transition.animateFloat(
+                        transitionSpec = { tween(PopcornMotion.TOOLBAR_SHOW_HIDE_MS) },
+                        label = "toolbar fade",
+                    ) { state -> if (state == EnterExitState.Visible) 1f else 0f }
+                    Modifier.graphicsLayer {
+                        this.alpha = alpha
+                        compositingStrategy = CompositingStrategy.ModulateAlpha
+                    }
                 }
-            }
-            Box(Modifier.fillMaxHeight().then(fade), contentAlignment = Alignment.BottomCenter) {
-                FloatingNavToolbar(
-                    selected = current,
-                    readyToImport = readyToImport,
-                    glass = glassTier,
-                    backdrop = backdrop,
-                    onSelect = { tab ->
-                        if (tab == current) {
-                            reselections.getValue(tab).intValue++
-                        } else {
-                            current = tab
-                        }
-                    },
-                )
+                Box((if (vertical) Modifier.fillMaxHeight() else Modifier.fillMaxWidth()).then(fade), contentAlignment = Alignment.BottomCenter) {
+                    FloatingNavToolbar(
+                        selected = current,
+                        readyToImport = readyToImport,
+                        glass = glassTier,
+                        backdrop = backdrop,
+                        vertical = vertical,
+                        onSelect = { tab ->
+                            if (tab == current) {
+                                reselections.getValue(tab).intValue++
+                            } else {
+                                current = tab
+                            }
+                        },
+                    )
+                }
             }
         }
     }

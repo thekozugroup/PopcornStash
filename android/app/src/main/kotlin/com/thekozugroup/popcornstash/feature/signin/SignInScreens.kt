@@ -2,6 +2,7 @@ package com.thekozugroup.popcornstash.feature.signin
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,6 +39,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import com.thekozugroup.popcornstash.R
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -276,7 +279,7 @@ private fun SignInPage(onBack: (() -> Unit)?, tag: String, content: @Composable 
 @Composable
 private fun Brand() {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.semantics(mergeDescendants = true) {}) {
-        LucideIcon(PopcornIcons.Brand, contentDescription = null, tint = Popcorn.colors.text, size = 28.dp)
+        Image(painterResource(R.drawable.ic_launcher_flat), contentDescription = null, modifier = Modifier.size(32.dp))
         Spacer(Modifier.width(Popcorn.spacing.s))
         Text("PopcornStash", style = Popcorn.type.title, color = Popcorn.colors.text)
     }

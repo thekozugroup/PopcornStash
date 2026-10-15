@@ -25,19 +25,19 @@ colors:
   status-error: "oklch(63.7% 0.237 25.331)"
 typography:
   headline:
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+    fontFamily: 'Newsreader, Georgia, serif'
     fontSize: "1.875rem"
     fontWeight: 600
     lineHeight: 1.2
     letterSpacing: "-0.025em"
   title:
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+    fontFamily: 'Newsreader, Georgia, serif'
     fontSize: "1.25rem"
     fontWeight: 600
     lineHeight: 1.4
     letterSpacing: "-0.025em"
   section:
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+    fontFamily: 'Newsreader, Georgia, serif'
     fontSize: "1rem"
     fontWeight: 600
     lineHeight: 1.5
@@ -137,7 +137,7 @@ components:
 
 A private shelf for a family's videos and photos. Neutral surfaces step back so posters, frames and photos carry the colour. Every incoming file has a visible, honest path: in progress, completed, sorted. The interface earns trust by saying exactly where things are and whether torrent traffic is protected, once and in plain words.
 
-PopcornStash shares Popcorn SR's world: Tailwind zinc neutrals, Tailwind blue-600 as the single action and focus accent with white on blue, the platform system sans, flat panels, thin dividers, 44px controls, system light and dark, and reduced motion. Components come from Astryx (`@astryxdesign/core`) with a custom `popcorn` theme (`web/src/themes/popcorn`, rebuilt with `npm run theme:build`) that maps these tokens onto Astryx's token surface. Astryx components are used as they are wherever one exists; local components are limited to media pieces (poster grid, shelf, episode rows, photo timeline, player chrome) and small layout wrappers (page header, settings group, status tag).
+PopcornStash shares Popcorn SR's world: Tailwind zinc neutrals, Tailwind blue-600 as the single action and focus accent with white on blue, Newsreader headings and platform system sans text, flat panels, thin dividers, 44px controls, system light and dark, and reduced motion. Components come from Astryx (`@astryxdesign/core`) with a custom `popcorn` theme (`web/src/themes/popcorn`, rebuilt with `npm run theme:build`) that maps these tokens onto Astryx's token surface. Astryx components are used as they are wherever one exists; local components are limited to media pieces (poster grid, shelf, episode rows, photo timeline, player chrome) and small layout wrappers (page header, settings group, status tag).
 
 It is an operating surface, not a showcase: familiar patterns, steady density, and no decoration that the library's own pictures do not provide.
 
@@ -216,10 +216,10 @@ In dark the empty part of a download's progress bar reads faintly: the web's Zin
 
 ## Typography
 
-**Body and display font:** the platform system sans (`-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`).
+**Body and display font:** Newsreader headings and platform system sans text (`-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`).
 **Code font:** `ui-monospace` for paths, codes and commands only.
 
-**Character:** One quiet family for everything; hierarchy comes from size and weight steps, never from a second typeface.
+**Character:** Newsreader adds warmth to page, title and section headings. The system sans keeps body text, controls and metadata compact and familiar. Both fonts are available offline; Newsreader is bundled under the SIL Open Font License.
 
 ### Hierarchy
 - **Headline** (600, 30px, 1.2, -0.025em): the page h1 ("Movies", "Settings", a film's title).
@@ -375,3 +375,7 @@ The whole app accepts dropped files; a full-window overlay says where they will 
 - **Don't** nest boxed cards inside a panel.
 - **Don't** hide the VPN state when torrents exist.
 - **Don't** show file paths to family members unless they open details.
+
+## Popcorn family assets
+
+The shared handoff template is `design-family/DESIGN.md`. The app icon uses the merged popcorn silhouette in `brand/popcorn.png`, rendered and exported by Apple Icon Composer from `brand/PopcornStash.icon`. Material, lighting and the blue gradient are flattened in `brand/popcornstash.png`. PopcornSR uses violet and PopcornBatch uses orange (`brand/family/`); UI surfaces and Action Blue stay consistent across the family.

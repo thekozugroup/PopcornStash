@@ -25,9 +25,11 @@ fun slideDirection(from: Tab, to: Tab): Int = to.ordinal.compareTo(from.ordinal)
  * the selection moves on the toolbar, on the page spring, the old page leaving the other
  * way. Under reduce motion the pages crossfade in 150 ms instead.
  */
-fun tabTransition(from: Tab, to: Tab, reduceMotion: Boolean): ContentTransform {
+fun tabTransition(from: Tab, to: Tab, reduceMotion: Boolean, vertical: Boolean = true): ContentTransform {
     if (reduceMotion) return crossfade()
     val direction = slideDirection(from, to)
+    if (!vertical) return slideInHorizontally(PopcornMotion.pageSpring()) { width -> width * direction } togetherWith
+        slideOutHorizontally(PopcornMotion.pageSpring()) { width -> -width * direction }
     return slideInVertically(PopcornMotion.pageSpring()) { height -> height * direction } togetherWith
         slideOutVertically(PopcornMotion.pageSpring()) { height -> -height * direction }
 }

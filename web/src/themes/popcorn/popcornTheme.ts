@@ -4,7 +4,7 @@
  * Maps the PopcornStash DESIGN.md tokens (shared with Popcorn SR) onto
  * Astryx's themeable surface: Tailwind zinc neutrals, Tailwind blue-600 as
  * the single action and focus accent with white on blue, the platform
- * system sans, flat panels, thin dividers, 44px controls, 8px control radius,
+ * Newsreader headings, system sans text, flat panels, thin dividers, 44px controls, 8px control radius,
  * 16px panel radius and 10px media radius. Light and dark follow the system
  * preference through Astryx's [light, dark] token tuples.
  *
@@ -73,6 +73,7 @@ const alpha = (color: string, amount: number) => {
 };
 
 const systemSans = '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+const headingSerif = 'Newsreader, Georgia, serif';
 
 // ---------------------------------------------------------------------------
 // Theme-local tokens. The neutral base routes its solid status fills through
@@ -142,7 +143,7 @@ export const popcornTheme = defineTheme({
   icons: popcornIconRegistry,
   localTokens,
 
-  // System sans for every role. Sizes come from the Astryx scale (14px base,
+  // Newsreader headings and system sans text. Sizes come from the Astryx scale (14px base,
   // 1.2 ratio) and the explicit type tokens below, which pin the DESIGN.md
   // ramp: headline 30px, title 20px, section 16px, body 16px, label 14px,
   // metadata 13px.
@@ -153,8 +154,8 @@ export const popcornTheme = defineTheme({
       fallbacks: 'BlinkMacSystemFont, "Segoe UI", sans-serif',
     },
     heading: {
-      family: '-apple-system',
-      fallbacks: 'BlinkMacSystemFont, "Segoe UI", sans-serif',
+      family: 'Newsreader',
+      fallbacks: 'Georgia, serif',
       weight: 'semibold',
     },
     code: {
@@ -238,7 +239,7 @@ export const popcornTheme = defineTheme({
 
     // Type ramp from DESIGN.md
     '--font-family-body': systemSans,
-    '--font-family-heading': systemSans,
+    '--font-family-heading': headingSerif,
     '--text-heading-1-size': '1.875rem',
     '--text-heading-1-weight': '600',
     '--text-heading-1-leading': '1.2',
