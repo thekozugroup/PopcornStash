@@ -46,6 +46,7 @@ import {useAuth} from '../auth/AuthProvider';
 import {BreakableAddress, BreakableName} from '../components/BreakableName';
 import {findLink, isTorrentLink, type DetectedLink} from '../components/downloads/linkDetect';
 import {MediaThumb} from '../components/downloads/MediaThumb';
+import {DestinationSelect} from '../components/downloads/DestinationSelect';
 import {VpnLine} from '../components/downloads/VpnLine';
 import {isNoVpnMode, torrentsAffected, torrentsOff, torrentsWait} from '../lib/vpn';
 import {PageHeader} from '../components/PageHeader';
@@ -353,6 +354,7 @@ interface LoadedShare {
 }
 
 function SharedFiles({id}: {id: string}) {
+  const [libraryId, setLibraryId] = useState('');
   const navigate = useNavigate();
   const [loaded, setLoaded] = useState<LoadedShare | null>(null);
   const [isSending, setIsSending] = useState(false);
@@ -433,7 +435,7 @@ function SharedFiles({id}: {id: string}) {
       }
     }
     // Downloads uploads them exactly like dropped files; each kept copy goes once its upload is done.
-    navigate('/downloads', {replace: true, state: {droppedFiles: handOff}});
+    navigate('/downloads', {replace: true, state: {droppedFiles: handOff, libraryId}});
   };
 
   const cancel = async () => {
@@ -488,6 +490,7 @@ function SharedFiles({id}: {id: string}) {
           ) : null}
         </div>
 
+        <DestinationSelect value={libraryId} onChange={setLibraryId} disabled={isSending || isCancelling} />
         <div {...stylex.props(styles.actions)}>
           <Button
             label="Upload to Downloads"
@@ -510,6 +513,7 @@ function SharedFiles({id}: {id: string}) {
 }
 
 function SharedLink() {
+  const [libraryId, setLibraryId] = useState('');
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const {isOwner} = useAuth();
@@ -530,7 +534,7 @@ function SharedLink() {
     setIsSending(true);
     setError(null);
     try {
-      setSent(await downloadsApi.create({url: link.url}));
+      setSent(await downloadsApi.create({url: link.url, library_id: libraryId || undefined}));
     } catch (cause) {
       if (cause instanceof ApiError && cause.code === 'vpn_unavailable') {
         setError({
@@ -668,6 +672,7 @@ function SharedLink() {
           />
         ) : null}
 
+        <DestinationSelect value={libraryId} onChange={setLibraryId} disabled={isSending} />
         <div {...stylex.props(styles.actions)}>
           <Button
             label="Add to Downloads"

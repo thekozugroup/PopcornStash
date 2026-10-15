@@ -212,8 +212,8 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
     suspend fun downloads(state: String = "all", limit: Int? = null): List<Download> =
         get("/api/downloads", DownloadList.serializer(), "state" to state, "limit" to limit?.toString()).items
 
-    suspend fun addDownload(url: String, filename: String? = null): Download =
-        post("/api/downloads", AddDownload(url, filename), AddDownload.serializer(), Download.serializer())
+    suspend fun addDownload(url: String, filename: String? = null, libraryId: String? = null): Download =
+        post("/api/downloads", AddDownload(url, filename, libraryId), AddDownload.serializer(), Download.serializer())
 
     suspend fun pauseDownload(id: String): Download =
         send(request("/api/downloads/${seg(id)}/pause").post(EMPTY_JSON).build(), Download.serializer())

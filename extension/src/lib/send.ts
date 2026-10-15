@@ -12,6 +12,7 @@ import {forgetConnection, getConnection, getPrefs} from './storage';
 import type {Download} from './types';
 
 export interface SendRequest {
+  libraryId?: string | undefined;
   url: string;
   /** Page the link or media was on (used for the Referer). */
   pageUrl?: string | undefined;
@@ -98,6 +99,7 @@ export async function sendToStash(request: SendRequest): Promise<SendResult> {
   });
 
   try {
+    if (request.libraryId) payload.library_id = request.libraryId;
     const download = await addDownload(connection, payload, magnet);
     const waitingForVpn = download.kind === 'torrent' && download.state === 'queued';
     return {

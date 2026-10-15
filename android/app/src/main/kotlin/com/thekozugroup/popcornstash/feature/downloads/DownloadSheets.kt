@@ -125,7 +125,7 @@ fun popcornFieldColors() = OutlinedTextFieldDefaults.colors(
  * ("Magnet link. Downloads as a torrent, only through the VPN."), or why it cannot be added.
  */
 @Composable
-fun AddLinkContent(state: AddLinkState, viaVpn: Boolean, onText: (String) -> Unit, onAdd: () -> Unit, onCancel: () -> Unit) {
+fun AddLinkContent(state: AddLinkState, viaVpn: Boolean, onText: (String) -> Unit, onAdd: () -> Unit, onCancel: () -> Unit, libraries: List<com.thekozugroup.popcornstash.data.api.Library> = emptyList(), onLibrary: (String?) -> Unit = {}) {
     SheetTitle("Add a link")
     val check = checkLink(state.text)
     val helper = when {
@@ -161,6 +161,8 @@ fun AddLinkContent(state: AddLinkState, viaVpn: Boolean, onText: (String) -> Uni
         modifier = Modifier.fillMaxWidth().testTag("link field"),
     )
     Spacer(Modifier.height(Popcorn.spacing.l))
+    com.thekozugroup.popcornstash.ui.components.DownloadDestinationPicker(libraries, state.libraryId, onLibrary, enabled = !state.busy)
+    Spacer(Modifier.height(Popcorn.spacing.s))
     PrimaryButton("Add", onClick = onAdd, busy = state.busy, modifier = Modifier.fillMaxWidth())
     Spacer(Modifier.height(Popcorn.spacing.xxs))
     QuietButton("Cancel", onClick = onCancel, enabled = !state.busy, modifier = Modifier.fillMaxWidth())

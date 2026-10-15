@@ -379,3 +379,7 @@ The whole app accepts dropped files; a full-window overlay says where they will 
 ## Popcorn family assets
 
 The shared handoff template is `design-family/DESIGN.md`. The app icon uses the merged popcorn silhouette in `brand/popcorn.png`, rendered and exported by Apple Icon Composer from `brand/PopcornStash.icon`. Material, lighting and the blue gradient are flattened in `brand/popcornstash.png`. PopcornSR uses violet and PopcornBatch uses orange (`brand/family/`); UI surfaces and Action Blue stay consistent across the family.
+
+### Download destination
+
+Add and Share offer “Where it goes”, default “Sorted automatically”, before the confirmation action. Use the existing library names and icons, equal control targets and normal flat surfaces. The choice applies to links and files from that form; loading or a failed library fetch leaves automatic sorting available. Interrupted uploads keep their original choice.

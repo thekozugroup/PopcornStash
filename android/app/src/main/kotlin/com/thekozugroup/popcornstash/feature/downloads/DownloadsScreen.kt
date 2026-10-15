@@ -56,6 +56,7 @@ class DownloadsActions(
     val onShowMoreFinished: () -> Unit = {},
     val onStopUpload: (String) -> Unit = {},
     val onOpenAdd: () -> Unit = {},
+    val onAddLibrary: (String?) -> Unit = {},
     val onAddText: (String) -> Unit = {},
     val onSubmitAdd: () -> Unit = {},
     val onCloseAdd: () -> Unit = {},
@@ -213,7 +214,7 @@ fun DownloadsPage(
 
     state.add?.let { add ->
         DownloadsSheet(onDismiss = actions.onCloseAdd, tag = "add link sheet") {
-            AddLinkContent(add, viaVpn = !state.noVpnMode, onText = actions.onAddText, onAdd = actions.onSubmitAdd, onCancel = actions.onCloseAdd)
+            AddLinkContent(add, viaVpn = !state.noVpnMode, onText = actions.onAddText, onAdd = actions.onSubmitAdd, onCancel = actions.onCloseAdd, libraries = state.destinationLibraries, onLibrary = actions.onAddLibrary)
         }
     }
     val editing = state.editing

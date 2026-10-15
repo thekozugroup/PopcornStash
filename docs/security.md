@@ -147,3 +147,5 @@ These are known and not fixed yet.
   - `rsa` (RUSTSEC-2023-0071) is in `Cargo.lock` but never built.
   - `rustls-pemfile`, used by `axum-server` for built-in TLS, is unmaintained.
   - Base images are pinned by tag, not digest, and Debian packages float within trixie.
+
+Kernel WireGuard transport UDP uses the supervisor-owned mark `0x5151` so encrypted packets retaining the engine UID can reach the VPN peer. The engine cannot set this mark (no capabilities). Cleartext engine traffic, including an explicit bind to the external interface, still drops. DNS upstreams use the distinct tunnel-only mark `0x5150`.

@@ -21,6 +21,8 @@ pub const DNS_FORWARDER_ADDR: &str = "127.0.0.54:5354";
 pub const ROUTE_TABLE: u32 = 51820;
 /// Socket mark used by the supervisor's DNS forwarder upstream sockets.
 pub const FWMARK: u32 = 0x5150;
+/// Privileged WireGuard transport sockets: encrypted outer UDP, never engine sockets.
+pub const WIREGUARD_TRANSPORT_MARK: u32 = 0x5151;
 /// nftables table name (family inet).
 pub const NFT_TABLE: &str = "popcornstash";
 /// VPN directory inside the shared torrent dir.

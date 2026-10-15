@@ -4,6 +4,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -47,7 +48,7 @@ class DownloadsScreenshotTest {
     private fun show(state: DownloadsUiState, dark: Boolean, list: LazyListState? = null) {
         compose.setContent {
             PopcornTheme(darkTheme = dark, reduceMotion = true) {
-                Page(state, list)
+                Page(state.copy(destinationLibraries = s.libraries), list)
             }
         }
         compose.waitForIdle()
@@ -222,4 +223,19 @@ class DownloadsScreenshotTest {
         compose.waitForIdle()
         captureScreenRoboImage(screenshot("downloads-picker-light"))
     }
+
+    @Test
+    fun chosenDestinationLight() {
+        show(s.content().copy(add = AddLinkState(text = "https://example.org/film.mp4", libraryId = "lib-movies")), dark = false)
+        captureScreenRoboImage(screenshot("download-destination-light"))
+    }
+
+    @Test
+    fun destinationMenuDark() {
+        show(s.content().copy(add = AddLinkState(text = "https://example.org/film.mp4")), dark = true)
+        compose.onNodeWithContentDescription("Where it goes").performClick()
+        compose.waitForIdle()
+        captureScreenRoboImage(screenshot("download-destination-menu-dark"))
+    }
+
 }

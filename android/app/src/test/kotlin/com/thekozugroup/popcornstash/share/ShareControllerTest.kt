@@ -59,6 +59,7 @@ class ShareControllerTest {
         enqueue = { enqueued += it },
         scope = scope,
         now = { 1_791_993_600 },
+        loadDestinationLibraries = { emptyList() },
     )
 
     private fun <T> eventually(block: suspend () -> T): T = runBlocking { withTimeout(5_000) { block() } }
@@ -85,13 +86,16 @@ class ShareControllerTest {
             """{"id":"d-9","kind":"torrent","name":"Harbor","state":"queued","progress":0,"done_bytes":0,"down_bps":0,"up_bps":0,
             "created_at":1,"item_ids":[],"destinations":[]}""",
         )
+        controller.chooseLibrary("lib-movies")
         controller.addLink()
         val added = eventually { controller.state.first { (it as? ShareSheetState.Link)?.addedName != null } } as ShareSheetState.Link
         assertEquals("Harbor", added.addedName)
         server.takeRequest()
         val post = server.takeRequest()
         assertEquals("/api/downloads", post.url.encodedPath)
-        assertTrue(post.body!!.utf8().contains("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"))
+        val sent = post.body!!.utf8()
+        assertTrue(sent.contains("\"library_id\":\"lib-movies\""))
+        assertTrue(sent.contains("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"))
     }
 
     @Test
@@ -118,9 +122,11 @@ class ShareControllerTest {
         assertEquals("Ana Ribeiro", files.userName)
         assertEquals(1, files.refused)
         assertEquals(2, files.files.size)
+        controller.chooseLibrary("lib-photos")
         assertTrue(controller.upload())
         val batch = enqueued.single()
         assertEquals("u-ana", batch.userId)
+        assertTrue(batch.files.all { it.libraryId == "lib-photos" })
         assertEquals(server.url("/").toString(), batch.server)
         assertEquals(uris.map { it.toString() }, batch.files.map { it.uri })
         assertEquals(1_791_993_600, batch.createdAt)

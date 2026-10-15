@@ -19,6 +19,7 @@ data class SharedFile(
     val uploadId: String? = null,
     /** Uploaded and completed (`/complete` answered). */
     val done: Boolean = false,
+    val libraryId: String? = null,
 )
 
 /**

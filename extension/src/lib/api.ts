@@ -149,3 +149,13 @@ export async function vpnStatus(connection: Connection): Promise<VpnStatus> {
   });
   return body;
 }
+
+/** Narrow metadata available to download-creation tokens; no library contents. */
+export async function destinations(connection: Connection): Promise<Array<{id: string; name: string; icon: string; kinds: string[]}>> {
+  const {body} = await request<Array<{id: string; name: string; icon: string; kinds: string[]}>>(
+    connection.server, '/api/downloads/destinations', {token: connection.token, context: {action: 'send'}});
+  if (!Array.isArray(body) || body.some(row => typeof row.id !== 'string' || typeof row.name !== 'string')) {
+    throw new Error('The server did not return its libraries.');
+  }
+  return body;
+}

@@ -157,6 +157,7 @@ impl DownloadManager {
         request: AddTorrentRequest,
         name: String,
         source: String,
+        library_id: Option<&str>,
     ) -> ApiResult<Download> {
         // Held from before the row exists until the add is over (removed on drop, even
         // when the request is abandoned mid-way), so the poller never takes a row that
@@ -166,6 +167,7 @@ impl DownloadManager {
         self.insert_row_as(
             &id,
             NewDownload {
+                library_id,
                 kind: DownloadKind::Torrent,
                 name: &name,
                 source: &source,

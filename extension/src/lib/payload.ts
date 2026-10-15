@@ -22,6 +22,7 @@ export interface ForwardedHeaders {
 }
 
 export interface DownloadPayload {
+  library_id?: string;
   url: string;
   filename?: string;
   headers?: ForwardedHeaders;

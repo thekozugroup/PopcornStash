@@ -399,6 +399,7 @@ pub struct SubtitleStream {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct DownloadRow {
     pub id: String,
+    pub library_id: Option<String>,
     pub kind: DownloadKind,
     pub name: String,
     pub source: String,
@@ -425,6 +426,7 @@ impl DownloadRow {
     pub fn to_download(&self, item_ids: Vec<String>) -> Download {
         Download {
             id: self.id.clone(),
+            library_id: self.library_id.clone(),
             kind: self.kind,
             name: self.name.clone(),
             source: self.source.clone(),
@@ -449,6 +451,8 @@ impl DownloadRow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Download {
     pub id: String,
+    #[serde(default)]
+    pub library_id: Option<String>,
     pub kind: DownloadKind,
     pub name: String,
     pub source: String,

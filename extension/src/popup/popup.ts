@@ -4,7 +4,7 @@
  * action that opens the options page.
  */
 
-import {listDownloads, vpnStatus, type Connection} from '../lib/api';
+import {destinations, listDownloads, vpnStatus, type Connection} from '../lib/api';
 import {byId, h, mount} from '../lib/dom';
 import {downloadRow, percent} from '../lib/downloads-view';
 import {toProblem, type Problem} from '../lib/errors';
@@ -180,6 +180,8 @@ function renderPaired(connection: Connection): void {
     placeholder: 'https://… or magnet:?…',
     'aria-describedby': 'send-message',
   });
+  const destination = h('select', {id: 'destination', class: 'input'}, h('option', {value: ''}, 'Sorted automatically'));
+  const destinationNote = h('p', {class: 'field-message', role: 'status'});
   const sendButton = h('button', {class: 'button button-primary', type: 'submit'}, 'Send');
   const message = h('p', {class: 'field-message', id: 'send-message', role: 'status'});
   const form = h(
@@ -187,6 +189,7 @@ function renderPaired(connection: Connection): void {
     {class: 'send', novalidate: true},
     h('label', {class: 'label', for: 'link'}, 'Paste a link or magnet'),
     h('div', {class: 'send-row'}, input, sendButton),
+    h('label', {class: 'label', for: 'destination'}, 'Where it goes'), destination, destinationNote,
     message,
   );
 
@@ -211,6 +214,10 @@ function renderPaired(connection: Connection): void {
 
   mount(view, vpnSlot, form, recent, footer);
   input.focus();
+  void destinations(connection).then(libraries => {
+    if (!destination.isConnected) return;
+    for (const library of libraries) destination.append(h('option', {value: library.id}, library.name));
+  }).catch(() => { destinationNote.textContent = 'Libraries could not be loaded. Automatic sorting is available.'; });
 
   let stopped = false;
   // Re-render only on change, so the live VPN line is not re-announced every refresh.
@@ -287,12 +294,13 @@ function renderPaired(connection: Connection): void {
       }
       input.removeAttribute('aria-invalid');
       sendButton.disabled = true;
+      destination.disabled = true;
       sendButton.textContent = 'Sending';
       input.readOnly = true;
       message.className = 'field-message';
       message.textContent = '';
       try {
-        const result = await sendFromPage(check.url);
+        const result = await sendFromPage(check.url, destination.value || undefined);
         if (result.ok) {
           input.value = '';
           message.className = 'field-message field-message-success';
@@ -313,6 +321,7 @@ function renderPaired(connection: Connection): void {
         message.textContent = 'The extension could not send that. Close this popup and try again.';
       } finally {
         sendButton.disabled = false;
+        destination.disabled = false;
         sendButton.textContent = 'Send';
         input.readOnly = false;
         input.focus();

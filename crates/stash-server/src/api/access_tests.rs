@@ -1008,3 +1008,126 @@ async fn an_owner_tv_token_does_not_see_a_members_waiting_upload() {
         assert!(everything.contains(id), "full owners see it: {all}");
     }
 }
+
+#[tokio::test]
+async fn download_destinations_keep_visibility_and_narrow_scopes() {
+    let w = world().await;
+    let token = w
+        .app
+        .device_token(&w.member_id, &["downloads:create", "downloads:read"])
+        .await;
+    let (status, values) = w.app.json("/api/downloads/destinations", &token).await;
+    assert_eq!(status, StatusCode::OK);
+    let ids: Vec<_> = values
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![STARTING_HOME_VIDEOS]);
+    assert_eq!(
+        w.app.json("/api/libraries", &token).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let mut errors = vec![];
+    for id in [STARTING_MOVIES, "missing"] {
+        let (status, value) = w
+            .app
+            .send_json(
+                "POST",
+                "/api/downloads",
+                &token,
+                serde_json::json!({"url":"https://example.org/legal.mp4", "library_id":id}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        errors.push(value);
+    }
+    assert_eq!(errors[0], errors[1]);
+}
+
+#[tokio::test]
+async fn inbox_accept_uses_the_chosen_download_suggestion() {
+    let app = TestApp::new().await;
+    let (user, owner) = app.user("owner").await;
+    let (status, kids) = app.send_json("POST", "/api/libraries", &owner, serde_json::json!({
+        "name":"Kids", "icon":"baby", "content_type":"video", "structure":"one_offs", "claims":[],
+        "folder":{"mode":"new", "name":"Kids"}
+    })).await;
+    assert_eq!(status, StatusCode::CREATED, "{kids}");
+    let id = kids["id"].as_str().unwrap();
+    app.state
+        .settings
+        .update(serde_json::json!({"auto_sort":false}))
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO downloads (id, kind, name, source, state, created_at, updated_at, created_by, library_id) VALUES ('chosen', 'upload', 'Heat', '', 'sorting', 0, 0, ?, ?)")
+        .bind(&user).bind(id).execute(&app.state.db).await.unwrap();
+    let rel = "Downloads/Completed/Heat.1995.1080p.mkv";
+    std::fs::create_dir_all(app.state.config.stash_root.join("Downloads/Completed")).unwrap();
+    std::fs::write(app.state.config.stash_root.join(rel), b"synthetic").unwrap();
+    let item = app
+        .state
+        .library
+        .sort_path(rel, Some("chosen"))
+        .await
+        .unwrap()[0]
+        .clone();
+    let (status, value) = app
+        .send_json(
+            "POST",
+            &format!("/api/inbox/{item}"),
+            &owner,
+            serde_json::json!({"action":"accept"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert!(
+        app.state
+            .config
+            .stash_root
+            .join("Kids/Heat (1995)/Heat (1995).mkv")
+            .is_file()
+    );
+}
+
+#[tokio::test]
+async fn torrent_multipart_destination_works_after_the_file_field() {
+    let app = TestApp::new().await;
+    let (_, owner) = app.user("owner").await;
+    let bytes = "d8:announce14:http://t.local4:infod6:lengthi12e4:name9:movie.mkv12:piece lengthi16384e6:pieces0:ee";
+    let body = format!(
+        "--boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"movie.torrent\"\r\nContent-Type: application/x-bittorrent\r\n\r\n{bytes}\r\n--boundary\r\nContent-Disposition: form-data; name=\"library_id\"\r\n\r\n{STARTING_MOVIES}\r\n--boundary--\r\n"
+    );
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/downloads/torrent")
+        .header("authorization", format!("Bearer {owner}"))
+        .header("content-type", "multipart/form-data; boundary=boundary")
+        .body(axum::body::Body::from(body.clone()))
+        .unwrap();
+    let (status, _, response) = app.send(req).await;
+    // The test server has torrents off, but validation and multipart parsing must complete.
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        String::from_utf8_lossy(&response)
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM downloads WHERE library_id=?")
+        .bind(STARTING_MOVIES)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/downloads/torrent")
+        .header("authorization", format!("Bearer {owner}"))
+        .header("content-type", "multipart/form-data; boundary=boundary")
+        .body(axum::body::Body::from(
+            body.replace(STARTING_MOVIES, "missing"),
+        ))
+        .unwrap();
+    assert_eq!(app.send(req).await.0, StatusCode::NOT_FOUND);
+}

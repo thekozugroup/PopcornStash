@@ -103,6 +103,7 @@ impl ForwardedHeaders {
 /// `POST /api/downloads`.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AddDownloadRequest {
+    pub library_id: Option<String>,
     pub url: String,
     pub filename: Option<String>,
     pub headers: Option<ForwardedHeaders>,
@@ -177,6 +178,7 @@ impl Default for Tuning {
 
 /// Fields of a new `downloads` row.
 pub(crate) struct NewDownload<'a> {
+    pub library_id: Option<&'a str>,
     pub kind: DownloadKind,
     pub name: &'a str,
     pub source: &'a str,
@@ -342,6 +344,8 @@ impl DownloadManager {
 
     /// Add an http(s) link or magnet link.
     pub async fn add_url(&self, user_id: &str, request: AddDownloadRequest) -> ApiResult<Download> {
+        self.validate_destination(user_id, request.library_id.as_deref())
+            .await?;
         let raw = request.url.trim();
         if raw.is_empty() {
             return Err(ApiError::bad_request("Paste a link to download."));
@@ -358,7 +362,13 @@ impl DownloadManager {
                 torrent_base64: None,
             };
             return self
-                .add_torrent(user_id, add, magnet.name(), magnet.redacted())
+                .add_torrent(
+                    user_id,
+                    add,
+                    magnet.name(),
+                    magnet.redacted(),
+                    request.library_id.as_deref(),
+                )
                 .await;
         }
         let url = Url::parse(raw).map_err(|_| ApiError::bad_request("That link is not valid."))?;
@@ -386,7 +396,9 @@ impl DownloadManager {
                 .fetch_torrent_file(&url, headers.unwrap_or_default())
                 .await?;
             let filename = source::name_from_url(&url);
-            return self.add_torrent_file(user_id, bytes, filename).await;
+            return self
+                .add_torrent_file_to(user_id, bytes, filename, request.library_id.as_deref())
+                .await;
         }
 
         self.guard
@@ -424,6 +436,7 @@ impl DownloadManager {
         self.insert_row_as(
             &id,
             NewDownload {
+                library_id: request.library_id.as_deref(),
                 kind: DownloadKind::Http,
                 name: &name,
                 source: &stored_source,
@@ -462,6 +475,18 @@ impl DownloadManager {
         bytes: Vec<u8>,
         filename: Option<String>,
     ) -> ApiResult<Download> {
+        self.add_torrent_file_to(user_id, bytes, filename, None)
+            .await
+    }
+
+    pub async fn add_torrent_file_to(
+        &self,
+        user_id: &str,
+        bytes: Vec<u8>,
+        filename: Option<String>,
+        library_id: Option<&str>,
+    ) -> ApiResult<Download> {
+        self.validate_destination(user_id, library_id).await?;
         self.require_torrents()?;
         if bytes.len() > MAX_TORRENT_FILE {
             return Err(ApiError::bad_request(
@@ -489,7 +514,8 @@ impl DownloadManager {
             magnet: None,
             torrent_base64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
         };
-        self.add_torrent(user_id, add, name, source).await
+        self.add_torrent(user_id, add, name, source, library_id)
+            .await
     }
 
     /// A finished browser upload that now sits at `rel_path` (in the private partial
@@ -503,6 +529,18 @@ impl DownloadManager {
         filename: &str,
         rel_path: &str,
         size: i64,
+    ) -> ApiResult<Download> {
+        self.upload_finished_to(user_id, filename, rel_path, size, None)
+            .await
+    }
+
+    pub async fn upload_finished_to(
+        &self,
+        user_id: &str,
+        filename: &str,
+        rel_path: &str,
+        size: i64,
+        library_id: Option<&str>,
     ) -> ApiResult<Download> {
         let single_part = rel_path
             .strip_prefix(paths::UPLOADS_TMP)
@@ -530,6 +568,7 @@ impl DownloadManager {
         })?;
         let inserted = self
             .insert_row(NewDownload {
+                library_id,
                 kind: DownloadKind::Upload,
                 name: &name,
                 source: &name,
@@ -931,6 +970,19 @@ impl DownloadManager {
         Ok(id)
     }
 
+    pub(crate) async fn validate_destination(
+        &self,
+        user_id: &str,
+        library_id: Option<&str>,
+    ) -> ApiResult<()> {
+        if let Some(id) = library_id {
+            stash_core::library::destinations::visible(&self.db, user_id, id)
+                .await?
+                .ok_or_else(|| ApiError::library_not_found().with_field("library_id"))?;
+        }
+        Ok(())
+    }
+
     /// Insert a row with a chosen id.
     pub(crate) async fn insert_row_as(&self, id: &str, new: NewDownload<'_>) -> ApiResult<()> {
         let t = now();
@@ -942,8 +994,8 @@ impl DownloadManager {
         let completed_at = (new.state == DownloadState::Completed).then_some(t);
         sqlx::query(
             "INSERT INTO downloads (id, kind, name, source, state, progress, total_bytes, done_bytes, down_bps, up_bps,
-                                    error, rel_path, created_by, created_at, updated_at, completed_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)",
+                                    error, rel_path, created_by, created_at, updated_at, completed_at, library_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id)
         .bind(new.kind.as_str())
@@ -959,6 +1011,7 @@ impl DownloadManager {
         .bind(t)
         .bind(t)
         .bind(completed_at)
+        .bind(new.library_id)
         .execute(&self.db)
         .await?;
         Ok(())
@@ -1219,6 +1272,7 @@ mod tests {
         let shown = format!("{headers:?}");
         assert!(!shown.contains("SECRET"));
         let request = AddDownloadRequest {
+            library_id: None,
             url: "https://example.com/a.mkv?token=SECRET".into(),
             filename: None,
             headers: Some(headers),

@@ -30,6 +30,8 @@ sealed interface ShareSheetState {
         val error: String? = null,
         /** The download it became, once added. */
         val addedName: String? = null,
+        val libraries: List<com.thekozugroup.popcornstash.data.api.Library> = emptyList(),
+        val libraryId: String? = null,
     ) : ShareSheetState
 
     data class Files(
@@ -38,6 +40,8 @@ sealed interface ShareSheetState {
         /** "Uploads as Ana to stash.example.com." */
         val userName: String,
         val server: String,
+        val libraries: List<com.thekozugroup.popcornstash.data.api.Library> = emptyList(),
+        val libraryId: String? = null,
         val busy: Boolean = false,
     ) : ShareSheetState
 
@@ -58,6 +62,7 @@ class ShareController(
     private val enqueue: (UploadBatch) -> Unit,
     private val scope: CoroutineScope,
     private val now: () -> Long = { System.currentTimeMillis() / 1000 },
+    private val loadDestinationLibraries: suspend (Session) -> List<com.thekozugroup.popcornstash.data.api.Library> = { it.api.libraries() },
 ) {
     private val _state = MutableStateFlow<ShareSheetState>(ShareSheetState.Checking)
     val state: StateFlow<ShareSheetState> = _state.asStateFlow()
@@ -105,6 +110,27 @@ class ShareController(
             }
             is ShareRequest.Unusable -> _state.value = ShareSheetState.Unusable(request.refused)
         }
+        if (request !is ShareRequest.Unusable) loadLibraries()
+    }
+
+    private suspend fun loadLibraries() {
+        val current = session ?: return
+        try {
+            val libraries = loadDestinationLibraries(current)
+            _state.update { when (it) {
+                is ShareSheetState.Link -> it.copy(libraries = libraries)
+                is ShareSheetState.Files -> it.copy(libraries = libraries)
+                else -> it
+            } }
+        } catch (_: ApiException) { /* Automatic sorting remains available. */ }
+    }
+
+    fun chooseLibrary(id: String?) {
+        _state.update { when (it) {
+            is ShareSheetState.Link -> if (!it.busy) it.copy(libraryId = id) else it
+            is ShareSheetState.Files -> if (!it.busy) it.copy(libraryId = id) else it
+            else -> it
+        } }
     }
 
     /** Adds the shared link to Downloads. */
@@ -115,7 +141,7 @@ class ShareController(
         _state.value = current.copy(busy = true, error = null)
         scope.launch {
             _state.value = try {
-                val download = api.addDownload(current.link.url)
+                val download = api.addDownload(current.link.url, libraryId = current.libraryId)
                 current.copy(busy = false, addedName = download.name)
             } catch (e: ApiException) {
                 val message = if (e.code == "vpn_unavailable") {
@@ -141,7 +167,7 @@ class ShareController(
                 userId = user.id,
                 userName = user.displayName,
                 server = signedIn.server.toString(),
-                files = current.files,
+                files = current.files.map { it.copy(libraryId = current.libraryId) },
                 createdAt = now(),
             ),
         )

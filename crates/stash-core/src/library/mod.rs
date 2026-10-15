@@ -5,6 +5,7 @@
 pub mod access;
 pub mod classify;
 pub mod defs;
+pub mod destinations;
 pub mod organizer;
 pub mod parse;
 pub mod repo;

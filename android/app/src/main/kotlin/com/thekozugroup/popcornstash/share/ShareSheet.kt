@@ -53,6 +53,7 @@ class ShareActions(
     val onOpenApp: () -> Unit = {},
     val onOpenDownloads: () -> Unit = {},
     val onClose: () -> Unit = {},
+    val onLibrary: (String?) -> Unit = {},
 )
 
 /** The share sheet over the app that shared: a Material bottom sheet with [ShareSheetContent]. */
@@ -154,6 +155,8 @@ private fun ColumnScope.LinkContent(state: ShareSheetState.Link, actions: ShareA
         Spacer(Modifier.height(Popcorn.spacing.xs))
         ErrorSentence(state.error)
     }
+    Spacer(Modifier.height(Popcorn.spacing.m))
+    com.thekozugroup.popcornstash.ui.components.DownloadDestinationPicker(state.libraries, state.libraryId, actions.onLibrary, enabled = !state.busy)
     Buttons {
         PrimaryButton("Add to Downloads", onClick = actions.onAddLink, busy = state.busy, modifier = Modifier.fillMaxWidth())
         QuietButton("Cancel", onClick = actions.onClose, enabled = !state.busy, modifier = Modifier.fillMaxWidth())
@@ -210,6 +213,8 @@ private fun ColumnScope.FilesContent(state: ShareSheetState.Files, actions: Shar
             color = Popcorn.colors.textMuted,
         )
     }
+    Spacer(Modifier.height(Popcorn.spacing.m))
+    com.thekozugroup.popcornstash.ui.components.DownloadDestinationPicker(state.libraries, state.libraryId, actions.onLibrary, enabled = !state.busy)
     Buttons {
         PrimaryButton("Upload", onClick = actions.onUpload, busy = state.busy, modifier = Modifier.fillMaxWidth())
         QuietButton("Cancel", onClick = actions.onClose, enabled = !state.busy, modifier = Modifier.fillMaxWidth())

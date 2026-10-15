@@ -59,6 +59,7 @@ data class AddLinkState(
     val fromClipboard: Boolean = false,
     val error: String? = null,
     val busy: Boolean = false,
+    val libraryId: String? = null,
 )
 
 data class EditState(
@@ -99,6 +100,7 @@ data class DownloadsUiState(
     val add: AddLinkState? = null,
     val edit: EditState? = null,
     val acceptAll: AcceptAllState? = null,
+    val destinationLibraries: List<Library> = emptyList(),
 ) {
     /** Files whose row is ready to accept as it is: what "Accept all" moves. */
     val readyToAccept: List<ImportRow> get() = imports.filter { it.ready }
@@ -216,7 +218,7 @@ class DownloadsController(
                     _messages.trySend(e.message)
                 } else {
                     try {
-                        data.apply(StashEvent.DownloadChanged(api.addDownload(download.source)))
+                        data.apply(StashEvent.DownloadChanged(api.addDownload(download.source, libraryId = download.libraryId)))
                         runCatching { api.removeDownload(download.id, deleteFiles = false) }
                         data.apply(StashEvent.DownloadRemoved(download.id))
                     } catch (second: ApiException) {
@@ -265,6 +267,8 @@ class DownloadsController(
         local.update { it.copy(add = AddLinkState(text = link?.url.orEmpty(), fromClipboard = link != null)) }
     }
 
+    fun onAddLibrary(id: String?) = local.update { l -> l.copy(add = l.add?.takeIf { !it.busy }?.copy(libraryId = id, error = null) ?: l.add) }
+
     fun onAddText(text: String) = local.update { l -> l.copy(add = l.add?.copy(text = text, fromClipboard = false, error = null)) }
 
     fun closeAdd() = local.update { if (it.add?.busy == true) it else it.copy(add = null) }
@@ -286,7 +290,7 @@ class DownloadsController(
         local.update { it.copy(add = add.copy(busy = true, error = null)) }
         scope.launch {
             try {
-                val download = api.addDownload(link.url)
+                val download = api.addDownload(link.url, libraryId = add.libraryId)
                 data.apply(StashEvent.DownloadChanged(download))
                 local.update { it.copy(add = null) }
                 _messages.trySend("Added ${download.name}.")
@@ -473,6 +477,7 @@ class DownloadsController(
         val finished = all.filterNot { it.isActive() }
             .sortedByDescending { it.completedAt ?: it.createdAt }
         return DownloadsUiState(
+            destinationLibraries = libraries,
             isOwner = isOwner,
             loading = downloads == null && (s.downloads is Loadable.Idle || s.downloads is Loadable.Loading),
             loadError = loadError,

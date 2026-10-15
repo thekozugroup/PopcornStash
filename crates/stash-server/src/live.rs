@@ -175,6 +175,13 @@ pub fn download_view(
         return None;
     }
     let mut view = download.clone();
+    if view
+        .library_id
+        .as_deref()
+        .is_some_and(|id| !access.sees_library(id))
+    {
+        view.library_id = None;
+    }
     view.item_ids = visible.iter().map(|(id, _)| id.clone()).collect();
     let mut destinations: Vec<Destination> = Vec::new();
     for (_, facts) in &visible {

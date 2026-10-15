@@ -267,12 +267,14 @@ pub(crate) async fn sort_path_as_of(
     let auto_sort = lib.settings.get().await.auto_sort;
     // One sort job, one set of claims (section 4): when a library write changes where
     // files go while this job runs, the rest of its files wait in Inbox.
+    let download = match &download_id {
+        Some(id) => download_row(lib, id).await?,
+        None => None,
+    };
     let job = SortJob {
+        library_id: download.as_ref().and_then(|d| d.library_id.clone()),
         download_id: download_id.clone(),
-        added_by: match &download_id {
-            Some(id) => download_row(lib, id).await?.and_then(|d| d.created_by),
-            None => None,
-        },
+        added_by: download.and_then(|d| d.created_by),
         auto_sort,
         generation,
     };
@@ -612,6 +614,7 @@ fn possible_artwork(mut c: Classification, file_name: &str) -> Classification {
 
 /// What one sort job keeps for all of its files.
 struct SortJob {
+    library_id: Option<String>,
     download_id: Option<String>,
     /// Who brought the files in (the download's creator).
     added_by: Option<String>,
@@ -745,9 +748,17 @@ async fn sort_file(lib: &Library, abs: &Path, role: Role, job: &SortJob) -> Resu
 
     // Where it goes, from the claims as they are now (section 4, claims).
     let library_defs = defs::load_all(&lib.db).await?;
-    let claimer = (c.category != Category::Other)
-        .then(|| library_defs.iter().find(|d| d.claims(c.category)))
-        .flatten();
+    let preferred = match (job.added_by.as_deref(), job.library_id.as_deref()) {
+        (Some(user), Some(id)) => super::destinations::visible(&lib.db, user, id)
+            .await?
+            .filter(|def| def.shape().fits(c.category)),
+        _ => None,
+    };
+    let claimer = preferred.as_ref().or_else(|| {
+        (c.category != Category::Other)
+            .then(|| library_defs.iter().find(|d| d.claims(c.category)))
+            .flatten()
+    });
     if let Some(def) = claimer
         && c.category == Category::Episode
     {
@@ -790,7 +801,11 @@ async fn sort_file(lib: &Library, abs: &Path, role: Role, job: &SortJob) -> Resu
             }
         }
     }
-    row.suggestion_json = Some(serde_json::to_string(&c)?);
+    let mut suggestion = serde_json::to_value(&c)?;
+    if let Some(def) = preferred {
+        suggestion["preferred_library_id"] = serde_json::Value::String(def.id().into());
+    }
+    row.suggestion_json = Some(serde_json::to_string(&suggestion)?);
     let id = record(lib, target, row).await?;
     Ok(Sorted::Changed(id))
 }
@@ -1685,10 +1700,11 @@ pub fn suggestion_view(
             waiting,
         )
     } else {
-        match access
-            .visible_claimer(c.category)
-            .and_then(|id| library_defs.iter().find(|d| d.id() == id))
-        {
+        match super::destinations::suggested(row, access, library_defs, c.category).or_else(|| {
+            access
+                .visible_claimer(c.category)
+                .and_then(|id| library_defs.iter().find(|d| d.id() == id))
+        }) {
             None => (None, None, None, Waiting::ChooseLibrary),
             Some(def) => {
                 let waiting = match states.get(def.id()) {

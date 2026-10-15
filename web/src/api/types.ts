@@ -245,6 +245,7 @@ export type DownloadState =
   | 'cancelled';
 
 export interface Download {
+  library_id?: Id | null;
   id: Id;
   kind: DownloadKind;
   name: string;
@@ -739,12 +740,14 @@ export interface DownloadList {
 }
 
 export interface DownloadCreateRequest {
+  library_id?: Id;
   url: string;
   filename?: string;
   headers?: {cookie?: string; referer?: string; user_agent?: string};
 }
 
 export interface UploadCreateRequest {
+  library_id?: Id;
   filename: string;
   size: number;
   mime?: string;

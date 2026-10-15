@@ -82,6 +82,7 @@ where
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/downloads", get(list).post(add))
+        .route("/api/downloads/destinations", get(destinations))
         .route(
             "/api/downloads/torrent",
             // Room for a 10 MB .torrent plus multipart framing.
@@ -120,6 +121,43 @@ async fn list(
     Ok(Json(DownloadList { items }))
 }
 
+#[derive(Serialize)]
+struct Destination {
+    id: String,
+    name: String,
+    icon: String,
+    kinds: Vec<stash_core::models::Category>,
+}
+
+async fn destinations(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> ApiResult<Json<Vec<Destination>>> {
+    user.require(Scope::DownloadsCreate)?;
+    let access = user.access(&state.db).await?;
+    use stash_core::models::Category;
+    let defs = stash_core::library::defs::load_all(&state.db).await?;
+    Ok(Json(
+        defs.into_iter()
+            .filter(|def| access.sees_library(def.id()))
+            .map(|def| Destination {
+                kinds: [
+                    Category::Movie,
+                    Category::Episode,
+                    Category::HomeVideo,
+                    Category::Photo,
+                ]
+                .into_iter()
+                .filter(|kind| def.shape().fits(*kind))
+                .collect(),
+                id: def.row.id,
+                name: def.row.name,
+                icon: def.row.icon,
+            })
+            .collect(),
+    ))
+}
+
 async fn add(
     State(state): State<AppState>,
     user: AuthUser,
@@ -139,32 +177,47 @@ async fn add_torrent(
         multipart.map_err(|_| ApiError::bad_request("Send the .torrent file as a form upload."))?;
     let too_large = || ApiError::bad_request("The .torrent file is larger than 10 MB.");
     let unreadable = || ApiError::bad_request("The upload could not be read. Try again.");
+    let mut file = None;
+    let mut library_id = None;
     while let Some(mut field) = multipart.next_field().await.map_err(|_| unreadable())? {
-        if field.name() != Some("file") {
+        let is_file = field.name() == Some("file");
+        let is_library = field.name() == Some("library_id");
+        if !is_file && !is_library {
             continue;
+        }
+        if (is_file && file.is_some()) || (is_library && library_id.is_some()) {
+            return Err(ApiError::bad_request(
+                "Send one file and one destination at most.",
+            ));
         }
         let filename = field.file_name().map(str::to_string);
         let mut bytes = Vec::new();
-        while let Some(chunk) = field.chunk().await.map_err(|e| {
-            if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
-                too_large()
-            } else {
-                unreadable()
-            }
-        })? {
-            if bytes.len() + chunk.len() > MAX_TORRENT_FILE {
-                return Err(too_large());
+        let limit = if is_file { MAX_TORRENT_FILE } else { 256 };
+        while let Some(chunk) = field.chunk().await.map_err(|_| unreadable())? {
+            if bytes.len() + chunk.len() > limit {
+                return Err(if is_file {
+                    too_large()
+                } else {
+                    ApiError::bad_request("Choose a valid destination library.")
+                        .with_field("library_id")
+                });
             }
             bytes.extend_from_slice(&chunk);
         }
-        return Ok(Json(
-            state
-                .downloads
-                .add_torrent_file(&user.user_id, bytes, filename)
-                .await?,
-        ));
+        if is_file {
+            file = Some((bytes, filename));
+        } else {
+            library_id = Some(String::from_utf8(bytes).map_err(|_| unreadable())?);
+        }
     }
-    Err(ApiError::bad_request("Choose a .torrent file to upload."))
+    let (bytes, filename) =
+        file.ok_or_else(|| ApiError::bad_request("Choose a .torrent file to upload."))?;
+    Ok(Json(
+        state
+            .downloads
+            .add_torrent_file_to(&user.user_id, bytes, filename, library_id.as_deref())
+            .await?,
+    ))
 }
 
 /// A download the caller cannot see answers 404, as one that never existed (section 7).

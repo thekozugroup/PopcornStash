@@ -368,6 +368,9 @@ check "uid $PUID reaches the echo server directly (it sees the container's own $
 check_not "engine uid cannot bypass the tunnel by binding to eth0" \
   as_engine curl -fsS -m 5 --interface eth0 "$ECHO_URL"
 
+check_not "the engine cannot forge WireGuard's transport mark" \
+  as_engine python3 -c 'import socket; socket.socket(socket.AF_INET, socket.SOCK_DGRAM).setsockopt(socket.SOL_SOCKET, 36, 0x5151)'
+
 engine_resolves() {
   local got
   got="$(as_engine getent hosts echo.test | awk '{print $1}')" || return 1

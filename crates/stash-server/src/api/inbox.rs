@@ -93,7 +93,23 @@ async fn resolve_target(
     let kind = item.suggestion().map_or(item.category, |s| s.category);
     let adder =
         access.full_owner() || item.added_by.as_deref() == Some(access.viewer.user_id.as_str());
-    let claimer = access.visible_claimer(kind).map(str::to_string);
+    let preferred = if adder {
+        let defs = defs::load_all(&state.db).await?;
+        stash_core::library::destinations::suggested(
+            item,
+            access,
+            &defs,
+            request.category.unwrap_or(kind),
+        )
+        .map(|def| def.id().to_string())
+    } else {
+        None
+    };
+    let claimer = preferred.or_else(|| {
+        access
+            .visible_claimer(request.category.unwrap_or(kind))
+            .map(str::to_string)
+    });
     let choose_library =
         || ApiError::bad_request("Choose a library for this file.").with_field("library_id");
     let (place, library_id) = match request.place {
@@ -111,8 +127,8 @@ async fn resolve_target(
         None => match (request.library_id.clone(), request.category.unwrap_or(kind)) {
             (Some(id), _) => (Place::Library, Some(id)),
             (None, Category::Other) => (Place::OtherFiles, None),
-            (None, category) => match access.visible_claimer(category) {
-                Some(id) => (Place::Library, Some(id.to_string())),
+            (None, _) => match claimer.clone() {
+                Some(id) => (Place::Library, Some(id)),
                 None => return Err(choose_library()),
             },
         },

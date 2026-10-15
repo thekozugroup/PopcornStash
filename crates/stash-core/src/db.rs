@@ -418,6 +418,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn migration_0004_keeps_existing_downloads_and_partial_uploads() {
+        let dir = tempfile::tempdir().unwrap();
+        let previous = dir.path().join("migrations");
+        std::fs::create_dir(&previous).unwrap();
+        for name in [
+            "0001_init.sql",
+            "0002_libraries.sql",
+            "0003_capture_time.sql",
+        ] {
+            std::fs::copy(
+                format!("{}/migrations/{name}", env!("CARGO_MANIFEST_DIR")),
+                previous.join(name),
+            )
+            .unwrap();
+        }
+        let db = super::connect(&dir.path().join("test.db")).await.unwrap();
+        sqlx::migrate::Migrator::new(previous.as_path())
+            .await
+            .unwrap()
+            .run(&db)
+            .await
+            .unwrap();
+        sqlx::raw_sql("INSERT INTO users (id, display_name, role, webauthn_id, created_at) VALUES ('u', 'Owner', 'owner', 'w', 0);
+            INSERT INTO downloads (id, kind, name, source, state, created_at, updated_at) VALUES ('d', 'upload', 'old', '', 'sorting', 0, 0);
+            INSERT INTO uploads (id, user_id, filename, size, received, state, created_at, updated_at) VALUES ('p', 'u', 'partial', 20, 10, 'receiving', 0, 0);")
+            .execute(&db).await.unwrap();
+        super::MIGRATOR.run(&db).await.unwrap();
+        let download: (String, Option<String>) =
+            sqlx::query_as("SELECT state, library_id FROM downloads WHERE id='d'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(download, ("sorting".into(), None));
+        let upload: (i64, Option<String>) =
+            sqlx::query_as("SELECT received, library_id FROM uploads WHERE id='p'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(upload, (10, None));
+        for table in ["downloads", "uploads"] {
+            sqlx::query(&format!("UPDATE {table} SET library_id=?"))
+                .bind(crate::library::defs::STARTING_MOVIES)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        sqlx::query("DELETE FROM libraries WHERE id=?")
+            .bind(crate::library::defs::STARTING_MOVIES)
+            .execute(&db)
+            .await
+            .unwrap();
+        let violations = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+        assert!(violations.is_empty());
+        for table in ["downloads", "uploads"] {
+            let count: i64 = sqlx::query_scalar(&format!(
+                "SELECT count(*) FROM {table} WHERE library_id IS NULL"
+            ))
+            .fetch_one(&db)
+            .await
+            .unwrap();
+            assert_eq!(count, 1);
+        }
+    }
+
+    #[tokio::test]
     async fn migrations_apply() {
         let db = super::open_memory().await.unwrap();
         let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM items")

@@ -43,6 +43,7 @@ const MSG_WRITE: &str = "The upload could not be saved. Check that the stash has
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateUpload {
+    pub library_id: Option<String>,
     pub filename: String,
     pub size: i64,
     pub mime: Option<String>,
@@ -68,6 +69,7 @@ pub struct UploadStatus {
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct UploadRow {
+    library_id: Option<String>,
     id: String,
     user_id: String,
     filename: String,
@@ -166,7 +168,7 @@ impl UploadService {
     /// Load an upload the caller may touch: their own, or any when they are the owner.
     async fn load(&self, user: &AuthUser, id: &str) -> ApiResult<UploadRow> {
         let row: Option<UploadRow> = sqlx::query_as(
-            "SELECT id, user_id, filename, size, received, state, last_modified FROM uploads WHERE id = ?",
+            "SELECT id, user_id, filename, size, received, state, last_modified, library_id FROM uploads WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(&self.db)
@@ -180,6 +182,9 @@ impl UploadService {
 
     /// `POST /api/uploads`: reserve space and create an empty part file.
     pub async fn create(&self, user: &AuthUser, request: CreateUpload) -> ApiResult<UploadCreated> {
+        self.downloads
+            .validate_destination(&user.user_id, request.library_id.as_deref())
+            .await?;
         let filename = request.filename.trim();
         if filename.is_empty() {
             return Err(ApiError::bad_request("The file needs a name."));
@@ -217,8 +222,8 @@ impl UploadService {
             .await?;
         let t = now();
         let inserted = sqlx::query(
-            "INSERT INTO uploads (id, user_id, filename, size, received, mime, last_modified, state, created_at, updated_at)
-             VALUES (?, ?, ?, ?, 0, ?, ?, 'receiving', ?, ?)",
+            "INSERT INTO uploads (id, user_id, filename, size, received, mime, last_modified, state, created_at, updated_at, library_id)
+             VALUES (?, ?, ?, ?, 0, ?, ?, 'receiving', ?, ?, ?)",
         )
         .bind(&id)
         .bind(&user.user_id)
@@ -228,6 +233,7 @@ impl UploadService {
         .bind(request.last_modified)
         .bind(t)
         .bind(t)
+        .bind(request.library_id.as_deref())
         .execute(&self.db)
         .await;
         if let Err(e) = inserted {
@@ -467,7 +473,13 @@ impl UploadService {
         let rel = format!("{}/{id}.part", paths::UPLOADS_TMP);
         let download = self
             .downloads
-            .upload_finished(&user.user_id, &row.filename, &rel, row.size)
+            .upload_finished_to(
+                &row.user_id,
+                &row.filename,
+                &rel,
+                row.size,
+                row.library_id.as_deref(),
+            )
             .await?;
         self.mark(id, "complete").await?;
         self.locks.remove(id);
@@ -700,6 +712,7 @@ mod tests {
             .create(
                 user,
                 CreateUpload {
+                    library_id: None,
                     filename: name.into(),
                     size: data.len() as i64,
                     mime: Some("image/png".into()),

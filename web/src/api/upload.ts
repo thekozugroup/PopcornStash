@@ -42,6 +42,7 @@ export interface UploadProgress {
 }
 
 export interface UploadOptions {
+  libraryId?: string;
   /** Resume an upload created earlier (for example after a reload). */
   resumeId?: string;
   onProgress?: (progress: UploadProgress) => void;
@@ -215,6 +216,7 @@ export class ResumableUpload {
     }
     const created: UploadCreated = await uploads.create(
       {
+        library_id: this.options.libraryId,
         filename: this.file.name,
         size: this.file.size,
         mime: this.file.type || undefined,

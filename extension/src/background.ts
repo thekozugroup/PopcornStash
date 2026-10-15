@@ -89,7 +89,7 @@ chrome.notifications.onClicked.addListener(id => {
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   // Only this extension's own pages may ask (never web pages or other extensions).
   if (sender.id !== chrome.runtime.id || !isExtensionMessage(message)) return false;
-  void sendToStash({url: message.url}).then(sendResponse);
+  void sendToStash({url: message.url, libraryId: message.libraryId}).then(sendResponse);
   return true;
 });
 

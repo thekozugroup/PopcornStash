@@ -43,6 +43,7 @@ export type UploadEntryState =
   | 'interrupted';
 
 export interface UploadEntry {
+  libraryId?: string;
   /** Local key, stable for the life of the entry. */
   key: string;
   /** name|size|lastModified, used to recognise the same file again. */
@@ -63,6 +64,7 @@ export interface UploadEntry {
 }
 
 interface StoredUpload {
+  libraryId?: string;
   /** The person who started the upload; it continues only for them. */
   userId: string;
   fileKey: string;
@@ -121,6 +123,7 @@ function readAllStored(): StoredUpload[] {
       (value): value is StoredUpload =>
         typeof value === 'object' &&
         value !== null &&
+        ((value as StoredUpload).libraryId === undefined || typeof (value as StoredUpload).libraryId === 'string') &&
         typeof (value as StoredUpload).userId === 'string' &&
         typeof (value as StoredUpload).fileKey === 'string' &&
         typeof (value as StoredUpload).uploadId === 'string' &&
@@ -152,7 +155,7 @@ function remember(entry: UploadEntry, uploadId: string) {
   if (owner === null) return;
   const userId = owner;
   const list = readAllStored().filter(stored => !(stored.userId === userId && stored.fileKey === entry.fileKey));
-  list.push({userId, fileKey: entry.fileKey, uploadId, name: entry.name, size: entry.size, savedAt: Date.now()});
+  list.push({userId, libraryId: entry.libraryId, fileKey: entry.fileKey, uploadId, name: entry.name, size: entry.size, savedAt: Date.now()});
   writeStored(list);
 }
 
@@ -399,9 +402,10 @@ function pump() {
   }
 }
 
-function makeRunner(key: string, file: File, resumeId: string | undefined): ResumableUpload {
+function makeRunner(key: string, file: File, resumeId: string | undefined, libraryId?: string): ResumableUpload {
   const runner: ResumableUpload = new ResumableUpload(file, {
     resumeId,
+    libraryId,
     onProgress: progress => {
       if (progress.phase === 'uploading') applyPending(runner);
       onProgress(key, progress);
@@ -498,6 +502,7 @@ export function restoreInterrupted(userId: string): void {
       bytesPerSecond: 0,
       error: null,
       resumedFrom: null,
+      libraryId: record.libraryId,
       uploadId: record.uploadId,
       hasFile: false,
       addedAt: record.savedAt,
@@ -516,7 +521,7 @@ export function restoreInterrupted(userId: string): void {
  * Queues files for upload by `userId`. Files that match an interrupted upload
  * of theirs continue it.
  */
-export function addFiles(list: File[], userId: string): AddResult {
+export function addFiles(list: File[], userId: string, libraryId?: string): AddResult {
   setUploadUser(userId);
   const result: AddResult = {started: 0, resumed: 0, duplicates: 0};
   const stored = readStored(userId);
@@ -530,10 +535,12 @@ export function addFiles(list: File[], userId: string): AddResult {
       result.duplicates += 1;
       continue;
     }
-    const resumeId = existing?.uploadId ?? stored.find(record => record.fileKey === fileKey)?.uploadId;
+    const remembered = stored.find(record => record.fileKey === fileKey);
+    const resumeId = existing?.uploadId ?? remembered?.uploadId;
     const key = existing?.key ?? nextKey();
     const entry: UploadEntry = {
       key,
+      libraryId: existing ? existing.libraryId : remembered ? remembered.libraryId : libraryId,
       fileKey,
       name: file.name,
       size: file.size,
@@ -547,7 +554,7 @@ export function addFiles(list: File[], userId: string): AddResult {
       hasFile: true,
       addedAt: existing?.addedAt ?? Date.now(),
     };
-    makeRunner(key, file, resumeId);
+    makeRunner(key, file, resumeId, entry.libraryId);
     if (sharedRecord) sharedRecords.set(key, sharedRecord);
     if (existing) {
       entries = entries.map(current => (current.key === key ? entry : current));

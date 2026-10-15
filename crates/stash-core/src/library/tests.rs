@@ -2694,4 +2694,137 @@ mod libraries {
             .unwrap_err();
         assert_eq!(err.to_string(), "That file was already sorted.");
     }
+
+    async fn chosen_download(h: &Harness, id: &str, library: &str, user: &str) {
+        sqlx::query("INSERT INTO downloads (id, kind, name, source, state, created_at, updated_at, created_by, library_id) VALUES (?, 'upload', 'test', '', 'sorting', 0, 0, ?, ?)")
+            .bind(id).bind(user).bind(library).execute(&h.lib.db).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn download_destination_overrides_only_compatible_files() {
+        let h = harness().await;
+        add_owner(&h).await;
+        let kids = h
+            .lib
+            .create_library(new_library("Kids", Some("one_offs"), &[]), "u")
+            .await
+            .unwrap();
+        chosen_download(&h, "chosen", &kids.id, "u").await;
+        h.write(
+            "Downloads/Completed/batch/Heat.1995.1080p.mkv",
+            &bytes("film"),
+        );
+        h.write(
+            "Downloads/Completed/batch/Lantern.S01E02.mkv",
+            &bytes("episode"),
+        );
+        h.lib
+            .sort_path("Downloads/Completed/batch", Some("chosen"))
+            .await
+            .unwrap();
+        assert!(h.exists("Kids/Heat (1995)/Heat (1995).mkv"));
+        assert!(h.exists("Shows/Lantern/Season 01/Lantern - S01E02.mkv"));
+        // A choice never transfers the household's movie claim.
+        assert!(
+            defs::load_one(&h.lib.db, STARTING_MOVIES)
+                .await
+                .unwrap()
+                .unwrap()
+                .claims(Category::Movie)
+        );
+    }
+
+    #[tokio::test]
+    async fn hidden_or_deleted_destination_falls_back_to_claims() {
+        let h = harness().await;
+        add_owner(&h).await;
+        sqlx::query("INSERT INTO users (id, display_name, role, webauthn_id, created_at) VALUES ('m', 'Member', 'member', 'w-m', 0)")
+            .execute(&h.lib.db).await.unwrap();
+        let kids = h
+            .lib
+            .create_library(new_library("Kids", Some("one_offs"), &[]), "u")
+            .await
+            .unwrap();
+        chosen_download(&h, "hidden", &kids.id, "m").await;
+        h.lib
+            .edit_library(
+                &kids.id,
+                EditLibrary {
+                    visibility: Some("selected".into()),
+                    member_ids: Some(vec![]),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        h.write("Downloads/Completed/Heat.1995.1080p.mkv", &bytes("hidden"));
+        h.lib
+            .sort_path("Downloads/Completed/Heat.1995.1080p.mkv", Some("hidden"))
+            .await
+            .unwrap();
+        assert!(h.exists("Movies/Heat (1995)/Heat (1995).mkv"));
+        chosen_download(&h, "deleted", &kids.id, "u").await;
+        h.lib.delete_library(&kids.id).await.unwrap();
+        let value: Option<String> =
+            sqlx::query_scalar("SELECT library_id FROM downloads WHERE id='deleted'")
+                .fetch_one(&h.lib.db)
+                .await
+                .unwrap();
+        assert_eq!(value, None);
+        h.write("Downloads/Completed/Up.2009.1080p.mkv", &bytes("deleted"));
+        h.lib
+            .sort_path("Downloads/Completed/Up.2009.1080p.mkv", Some("deleted"))
+            .await
+            .unwrap();
+        assert!(h.exists("Movies/Up (2009)/Up (2009).mkv"));
+    }
+
+    #[tokio::test]
+    async fn chosen_destination_waits_for_review_and_survives_history_removal() {
+        let h = harness().await;
+        add_owner(&h).await;
+        let kids = h
+            .lib
+            .create_library(new_library("Kids", Some("one_offs"), &[]), "u")
+            .await
+            .unwrap();
+        h.lib
+            .settings
+            .update(serde_json::json!({"auto_sort": false}))
+            .await
+            .unwrap();
+        chosen_download(&h, "waiting", &kids.id, "u").await;
+        h.write("Downloads/Completed/Heat.1995.1080p.mkv", &bytes("waiting"));
+        let id = h
+            .lib
+            .sort_path("Downloads/Completed/Heat.1995.1080p.mkv", Some("waiting"))
+            .await
+            .unwrap()[0]
+            .clone();
+        sqlx::query("DELETE FROM downloads WHERE id='waiting'")
+            .execute(&h.lib.db)
+            .await
+            .unwrap();
+        let item = h.item(&id).await;
+        assert_eq!(item.status, ItemStatus::NeedsReview);
+        assert_eq!(
+            h.suggestion(&item).await.library_id.as_deref(),
+            Some(kids.id.as_str())
+        );
+        assert!(h.destination(&item).await.starts_with("Kids/"));
+        // Someone else's incoming file is offered only to their visible default claim.
+        let viewer = crate::library::access::Viewer {
+            user_id: "someone-else".into(),
+            role: crate::models::Role::Member,
+            full: true,
+        };
+        let access = crate::library::access::Access::load(&h.lib.db, &viewer)
+            .await
+            .unwrap();
+        let definitions = defs::load_all(&h.lib.db).await.unwrap();
+        assert!(
+            crate::library::destinations::suggested(&item, &access, &definitions, Category::Movie)
+                .is_none()
+        );
+    }
 }

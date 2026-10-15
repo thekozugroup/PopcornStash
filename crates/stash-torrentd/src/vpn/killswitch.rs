@@ -7,7 +7,9 @@
 
 use std::net::SocketAddrV4;
 
-use stash_core::internal_api::{DNS_FORWARDER_ADDR, FWMARK, NFT_TABLE, TUNNEL_IF};
+use stash_core::internal_api::{
+    DNS_FORWARDER_ADDR, FWMARK, NFT_TABLE, TUNNEL_IF, WIREGUARD_TRANSPORT_MARK,
+};
 
 use crate::sys::{self, CommandError};
 
@@ -52,6 +54,10 @@ impl KillSwitch {
         let fwd_ip = self.dns_forwarder.ip();
         let fwd_port = self.dns_forwarder.port();
         let mark = format!("{:#x}", self.ct_mark);
+        // Kernel WireGuard outer datagrams can retain the originating engine UID.
+        // Only its privileged transport mark may bypass the UID guard; engine sockets
+        // have no capabilities and cannot set SO_MARK. Plain engine traffic still drops.
+        let transport = format!("{WIREGUARD_TRANSPORT_MARK:#x}");
         let ports = |ports: &[u16]| {
             if ports.len() == 1 {
                 ports[0].to_string()
@@ -74,12 +80,13 @@ delete table inet {NFT_TABLE}
 table inet {NFT_TABLE} {{
 	chain nat_output {{
 		type nat hook output priority -110; policy accept;
-		meta nfproto ipv4 meta skuid {uid} udp dport 53 dnat ip to {fwd_ip}:{fwd_port}
-		meta nfproto ipv4 meta skuid {uid} tcp dport 53 dnat ip to {fwd_ip}:{fwd_port}
+		meta nfproto ipv4 meta mark != {transport} meta skuid {uid} udp dport 53 dnat ip to {fwd_ip}:{fwd_port}
+		meta nfproto ipv4 meta mark != {transport} meta skuid {uid} tcp dport 53 dnat ip to {fwd_ip}:{fwd_port}
 	}}
 
 	chain output {{
 		type filter hook output priority 0; policy accept;
+		meta mark {transport} meta l4proto udp accept
 		meta mark {mark} oifname != \"{tun}\" counter drop
 		ct mark {mark} oifname != {{ \"lo\", \"{tun}\" }} counter drop
 		oifname \"{tun}\" ct mark set {mark}
@@ -165,12 +172,13 @@ delete table inet popcornstash
 table inet popcornstash {
 	chain nat_output {
 		type nat hook output priority -110; policy accept;
-		meta nfproto ipv4 meta skuid 6881 udp dport 53 dnat ip to 127.0.0.54:5354
-		meta nfproto ipv4 meta skuid 6881 tcp dport 53 dnat ip to 127.0.0.54:5354
+		meta nfproto ipv4 meta mark != 0x5151 meta skuid 6881 udp dport 53 dnat ip to 127.0.0.54:5354
+		meta nfproto ipv4 meta mark != 0x5151 meta skuid 6881 tcp dport 53 dnat ip to 127.0.0.54:5354
 	}
 
 	chain output {
 		type filter hook output priority 0; policy accept;
+		meta mark 0x5151 meta l4proto udp accept
 		meta mark 0x5150 oifname != \"psw0\" counter drop
 		ct mark 0x5150 oifname != { \"lo\", \"psw0\" } counter drop
 		oifname \"psw0\" ct mark set 0x5150
@@ -211,7 +219,9 @@ table inet popcornstash {
         // Before any rule that accepts.
         let first_accept = output
             .lines()
-            .position(|l| l.trim_end().ends_with(" accept") && !l.contains("policy"))
+            .position(|l| {
+                l.trim_end().ends_with(" accept") && !l.contains("policy") && !l.contains("0x5151")
+            })
             .unwrap();
         let position = output.lines().position(|l| l.trim() == rule).unwrap();
         assert!(position < first_accept);

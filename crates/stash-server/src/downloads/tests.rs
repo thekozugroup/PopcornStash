@@ -235,6 +235,7 @@ impl Env {
             .add_url(
                 &self.owner.user_id,
                 AddDownloadRequest {
+                    library_id: None,
                     url: url.into(),
                     filename: None,
                     headers: None,
@@ -977,6 +978,7 @@ async fn chosen_filename_wins() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                library_id: None,
                 url: files.url("/named"),
                 filename: Some("../Holiday.mp4".into()),
                 headers: None,
@@ -1013,6 +1015,7 @@ async fn ssrf_guard_refuses_local_destinations() {
             .add_url(
                 &env.owner.user_id,
                 AddDownloadRequest {
+                    library_id: None,
                     url: url.clone(),
                     filename: None,
                     headers: None,
@@ -1041,6 +1044,7 @@ async fn ssrf_guard_refuses_local_destinations() {
             .add_url(
                 &env.owner.user_id,
                 AddDownloadRequest {
+                    library_id: None,
                     url: bad.into(),
                     filename: None,
                     headers: None,
@@ -1137,6 +1141,7 @@ async fn forwarded_headers_reach_the_server_but_are_never_stored() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                library_id: None,
                 url: files.url("/query.bin?id=7&token=SECRETTOKEN"),
                 filename: None,
                 headers: Some(ForwardedHeaders {
@@ -1390,6 +1395,7 @@ async fn torrents_disabled_answer_vpn_unavailable() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                library_id: None,
                 url: MAGNET.into(),
                 filename: None,
                 headers: None,
@@ -1988,6 +1994,7 @@ async fn torrent_files_are_validated_and_added() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                library_id: None,
                 url: files.url("/fake.torrent"),
                 filename: None,
                 headers: None,
@@ -2002,6 +2009,7 @@ async fn torrent_files_are_validated_and_added() {
 
 fn create(name: &str, size: i64) -> CreateUpload {
     CreateUpload {
+        library_id: None,
         filename: name.into(),
         size,
         mime: Some("video/mp4".into()),
@@ -2592,6 +2600,7 @@ async fn private_link_is_not_fetched_without_its_secret_after_a_restart() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                library_id: None,
                 url: files.url("/query.bin?id=7&token=SECRETTOKEN"),
                 filename: None,
                 headers: None,
@@ -2622,6 +2631,7 @@ async fn private_link_is_not_fetched_without_its_secret_after_a_restart() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                library_id: None,
                 url: d.source.clone(),
                 filename: None,
                 headers: None,
@@ -2992,6 +3002,7 @@ async fn a_stalled_torrent_link_gives_up() {
         env.manager.add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                library_id: None,
                 url: files.url("/stall.torrent"),
                 filename: None,
                 headers: None,
@@ -3127,6 +3138,7 @@ async fn forwarded_cookies_never_follow_a_redirect_to_another_host() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                library_id: None,
                 url: "http://127.0.0.1/start.bin".into(),
                 filename: None,
                 headers: headers(),
@@ -3154,6 +3166,7 @@ async fn forwarded_cookies_never_follow_a_redirect_to_another_host() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                library_id: None,
                 url: "http://127.0.0.1/start.torrent".into(),
                 filename: None,
                 headers: headers(),
@@ -3287,4 +3300,31 @@ async fn web_download_parts_are_private() {
     } else {
         eprintln!("skipping the planted-file half: needs root");
     }
+}
+
+#[tokio::test]
+async fn upload_keeps_destination_when_an_owner_completes_a_members_upload() {
+    use stash_core::library::defs::STARTING_MOVIES;
+    let env = env(Opts::default()).await;
+    let mut request = create("Chosen.2020.mp4", 4);
+    request.library_id = Some(STARTING_MOVIES.into());
+    let created = env.uploads.create(&env.member, request).await.unwrap();
+    env.uploads
+        .write_chunk(
+            &env.member,
+            &created.id,
+            0,
+            Some(4),
+            Body::from(vec![1u8; 4]),
+        )
+        .await
+        .unwrap();
+    let download = env.uploads.complete(&env.owner, &created.id).await.unwrap();
+    assert_eq!(download.library_id.as_deref(), Some(STARTING_MOVIES));
+    let row: DownloadRow = sqlx::query_as("SELECT * FROM downloads WHERE id=?")
+        .bind(&download.id)
+        .fetch_one(&env.db)
+        .await
+        .unwrap();
+    assert_eq!(row.created_by.as_deref(), Some(env.member.user_id.as_str()));
 }

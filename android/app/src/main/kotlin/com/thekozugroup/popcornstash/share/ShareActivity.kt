@@ -75,6 +75,7 @@ class ShareActivity : ComponentActivity() {
                     state = state,
                     actions = ShareActions(
                         onAddLink = model.controller::addLink,
+                        onLibrary = model.controller::chooseLibrary,
                         onUpload = ::confirmUpload,
                         onOpenApp = { open(Tab.Home) },
                         onOpenDownloads = { open(Tab.Downloads) },

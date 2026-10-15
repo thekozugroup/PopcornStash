@@ -118,6 +118,7 @@ export default function DownloadsPage() {
   const queue = useUploadQueue();
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
+  const [libraryId, setLibraryId] = useState('');
   const [removeTarget, setRemoveTarget] = useState<Download | null>(null);
   const [cancelTarget, setCancelTarget] = useState<UploadEntry | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
@@ -141,7 +142,7 @@ export default function DownloadsPage() {
   }, [upsert, userId]);
 
   const addTorrents = useCallback(
-    async (files: File[]) => {
+    async (files: File[], destination = libraryId) => {
       setIsAddingTorrents(true);
       let added = 0;
       try {
@@ -151,7 +152,7 @@ export default function DownloadsPage() {
             continue;
           }
           try {
-            upsert(await downloadsApi.addTorrent(file));
+            upsert(await downloadsApi.addTorrent(file, destination || undefined));
             added += 1;
           } catch (error) {
             const fallback =
@@ -166,15 +167,15 @@ export default function DownloadsPage() {
       }
       if (added > 0) showToast({body: added === 1 ? 'Torrent added.' : `${formatCount(added, 'torrent')} added.`});
     },
-    [showToast, toastError, upsert],
+    [showToast, toastError, upsert, libraryId],
   );
 
   const handleFiles = useCallback(
-    (files: File[]) => {
+    (files: File[], destination = libraryId) => {
       const torrents = files.filter(isTorrentFile);
       const others = files.filter(file => !isTorrentFile(file));
       if (others.length > 0 && userId) {
-        const result = addFiles(others, userId);
+        const result = addFiles(others, userId, destination || undefined);
         const messages: string[] = [];
         if (result.started > 0) {
           messages.push(
@@ -197,19 +198,19 @@ export default function DownloadsPage() {
         }
         if (messages.length > 0) showToast({body: messages.join(' ')});
       }
-      if (torrents.length > 0) void addTorrents(torrents);
+      if (torrents.length > 0) void addTorrents(torrents, destination);
     },
-    [addTorrents, showToast, userId],
+    [addTorrents, showToast, userId, libraryId],
   );
 
   // Files dropped anywhere in the app arrive through router state.
   useEffect(() => {
-    const state = location.state as {droppedFiles?: unknown} | null;
+    const state = location.state as {droppedFiles?: unknown; libraryId?: string} | null;
     if (!state || !Array.isArray(state.droppedFiles) || handledDrops.has(state)) return;
     handledDrops.add(state);
     const files = state.droppedFiles.filter((file): file is File => file instanceof File);
     // Start the uploads after this render settles.
-    if (files.length > 0) queueMicrotask(() => handleFiles(files));
+    if (files.length > 0) queueMicrotask(() => handleFiles(files, state.libraryId));
     navigate(`${location.pathname}${location.search}`, {replace: true, state: null});
   }, [location.state, location.pathname, location.search, navigate, handleFiles]);
 
@@ -224,7 +225,7 @@ export default function DownloadsPage() {
       } else {
         // The server cannot restart this one in place: add the same link again.
         try {
-          upsert(await downloadsApi.create({url: download.source}));
+          upsert(await downloadsApi.create({url: download.source, ...(download.library_id ? {library_id: download.library_id} : {})}));
           await downloadsApi.remove(download.id, false).catch(() => undefined);
           removeLocal(download.id);
         } catch (second) {
@@ -264,6 +265,7 @@ export default function DownloadsPage() {
       />
 
       <AddPanel
+        libraryId={libraryId} onLibrary={setLibraryId}
         isOwner={isOwner}
         vpnStatus={vpn.status}
         vpnUnavailable={vpn.isUnavailable}

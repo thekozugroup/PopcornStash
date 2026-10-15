@@ -350,3 +350,7 @@ Loading pages show placeholder tiles and rows in `subtle` at their final sizes (
 ## Owner's knobs
 
 The values most likely to change as the design is iterated, all in `ui/theme`: `ToolbarTokens` (square size, radius, padding, gap, the margin from the screen edge, the gap between a page's end and the bar, elevation, the glass's blur and saturation, badge), the `glass` and `glassEdge` colours, `PopcornMotion.pageSpring`, `indicatorSpring` and `push`, `IconStroke`, the type table, the tile widths in `MediaTokens` (also the episode frame and the row glyph square), `CarouselTokens` (card peek, gap, frame ratio), and `PlayerTokens` (disc and plate size, play disc, seek bar, how soon the chrome hides).
+
+### Download destination
+
+Add and Share offer “Where it goes”, default “Sorted automatically”, before the confirmation action. Use the existing library names and icons, equal control targets and normal flat surfaces. The choice applies to links and files from that form; loading or a failed library fetch leaves automatic sorting available. Interrupted uploads keep their original choice.

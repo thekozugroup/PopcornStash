@@ -459,9 +459,10 @@ export const downloads = {
   /** http(s) URL or magnet link. */
   create: (body: DownloadCreateRequest) => post<Download>('/api/downloads', body),
   /** `.torrent` file up to 10 MB. */
-  addTorrent: (file: File) => {
+  addTorrent: (file: File, libraryId?: string) => {
     const form = new FormData();
     form.append('file', file, file.name);
+    if (libraryId) form.append('library_id', libraryId);
     return request<Download>('/api/downloads/torrent', {method: 'POST', body: form});
   },
   pause: (id: string) => post<Download>(`/api/downloads/${enc(id)}/pause`, {}),

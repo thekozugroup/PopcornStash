@@ -73,7 +73,7 @@ class Uploader(
         }
         if (id == null) {
             check()
-            val started = api.startUpload(UploadCreate(file.name, size, file.mime, file.lastModified))
+            val started = api.startUpload(UploadCreate(file.name, size, file.mime, file.lastModified, file.libraryId))
             id = started.id
             received = started.received
             if (started.chunkSize > 0) chunk = started.chunkSize.coerceAtMost(MAX_CHUNK)

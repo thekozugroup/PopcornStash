@@ -616,18 +616,19 @@ data class Download(
     val completedAt: Long? = null,
     val itemIds: List<String> = emptyList(),
     val destinations: List<Destination> = emptyList(),
+    val libraryId: String? = null,
 )
 
 @Serializable
 data class DownloadList(val items: List<Download>)
 
 @Serializable
-data class AddDownload(val url: String, val filename: String? = null)
+data class AddDownload(val url: String, val filename: String? = null, val libraryId: String? = null)
 
 // ------------------------------------------------------------------ uploads ----
 
 @Serializable
-data class UploadCreate(val filename: String, val size: Long, val mime: String? = null, val lastModified: Long? = null)
+data class UploadCreate(val filename: String, val size: Long, val mime: String? = null, val lastModified: Long? = null, val libraryId: String? = null)
 
 @Serializable
 data class UploadStarted(val id: String, val chunkSize: Long, val received: Long = 0)

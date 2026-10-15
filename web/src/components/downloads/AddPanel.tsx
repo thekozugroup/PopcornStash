@@ -20,6 +20,7 @@ import {errorMessage} from '../../lib/errors';
 import {checkLink, describeLink, isTorrentLink} from './linkDetect';
 import {isNoVpnMode, showsVpnLine, torrentsOff, torrentsWait} from '../../lib/vpn';
 import {VpnLine} from './VpnLine';
+import {DestinationSelect} from './DestinationSelect';
 
 const styles = stylex.create({
   panel: {
@@ -110,6 +111,8 @@ const KIND_ICON: Record<'magnet' | 'torrent-url' | 'http', LucideIcon> = {
 };
 
 export interface AddPanelProps {
+  libraryId: string;
+  onLibrary: (value: string) => void;
   isOwner: boolean;
   vpnStatus: VpnStatus | null;
   vpnUnavailable: boolean;
@@ -123,6 +126,7 @@ export interface AddPanelProps {
 }
 
 export function AddPanel({
+  libraryId, onLibrary,
   isOwner,
   vpnStatus,
   vpnUnavailable,
@@ -184,7 +188,7 @@ export function AddPanel({
     if (check.status === 'invalid') return;
     setIsBusy(true);
     try {
-      const download = await downloadsApi.create({url: check.link.url});
+      const download = await downloadsApi.create({url: check.link.url, library_id: libraryId || undefined});
       onAdded(download);
       setValue('');
       setTouched(false);
@@ -250,6 +254,7 @@ export function AddPanel({
         </p>
       </form>
 
+      <DestinationSelect value={libraryId} onChange={onLibrary} disabled={isBusy || isAddingTorrents} />
       <div {...stylex.props(styles.others)}>
         <input
           ref={uploadInputRef}

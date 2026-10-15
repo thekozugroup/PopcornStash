@@ -297,8 +297,10 @@ class DownloadsControllerTest {
         )
         answers["POST /api/downloads"] = { json(StashJson.encodeToString(Download.serializer(), s.paused.copy(id = "d-new", name = "clip.mp4"))) }
         controller.onAddText("https://example.org/clip.mp4")
+        controller.onAddLibrary("lib-movies")
         controller.submitAdd()
         assertEquals("Added clip.mp4.", eventually { controller.messages.first() })
+        assertEquals("lib-movies", sent("POST", "/api/downloads").json()["library_id"]!!.jsonPrimitive.content)
         eventually { controller.state.first { s -> s.add == null && s.inProgress.any { it.id == "d-new" } } }
     }
 

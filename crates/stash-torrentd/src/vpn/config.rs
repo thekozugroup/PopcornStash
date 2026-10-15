@@ -314,6 +314,10 @@ impl WireGuardPlan {
     pub fn setconf_text(&self) -> String {
         let mut out = String::from("[Interface]\n");
         out.push_str(&format!("PrivateKey = {}\n", self.private_key));
+        out.push_str(&format!(
+            "FwMark = {:#x}\n",
+            stash_core::internal_api::WIREGUARD_TRANSPORT_MARK
+        ));
         if let Some(port) = self.listen_port {
             out.push_str(&format!("ListenPort = {port}\n"));
         }
@@ -813,7 +817,7 @@ mod tests {
         assert_eq!(
             conf,
             format!(
-                "[Interface]\nPrivateKey = {KEY_A}\n\n[Peer]\nPublicKey = {KEY_B}\nEndpoint = nl812.nordvpn.com:51820\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n"
+                "[Interface]\nPrivateKey = {KEY_A}\nFwMark = 0x5151\n\n[Peer]\nPublicKey = {KEY_B}\nEndpoint = nl812.nordvpn.com:51820\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n"
             )
         );
         assert!(!conf.contains("Address"));

@@ -135,3 +135,52 @@ test('a paused upload keeps showing what the server already has', async ({page})
   await expect.poll(() => fs.readdirSync(path.join(env.stash, '.popcornstash', 'uploads'))).toEqual([]);
   fs.rmSync(file);
 });
+
+
+test('a chosen upload library survives interruption and automatic sorting remains available', async ({page}) => {
+  await page.goto('/downloads');
+  const made = await page.request.post('/api/libraries', {headers: {Origin: new URL(env.publicUrl).origin}, data: {
+    name: 'Test movies', icon: 'film', content_type: 'video', structure: 'one_offs', claims: [],
+    folder: {mode: 'new', name: 'Test movies'},
+  }});
+  expect(made.status()).toBe(201);
+  const library = await made.json();
+  await page.reload();
+  // The existing library claim is unchanged; the selection applies only to this upload.
+  const picker = page.getByRole('combobox', {name: 'Where it goes'});
+  await picker.click();
+  await page.getByRole('option', {name: 'Test movies', exact: true}).click();
+  const bytes = fs.readFileSync(path.join(env.files, 'Sunset.Drive.2020.720p.WEB.mp4'));
+  const chosenFile = path.join(env.files, 'Chosen.Dawn.2020.mp4');
+  fs.writeFileSync(chosenFile, bytes);
+  let uploadId = '';
+  await page.route(/\/api\/uploads\/[^/]+\?offset=\d+$/, route => route.abort());
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', {name: 'Upload files'}).click();
+  await (await chooser).setFiles(chosenFile);
+  await expect.poll(async () => {
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('popcornstash.uploads.v1') ?? '[]'));
+    uploadId = stored.find((v: {name: string}) => v.name === 'Chosen.Dawn.2020.mp4')?.uploadId ?? '';
+    return uploadId;
+  }).not.toBe('');
+  await page.reload();
+  await page.unroute(/\/api\/uploads\/[^/]+\?offset=\d+$/);
+  // After a reload the form returns to automatic, while the interrupted file keeps Test movies.
+  const resume = page.waitForEvent('filechooser');
+  await page.getByRole('button', {name: 'Upload files'}).click();
+  await (await resume).setFiles(chosenFile);
+  await expectFile('Test movies/Chosen Dawn (2020)/Chosen Dawn (2020).mp4');
+  const downloads = await (await page.request.get('/api/downloads?state=all')).json();
+  expect(downloads.items.find((d: {name: string}) => d.name === 'Chosen.Dawn.2020.mp4')).toMatchObject({library_id: library.id});
+  // A fresh upload follows the default movie claim.
+  const auto = page.waitForEvent('filechooser');
+  await page.getByRole('button', {name: 'Upload files'}).click();
+  await (await auto).setFiles({name: 'Automatic.Dawn.2021.mp4', mimeType: 'video/mp4', buffer: bytes});
+  await expectFile('Movies/Automatic Dawn (2021)/Automatic Dawn (2021).mp4');
+  await picker.click();
+  await page.getByRole('option', {name: 'Test movies', exact: true}).click();
+  await page.screenshot({path: path.join(env.files, 'destination-desktop.png')});
+  await page.setViewportSize({width: 390, height: 844});
+  await expectNotClipped(picker);
+  await page.screenshot({path: path.join(env.files, 'destination-phone.png')});
+});
