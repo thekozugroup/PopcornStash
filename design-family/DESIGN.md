@@ -24,9 +24,8 @@ importing the separate stroked paths clips the popcorn's side contours. Keep tha
 source layer, a 1024px canvas and the -45 degree light angle. Export iOS/macOS, Default,
 1024pt, 1x. Check the whole silhouette and preview the icon at 16, 32, 48 and 128px.
 
-The product lockup is a 32px icon, 10px gap, “Popcorn” in system sans at 19px/650 and the
-product suffix at 12px/500 in muted text. Use an accessible full product name. Keep the
-native corner contour; do not clip it with another rounded rectangle.
+The web product lockup uses the standalone Lucide Popcorn symbol at 32px, in the text color with stroke 1.75 (40px for a large standalone mark), 10px gap, “Popcorn” in system sans at 19px/650 and the
+product suffix at 12px/500 in muted text. Use an accessible full product name. Keep the whole popcorn contour visible. Do not put the flattened app tile in web headers or sidebars. On launcher/install surfaces, keep the native corner contour; do not clip it with another rounded rectangle.
 
 Gradients and flattened Liquid Glass belong to app icons. App backgrounds stay flat zinc.
 An existing native frosted navigation bar may retain its platform treatment; do not spread

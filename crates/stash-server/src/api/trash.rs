@@ -199,6 +199,19 @@ mod tests {
         assert_eq!(json.as_array().unwrap().len(), 1, "{json}");
         assert_eq!(json[0]["original_rel_path"], rel);
 
+        // Even someone with full member access cannot restore a trashed item.
+        let (_, member) = app.user("member").await;
+        let (status, _, _) = app
+            .send(request(
+                "POST",
+                &format!("/api/trash/{id}/restore"),
+                Some(&member),
+                None,
+            ))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(!root.join(rel).exists());
+
         let (status, _, body) = app
             .send(request(
                 "POST",

@@ -378,6 +378,8 @@ The whole app accepts dropped files; a full-window overlay says where they will 
 
 ## Popcorn family assets
 
+The web header, sidebar and sign-in page use the standalone Lucide Popcorn symbol in the text color: 32px in the brand lockup, 40px for a large standalone mark, stroke 1.75. Keep the full contour visible. The flattened gradient app tile is for launcher/install surfaces, not in-page branding.
+
 The shared handoff template is `design-family/DESIGN.md`. The app icon uses the merged popcorn silhouette in `brand/popcorn.png`, rendered and exported by Apple Icon Composer from `brand/PopcornStash.icon`. Material, lighting and the blue gradient are flattened in `brand/popcornstash.png`. PopcornSR uses violet and PopcornBatch uses orange (`brand/family/`); UI surfaces and Action Blue stay consistent across the family.
 
 ### Download destination

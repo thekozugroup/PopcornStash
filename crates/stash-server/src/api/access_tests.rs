@@ -1056,11 +1056,9 @@ async fn inbox_accept_uses_the_chosen_download_suggestion() {
     })).await;
     assert_eq!(status, StatusCode::CREATED, "{kids}");
     let id = kids["id"].as_str().unwrap();
-    app.state
-        .settings
-        .update(serde_json::json!({"auto_sort":false}))
-        .await
-        .unwrap();
+    let folder = app.state.config.stash_root.join("Kids");
+    std::fs::remove_dir(&folder).unwrap();
+    std::fs::write(&folder, b"unavailable").unwrap();
     sqlx::query("INSERT INTO downloads (id, kind, name, source, state, created_at, updated_at, created_by, library_id) VALUES ('chosen', 'upload', 'Heat', '', 'sorting', 0, 0, ?, ?)")
         .bind(&user).bind(id).execute(&app.state.db).await.unwrap();
     let rel = "Downloads/Completed/Heat.1995.1080p.mkv";
@@ -1073,6 +1071,8 @@ async fn inbox_accept_uses_the_chosen_download_suggestion() {
         .await
         .unwrap()[0]
         .clone();
+    std::fs::remove_file(&folder).unwrap();
+    std::fs::create_dir(&folder).unwrap();
     let (status, value) = app
         .send_json(
             "POST",

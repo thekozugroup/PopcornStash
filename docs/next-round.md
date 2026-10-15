@@ -322,6 +322,8 @@ docs/android.md:81, 86, 95; docs/deployment.md:21-32, 367; the `.env.example` co
 
 ## 4. File management: Trash, delete permanently, selection
 
+Confirmed 2026-10-15: restoring Trash stays owner-only. Android keeps the existing web Trash this round; do not build a native Trash screen.
+
 ### Decision (2026-10-14)
 - **Who may trash:** members may move to the Trash only their own private files: their Other files and their own Inbox files. Owners may trash anything.
 - **Move to Trash stays the default everywhere.** Add a separate "Delete permanently…" on the item page, in selections and in the Inbox, with a stronger confirm that names the files and their size.
@@ -383,7 +385,7 @@ docs/android.md:81, 86, 95; docs/deployment.md:21-32, 367; the `.env.example` co
 - Show page: "Delete show…", and "Delete season…" on each season.
 - Inbox rows, waiting and ignored: "Move to Trash" and "Delete permanently…".
 - Trash: "Delete now" on each row, row selection with "Delete selected", Empty trash as before.
-- The Move to Trash toast offers Undo, which restores.
+- The owner Move to Trash toast offers Undo, which restores; members receive confirmation without Undo because restore remains owner-only.
 - Confirms:
   - Several to the Trash: "Move 12 items to Trash?" with the retention period. When the files cross disks: "Moving these to Trash copies 38 GB to the stash disk first."
   - Permanent: "Delete “Heat (1995)” for good?" with the size and "Everyone's progress on it goes too."
@@ -395,7 +397,7 @@ docs/android.md:81, 86, 95; docs/deployment.md:21-32, 367; the `.env.example` co
 - An owner overflow menu on the item screen (and for members where `can_trash`): Move to Trash, Delete permanently.
 - Long press starts selection in grids, season lists, Other files and the photo timeline, with a contextual bar showing the count and both actions.
 - Imports rows get Move to Trash and Delete permanently.
-- A native Trash screen for owners (Restore, Delete now, Empty trash, the retention period). "Sorting and trash" then becomes "Sorting". If time is short, keep the web Trash this round and say so in docs/android.md.
+- Keep the existing owner web Trash entry this round (owner decision, 2026-10-15); document it in docs/android.md.
 
 ### Tests
 - Core:
@@ -558,14 +560,14 @@ docs/android.md:81, 86, 95; docs/deployment.md:21-32, 367; the `.env.example` co
 - Today the person who added a file may already accept it from the Inbox into any library they see that fits (docs/architecture.md:232). Choosing up front is the same power, used earlier.
 - The extension token cannot list libraries: `GET /api/libraries` needs `library:read` (docs/architecture.md:621).
 
-### Design (proposal; confirm the open points with the owner)
+### Design (destination policy confirmed 2026-10-15)
 - Store the choice on the download: a new nullable `downloads.library_id` column (`REFERENCES libraries(id) ON DELETE SET NULL`) and `uploads.library_id`, copied to the download when the upload completes.
 - Validation: the library must exist and be visible to the caller. Otherwise answer exactly like a missing library, so hidden libraries are not revealed.
 - Sorter: `SortJob` gains `library_id`, read from the download row. For each file:
   - If the file's category fits that library's shape (`Shape::fits`, and Photos for photos), the chosen library replaces the claim lookup at organizer.rs:746-749.
   - Otherwise, the normal claim lookup.
-  - Everything after the lookup stays the same: the claims-generation check, confidence, `auto_sort`, a missing or read-only folder.
-  - Proposed: a Low-confidence file, or any file with `auto_sort` off, waits in Inbox with the chosen library as its suggestion.
+  - A compatible explicit choice bypasses confidence and `auto_sort`; claims generation and unavailable storage still prevent unsafe moves. Unidentified videos can enter a chosen one-off library using its normal movie/camera filing rules.
+  - Owner decision: move compatible files into the chosen library immediately, even with Low confidence or `auto_sort` off.
   - If the chosen library was deleted (`library_id` now NULL) or hidden from the person meanwhile, files sort automatically.
 - Contract:
   - `library_id?` on `POST /api/downloads`, the `.torrent` multipart (`library_id` field) and `POST /api/uploads`;
@@ -582,7 +584,7 @@ docs/android.md:81, 86, 95; docs/deployment.md:21-32, 367; the `.env.example` co
 - An unseen or nonexistent `library_id` is refused the same way.
 - The library is deleted before sorting: automatic sorting.
 - Claims change mid-job: the existing generation rule still holds.
-- Low confidence waits in Inbox with the chosen suggestion.
+- Low confidence moves immediately into a compatible chosen library; without a choice it still waits. An unavailable chosen folder still waits with its suggestion.
 - An upload carries the choice through `/complete`.
 - The `.torrent` multipart field works.
 - The extension destinations endpoint lists only visible libraries.
@@ -753,9 +755,9 @@ The Android navigation moved to a vertical bar on the right edge in `f75529d`. V
 
 1. **Passkeys in the app:** make `assetlinks.json` public (Tailscale Funnel on 443 for that path, with the app moving to :8443; or an own domain or public route, which needs a new passkey), or stay private and use pairing?
 2. **Torrents:** should new installs default to Upload limit 16 KB/s? Recommendation: no. Peers favour clients that upload, so downloads would be slower for everyone, and the owner's own server is set by hand.
-3. **Trash:** may a member restore a file they moved to the Trash themselves, or only owners (the proposal)?
-4. **Android Trash:** a native Trash screen this round, or keep the web Trash in a Custom Tab for now?
+3. **Trash (answered):** owners only.
+4. **Android Trash (answered):** keep the existing web Trash this round.
 5. **Download history:** confirm the defaults accepted without being asked: kept until cleared; failed downloads 7 days when history is off; ids-only info logs with rotation; audit names for 90 days; "Also delete the downloaded files" ticked for unfinished downloads.
-6. **Destination library:** when the chosen library would take a file but the sorter is not sure what it is (Low confidence), or automatic sorting is off, should the file wait in Inbox with the chosen library suggested (the proposal), or go there anyway?
+6. **Destination library (answered):** compatible files go into the chosen library immediately, including Low confidence or automatic sorting off.
 7. **Extension fallback:** when the server is refused, should the browser start downloading on its own, or after a click that says it uses this computer's connection, not the VPN (the proposal)?
 8. **The Arc:** which card (A310 or A380), and does the box have a free x16 slot? Later: is the non-free Intel driver acceptable in the AGPL image if hardware AV1 decode is ever added?

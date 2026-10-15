@@ -708,20 +708,6 @@ async fn sort_file(lib: &Library, abs: &Path, role: Role, job: &SortJob) -> Resu
         .or_else(|| probe.as_ref().and_then(camera_from_tags));
     let hash = quick_hash_async(abs).await;
 
-    let mut row = new_row(
-        &rel,
-        c.category,
-        ItemStatus::NeedsReview,
-        Meta::from_classification(&c),
-        size,
-        mtime,
-        hash,
-    );
-    row.source_download_id = job.download_id.clone();
-    row.added_by = job.added_by.clone();
-    row.camera = camera;
-    fill_media(&mut row, probe.as_ref(), exif.as_ref());
-
     // Probing took a while without the lock. Only act if neither the file nor its row
     // changed meanwhile (an organize, review, trash or a new copy of the file).
     let _moves = lib.lock_moves().await;
@@ -742,18 +728,49 @@ async fn sort_file(lib: &Library, abs: &Path, role: Role, job: &SortJob) -> Resu
     // path it held) is reused and its favorites and progress survive.
     let target = match existing {
         Some(item) => Some(item),
-        None => find_moved(lib, size, row.quick_hash.as_deref()).await?,
+        None => find_moved(lib, size, hash.as_deref()).await?,
     };
     let own_id = target.as_ref().map(|t| t.id.clone());
 
     // Where it goes, from the claims as they are now (section 4, claims).
     let library_defs = defs::load_all(&lib.db).await?;
     let preferred = match (job.added_by.as_deref(), job.library_id.as_deref()) {
-        (Some(user), Some(id)) => super::destinations::visible(&lib.db, user, id)
-            .await?
-            .filter(|def| def.shape().fits(c.category)),
+        (Some(user), Some(id)) => super::destinations::visible(&lib.db, user, id).await?,
         _ => None,
     };
+    // An unidentified video still fits an explicitly chosen one-off library.
+    // Do not invent episode numbers, or treat documents/artwork as videos.
+    if let Some(def) = preferred.as_ref()
+        && c.category == Category::Other
+        && kind == MediaKind::Video
+        && def.shape() == Shape::OneOffs
+    {
+        c.category = in_place_category(
+            def,
+            &format!("{}/{}", def.folder(), file_name(abs)),
+            kind,
+            meta.len(),
+        )
+        .unwrap_or(Category::Movie);
+        if c.category == Category::HomeVideo && c.taken().is_none() {
+            c.set_taken(Recorded::instant(mtime).and_then(|t| t.resolve(&capture::server_zone())));
+        }
+        c.layout = layout_for(&c, &file_name(abs));
+    }
+    let preferred = preferred.filter(|def| def.shape().fits(c.category));
+    let mut row = new_row(
+        &rel,
+        c.category,
+        ItemStatus::NeedsReview,
+        Meta::from_classification(&c),
+        size,
+        mtime,
+        hash,
+    );
+    row.source_download_id = job.download_id.clone();
+    row.added_by = job.added_by.clone();
+    row.camera = camera;
+    fill_media(&mut row, probe.as_ref(), exif.as_ref());
     let claimer = preferred.as_ref().or_else(|| {
         (c.category != Category::Other)
             .then(|| library_defs.iter().find(|d| d.claims(c.category)))
@@ -768,7 +785,11 @@ async fn sort_file(lib: &Library, abs: &Path, role: Role, job: &SortJob) -> Resu
         row.sort_title = repo::sort_title(&row.title);
     }
     let claims_changed = lib.claims_generation() != job.generation;
-    let destination = if claims_changed || !job.auto_sort || c.confidence != Confidence::High {
+    // Choosing a compatible library is an explicit placement decision. Confidence
+    // and auto-sort gate only automatic destinations; folder and generation checks
+    // still protect the move when the library changes or its storage disappears.
+    let automatic_waits = !job.auto_sort || c.confidence != Confidence::High;
+    let destination = if claims_changed || (preferred.is_none() && automatic_waits) {
         None
     } else if c.category == Category::Other {
         Some(destination_in(None, &c, &file_name(abs)))

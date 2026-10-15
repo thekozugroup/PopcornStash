@@ -14,7 +14,7 @@ references. Adopt the contract while keeping each project's own workflows and pe
 
 Suggested agent instruction:
 
-> Apply the attached Popcorn family DESIGN.md to this product. Use its assigned icon,
+> Apply the attached Popcorn family DESIGN.md to this product. Use its assigned launcher icon and standalone web popcorn symbol,
 > Newsreader headings, neutral surfaces and common spacing. Refine the existing components
 > and navigation; preserve all functional and security behavior. Verify actual light/dark,
 > compact/wide, large-text, keyboard and error states. Commit, test and report the completed

@@ -137,7 +137,7 @@ test('a paused upload keeps showing what the server already has', async ({page})
 });
 
 
-test('a chosen upload library survives interruption and automatic sorting remains available', async ({page}) => {
+test('an uncertain chosen upload moves immediately after interruption while automatic sorting remains available', async ({page}) => {
   await page.goto('/downloads');
   const made = await page.request.post('/api/libraries', {headers: {Origin: new URL(env.publicUrl).origin}, data: {
     name: 'Test movies', icon: 'film', content_type: 'video', structure: 'one_offs', claims: [],
@@ -151,7 +151,7 @@ test('a chosen upload library survives interruption and automatic sorting remain
   await picker.click();
   await page.getByRole('option', {name: 'Test movies', exact: true}).click();
   const bytes = fs.readFileSync(path.join(env.files, 'Sunset.Drive.2020.720p.WEB.mp4'));
-  const chosenFile = path.join(env.files, 'Chosen.Dawn.2020.mp4');
+  const chosenFile = path.join(env.files, 'Chosen.Dawn.1080p.WEB.mp4');
   fs.writeFileSync(chosenFile, bytes);
   let uploadId = '';
   await page.route(/\/api\/uploads\/[^/]+\?offset=\d+$/, route => route.abort());
@@ -160,7 +160,7 @@ test('a chosen upload library survives interruption and automatic sorting remain
   await (await chooser).setFiles(chosenFile);
   await expect.poll(async () => {
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('popcornstash.uploads.v1') ?? '[]'));
-    uploadId = stored.find((v: {name: string}) => v.name === 'Chosen.Dawn.2020.mp4')?.uploadId ?? '';
+    uploadId = stored.find((v: {name: string}) => v.name === 'Chosen.Dawn.1080p.WEB.mp4')?.uploadId ?? '';
     return uploadId;
   }).not.toBe('');
   await page.reload();
@@ -169,9 +169,9 @@ test('a chosen upload library survives interruption and automatic sorting remain
   const resume = page.waitForEvent('filechooser');
   await page.getByRole('button', {name: 'Upload files'}).click();
   await (await resume).setFiles(chosenFile);
-  await expectFile('Test movies/Chosen Dawn (2020)/Chosen Dawn (2020).mp4');
+  await expectFile('Test movies/Chosen Dawn/Chosen Dawn.mp4');
   const downloads = await (await page.request.get('/api/downloads?state=all')).json();
-  expect(downloads.items.find((d: {name: string}) => d.name === 'Chosen.Dawn.2020.mp4')).toMatchObject({library_id: library.id});
+  expect(downloads.items.find((d: {name: string}) => d.name === 'Chosen.Dawn.1080p.WEB.mp4')).toMatchObject({library_id: library.id});
   // A fresh upload follows the default movie claim.
   const auto = page.waitForEvent('filechooser');
   await page.getByRole('button', {name: 'Upload files'}).click();

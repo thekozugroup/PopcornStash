@@ -2763,6 +2763,14 @@ mod libraries {
             .await
             .unwrap();
         assert!(h.exists("Movies/Heat (1995)/Heat (1995).mkv"));
+        // Revoked access also prevents a choice from identifying an unknown clip.
+        let rel = "Downloads/Completed/clip_final_v2.mkv";
+        h.write(rel, &bytes("hidden unidentified"));
+        let id = h.lib.sort_path(rel, Some("hidden")).await.unwrap()[0].clone();
+        let item = h.item(&id).await;
+        assert_eq!(item.status, ItemStatus::NeedsReview);
+        assert_eq!(item.category, Category::Other);
+        assert!(h.exists(rel));
         chosen_download(&h, "deleted", &kids.id, "u").await;
         h.lib.delete_library(&kids.id).await.unwrap();
         let value: Option<String> =
@@ -2780,7 +2788,7 @@ mod libraries {
     }
 
     #[tokio::test]
-    async fn chosen_destination_waits_for_review_and_survives_history_removal() {
+    async fn chosen_destination_with_unavailable_folder_survives_history_removal() {
         let h = harness().await;
         add_owner(&h).await;
         let kids = h
@@ -2788,11 +2796,10 @@ mod libraries {
             .create_library(new_library("Kids", Some("one_offs"), &[]), "u")
             .await
             .unwrap();
-        h.lib
-            .settings
-            .update(serde_json::json!({"auto_sort": false}))
-            .await
-            .unwrap();
+        // An unavailable destination still waits, even after an explicit choice.
+        // A file at the folder path prevents an empty library being recreated.
+        std::fs::remove_dir(h.lib.layout.root().join("Kids")).unwrap();
+        std::fs::write(h.lib.layout.root().join("Kids"), b"unavailable").unwrap();
         chosen_download(&h, "waiting", &kids.id, "u").await;
         h.write("Downloads/Completed/Heat.1995.1080p.mkv", &bytes("waiting"));
         let id = h
@@ -2826,5 +2833,78 @@ mod libraries {
             crate::library::destinations::suggested(&item, &access, &definitions, Category::Movie)
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn chosen_destination_moves_uncertain_files_even_with_auto_sort_off() {
+        for auto_sort in [true, false] {
+            let h = harness().await;
+            add_owner(&h).await;
+            let kids = h
+                .lib
+                .create_library(new_library("Kids", Some("one_offs"), &[]), "u")
+                .await
+                .unwrap();
+            h.lib
+                .settings
+                .update(serde_json::json!({"auto_sort": auto_sort}))
+                .await
+                .unwrap();
+            chosen_download(&h, "chosen", &kids.id, "u").await;
+            let rel = "Downloads/Completed/Heat.1080p.WEB-DL.mkv";
+            h.write(rel, &bytes("uncertain chosen"));
+            let id = h.lib.sort_path(rel, Some("chosen")).await.unwrap()[0].clone();
+            let item = h.item(&id).await;
+            assert_eq!(item.status, ItemStatus::Ready);
+            assert_eq!(item.library_id.as_deref(), Some(kids.id.as_str()));
+            assert!(item.rel_path.starts_with("Kids/"), "{}", item.rel_path);
+            assert!(!h.exists(rel));
+
+            let rel = "Downloads/Completed/clip_final_v2.mkv";
+            h.write(rel, &bytes("unidentified chosen"));
+            let id = h.lib.sort_path(rel, Some("chosen")).await.unwrap()[0].clone();
+            let item = h.item(&id).await;
+            assert_eq!(item.status, ItemStatus::Ready);
+            assert_eq!(item.category, Category::Movie);
+            assert_eq!(item.library_id.as_deref(), Some(kids.id.as_str()));
+            assert!(!h.exists(rel));
+
+            let rel = "Downloads/Completed/notes.pdf";
+            h.write(rel, &bytes("document"));
+            let id = h.lib.sort_path(rel, Some("chosen")).await.unwrap()[0].clone();
+            let item = h.item(&id).await;
+            assert_eq!(item.status, ItemStatus::NeedsReview);
+            assert_eq!(item.category, Category::Other);
+            assert!(h.exists(rel));
+
+            // The same uncertain name without a choice still needs review.
+            let rel = "Downloads/Completed/Up.1080p.WEB-DL.mkv";
+            h.write(rel, &bytes("uncertain automatic"));
+            let id = h.lib.sort_path(rel, None).await.unwrap()[0].clone();
+            let item = h.item(&id).await;
+            assert_eq!(item.status, ItemStatus::NeedsReview);
+            assert_eq!(
+                item.suggestion().unwrap().confidence,
+                crate::models::Confidence::Low
+            );
+            assert!(h.exists(rel));
+        }
+    }
+
+    #[tokio::test]
+    async fn unidentified_video_chosen_for_camera_library_keeps_its_date() {
+        let h = harness().await;
+        add_owner(&h).await;
+        chosen_download(&h, "chosen", STARTING_HOME_VIDEOS, "u").await;
+        let rel = "Downloads/Completed/clip_final_v2.mkv";
+        h.write(rel, &bytes("unidentified camera clip"));
+        let id = h.lib.sort_path(rel, Some("chosen")).await.unwrap()[0].clone();
+        let item = h.item(&id).await;
+        assert_eq!(item.status, ItemStatus::Ready);
+        assert_eq!(item.category, Category::HomeVideo);
+        assert_eq!(item.library_id.as_deref(), Some(STARTING_HOME_VIDEOS));
+        assert!(item.taken_at.is_some());
+        assert!(!item.rel_path.contains("Undated"));
+        assert!(!h.exists(rel));
     }
 }

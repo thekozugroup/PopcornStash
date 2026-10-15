@@ -5,6 +5,7 @@
 import * as stylex from '@stylexjs/stylex';
 import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {Link} from 'react-router';
+import {Popcorn} from 'lucide-react';
 
 const styles = stylex.create({
   brand: {
@@ -45,7 +46,7 @@ const styles = stylex.create({
 
 export function BrandMark({size = 'md'}: {size?: 'md' | 'lg'}) {
   return (
-    <img src="/icons/icon-192.png" alt="" width={32} height={32} aria-hidden="true" {...stylex.props(styles.mark, size === 'lg' && styles.markLarge)} />
+    <Popcorn size={32} strokeWidth={1.75} aria-hidden="true" {...stylex.props(styles.mark, size === 'lg' && styles.markLarge)} />
   );
 }
 
