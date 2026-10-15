@@ -12,5 +12,5 @@ chmod 0755 /www/cgi-bin/ip
 printf 'echo.test %s\n' "$ECHO_IP" > /etc/dnsd.conf
 dnsd -c /etc/dnsd.conf -p 53 -i 0.0.0.0 &
 trap 'exit 0' TERM INT
-httpd -f -p 80 -h /www &
+httpd -f -p 0.0.0.0:80 -h /www &
 wait

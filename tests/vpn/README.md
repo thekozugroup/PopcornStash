@@ -21,7 +21,8 @@ access is needed; everything runs on a private Docker network.
 ```
 
 - **echo** answers `GET /cgi-bin/ip` with the caller's address and runs a DNS
-  server that knows `echo.test`, a name Docker's own resolver does not.
+  server that knows `echo.test`, a name Docker's own resolver does not. HTTP binds
+  IPv4 explicitly, so IPv4 fixture addresses are not reported as IPv6-mapped addresses.
 - **wgserver** is the VPN provider: one WireGuard peer (kernel module, or
   boringtun when the kernel has none) that masquerades tunnel traffic, so the
   echo server sees `wgserver`'s address for anything that came through the VPN.
@@ -35,7 +36,11 @@ access is needed; everything runs on a private Docker network.
   `/config/torrent/vpn/{wireguard.conf,vpn.json}` pointing at `wgserver`, with
   `Address = 10.66.0.2/24` and `DNS = <echo>`. Later the test writes new files
   into the VPN folder as the web server's user and asks for a reload, as the web
-  server does after an upload.
+  server does after an upload. Before starting the unchanged `tini -- popcornstash run`
+  command, a fixture wrapper creates an unrelated empty nftables table and records
+  every existing table. Setup and both protocol reloads must preserve them. This
+  also tests hosts whose Docker networking uses legacy iptables and creates no
+  nftables tables of its own.
 
 ## Run
 
@@ -61,9 +66,9 @@ containers running for inspection).
 |---|---|
 | Tunnel | The supervisor brings up `psw0` and the engine's `/health` reports `vpn.state = connected`; the engine starts its librqbit session (on IPv4 sockets when the kernel has no IPv6) |
 | Routing | As the engine user (`docker exec --user 6881`), `curl` to the echo server reports **wgserver's** address; as `PUID` it reports **the container's own** address |
-| Bypass | The engine user cannot leave through `eth0` even when binding to it (`curl --interface eth0`) |
+| Bypass | The engine user cannot leave through `eth0` even when binding to it (`curl --interface eth0`), or set WireGuard's privileged transport mark |
 | DNS | As the engine user `echo.test` resolves (DNAT to the forwarder on 127.0.0.54:5354, then through the tunnel to the echo DNS); as `PUID` it does not (Docker's resolver, normal network) |
-| Rules | `nft list table inet popcornstash` holds the port-53 DNAT and the engine-only output filter; `ip rule` holds priorities 99–102 for fwmark `0x5150` and `uidrange 6881-6881`; table 51820 is `default dev psw0`; Docker's own tables are untouched |
+| Rules | `nft list table inet popcornstash` holds the port-53 DNAT and the engine-only output filter; `ip rule` holds priorities 99–102 for fwmark `0x5150` and `uidrange 6881-6881`; table 51820 is `default dev psw0`; every preexisting nftables table survives setup and reloads |
 | Main table | With `Address = 10.66.0.2/24` the main table has no `psw0` route, `psw0` carries `10.66.0.2/32`, and `ip route get 10.66.0.1 uid PUID` leaves through `eth0` (the web server's traffic is never pulled into the tunnel) |
 | Secrets | Neither the engine user nor `PUID` can read the WireGuard settings (`wg showconf psw0`) |
 | Processes | `serve` runs as `PUID`, `torrent-engine` as 6881, the supervisor as root; `serve` and the engine have `CapEff = 0` and `NoNewPrivs = 1` |

@@ -281,7 +281,11 @@ docker run -d --name "$MAIN" --network "$NET" --ip "$STASH_IP" \
   --read-only --tmpfs /tmp --tmpfs /run \
   --security-opt=no-new-privileges:true \
   --stop-timeout 30 \
-  "$IMAGE" >/dev/null
+  --entrypoint /bin/sh "$IMAGE" -c '
+    set -eu
+    nft add table inet pst_test_preserve
+    nft list tables > /run/pst-vpn-tables-before
+    exec /usr/bin/tini -- popcornstash run' >/dev/null
 
 base_url() {
   printf 'http://%s' "$(docker port "$MAIN" 8788/tcp | sed -n 1p)"
@@ -406,12 +410,16 @@ rules_ok() {
 }
 check "ip rules: fwmark and uidrange lookups into table 51820, then prohibit" rules_ok
 check "table 51820 routes everything through psw0" bash -c "docker exec '$MAIN' ip -4 route show table 51820 | grep -q '^default dev psw0'"
-docker_tables_intact() {
-  local tables
+other_tables_intact() {
+  local before tables table
+  before="$(docker exec "$MAIN" cat /run/pst-vpn-tables-before)" || return 1
   tables="$(docker exec "$MAIN" nft list tables)" || return 1
-  grep -qv 'inet popcornstash' <<<"$tables"
+  [[ -n "$before" ]] || return 1
+  while IFS= read -r table; do
+    grep -Fxq "$table" <<<"$tables" || return 1
+  done <<<"$before"
 }
-check "Docker's own nftables tables are still there" docker_tables_intact
+check "preexisting nftables tables survive initial VPN setup" other_tables_intact
 
 # The tunnel adds no route to the main table, whatever prefix its address has:
 # a `10.66.0.0/24 dev psw0` route would pull the web server's traffic for that
@@ -581,6 +589,7 @@ check "POST /vpn/reload is accepted" reload_accepted
 reload_logged() { grep -q 'reload requested; re-applying the VPN' <<<"$(logs_of "$MAIN")"; }
 check "the engine exits for the reload and the supervisor re-applies the VPN" eventually 30 reload_logged
 check "after a reload the engine comes back and the tunnel reconnects" eventually 120 tunnel_connected
+check "preexisting nftables tables survive a WireGuard reload" other_tables_intact
 new_tunnel() {
   local index
   index="$(psw0_index)" || return 1
@@ -632,6 +641,7 @@ else
 fi
 docker exec "$MAIN" ip -4 route show table main >"$EVIDENCE_DIR/route-main-openvpn.txt" 2>&1 || true
 docker exec "$MAIN" ip -4 address show dev psw0 >"$EVIDENCE_DIR/psw0-openvpn.txt" 2>&1 || true
+check "preexisting nftables tables survive switching to OpenVPN" other_tables_intact
 check "OpenVPN: engine uid reaches the echo server through the tunnel (it sees $OVPN_IP)" \
   eventually 60 engine_sees "$OVPN_IP"
 check "OpenVPN: uid $PUID still reaches the echo server directly" puid_sees_stash
