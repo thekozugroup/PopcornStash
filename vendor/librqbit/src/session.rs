@@ -1782,7 +1782,15 @@ impl tracker_comms::TorrentStatsProvider for PeerRxTorrentInfo {
             Some(mt) => mt,
             None => {
                 trace!(info_hash=?self.info_hash, "can't find torrent in the session, using default stats");
-                return Default::default();
+                // PopcornStash patch: a magnet without metadata still needs bytes.
+                // left=0 tells trackers it is already a seed; some then withhold
+                // the seeders needed to fetch its metadata. The actual size
+                // replaces this sentinel as soon as the torrent is registered.
+                return tracker_comms::TrackerCommsStats {
+                    total_bytes: 1,
+                    torrent_state: tracker_comms::TrackerCommsStatsState::Initializing,
+                    ..Default::default()
+                };
             }
         };
         let stats = mt.stats();

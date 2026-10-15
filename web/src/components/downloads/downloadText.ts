@@ -17,13 +17,20 @@ export function isActive(download: Download): boolean {
   return ACTIVE_STATES.has(download.state);
 }
 
+/** A magnet has no file list yet; zero speed does not mean an idle transfer. */
+export function fetchingTorrentDetails(download: Download): boolean {
+  return download.kind === 'torrent' && download.state === 'downloading'
+    && (download.total_bytes === null || download.total_bytes <= 0) && download.done_bytes === 0;
+}
+
 /** One short phrase for the state of an in-progress download. */
 export function activeStateWords(download: Download): string {
   switch (download.state) {
     case 'queued':
       return download.error ?? 'Waiting to start';
     case 'downloading':
-      if (download.kind === 'torrent' && download.peers === 0) return 'Looking for peers';
+      if (fetchingTorrentDetails(download)) return 'Fetching torrent details';
+      if (download.kind === 'torrent' && !download.peers && download.down_bps === 0) return 'Looking for peers';
       return 'Downloading';
     case 'paused':
       return 'Paused';

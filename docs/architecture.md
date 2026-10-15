@@ -875,3 +875,11 @@ Web Downloads and Share, Android Add link and Share, and the extension popup off
 ### Kernel WireGuard transport marking
 
 The supervisor sets WireGuard `FwMark = 0x5151`, replacing any uploaded mark. Kernel WireGuard can preserve the originating engine UID on encrypted outer UDP packets. The kill switch permits only UDP carrying this privileged transport mark before the UID guard, and excludes it from engine DNS redirection. Unencrypted engine packets remain subject to routing, tunnel and conntrack guards. The engine has no capabilities and cannot set `SO_MARK`; no application can obtain this exception through the download API. DNS forwarder sockets retain their separate tunnel-only mark `0x5150`. The VPN tests prove both tunneled engine traffic and failed direct-interface/mark-forgery attempts.
+
+### Magnet metadata recovery and status
+
+An unresolved magnet announces as initializing with one byte left, so trackers do not mistake it for a completed seed before the file size is known. A metadata peer whose connection failed can be retried when a tracker or DHT lists it again, at least 10 seconds after the failure; only one attempt per address runs at once. Pause, removal and VPN loss cancel the lookup as before. These are vendored librqbit fixes, documented in `vendor/librqbit/PATCHED.md`.
+
+Web and Android interpret a downloading torrent with unknown/nonpositive `total_bytes` and zero `done_bytes` as “Fetching torrent details”, with an explanation that it is waiting for a peer. It stays indeterminate and does not show “Idle”. With a known size, zero speed and zero/unknown peers it says “Looking for peers”. Paused and queued reasons take precedence. No new download state, API field or database migration is required; unavailable swarms keep waiting and can still be paused or removed.
+
+Active transfer rows show one status and one progress bar, with separate download rate, upload rate (torrents) and connected-peer chips. Null peer counts display “Peers pending”, distinct from zero connected peers. The filename truncates visually while retaining its complete accessible name. On narrow screens telemetry flows beneath the title/actions; controls keep their platform touch targets. Upload rows share the web hierarchy.

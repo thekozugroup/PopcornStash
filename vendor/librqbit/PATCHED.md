@@ -32,3 +32,19 @@ the whole change.
 Test: `a_seeder_that_comes_back_is_reconnected_while_the_tracker_lists_it` in
 `crates/stash-torrentd/src/engine.rs` (fails without this patch). Remove the
 patch once upstream reconnects re-announced peers.
+
+Metadata recovery (2026-10-15): `src/dht_utils.rs` also retries a re-announced
+metadata peer 10 seconds after its failed attempt, deduplicating concurrent
+attempts. Upstream's permanent `seen` set ignored that peer for the entire
+metadata lookup, so a magnet could wait indefinitely after one failed
+connection. Cancellation still drops every in-flight attempt with the lookup.
+
+`src/session.rs` advertises an unresolved magnet with one byte left and the
+initializing state, replaced by real stats once metadata is registered. The
+upstream zero-byte default told trackers the magnet was already complete;
+trackers that filter seed-to-seed connections could withhold its seeders.
+
+Tests: `metadata_lookup_announces_missing_bytes_to_trackers` uses a tracker
+that withholds peers from completed clients; `metadata_lookup_retries_a_peer_that_comes_back`
+lists a paused seeder repeatedly, then resumes it. Both exercise real metadata
+exchange with DHT and local discovery disabled, and fail without these fixes.

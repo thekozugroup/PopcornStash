@@ -1,4 +1,9 @@
-use std::{collections::HashSet, net::SocketAddr, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use buffers::ByteBufOwned;
@@ -37,6 +42,11 @@ pub async fn read_metainfo_from_peer_receiver<A: Stream<Item = SocketAddr> + Unp
     client_name_and_version: String,
 ) -> ReadMetainfoResult<A> {
     let mut seen = HashSet::<SocketAddr>::new();
+    // PopcornStash patch: metadata peers can disappear and return just like data
+    // peers. Deduplicate active attempts, but retry a re-announced failed peer.
+    let mut failed_at = HashMap::<SocketAddr, Instant>::new();
+    let mut in_flight = HashSet::<SocketAddr>::new();
+    const RETRY_LISTED_PEER_AFTER: Duration = Duration::from_secs(10);
     let mut addrs = addrs_stream;
 
     let semaphore = tokio::sync::Semaphore::new(128);
@@ -46,31 +56,35 @@ pub async fn read_metainfo_from_peer_receiver<A: Stream<Item = SocketAddr> + Unp
         let connector = connector.clone();
         let client_name_and_version = client_name_and_version.clone();
         async move {
-            let token = semaphore.acquire().await?;
-            let ret = peer_info_reader::read_metainfo_from_peer(
-                addr,
-                peer_id,
-                info_hash,
-                peer_connection_options,
-                // This shouldn't be called anyway as we aren't reading/writing to disk, so it's
-                // ok not to use a shared one.
-                BlockingSpawner::new(1),
-                connector,
-                client_name_and_version,
-            )
-            .instrument(debug_span!("read_metainfo_from_peer", ?addr))
-            .await
-            .with_context(|| format!("error reading metainfo from {addr}"));
-            drop(token);
-            ret
+            let ret = async {
+                let _token = semaphore.acquire().await?;
+                peer_info_reader::read_metainfo_from_peer(
+                    addr,
+                    peer_id,
+                    info_hash,
+                    peer_connection_options,
+                    // This shouldn't be called anyway as we aren't reading/writing to disk, so it's
+                    // ok not to use a shared one.
+                    BlockingSpawner::new(1),
+                    connector,
+                    client_name_and_version,
+                )
+                .instrument(debug_span!("read_metainfo_from_peer", ?addr))
+                .await
+                .with_context(|| format!("error reading metainfo from {addr}"))
+            }
+            .await;
+            (addr, ret)
         }
     };
 
     let mut unordered = FuturesUnordered::new();
 
     for a in initial_addrs {
-        seen.insert(a);
-        unordered.push(read_info_guarded(a));
+        if seen.insert(a) {
+            in_flight.insert(a);
+            unordered.push(read_info_guarded(a));
+        }
     }
 
     let mut addrs_completed = false;
@@ -83,8 +97,10 @@ pub async fn read_metainfo_from_peer_receiver<A: Stream<Item = SocketAddr> + Unp
         tokio::select! {
             done = unordered.next(), if !unordered.is_empty() => {
                 match done {
-                    Some(Ok((info, info_bytes))) => return ReadMetainfoResult::Found { info, info_bytes, seen, rx: addrs },
-                    Some(Err(e)) => {
+                    Some((_, Ok((info, info_bytes)))) => return ReadMetainfoResult::Found { info, info_bytes, seen, rx: addrs },
+                    Some((addr, Err(e))) => {
+                        in_flight.remove(&addr);
+                        failed_at.insert(addr, Instant::now());
                         debug!("{:#}", e);
                     },
                     None => unreachable!()
@@ -94,7 +110,10 @@ pub async fn read_metainfo_from_peer_receiver<A: Stream<Item = SocketAddr> + Unp
             next_addr = addrs.next(), if !addrs_completed => {
                 match next_addr {
                     Some(addr) => {
-                        if seen.insert(addr) {
+                        let new = seen.insert(addr);
+                        let retry = failed_at.get(&addr).is_some_and(|at| at.elapsed() >= RETRY_LISTED_PEER_AFTER);
+                        if (new || retry) && in_flight.insert(addr) {
+                            failed_at.remove(&addr);
                             unordered.push(read_info_guarded(addr));
                         }
                         continue;

@@ -1,10 +1,7 @@
 /**
  * One row of the In progress list: torrents, web downloads and browser
- * uploads share it. Name, kind and state in words, a real progress bar,
- * then size, speed, time left and peers in the metadata style. Actions sit
- * at the trailing edge: one quiet pause or resume control and a menu.
- *
- * Under 560px the progress block takes the full row width below the name.
+ * uploads share it. One truncated name, one status, inline telemetry and a
+ * real progress bar. The icon and trailing actions share the row's center.
  */
 import * as stylex from '@stylexjs/stylex';
 import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
@@ -13,7 +10,6 @@ import {Text} from '@astryxdesign/core/Text';
 import type {LucideIcon} from 'lucide-react';
 import type {ReactNode} from 'react';
 import {formatPercent} from '../../lib/format';
-import {BreakableName} from '../BreakableName';
 
 export const rowStyles = stylex.create({
   list: {
@@ -31,46 +27,41 @@ export const rowStyles = stylex.create({
 const styles = stylex.create({
   row: {
     display: 'grid',
-    gridTemplateAreas: {
-      default: '"icon title actions" "icon body actions"',
-      '@media (max-width: 559px)': '"title actions" "body body"',
-    },
-    gridTemplateColumns: {default: 'auto minmax(0, 1fr) auto', '@media (max-width: 559px)': 'minmax(0, 1fr) auto'},
-    columnGap: {default: 16, '@media (max-width: 559px)': 8},
-    rowGap: 6,
-    alignItems: 'start',
-    paddingBlock: 16,
+    gridTemplateColumns: 'auto minmax(0, 1fr) auto',
+    columnGap: {default: 12, '@media (max-width: 559px)': 8},
+    rowGap: 4,
+    alignItems: 'center',
+    paddingBlock: 12,
     paddingInline: {default: 20, '@media (max-width: 559px)': 16},
   },
   icon: {
-    gridArea: 'icon',
-    display: {default: 'grid', '@media (max-width: 559px)': 'none'},
+    gridRow: {default: 'auto', '@media (max-width: 559px)': '1 / 4'},
+    display: 'grid',
     placeItems: 'center',
-    width: 40,
-    height: 40,
-    borderRadius: 10,
+    width: {default: 64, '@media (max-width: 559px)': 40},
+    height: {default: 64, '@media (max-width: 559px)': 40},
+    borderRadius: 12,
     backgroundColor: colorVars['--color-background-muted'],
     color: colorVars['--color-icon-secondary'],
   },
   title: {
-    gridArea: 'title',
     minWidth: 0,
-    alignSelf: {default: 'start', '@media (max-width: 559px)': 'center'},
-    paddingTop: {default: 2, '@media (max-width: 559px)': 0},
+    overflow: 'hidden',
   },
   body: {
-    gridArea: 'body',
-    display: 'flex',
+    display: {default: 'flex', '@media (max-width: 559px)': 'contents'},
     flexDirection: 'column',
-    gap: 8,
+    gap: 6,
     minWidth: 0,
-    marginTop: {default: 0, '@media (max-width: 559px)': 6},
   },
   stateLine: {
+    gridColumn: {default: 'auto', '@media (max-width: 559px)': '2 / 4'},
+    gridRow: {default: 'auto', '@media (max-width: 559px)': '2'},
     display: 'flex',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-    gap: 12,
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    columnGap: 12,
+    rowGap: 4,
     minWidth: 0,
   },
   stateText: {
@@ -80,10 +71,26 @@ const styles = stylex.create({
     flexShrink: 0,
     fontVariantNumeric: 'tabular-nums',
   },
+  titleLine: {
+    gridColumn: {default: 'auto', '@media (max-width: 559px)': '2'},
+    gridRow: {default: 'auto', '@media (max-width: 559px)': '1'},
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    minWidth: 0,
+  },
+  telemetry: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    flexWrap: 'wrap',
+    fontVariantNumeric: 'tabular-nums',
+  },
   meta: {
     display: 'flex',
     flexWrap: 'wrap',
-    columnGap: 16,
+    columnGap: 12,
     rowGap: 2,
     margin: 0,
     padding: 0,
@@ -94,14 +101,22 @@ const styles = stylex.create({
     fontVariantNumeric: 'tabular-nums',
   },
   actions: {
-    gridArea: 'actions',
+    gridColumn: {default: 'auto', '@media (max-width: 559px)': '3'},
+    gridRow: {default: 'auto', '@media (max-width: 559px)': '1'},
     display: 'flex',
     alignItems: 'center',
     gap: 4,
-    marginBlock: {default: -2, '@media (max-width: 559px)': 0},
   },
   error: {
     color: colorVars['--color-error'],
+  },
+  progress: {
+    gridColumn: {default: 'auto', '@media (max-width: 559px)': '2 / 4'},
+    gridRow: {default: 'auto', '@media (max-width: 559px)': '3'},
+  },
+  note: {
+    gridColumn: {default: 'auto', '@media (max-width: 559px)': '2 / 4'},
+    gridRow: {default: 'auto', '@media (max-width: 559px)': '4'},
   },
 });
 
@@ -110,13 +125,16 @@ export type TransferTone = 'active' | 'paused' | 'failed';
 export interface TransferRowProps {
   icon: LucideIcon;
   name: string;
-  /** "Torrent · Downloading". */
+  /** One changing status, for example "Downloading". */
   stateText: ReactNode;
   /** 0..1, or null when the size is unknown. */
   progress: number | null;
   tone?: TransferTone;
   /** Short metadata entries: size, speed, time left, peers. */
   meta?: (string | null | undefined | false)[];
+  telemetry?: ReactNode;
+  /** Full file size, ETA or waiting explanation, available on hover. */
+  detail?: string;
   /** Extra line under the bar, for example an error message. */
   note?: ReactNode;
   actions?: ReactNode;
@@ -124,45 +142,36 @@ export interface TransferRowProps {
 
 const BAR_VARIANT = {active: 'accent', paused: 'neutral', failed: 'error'} as const;
 
-export function TransferRow({icon: Icon, name, stateText, progress, tone = 'active', meta = [], note, actions}: TransferRowProps) {
+export function TransferRow({icon: Icon, name, stateText, progress, tone = 'active', meta = [], telemetry, detail, note, actions}: TransferRowProps) {
   const entries = meta.filter((entry): entry is string => Boolean(entry));
   const hasSize = progress !== null && Number.isFinite(progress);
   return (
     <div {...stylex.props(styles.row)}>
       <span {...stylex.props(styles.icon)} aria-hidden="true">
-        <Icon size={20} strokeWidth={1.75} />
+        <Icon size={24} strokeWidth={1.75} />
       </span>
-      <Text type="label" as="p" maxLines={2} wordBreak="break-word" xstyle={styles.title}>
-        <BreakableName name={name} />
-      </Text>
-      <div {...stylex.props(styles.body)}>
+      <div {...stylex.props(styles.body)} title={detail}>
+        <div {...stylex.props(styles.titleLine)} title={name}>
+          <Text type="label" as="p" maxLines={1} wordBreak="break-all" xstyle={styles.title}>{name}</Text>
+          {hasSize ? <Text type="supporting" color="secondary" xstyle={styles.percent}>{formatPercent(progress)}</Text> : null}
+        </div>
         <div {...stylex.props(styles.stateLine)}>
           <Text type="supporting" color="secondary" xstyle={styles.stateText}>
             {stateText}
           </Text>
-          {hasSize ? (
-            <Text type="supporting" color="secondary" xstyle={styles.percent}>
-              {formatPercent(progress)}
-            </Text>
-          ) : null}
+          {telemetry ? <div {...stylex.props(styles.telemetry)}>{telemetry}</div> : null}
+          {entries.length > 0 ? <ul {...stylex.props(styles.meta)}>{entries.map(entry => <li key={entry}>{entry}</li>)}</ul> : null}
         </div>
-        <ProgressBar
+        <div {...stylex.props(styles.progress)}><ProgressBar
           label={`${name} progress`}
           isLabelHidden
           value={hasSize ? Math.round((progress ?? 0) * 1000) / 10 : 0}
           max={100}
           isIndeterminate={!hasSize && tone === 'active'}
           variant={BAR_VARIANT[tone]}
-        />
-        {entries.length > 0 ? (
-          <ul {...stylex.props(styles.meta)}>
-            {entries.map(entry => (
-              <li key={entry}>{entry}</li>
-            ))}
-          </ul>
-        ) : null}
+        /></div>
         {note ? (
-          <Text type="supporting" as="p" xstyle={tone === 'failed' ? styles.error : undefined}>
+          <Text type="supporting" as="p" xstyle={[styles.note, tone === 'failed' && styles.error]}>
             {note}
           </Text>
         ) : null}

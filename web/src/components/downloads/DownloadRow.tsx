@@ -3,13 +3,14 @@
  * `download` events.
  */
 import {IconButton} from '@astryxdesign/core/IconButton';
+import {Badge} from '@astryxdesign/core/Badge';
 import {MoreMenu} from '@astryxdesign/core/MoreMenu';
-import {Globe, Magnet, Pause, Play, Upload, type LucideIcon} from 'lucide-react';
+import {ArrowDown, ArrowUp, Globe, Magnet, Pause, Play, Upload, Users, type LucideIcon} from 'lucide-react';
 import {useState} from 'react';
 import {downloads as downloadsApi} from '../../api/client';
 import type {Download, DownloadKind} from '../../api/types';
-import {formatBytesOf, formatCount, formatEta, formatSpeed} from '../../lib/format';
-import {activeStateWords, canPause, canResume, KIND_LABEL} from './downloadText';
+import {formatBytes, formatBytesOf, formatCount, formatEta} from '../../lib/format';
+import {activeStateWords, canPause, canResume, fetchingTorrentDetails} from './downloadText';
 import {TransferRow} from './TransferRow';
 
 export const KIND_ICON: Record<DownloadKind, LucideIcon> = {
@@ -29,7 +30,6 @@ export function DownloadRow({download, onChanged, onRemove, onError}: DownloadRo
   const [isBusy, setIsBusy] = useState(false);
   const pausable = canPause(download);
   const resumable = canResume(download);
-  const isSeeding = download.state === 'seeding';
 
   const toggle = async () => {
     setIsBusy(true);
@@ -46,22 +46,33 @@ export function DownloadRow({download, onChanged, onRemove, onError}: DownloadRo
   const known = download.total_bytes !== null && download.total_bytes > 0;
   const progress = known || download.progress > 0 ? Math.min(1, Math.max(0, download.progress)) : null;
   const moving = download.state === 'downloading';
-  const meta = [
+  const fetchingDetails = fetchingTorrentDetails(download);
+  const detail = [
+    fetchingDetails ? 'Waiting for a peer to share the file list. Retrying automatically.' : null,
     known ? formatBytesOf(download.done_bytes, download.total_bytes) : download.done_bytes > 0 ? formatBytesOf(download.done_bytes, null) : null,
-    moving ? formatSpeed(download.down_bps) : null,
-    isSeeding && download.up_bps > 0 ? `Sharing at ${formatSpeed(download.up_bps)}` : null,
     moving ? formatEta(download.eta_s) : null,
-    download.kind === 'torrent' && download.peers !== null && (moving || isSeeding) ? formatCount(download.peers, 'peer') : null,
-  ];
+  ].filter(Boolean).join(' · ');
+  const down = `${formatBytes(download.down_bps)}/s`;
+  const up = `${formatBytes(download.up_bps)}/s`;
+  const peers = download.peers === null ? 'Peers pending' : formatCount(download.peers, 'peer');
 
   return (
     <TransferRow
       icon={KIND_ICON[download.kind]}
       name={download.name}
-      stateText={`${KIND_LABEL[download.kind]} · ${activeStateWords(download)}`}
+      stateText={activeStateWords(download)}
       progress={progress}
       tone={download.state === 'paused' || download.state === 'queued' ? 'paused' : 'active'}
-      meta={meta}
+      detail={detail}
+      telemetry={
+        <>
+          <span role="img" aria-label={`Download speed: ${down}`}><Badge variant={download.down_bps > 0 ? 'green' : 'neutral'} icon={<ArrowDown size={12} />} label={down} /></span>
+          {download.kind === 'torrent' ? <>
+            <span role="img" aria-label={`Upload speed: ${up}`}><Badge variant={download.up_bps > 0 ? 'blue' : 'neutral'} icon={<ArrowUp size={12} />} label={up} /></span>
+            <span role="img" aria-label={download.peers === null ? 'Connected peers: not reported yet' : `${peers} connected`}><Badge variant="neutral" icon={<Users size={12} />} label={peers} /></span>
+          </> : null}
+        </>
+      }
       actions={
         <>
           {pausable || resumable ? (

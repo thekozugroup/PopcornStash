@@ -1,7 +1,7 @@
 ---
 name: Popcorn family
 description: Quiet, private media tools with familiar controls and warm editorial headings.
-version: 1
+version: 2
 products: [PopcornStash, PopcornSR, PopcornBatch]
 ---
 
@@ -95,6 +95,16 @@ below. Avoid the full hinge bounds, including a physical gap. Maintain the playb
 position and session. A flat or vertical book posture uses the normal layout; picture-in-
 picture uses the whole picture. Use Jetpack WindowManager posture data, not guessed angles.
 
+Use [Apple HIG layout](https://developer.apple.com/design/human-interface-guidelines/layout)
+principles for hierarchy, consistent alignment, related-element grouping and adaptive spacing.
+Keep platform controls and touch targets: 44px web, 48dp Android. Names lead, secondary facts
+follow, and actions align consistently. Narrow windows and enlarged text may wrap secondary
+facts instead of shrinking controls. Preserve full accessible names when filenames truncate.
+Use one [progress indicator](https://developer.apple.com/design/human-interface-guidelines/progress-indicators)
+per job and one changing status; do not repeat transport, downloading and idle labels. Direction
+arrows and screen-reader labels accompany rate colors. These are shared layout principles,
+not a requirement to imitate macOS controls on Android.
+
 ## Components and behavior
 
 Use the product's maintained component system. For Astryx products, adopt the supplied
@@ -103,7 +113,7 @@ apply the supplied Popcorn type and navigation references over Material 3.
 
 - Page header: serif headline, optional plain subtitle, one clear primary action.
 - Settings group: serif section title, plain explanation, rows with label/value/action aligned.
-- Processing/download row: filename, visible state, progress and one trailing action menu.
+- Processing/download row: centered glyph, one truncated filename, one changing status, progress and trailing actions. Keep compact rate/peer metrics in labeled, noninteractive chips where relevant; unknown counts stay distinct from zero.
 - Empty state: explain what belongs here and provide one relevant action.
 - Error: say what failed and offer a recovery action; keep the person's input.
 - Confirmation: name the item and actual consequence. Destructive actions require explicit intent.

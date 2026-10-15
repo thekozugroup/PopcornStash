@@ -385,3 +385,11 @@ The shared handoff template is `design-family/DESIGN.md`. The app icon uses the 
 ### Download destination
 
 Add and Share offer “Where it goes”, default “Sorted automatically”, before the confirmation action. Use the existing library names and icons, equal control targets and normal flat surfaces. The choice applies to links and files from that form; loading or a failed library fetch leaves automatic sorting available. Interrupted uploads keep their original choice.
+
+### Transfer row layout and hierarchy
+
+Use the Apple HIG layout principles of clear hierarchy, alignment and adaptive spacing, while retaining platform controls (48dp touch targets on Android). The name leads, one changing status follows, and a single progress bar anchors the row. Keep names to one line with an ellipsis; preserve the complete accessible name. A centered magnet glyph identifies torrents. Desktop content fits beside its 64px icon; on phones the status and telemetry use the available width below the filename and actions. Large text may increase row height. Never shrink actions to force density.
+
+Download and upload rates and connected peers are quiet, noninteractive chips. Green denotes incoming bytes, blue outgoing bytes; arrows and accessible labels convey direction independently of color. Zero rates are neutral. Unknown peers say “Peers pending”; they are not reported as zero. Metadata waits say “Fetching torrent details”, known-size discovery says “Looking for peers”, and paused/queued reasons take precedence. No duplicated kind/status labels or “Idle” line. Keep errors visible below progress.
+
+References: [Apple layout](https://developer.apple.com/design/human-interface-guidelines/layout), [progress indicators](https://developer.apple.com/design/human-interface-guidelines/progress-indicators).

@@ -2,6 +2,8 @@
 
 PopcornStash for Android shows the family's libraries, the downloads and the owner's library settings on a phone. It talks only to your own server, with the same API and the same rules as the web app: a person sees only the libraries the owner shares with them.
 
+A magnet waiting for its file list says “Fetching torrent details. Waiting for a peer.” instead of “Idle”. Once the size is known, a torrent with no connected peers says “Looking for peers”. A paused download and a download waiting for the VPN keep their own explanations.
+
 It is new. It has been tested on the build machine (unit tests, Compose UI tests on Robolectric, screenshots and runs against a real server), with additional native layout checks on Android emulators. Physical phones have not been tested. Read [What is not done yet](#what-is-not-done-yet) before you hand it to the family.
 
 ## What it does
@@ -151,3 +153,5 @@ Then remove the old copy of this phone from **Settings, Devices** on the web. Fr
 ## Choose where a download goes
 
 “Where it goes” defaults to “Sorted automatically”. Choose any library you can see when adding a link or sharing files. Compatible files go there; other file kinds follow the server’s normal sorting rules. Uncertain files wait in Inbox with your choice suggested. A choice never changes where future automatic downloads go. If the library is hidden or deleted before sorting, normal sorting applies.
+
+Downloads use a centered magnet glyph, a truncated filename, one status, progress and separate download/upload/peer chips. Unknown peer counts say “Peers pending”. Rates have arrow icons and accessibility labels as well as color; actions retain 48dp targets and chips wrap with large text.

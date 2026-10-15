@@ -92,7 +92,7 @@ export function UploadRow({entry, onChooseAgain, onCancel}: UploadRowProps) {
     <TransferRow
       icon={Upload}
       name={entry.name}
-      stateText={`Upload · ${stateWords(entry)}`}
+      stateText={stateWords(entry)}
       progress={progress}
       tone={toneOf(entry)}
       meta={[

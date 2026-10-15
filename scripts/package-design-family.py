@@ -38,7 +38,9 @@ def main():
         references = kit / "references"
         references.mkdir()
         for source in (
-            "DESIGN.md", "android/DESIGN.md", "web/src/components/Brand.tsx", "web/src/themes/popcorn/popcornTheme.ts",
+            "DESIGN.md", "android/DESIGN.md", "web/src/components/Brand.tsx",
+            "web/src/components/downloads/TransferRow.tsx", "web/src/components/downloads/DownloadRow.tsx",
+            "android/app/src/main/kotlin/com/thekozugroup/popcornstash/feature/downloads/DownloadRows.kt", "web/src/themes/popcorn/popcornTheme.ts",
             "web/src/themes/popcorn/popcorn.css", "web/src/index.css",
             "android/app/src/main/kotlin/com/thekozugroup/popcornstash/ui/theme/Type.kt",
             "android/app/src/main/kotlin/com/thekozugroup/popcornstash/navigation/NavigationPlacement.kt",

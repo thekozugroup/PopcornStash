@@ -2142,6 +2142,161 @@ mod tests {
         format!("http://{addr}/announce")
     }
 
+    /// Metadata lookup must identify itself as a downloader, and must retry a peer
+    /// that was unavailable when the tracker first listed it.
+    async fn metadata_tracker_fixture(require_left: bool, start_paused: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let seed_dir = dir.path().join("seed");
+        let leech_dir = dir.path().join("leech");
+        std::fs::create_dir_all(&seed_dir).unwrap();
+        std::fs::create_dir_all(&leech_dir).unwrap();
+        let film = seed_dir.join("metadata-fixture.bin");
+        std::fs::write(&film, vec![42u8; 32 * 1024]).unwrap();
+        let offline = || SessionOptions {
+            dht: None,
+            disable_local_service_discovery: true,
+            ipv4_only: true,
+            ..Default::default()
+        };
+        let seeder = Session::new_with_opts(
+            seed_dir,
+            SessionOptions {
+                disable_trackers: true,
+                listen: Some(ListenerOptions {
+                    mode: ListenerMode::TcpOnly,
+                    listen_addr: (Ipv4Addr::LOCALHOST, 0).into(),
+                    ipv4_only: true,
+                    ..Default::default()
+                }),
+                ..offline()
+            },
+        )
+        .await
+        .unwrap();
+        let SocketAddr::V4(peer) = seeder.listen_addr().unwrap() else {
+            panic!("IPv4 fixture")
+        };
+        let announces = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let observed = announces.clone();
+        let mut body = b"d8:intervali1e5:peers6:".to_vec();
+        body.extend_from_slice(&peer.ip().octets());
+        body.extend_from_slice(&peer.port().to_be_bytes());
+        body.push(b'e');
+        let app = axum::Router::new().route(
+            "/announce",
+            axum::routing::get(
+                move |axum::extract::Query(query): axum::extract::Query<
+                    HashMap<String, String>,
+                >| {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    let response =
+                        if require_left && query.get("left").is_none_or(|left| left == "0") {
+                            b"d8:intervali1e5:peers0:e".to_vec()
+                        } else {
+                            body.clone()
+                        };
+                    std::future::ready(response)
+                },
+            ),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tracker = format!("http://{}/announce", listener.local_addr().unwrap());
+        let tracker_task = tokio::spawn(async move { axum::serve(listener, app).await });
+        let torrent = librqbit::create_torrent(
+            &film,
+            librqbit::CreateTorrentOptions {
+                name: None,
+                trackers: vec![tracker.clone()],
+                piece_length: Some(16 * 1024),
+            },
+            &librqbit::spawn_utils::BlockingSpawner::new(1),
+        )
+        .await
+        .unwrap()
+        .as_bytes()
+        .unwrap();
+        let seeded = seeder
+            .add_torrent(
+                AddTorrent::from_bytes(torrent),
+                Some(AddTorrentOptions {
+                    overwrite: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap()
+            .into_handle()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), seeded.wait_until_completed())
+            .await
+            .unwrap()
+            .unwrap();
+        if start_paused {
+            seeder.pause(&seeded).await.unwrap();
+        }
+        let leecher = Session::new_with_opts(
+            leech_dir,
+            SessionOptions {
+                listen: None,
+                ..offline()
+            },
+        )
+        .await
+        .unwrap();
+        let magnet = format!(
+            "magnet:?xt=urn:btih:{}&tr={tracker}",
+            seeded.info_hash().as_string()
+        );
+        let resolving = {
+            let leecher = leecher.clone();
+            tokio::spawn(async move {
+                leecher
+                    .add_torrent(
+                        AddTorrent::from_url(&magnet),
+                        Some(AddTorrentOptions {
+                            list_only: true,
+                            ..Default::default()
+                        }),
+                    )
+                    .await
+            })
+        };
+        if start_paused {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while announces.load(Ordering::SeqCst) < 3 {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .expect("the paused peer was listed repeatedly");
+            assert!(
+                !resolving.is_finished(),
+                "a paused peer cannot serve metadata"
+            );
+            seeder.unpause(&seeded).await.unwrap();
+        }
+        let result = tokio::time::timeout(Duration::from_secs(15), resolving).await;
+        // Stop the fixture even when the regression fails.
+        leecher.stop().await;
+        seeder.stop().await;
+        tracker_task.abort();
+        let result = result
+            .expect("metadata did not recover from the tracker")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, RqAddResponse::ListOnly(_)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn metadata_lookup_announces_missing_bytes_to_trackers() {
+        metadata_tracker_fixture(true, false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn metadata_lookup_retries_a_peer_that_comes_back() {
+        metadata_tracker_fixture(false, true).await;
+    }
+
     /// A lone seeder that goes away and comes back is reconnected as soon as the tracker
     /// lists it again (the vendored librqbit patch, vendor/librqbit/PATCHED.md). Upstream
     /// librqbit ignores addresses it already knows and waits out a reconnect backoff that

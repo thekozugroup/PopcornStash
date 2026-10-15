@@ -29,6 +29,19 @@ class DownloadsTextTest {
     }
 
     @Test
+    fun aMagnetWithoutMetadataExplainsTheWaitInsteadOfSayingIdle() {
+        val magnet = s.downloading.copy(totalBytes = null, doneBytes = 0, progress = 0.0, peers = null, downBps = 0, etaS = null)
+        assertEquals(listOf("Fetching torrent details. Waiting for a peer."), magnet.progressFacts(us))
+        assertEquals("Fetching torrent details", magnet.activeStatus())
+        assertEquals("Paused", magnet.copy(state = DownloadState.Paused).activeStatus())
+        assertEquals("Waiting for the VPN.", magnet.copy(state = DownloadState.Queued, error = "Waiting for the VPN.").activeStatus())
+        assertEquals("Looking for peers", magnet.copy(totalBytes = 1024).activeStatus())
+        assertEquals("Downloading", magnet.copy(totalBytes = 1024, downBps = 100).activeStatus())
+        assertEquals(listOf("Paused"), magnet.copy(state = DownloadState.Paused).progressFacts(us))
+        assertEquals(listOf("64%", "Looking for peers"), s.downloading.copy(peers = null, downBps = 0, etaS = null).progressFacts(us))
+    }
+
+    @Test
     fun aPausedDownloadSaysPausedWithWhatArrived() {
         assertEquals(listOf("Paused", "31%", "128 MB of 412 MB"), s.paused.progressFacts(us))
     }

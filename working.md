@@ -1,5 +1,14 @@
 # PopcornStash, iteration 1
 
+## Current continuation: stalled magnet diagnosis, 2026-10-15
+
+- Owner report: the active Atlas magnet shows Idle and never downloads; inspect the real torrent, fix verified defects, preserve its state and all unrelated services, keep VPN isolation, remove work-owned NAS test resources.
+- Live baseline: one unpaused torrent is still fetching metadata, with no total size or bytes received. NordVPN/WireGuard is connected and reports protected. Five of its UDP trackers answer through the engine UID/tunnel; responding announces report zero seeders. No private magnet, names, peer addresses or credentials are recorded here.
+- A separate official Debian magnet on the existing production engine fetched metadata and 54,263,808 bytes in five seconds (10 peers, 20,796,535 B/s), then its engine entry and test files were removed. This establishes real VPN torrent transfer; it does not establish source availability for the owner's magnet.
+- Implemented: retry failed metadata peers when re-announced after 10 seconds and advertise missing metadata as an initializing downloader. Both loopback metadata regressions failed before the vendor changes and pass afterward. Linux fmt, strict workspace clippy and all 553 Rust tests pass (216 core, 247 server, 90 torrentd). Native Mac Rust cannot compile Linux-only Landlock; verification uses a scoped Linux runner on Atlas.
+- UI: centered magnet, truncated name, one changing status, down/up/peer chips and progress on web and Android; shared web uploads use the same hierarchy. Unknown peers stay distinct from zero. Apple HIG layout/progress principles are recorded in both design guides; native controls keep their touch targets. Reviewed desktop/phone light/dark, 320px width and 200% web text, plus all 20 changed Android captures (including two new metadata states). The Impeccable changed-surface detector reports no findings.
+- Web check/build (57 tests) and extension check/ZIP (78 tests) pass. Android test/lint/debug assembly, screenshot verification and Lucide glyph checks pass. Exact-source native Docker build/smoke/deployment remain pending; no deployment claim yet.
+
 ## Local continuation, 2026-10-14
 
 - Owner scope: Atlas PR review/deployment, adaptive Android navigation, tabletop fold playback, Newsreader headings, one Icon Composer brand, and a separate PopcornSR/PopcornBatch design handoff ZIP. Emulator only. Gradients and flattened glass are confined to app icons.

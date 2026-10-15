@@ -83,6 +83,14 @@ class DownloadsScreenshotTest {
         compose.onRoot().captureRoboImage(screenshot("downloads-dark"))
     }
 
+    private fun metadataWaiting(dark: Boolean) {
+        show(s.content().copy(inProgress = listOf(s.downloading.copy(totalBytes = null, doneBytes = 0, progress = 0.0, peers = null, downBps = 0, etaS = null)), uploads = emptyList()), dark)
+        compose.onRoot().captureRoboImage(screenshot(if (dark) "downloads-metadata-dark" else "downloads-metadata-light"))
+    }
+
+    @Test fun metadataWaitingLight() = metadataWaiting(false)
+    @Test fun metadataWaitingDark() = metadataWaiting(true)
+
     @Test
     fun readyToImportLight() {
         // The list: VPN, In progress header, the upload, 3 downloads, then Ready to import.

@@ -52,6 +52,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.thekozugroup.popcornstash.data.api.Download
+import com.thekozugroup.popcornstash.data.api.DownloadKind
 import com.thekozugroup.popcornstash.data.api.DownloadState
 import com.thekozugroup.popcornstash.share.UploadBatchProgress
 import com.thekozugroup.popcornstash.ui.components.SecondaryButton
@@ -295,24 +296,66 @@ fun DownloadRow(
     modifier: Modifier = Modifier,
 ) {
     val resumable = download.canResume()
-    TransferRowLayout(
-        name = download.name,
-        fraction = download.knownProgress(),
-        moving = download.state == DownloadState.Downloading || download.state == DownloadState.Seeding,
-        facts = download.progressFacts(),
-        factsAreSentence = download.isWaiting(),
-        modifier = modifier.testTag("download ${download.id}"),
+    Row(
+        modifier.testTag("download ${download.id}").fillMaxWidth()
+            .padding(start = Popcorn.spacing.gutter, end = Popcorn.spacing.xxs, top = 12.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (resumable || download.canPause()) {
-            RowIconButton(
-                glyph = if (resumable) PopcornIcons.Play else PopcornIcons.Pause,
-                label = if (resumable) "Resume" else "Pause",
-                description = "${if (resumable) "Resume" else "Pause"} ${download.name}",
-                onClick = onPauseOrResume,
-                busy = busy,
-            )
+        Box(Modifier.size(48.dp).background(Popcorn.colors.subtle, Popcorn.shapes.tag), contentAlignment = Alignment.Center) {
+            LucideIcon(if (download.kind == DownloadKind.Torrent) LucideGlyphs.Magnet else PopcornIcons.Link, contentDescription = null, size = 24.dp, tint = Popcorn.colors.textMuted)
         }
-        RowMoreMenu(download.name, listOf(MenuChoice("Remove", destructive = true, onClick = onRemove)), enabled = !busy)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(download.name, style = Popcorn.type.item, color = Popcorn.colors.text,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                download.knownProgress()?.let {
+                    Spacer(Modifier.width(8.dp))
+                    Text(formatPercent(it), style = Popcorn.type.metadata, color = Popcorn.colors.textMuted, maxLines = 1)
+                }
+                Spacer(Modifier.width(Popcorn.spacing.xxs))
+                if (resumable || download.canPause()) {
+                    RowIconButton(
+                        glyph = if (resumable) PopcornIcons.Play else PopcornIcons.Pause,
+                        label = if (resumable) "Resume" else "Pause",
+                        description = "${if (resumable) "Resume" else "Pause"} ${download.name}",
+                        onClick = onPauseOrResume,
+                        busy = busy,
+                    )
+                }
+                RowMoreMenu(download.name, listOf(MenuChoice("Remove", destructive = true, onClick = onRemove)), enabled = !busy)
+            }
+            Text(download.activeStatus(), style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
+            NetworkChips(download)
+            ThinProgress(download.knownProgress(), download.state == DownloadState.Downloading || download.state == DownloadState.Seeding, "${download.name} progress")
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun NetworkChips(download: Download) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        NetworkChip("${formatBytes(download.downBps)}/s", LucideGlyphs.ArrowDown,
+            if (download.downBps > 0) Popcorn.colors.connected else Popcorn.colors.textMuted, "Download speed")
+        if (download.kind == DownloadKind.Torrent) {
+            NetworkChip("${formatBytes(download.upBps)}/s", LucideGlyphs.ArrowUp,
+                if (download.upBps > 0) Popcorn.colors.link else Popcorn.colors.textMuted, "Upload speed")
+            NetworkChip(download.peers?.let { countOf(it, "peer") } ?: "Peers pending", LucideGlyphs.Users,
+                Popcorn.colors.textMuted, if (download.peers == null) "Connected peers not reported yet" else "Connected peers")
+        }
+    }
+}
+
+@Composable
+private fun NetworkChip(text: String, icon: LucideGlyph, tint: Color, description: String) {
+    Row(
+        Modifier.background(tint.copy(alpha = 0.10f), Popcorn.shapes.tag).padding(horizontal = 6.dp, vertical = 3.dp)
+            .clearAndSetSemantics { contentDescription = "$description: $text" },
+        horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LucideIcon(icon, contentDescription = null, size = 12.dp, tint = tint)
+        Text(text, style = Popcorn.type.metadata, color = tint, maxLines = 1)
     }
 }
 

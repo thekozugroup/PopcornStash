@@ -238,6 +238,7 @@ val lucideIconNames = listOf(
     "smartphone", "rotate-ccw",
     // Home and libraries: save the original, details, sort, file types.
     "download", "info", "arrow-up-down", "file-archive",
+    "magnet", "arrow-down", "arrow-up",
 )
 
 abstract class LucideGlyphsTask : DefaultTask() {

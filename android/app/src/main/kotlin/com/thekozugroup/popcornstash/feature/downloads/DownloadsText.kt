@@ -43,6 +43,21 @@ fun Download.knownProgress(): Double? {
     return if (known || progress > 0) progress.coerceIn(0.0, 1.0) else null
 }
 
+fun Download.fetchingTorrentDetails(): Boolean = kind == DownloadKind.Torrent && state == DownloadState.Downloading &&
+    (totalBytes ?: 0) <= 0 && doneBytes == 0L
+
+/** One changing status; the icon already communicates the kind of transfer. */
+fun Download.activeStatus(): String = when (state) {
+    DownloadState.Queued -> error?.takeIf { it.isNotBlank() } ?: "Waiting to start"
+    DownloadState.Paused -> "Paused"
+    DownloadState.Seeding -> "Sharing with peers"
+    else -> when {
+        fetchingTorrentDetails() -> "Fetching torrent details"
+        kind == DownloadKind.Torrent && (peers ?: 0) == 0L && downBps == 0L -> "Looking for peers"
+        else -> "Downloading"
+    }
+}
+
 /**
  * The facts under an in-progress row, spaced apart rather than joined
  * (android/DESIGN.md, Downloads): "64%  2.1 MB/s  12 min left", or the reason it waits.
@@ -63,7 +78,8 @@ fun Download.progressFacts(locale: Locale = Locale.getDefault()): List<String> {
             if (upBps > 0) "Sharing at ${formatSpeed(upBps, locale)}" else null,
         )
         else -> {
-            val lookingForPeers = kind == DownloadKind.Torrent && peers == 0L
+            if (fetchingTorrentDetails()) return listOf("Fetching torrent details. Waiting for a peer.")
+            val lookingForPeers = kind == DownloadKind.Torrent && (peers ?: 0) == 0L && downBps == 0L
             listOfNotNull(
                 percent,
                 if (lookingForPeers) "Looking for peers" else formatSpeed(downBps, locale),
