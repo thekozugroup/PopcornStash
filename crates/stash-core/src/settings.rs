@@ -93,6 +93,7 @@ impl Settings {
     pub fn normalized(mut self) -> Self {
         self.max_concurrent_downloads = self.max_concurrent_downloads.clamp(1, 10);
         self.torrent.seed_ratio = self.torrent.seed_ratio.clamp(0.0, 100.0);
+        self.torrent.seed_hours = self.torrent.seed_hours.clamp(1, 720);
         self.torrent.max_active = self.torrent.max_active.clamp(1, 50);
         for limit in [
             &mut self.torrent.down_limit_kbps,
@@ -232,6 +233,31 @@ fn merge(base: &mut serde_json::Value, patch: serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn seeding_hours_are_bounded_and_persisted() {
+        let db = crate::db::open_memory().await.unwrap();
+        let store = SettingsStore::load(db.clone(), HwAccel::None)
+            .await
+            .unwrap();
+        for (requested, expected) in [(0, 1), (1, 1), (24, 24), (720, 720), (u32::MAX, 720)] {
+            let value = store
+                .update(serde_json::json!({"torrent": {"seed_hours": requested}}))
+                .await
+                .unwrap();
+            assert_eq!(value.torrent.seed_hours, expected);
+            assert_eq!(
+                SettingsStore::load(db.clone(), HwAccel::None)
+                    .await
+                    .unwrap()
+                    .get()
+                    .await
+                    .torrent
+                    .seed_hours,
+                expected
+            );
+        }
+    }
 
     #[tokio::test]
     async fn partial_update_merges() {

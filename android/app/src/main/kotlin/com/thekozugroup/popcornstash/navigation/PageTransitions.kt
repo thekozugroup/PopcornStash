@@ -13,21 +13,24 @@ import androidx.compose.ui.unit.LayoutDirection
 import com.thekozugroup.popcornstash.ui.theme.PopcornMotion
 
 /**
- * Which way a tab change moves on the screen: the new page comes in from the side of the
- * tapped square on the upright toolbar. +1 when that square lies below the current one (the
- * new page rises from the bottom), -1 above it (the new page comes down from the top), 0 for
- * the same tab. The bar's order is top to bottom in every layout direction, so this is too.
+ * The tapped square's position in the toolbar's order: +1 after, -1 before, 0 unchanged.
  */
 fun slideDirection(from: Tab, to: Tab): Int = to.ordinal.compareTo(from.ordinal)
 
 /**
- * A tab change (android/DESIGN.md, Tab transitions): a full-height slide in the direction
- * the selection moves on the toolbar, on the page spring, the old page leaving the other
- * way. Under reduce motion the pages crossfade in 150 ms instead.
+ * A tab change follows the selection along the toolbar's axis. Bottom navigation mirrors
+ * horizontally in RTL; the physical right rail keeps its vertical order. Under reduce
+ * motion the pages crossfade in 150 ms instead.
  */
-fun tabTransition(from: Tab, to: Tab, reduceMotion: Boolean, vertical: Boolean = true): ContentTransform {
+fun tabTransition(
+    from: Tab,
+    to: Tab,
+    reduceMotion: Boolean,
+    vertical: Boolean = true,
+    layoutDirection: LayoutDirection = LayoutDirection.Ltr,
+): ContentTransform {
     if (reduceMotion) return crossfade()
-    val direction = slideDirection(from, to)
+    val direction = slideDirection(from, to) * (if (!vertical && layoutDirection == LayoutDirection.Rtl) -1 else 1)
     if (!vertical) return slideInHorizontally(PopcornMotion.pageSpring()) { width -> width * direction } togetherWith
         slideOutHorizontally(PopcornMotion.pageSpring()) { width -> -width * direction }
     return slideInVertically(PopcornMotion.pageSpring()) { height -> height * direction } togetherWith

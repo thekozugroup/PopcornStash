@@ -18,7 +18,7 @@ Browsers only create and use passkeys on secure pages: an `https://` address wit
 
 A passkey also belongs to one domain name. `STASH_PUBLIC_URL` must be exactly the address people open, and passkeys made for `stash.example.com` will not work on another name. Choose a name you plan to keep. If you ever change it, the owner recovers access with a new passkey (see [Recovery](#recovery)) and invites everyone again.
 
-The name does not have to be public on the internet. A name that only resolves inside your home network or inside Tailscale works, as long as it has a valid certificate.
+Browser passkeys work on a private home or Tailscale name with a valid certificate. Android app passkeys also require Google to fetch `https://<rp_id>/.well-known/assetlinks.json` publicly on port 443. Keep the server private and use code pairing, or explicitly approve a public metadata route; see [Android passkeys](android.md#sign-in-with-a-passkey).
 
 ### Option 1: Tailscale Serve (simplest for private use)
 
@@ -364,7 +364,7 @@ Starting the container as a non-root user (`--user` or `user:` in Compose) has t
 | `STASH_HWACCEL` | empty | `none`, `vaapi`, `qsv` or `nvenc`. When set, it overrides **Settings > System > Streaming** |
 | `STASH_TORRENT_UID` | `6881` | User the torrent engine runs as |
 | `STASH_EXTRA_ORIGINS` | none | Extra allowed addresses on the same domain, comma separated |
-| `STASH_ANDROID_ASSETLINKS` | none | The Digital Asset Links statement (JSON) that lets the PopcornStash Android app use your passkeys ([docs/android.md](android.md#sign-in-with-a-passkey) has the exact text). Without it the app signs in by pairing with a code |
+| `STASH_ANDROID_ASSETLINKS` | none | The Digital Asset Links statement (JSON) that lets the PopcornStash Android app use your passkeys ([docs/android.md](android.md#sign-in-with-a-passkey) has the full two-permission statement and public-reachability checks). Without it the app signs in by pairing with a code |
 | `STASH_TLS_CERT`, `STASH_TLS_KEY` | none | Certificate and key for built-in HTTPS |
 | `STASH_LOG` | `info` | Log detail |
 | `STASH_ALLOW_NO_VPN` | `false` | See [Running without a VPN](vpn.md#running-without-a-vpn) |

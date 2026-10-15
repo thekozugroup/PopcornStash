@@ -29,6 +29,7 @@ data class ServerInfo(
     val passkeysOffered: Boolean,
     /** Nobody has set the server up yet (no owner passkey). */
     val setupRequired: Boolean,
+    val passkeyProblem: String? = null,
 )
 
 enum class SignInStep { Server, Method, Pairing }
@@ -56,6 +57,7 @@ class SignInDependencies(
     val packageName: String,
     /** Debug builds accept http:// for this phone and the emulator's host. */
     val allowLocalHttp: Boolean,
+    val signingFingerprints: Set<String>,
 )
 
 /**
@@ -93,8 +95,19 @@ class SignInController(
                 val health = api.health()
                 if (health.status != "ok") throw ApiException.unexpected(200)
                 val auth = api.authState()
-                val listed = auth.passkeysReady && api.listsAppForPasskeys(deps.packageName)
-                ServerInfo(url, ServerAddress.display(url), health.version, listed, auth.setupRequired)
+                val problem = when {
+                    !auth.passkeysReady -> "Passkeys are not set up on this server. Pair with a code instead."
+                    auth.rpId == null -> "The server did not give a passkey address. Pair with a code instead."
+                    auth.rpId != url.host -> "This address uses passkeys for ${auth.rpId}. Open that address, or pair with a code."
+                    else -> {
+                        // Android verifies the RP host's HTTPS root, regardless of the app's port.
+                        // Local HTTP is only for debug builds and loopback integration fixtures.
+                        val metadata = if (deps.allowLocalHttp && !url.isHttps) url else
+                            url.newBuilder().scheme("https").port(443).build()
+                        deps.publicApi(metadata).appPasskeyProblem(deps.packageName, deps.signingFingerprints)
+                    }
+                }
+                ServerInfo(url, ServerAddress.display(url), health.version, problem == null, auth.setupRequired, problem)
             } catch (_: ApiException) {
                 _state.update { it.copy(checking = false, addressError = "PopcornStash did not answer at this address.") }
                 return@launch

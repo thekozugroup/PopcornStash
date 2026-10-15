@@ -232,7 +232,7 @@ class ServerIntegrationTest {
         val state = api.authState()
         assertTrue("passkeys work on localhost", state.passkeysReady)
         assertTrue("the owner exists", !state.setupRequired)
-        assertTrue("the server lists the app for passkeys", api.listsAppForPasskeys("com.thekozugroup.popcornstash"))
+        assertEquals(null, api.appPasskeyProblem("com.thekozugroup.popcornstash", setOf(CERT_SHA256)))
     }
 
     @Test

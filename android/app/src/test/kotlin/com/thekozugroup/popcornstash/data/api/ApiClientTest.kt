@@ -82,9 +82,9 @@ class ApiClientTest {
         server.respond(
             """[{"relation":["delegate_permission/common.handle_all_urls","delegate_permission/common.get_login_creds"],
             "target":{"namespace":"android_app","package_name":"com.thekozugroup.popcornstash",
-            "sha256_cert_fingerprints":["AB:CD"]}}]""",
+            "sha256_cert_fingerprints":["DB:19:CF:5F:75:DB:CD:2C:BE:11:11:5E:67:51:B5:BC:B8:DD:19:FE:F7:F2:9C:89:E3:63:BE:D9:9E:87:9A:C0"]}}]""",
         )
-        assertTrue(publicApi.listsAppForPasskeys("com.thekozugroup.popcornstash"))
+        assertEquals(null, publicApi.appPasskeyProblem("com.thekozugroup.popcornstash", setOf("DB:19:CF:5F:75:DB:CD:2C:BE:11:11:5E:67:51:B5:BC:B8:DD:19:FE:F7:F2:9C:89:E3:63:BE:D9:9E:87:9A:C0")))
         assertEquals("/.well-known/assetlinks.json", server.next().path)
     }
 
@@ -94,13 +94,13 @@ class ApiClientTest {
             """[{"relation":["delegate_permission/common.get_login_creds"],
             "target":{"namespace":"android_app","package_name":"com.example.other"}}]""",
         )
-        assertFalse(publicApi.listsAppForPasskeys("com.thekozugroup.popcornstash"))
+        assertTrue(publicApi.appPasskeyProblem("com.thekozugroup.popcornstash", setOf("DB:19:CF:5F:75:DB:CD:2C:BE:11:11:5E:67:51:B5:BC:B8:DD:19:FE:F7:F2:9C:89:E3:63:BE:D9:9E:87:9A:C0")) != null)
         server.respond("""{"error":{"code":"not_found","message":"Not found."}}""", code = 404)
-        assertFalse(publicApi.listsAppForPasskeys("com.thekozugroup.popcornstash"))
+        assertTrue(publicApi.appPasskeyProblem("com.thekozugroup.popcornstash", setOf("DB:19:CF:5F:75:DB:CD:2C:BE:11:11:5E:67:51:B5:BC:B8:DD:19:FE:F7:F2:9C:89:E3:63:BE:D9:9E:87:9A:C0")) != null)
         server.respond("<html>nope</html>")
-        assertFalse(publicApi.listsAppForPasskeys("com.thekozugroup.popcornstash"))
-        assertFalse(assetLinksAllow("""[{"relation":["delegate_permission/common.handle_all_urls"],
-            "target":{"namespace":"android_app","package_name":"com.thekozugroup.popcornstash"}}]""", "com.thekozugroup.popcornstash"))
+        assertTrue(publicApi.appPasskeyProblem("com.thekozugroup.popcornstash", setOf("DB:19:CF:5F:75:DB:CD:2C:BE:11:11:5E:67:51:B5:BC:B8:DD:19:FE:F7:F2:9C:89:E3:63:BE:D9:9E:87:9A:C0")) != null)
+        assertTrue(assetLinksProblem("""[{"relation":["delegate_permission/common.handle_all_urls"],
+            "target":{"namespace":"android_app","package_name":"com.thekozugroup.popcornstash"}}]""", "com.thekozugroup.popcornstash", setOf("DB:19:CF:5F:75:DB:CD:2C:BE:11:11:5E:67:51:B5:BC:B8:DD:19:FE:F7:F2:9C:89:E3:63:BE:D9:9E:87:9A:C0")) != null)
     }
 
     @Test

@@ -45,27 +45,80 @@ class SignInControllerTest {
             deviceName = "Ana's Pixel",
             packageName = "com.thekozugroup.popcornstash",
             allowLocalHttp = true,
+            signingFingerprints = setOf("DB:19:CF:5F:75:DB:CD:2C:BE:11:11:5E:67:51:B5:BC:B8:DD:19:FE:F7:F2:9C:89:E3:63:BE:D9:9E:87:9A:C0"),
         ),
         CoroutineScope(UnconfinedTestDispatcher(testScheduler)),
         lastServer,
         notice,
     )
 
-    private fun serverAnswers(passkeysReady: Boolean = true, listsApp: Boolean = true, setupRequired: Boolean = false) {
+    private fun serverAnswers(passkeysReady: Boolean = true, listsApp: Boolean = true, setupRequired: Boolean = false, rpId: String = "localhost", relations: String = "delegate_permission/common.get_login_creds\",\"delegate_permission/common.handle_all_urls", fingerprint: String = "DB:19:CF:5F:75:DB:CD:2C:BE:11:11:5E:67:51:B5:BC:B8:DD:19:FE:F7:F2:9C:89:E3:63:BE:D9:9E:87:9A:C0") {
         server.respond("""{"status":"ok","version":"0.2.0","source":"x"}""")
         server.respond(
-            """{"setup_required":$setupRequired,"authenticated":false,"user":null,"public_url":null,"rp_id":"localhost",
+            """{"setup_required":$setupRequired,"authenticated":false,"user":null,"public_url":null,"rp_id":"$rpId",
             "passkeys_ready":$passkeysReady,"reason":null}""",
         )
-        if (passkeysReady) {
+        if (passkeysReady && rpId == "localhost") {
             val app = if (listsApp) "com.thekozugroup.popcornstash" else "com.example.other"
-            server.respond("""[{"relation":["delegate_permission/common.get_login_creds"],"target":{"namespace":"android_app","package_name":"$app"}}]""")
+            server.respond("""[{"relation":["$relations"],"target":{"namespace":"android_app","package_name":"$app","sha256_cert_fingerprints":["$fingerprint"]}}]""")
         }
     }
 
     private suspend fun SignInController.awaitStep(step: SignInStep) = withinRealSeconds { state.first { it.step == step && !it.checking } }
 
     private val address get() = "http://localhost:${server.port}"
+
+    @Test
+    fun appOnAnotherPortFetchesVerificationFromHttps443() = runTest {
+        val addresses = mutableListOf<HttpUrl>()
+        val controller = SignInController(
+            SignInDependencies(
+                publicApi = { addresses += it; ApiClient(server.url("/"), baseHttpClient("t")) },
+                finishSignIn = { _, _ -> }, deviceName = "test", packageName = "com.thekozugroup.popcornstash",
+                allowLocalHttp = false,
+                signingFingerprints = setOf("DB19CF5F75DBCD2CBE11115E6751B5BCB8DD19FEF7F29C89E363BED99E879AC0"),
+            ),
+            CoroutineScope(UnconfinedTestDispatcher(testScheduler)),
+        )
+        serverAnswers(rpId = "stash.example.com")
+        server.respond("""[{"relation":["delegate_permission/common.get_login_creds","delegate_permission/common.handle_all_urls"],
+            "target":{"namespace":"android_app","package_name":"com.thekozugroup.popcornstash",
+            "sha256_cert_fingerprints":["DB:19:CF:5F:75:DB:CD:2C:BE:11:11:5E:67:51:B5:BC:B8:DD:19:FE:F7:F2:9C:89:E3:63:BE:D9:9E:87:9A:C0"]}}]""")
+        controller.onAddressChange("https://stash.example.com:9446")
+        controller.onContinue()
+        assertTrue(controller.awaitStep(SignInStep.Method).server!!.passkeysOffered)
+        assertEquals(9446, addresses[0].port)
+        assertEquals(443, addresses[1].port)
+        assertEquals("https", addresses[1].scheme)
+        assertEquals("stash.example.com", addresses[1].host)
+    }
+
+    @Test
+    fun aDifferentPasskeyHostExplainsTheAddressWithoutFetchingIt() = runTest {
+        val controller = controller()
+        serverAnswers(rpId = "other.example.com")
+        controller.onAddressChange(address)
+        controller.onContinue()
+        val info = controller.awaitStep(SignInStep.Method).server!!
+        assertEquals(false, info.passkeysOffered)
+        assertTrue(info.passkeyProblem!!.contains("other.example.com"))
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test
+    fun missingPermissionsAndTheWrongSigningCertificateOfferPairing() = runTest {
+        val controller = controller()
+        serverAnswers(relations = "delegate_permission/common.get_login_creds")
+        controller.onAddressChange(address)
+        controller.onContinue()
+        assertTrue(controller.awaitStep(SignInStep.Method).server!!.passkeyProblem!!.contains("missing a permission"))
+        controller.onBack()
+        serverAnswers(fingerprint = "11".repeat(32))
+        controller.onContinue()
+        val info = controller.awaitStep(SignInStep.Method).server!!
+        assertEquals(false, info.passkeysOffered)
+        assertTrue(info.passkeyProblem!!.contains("different build"))
+    }
 
     @Test
     fun aGoodAddressLeadsToTheWaysToSignIn() = runTest {

@@ -6,7 +6,8 @@
 //! the session starts, so the session is created when the tunnel comes up,
 //! stopped when it goes down and recreated when the interface changes (a
 //! reconnect makes a new `psw0`). While no session runs the engine is
-//! "blocked": it refuses new torrents and answers from its persisted state.
+//! "blocked" while the tunnel is unusable. With a usable tunnel it is ready,
+//! but leaves the peer/DHT session stopped until there is work.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr};
@@ -55,6 +56,7 @@ const UNPROTECTED_RECHECK: Duration = Duration::from_secs(60);
 const START_RETRY: Duration = Duration::from_secs(60);
 const PENDING_FILE: &str = "pending.json";
 const LIMITS_FILE: &str = "limits.json";
+const PEERS_PER_TORRENT: usize = 50;
 /// The last public-address answer while it says the address is not a VPN address, so a
 /// restarted engine (Reconnect, a saved VPN, a container restart) keeps torrents stopped
 /// until a check passes instead of starting them before its first check.
@@ -292,10 +294,13 @@ pub struct Engine {
     pending_ops: tokio::sync::Mutex<()>,
     inner: Mutex<Inner>,
     running_tx: watch::Sender<bool>,
+    seed_tx: watch::Sender<bool>,
     /// The tunnel is up (or no VPN is required): the proxy may forward.
     tunnel_tx: watch::Sender<bool>,
     reload: Notify,
     reload_requested: AtomicBool,
+    #[cfg(test)]
+    offline_sessions: bool,
 }
 
 /// Name of the folder a torrent is downloaded into: the torrent name (without
@@ -456,11 +461,15 @@ impl Engine {
                 reserved_folders: HashSet::new(),
             }),
             running_tx,
+            seed_tx: watch::channel(false).0,
             tunnel_tx,
             reload: Notify::new(),
             reload_requested: AtomicBool::new(false),
+            #[cfg(test)]
+            offline_sessions: false,
         };
         engine.load_saved_state();
+        engine.seed_tx.send_replace(lock(&engine.inner).limits.seed);
         engine
     }
 
@@ -470,7 +479,7 @@ impl Engine {
         self
     }
 
-    /// `true` while the torrent session runs.
+    /// `true` while the engine is ready to accept torrents (also while idle).
     pub fn running(&self) -> watch::Receiver<bool> {
         self.running_tx.subscribe()
     }
@@ -583,7 +592,7 @@ impl Engine {
         };
         if changed {
             if running {
-                tracing::info!("torrents are running");
+                tracing::info!("torrent engine is ready");
             } else {
                 tracing::info!(
                     reason = reason.as_deref().unwrap_or(""),
@@ -631,6 +640,7 @@ impl Engine {
                     let wait_retry = failed_start.is_some_and(|(failed, at)| {
                         failed == ifindex && at.elapsed() < START_RETRY
                     });
+                    let has_work = self.has_session_work().await;
                     if unprotected {
                         if current.is_some() {
                             tracing::warn!(
@@ -639,7 +649,7 @@ impl Engine {
                             self.stop_session().await;
                         }
                         self.block_unprotected();
-                    } else if current != Some(ifindex) && !wait_retry {
+                    } else if current != Some(ifindex) && !wait_retry && has_work {
                         self.stop_session().await;
                         // Starting can take several seconds; a reload or shutdown must not wait for it.
                         let started = tokio::select! {
@@ -660,9 +670,15 @@ impl Engine {
                                 self.set_running(false, Some(start_failure_reason(&detail)));
                             }
                         }
+                    } else if !has_work && !wait_retry {
+                        // Ready to accept work; no DHT or peer listener is needed yet.
+                        self.set_running(true, None);
                     }
                     // Magnets added since the last tick (or left over from a stopped session).
                     self.spawn_resolutions().await;
+                    if !unprotected {
+                        self.stop_idle_session().await;
+                    }
                     let interval = if unprotected {
                         self.ip_check.recheck_unprotected
                     } else {
@@ -711,7 +727,7 @@ impl Engine {
         let ipv4_only = !interface_has_ipv6(bind_device_name.as_deref());
         let listen_port = if fixed_ports { ENGINE_LISTEN_PORT } else { 0 };
         let listen_addr: SocketAddr = (Ipv4Addr::UNSPECIFIED, listen_port).into();
-        SessionOptions {
+        let options = SessionOptions {
             dht: Some(DhtSessionConfig {
                 bootstrap_addrs: None,
                 port: fixed_ports.then_some(ENGINE_DHT_PORT),
@@ -737,11 +753,38 @@ impl Engine {
                 download_bps: kbps_to_bps(limits.down_kbps),
                 upload_bps: kbps_to_bps(limits.up_kbps),
             },
+            peer_limit: Some(PEERS_PER_TORRENT),
             ..Default::default()
-        }
+        };
+        #[cfg(test)]
+        let options = if self.offline_sessions {
+            SessionOptions {
+                dht: None,
+                disable_trackers: true,
+                listen: None,
+                ..options
+            }
+        } else {
+            options
+        };
+        options
     }
 
     async fn start_session(&self, ifindex: Option<u32>) -> anyhow::Result<()> {
+        let _operation = self.pending_ops.lock().await;
+        if self
+            .session
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|live| live.ifindex == ifindex)
+        {
+            return Ok(());
+        }
+        self.start_session_locked(ifindex).await
+    }
+
+    async fn start_session_locked(&self, ifindex: Option<u32>) -> anyhow::Result<()> {
         let mut last_error = None;
         // Fixed ports first (the kill switch opens them on the tunnel); a port
         // still held by the previous session is retried, then any port is used.
@@ -749,6 +792,12 @@ impl Engine {
             let options = self.session_options(ifindex, attempt < 3);
             match Session::new_with_opts(self.downloads_dir.clone(), options).await {
                 Ok(session) => {
+                    let restored = session.with_torrents(|iter| {
+                        iter.map(|(_, handle)| handle.clone()).collect::<Vec<_>>()
+                    });
+                    for handle in restored {
+                        self.watch_completion(&session, handle);
+                    }
                     tracing::info!(interface = ?self.tunnel_if, ifindex = ?ifindex, "torrent session started");
                     *self.session.write().await = Some(Live { session, ifindex });
                     return Ok(());
@@ -765,6 +814,10 @@ impl Engine {
 
     async fn stop_session(&self) {
         let _pending_op = self.pending_ops.lock().await;
+        self.stop_session_locked().await;
+    }
+
+    async fn stop_session_locked(&self) {
         let live = self.session.write().await.take();
         if let Some(live) = live {
             let snapshot: Vec<EngineTorrent> = live
@@ -782,6 +835,54 @@ impl Engine {
             live.session.stop().await;
             tracing::info!("torrent session stopped");
         }
+    }
+
+    async fn has_session_work(&self) -> bool {
+        if !lock(&self.inner).pending.is_empty() {
+            return true;
+        }
+        match self.live_session().await {
+            Some(session) => session.with_torrents(|iter| iter.next().is_some()),
+            None => !self.persisted_torrents().is_empty(),
+        }
+    }
+
+    async fn stop_idle_session(&self) {
+        // The emptiness check and stop share the add/control lock: a just-added
+        // torrent cannot be stopped from an earlier, empty snapshot.
+        let _operation = self.pending_ops.lock().await;
+        if !self.has_session_work().await {
+            self.stop_session_locked().await;
+        }
+    }
+
+    fn watch_completion(&self, session: &Arc<Session>, handle: Arc<ManagedTorrent>) {
+        let session = session.clone();
+        let mut seed = self.seed_tx.subscribe();
+        tokio::spawn(async move {
+            let cancellation = session.cancellation_token();
+            loop {
+                let current = session.get(TorrentIdOrHash::Hash(handle.info_hash()));
+                if !current.is_some_and(|current| Arc::ptr_eq(&current, &handle)) {
+                    return;
+                }
+                let stats = handle.stats();
+                let seed_allowed = *seed.borrow_and_update();
+                if stats.finished
+                    && !seed_allowed
+                    && !handle.is_paused()
+                    && let Err(error) = session.pause(&handle).await
+                {
+                    tracing::warn!(%error, "could not pause a completed torrent; will retry");
+                }
+                tokio::select! {
+                    _ = cancellation.cancelled() => return,
+                    changed = seed.changed() => if changed.is_err() { return; },
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                    _ = handle.wait_until_completed(), if !stats.finished && stats.error.is_none() => {},
+                }
+            }
+        });
     }
 
     async fn live_session(&self) -> Option<Arc<Session>> {
@@ -921,12 +1022,15 @@ impl Engine {
             trackers: (!trackers.is_empty()).then_some(trackers),
             ..Default::default()
         };
-        session
+        let added = session
             .add_torrent(
                 AddTorrent::from_bytes(list.torrent_bytes.clone()),
                 Some(options),
             )
             .await?;
+        if let Some(handle) = added.into_handle() {
+            self.watch_completion(session, handle);
+        }
         Ok(())
     }
 
@@ -1217,8 +1321,27 @@ impl TorrentBackend for Engine {
 
     async fn add(&self, torrent: NewTorrent) -> Result<AddTorrentResponse, BackendError> {
         let _pending_op = self.pending_ops.lock().await;
-        let Some(session) = self.live_session().await else {
-            return Err(BackendError::Blocked(MSG_VPN_WAIT.into()));
+        let session = match self.live_session().await {
+            Some(session) => session,
+            None => {
+                let blocked = {
+                    let inner = lock(&self.inner);
+                    !inner.running || inner.unprotected
+                };
+                if blocked {
+                    return Err(BackendError::Blocked(MSG_VPN_WAIT.into()));
+                }
+                let status = status::read(&self.status_file);
+                let ifindex = self
+                    .decide(status.as_ref(), now_unix())
+                    .map_err(BackendError::Blocked)?;
+                self.start_session_locked(ifindex)
+                    .await
+                    .map_err(|e| BackendError::Internal(format!("{e:#}")))?;
+                self.live_session().await.ok_or_else(|| {
+                    BackendError::Internal("The torrent session did not start.".into())
+                })?
+            }
         };
         match torrent {
             NewTorrent::File(bytes) => {
@@ -1251,7 +1374,14 @@ impl TorrentBackend for Engine {
                     .add_torrent(AddTorrent::from_bytes(bytes), Some(options))
                     .await
                     .map_err(|e| BackendError::Internal(format!("{e:#}")))?;
-                let name = response.into_handle().and_then(|h| h.name()).or(name);
+                let name = response
+                    .into_handle()
+                    .and_then(|h| {
+                        let name = h.name();
+                        self.watch_completion(&session, h);
+                        name
+                    })
+                    .or(name);
                 tracing::info!(id = %id, "torrent added");
                 Ok(AddTorrentResponse {
                     id: id.clone(),
@@ -1418,6 +1548,7 @@ impl TorrentBackend for Engine {
 
     async fn set_limits(&self, limits: LimitsRequest) -> Result<(), BackendError> {
         lock(&self.inner).limits = limits;
+        self.seed_tx.send_replace(limits.seed);
         if let Ok(bytes) = serde_json::to_vec(&limits) {
             let _ = sys::write_atomic(&self.state_dir.join(LIMITS_FILE), &bytes, 0o600);
         }
@@ -1670,6 +1801,132 @@ mod tests {
         engine.stop_session().await;
     }
 
+    #[tokio::test]
+    async fn idle_session_stops_and_the_next_add_starts_it_without_losing_ready_health() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut opts = options(dir.path());
+        opts.allow_no_vpn = true;
+        let mut engine = Engine::new(&opts);
+        engine.offline_sessions = true;
+        engine.set_running(true, None);
+        assert!(engine.live_session().await.is_none());
+        let bytes = b"d4:infod6:lengthi4e4:name11:fixture.bin12:piece lengthi16384e6:pieces20:11111111111111111111ee";
+        let first = engine.add(NewTorrent::File(bytes.to_vec())).await.unwrap();
+        let session = engine.live_session().await.unwrap();
+        assert_eq!(engine.session_options(None, false).peer_limit, Some(50));
+        engine.stop_idle_session().await;
+        assert!(engine.live_session().await.is_some());
+        engine.remove(first.id.clone(), false).await.unwrap();
+        engine.stop_idle_session().await;
+        assert!(engine.live_session().await.is_none());
+        assert!(engine.list().await.is_empty());
+        assert_eq!(engine.health().await.engine.state, EngineRunState::Running);
+        assert!(Engine::new(&opts).list().await.is_empty());
+        let second = engine.add(NewTorrent::File(bytes.to_vec())).await.unwrap();
+        assert_eq!(first.id, second.id);
+        assert!(!Arc::ptr_eq(
+            &session,
+            &engine.live_session().await.unwrap()
+        ));
+        engine.stop_session().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn completed_loopback_download_pauses_unless_seeding_is_allowed() {
+        for seed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let seed_dir = dir.path().join("seed");
+            std::fs::create_dir_all(&seed_dir).unwrap();
+            let file = seed_dir.join("fixture.bin");
+            std::fs::write(&file, vec![7_u8; 64 * 1024]).unwrap();
+            let seeder = Session::new_with_opts(
+                seed_dir,
+                SessionOptions {
+                    dht: None,
+                    disable_trackers: true,
+                    disable_local_service_discovery: true,
+                    ipv4_only: true,
+                    listen: Some(ListenerOptions {
+                        mode: ListenerMode::TcpOnly,
+                        listen_addr: (Ipv4Addr::LOCALHOST, 0).into(),
+                        ipv4_only: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            let bytes = librqbit::create_torrent(
+                &file,
+                librqbit::CreateTorrentOptions {
+                    name: None,
+                    trackers: vec![],
+                    piece_length: Some(16 * 1024),
+                },
+                &librqbit::spawn_utils::BlockingSpawner::new(1),
+            )
+            .await
+            .unwrap()
+            .as_bytes()
+            .unwrap();
+            let seeded = seeder
+                .add_torrent(
+                    AddTorrent::from_bytes(bytes.clone()),
+                    Some(AddTorrentOptions {
+                        overwrite: true,
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .unwrap()
+                .into_handle()
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(10), seeded.wait_until_completed())
+                .await
+                .unwrap()
+                .unwrap();
+            let opts = options(&dir.path().join("engine"));
+            let engine = Engine::new(&opts);
+            engine
+                .set_limits(LimitsRequest {
+                    seed,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            let leecher = offline_session(&opts).await;
+            let handle = leecher
+                .add_torrent(
+                    AddTorrent::from_bytes(bytes),
+                    Some(AddTorrentOptions {
+                        initial_peers: Some(vec![seeder.listen_addr().unwrap()]),
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .unwrap()
+                .into_handle()
+                .unwrap();
+            engine.watch_completion(&leecher, handle.clone());
+            wait_until("the loopback download to finish", async || {
+                handle.stats().finished
+            })
+            .await;
+            if seed {
+                assert!(
+                    !handle.is_paused(),
+                    "seeding remains available when enabled"
+                );
+                engine.set_limits(LimitsRequest::default()).await.unwrap();
+            }
+            wait_until("completion to stop uploading", async || handle.is_paused()).await;
+            assert_eq!(engine_torrent(&handle).up_bps, 0);
+            leecher.stop().await;
+            seeder.stop().await;
+        }
+    }
+
     #[test]
     fn start_failures_explain_missing_ipv6() {
         let detail = "error creating UDP tracker client: error creating UDP socket at [::]:0: error creating socket: Address family not supported by protocol (os error 97)";
@@ -1822,6 +2079,7 @@ mod tests {
             .set_limits(LimitsRequest {
                 down_kbps: 100,
                 up_kbps: 5,
+                seed: false,
             })
             .await
             .unwrap();
@@ -1830,7 +2088,8 @@ mod tests {
             lock(&engine.inner).limits,
             LimitsRequest {
                 down_kbps: 100,
-                up_kbps: 5
+                up_kbps: 5,
+                seed: false,
             }
         );
         assert_eq!(kbps_to_bps(0), None);
@@ -2174,7 +2433,10 @@ mod tests {
             engine.health().await.protected == Some(true)
         })
         .await;
-        assert!(engine.live_session().await.is_some());
+        assert!(
+            engine.live_session().await.is_none(),
+            "ready but idle: no listeners are needed"
+        );
         shutdown.cancel();
         let _ = tokio::time::timeout(Duration::from_secs(10), task).await;
     }

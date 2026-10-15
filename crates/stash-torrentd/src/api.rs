@@ -309,7 +309,7 @@ async fn limits<B: TorrentBackend>(
         return error(
             StatusCode::BAD_REQUEST,
             "bad_request",
-            "Send {\"down_kbps\": n, \"up_kbps\": n}.",
+            "Send {\"down_kbps\": n, \"up_kbps\": n, \"seed\": false}.",
         );
     };
     match state.backend.set_limits(limits).await {
@@ -625,7 +625,8 @@ pub(crate) mod tests {
             *backend.limits.lock().unwrap(),
             Some(LimitsRequest {
                 down_kbps: 500,
-                up_kbps: 0
+                up_kbps: 0,
+                seed: false,
             })
         );
         let (status, _) = call(

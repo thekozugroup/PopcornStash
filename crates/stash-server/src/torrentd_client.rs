@@ -1070,6 +1070,7 @@ mod tests {
             .set_limits(LimitsRequest {
                 down_kbps: 100,
                 up_kbps: 50,
+                seed: false,
             })
             .await
             .unwrap();
@@ -1077,7 +1078,8 @@ mod tests {
             *lock(&fake.limits),
             Some(LimitsRequest {
                 down_kbps: 100,
-                up_kbps: 50
+                up_kbps: 50,
+                seed: false,
             })
         );
         client.reload_vpn().await.unwrap();

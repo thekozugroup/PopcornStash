@@ -68,7 +68,7 @@ The phone then appears in **Settings, Devices** under its model name; removing i
 
 ### Sign in with a passkey
 
-The app can use the passkey you already sign in with on the web, once the server tells Android that the app may. Until then the app offers pairing only and says "Passkeys work in the app once the server lists it."
+The app can use the passkey you already sign in with on the web, once the server tells Android that the app may. The app checks the passkey host, both app-link permissions and its installed signing certificate before offering passkeys. When a check fails, it explains the problem and offers pairing.
 
 1. Find the SHA-256 fingerprint of the certificate your copy of the app is signed with. For a debug build from your own computer:
 
@@ -82,21 +82,33 @@ The app can use the passkey you already sign in with on the web, once the server
    $ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs app-debug.apk | grep SHA-256
    ```
 
-   `cd android && ./gradlew :app:signingReport` prints it for every build type too. For a release key, run the `keytool` line on your `.jks` file with your alias and password. If the app is ever installed from Google Play with Play App Signing, use the "App signing key certificate" fingerprint from the Play Console instead. The fingerprint is 32 bytes in hex; colons between the bytes are fine, and so is no separator at all.
+   `cd android && ./gradlew :app:signingReport` prints it for every build type too. For a release key, run the `keytool` line on your `.jks` file with your alias and password. If the app is ever installed from Google Play with Play App Signing, use the "App signing key certificate" fingerprint from the Play Console instead. Use 32 bytes in uppercase hex, with a colon between every byte (the format printed by `keytool`).
 
 2. Put it in `STASH_ANDROID_ASSETLINKS`, exactly as below with your fingerprint (list both the debug and the release fingerprint if you use both builds). In `.env`, on one line, in single quotes:
 
    ```sh
-   STASH_ANDROID_ASSETLINKS='[{"relation":["delegate_permission/common.get_login_creds"],"target":{"namespace":"android_app","package_name":"com.thekozugroup.popcornstash","sha256_cert_fingerprints":["14:6D:E9:83:C5:73:06:50:D8:EE:B9:95:2F:34:FC:64:16:A0:83:42:E6:1D:BE:A8:8A:04:96:B2:3F:CF:44:E5"]}}]'
+   STASH_ANDROID_ASSETLINKS='[{"relation":["delegate_permission/common.handle_all_urls","delegate_permission/common.get_login_creds"],"target":{"namespace":"android_app","package_name":"com.thekozugroup.popcornstash","sha256_cert_fingerprints":["14:6D:E9:83:C5:73:06:50:D8:EE:B9:95:2F:34:FC:64:16:A0:83:42:E6:1D:BE:A8:8A:04:96:B2:3F:CF:44:E5"]}}]'
    ```
 
    `compose.yaml` passes it to the container. On Unraid, add a variable named `STASH_ANDROID_ASSETLINKS` to the container with the same value (without the single quotes). Then recreate the container (`docker compose up -d`); a restart keeps the old environment.
 
-3. Check that the server serves it: `https://<your server>/.well-known/assetlinks.json` must show the same statement. The server now also accepts the app's passkey origin (`android:apk-key-hash:` of that certificate) for sign-in; nothing else changes for the web.
+3. Check `https://<rp_id>/.well-known/assetlinks.json` on HTTPS port 443, even when the app itself uses another port. The server also accepts the listed certificate's `android:apk-key-hash:` WebAuthn origin; the web's checks stay the same. The app address's host must match `rp_id` from `/api/auth/state`.
+4. Check Google's view, replacing the host and fingerprint (URL-encode the fingerprint):
 
-4. In the app, go back to the address step and continue: it now offers **Sign in with a passkey**. Android shows the passkeys saved for your server (in Google Password Manager or another passkey provider on the phone); pick yours.
+   ```text
+   https://digitalassetlinks.googleapis.com/v1/assetlinks:check?source.web.site=https://<rp_id>&relation=delegate_permission/common.handle_all_urls&target.android_app.package_name=com.thekozugroup.popcornstash&target.android_app.certificate.sha256_fingerprint=<FINGERPRINT>
+   ```
 
-Android checks this file through Google's Digital Asset Links service, so passkeys in the app need an address that is reachable from the internet over https with a publicly trusted certificate (a Cloudflare Tunnel or a reverse proxy with Let's Encrypt works; an address only your home network or Tailscale can reach may not). Pairing works everywhere.
+   Repeat with `delegate_permission/common.get_login_creds`. Both must return `"linked": true`. Google caches fetch failures, so allow about ten minutes after fixing a route.
+
+A private Tailscale address without a public route, home-only DNS, or a certificate trusted only inside your network cannot be verified by Google. Use **Pair with a code** for a private server. The app's local pre-check cannot prove Google's reachability. A provider verification failure explains this and directs the person to pairing. No automatic Google diagnostic request is sent by the app.
+
+Two public alternatives require the owner's approval:
+
+- Expose only the verification file on HTTPS port 443, with Tailscale Funnel or a public proxy, and keep the app private on another HTTPS port. The RP host stays the same, so its existing passkeys remain usable. Bookmarks and paired clients must use the new app port if it changes. A Funnel/file-only arrangement has not been validated here; review its routing before enabling it.
+- Use an owned domain and public HTTPS route. A changed RP host requires a new passkey through `popcornstash admin reset-owner`; choose the domain before migrating clients.
+
+Startup logs report malformed certificates, missing permissions, noncanonical fingerprint formatting and probably private RP hosts. Android logs under `PopcornStash.Passkey` contain exception and DOM class names only; provider messages, account data, assertions and challenges are excluded. The app distinguishes cancellation, no credential, verification failure, screen-lock refusal, interruption and an unavailable passkey service. Native sign-in starts and expired unfinished requests are logged by the server; native is inferred from missing Origin/Referer headers, and expiry is reported on the next flow sweep.
 
 ## Updates
 

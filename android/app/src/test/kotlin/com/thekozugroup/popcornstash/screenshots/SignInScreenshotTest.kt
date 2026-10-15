@@ -91,6 +91,21 @@ class SignInScreenshotTest {
     )
 
     @Test
+    fun verificationProblemLight() = verificationProblem(false, "signin-verification-light")
+
+    @Test
+    fun verificationProblemDark() = verificationProblem(true, "signin-verification-dark")
+
+    private fun verificationProblem(dark: Boolean, name: String) = methodPage(
+        SignInUiState(step = SignInStep.Method, server = server.copy(
+            passkeysOffered = false,
+            passkeyProblem = "The server lists a different build of this app. Ask its owner to add this build's signing certificate, or pair with a code.",
+        )),
+        dark,
+        name,
+    )
+
+    @Test
     fun passkeyFailedDark() = methodPage(
         SignInUiState(
             step = SignInStep.Method,

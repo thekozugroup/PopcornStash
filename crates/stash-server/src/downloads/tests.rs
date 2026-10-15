@@ -492,6 +492,7 @@ struct EngineInner {
     torrents: Vec<EngineTorrent>,
     added: Vec<AddTorrentRequest>,
     removed: Vec<(String, bool)>,
+    remove_failures: u32,
     limits: Vec<LimitsRequest>,
     next: u32,
 }
@@ -699,9 +700,15 @@ async fn engine_remove(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let mut inner = s.inner.lock().unwrap();
+    inner
+        .removed
+        .push((id.clone(), q.delete_files.unwrap_or(false)));
+    if inner.remove_failures > 0 {
+        inner.remove_failures -= 1;
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
     let before = inner.torrents.len();
     inner.torrents.retain(|t| t.id != id);
-    inner.removed.push((id, q.delete_files.unwrap_or(false)));
     if inner.torrents.len() == before {
         StatusCode::NOT_FOUND
     } else {
@@ -1466,6 +1473,98 @@ async fn magnet_completes_into_completed_and_leaves_the_engine() {
             Some(d.id.clone())
         )]
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_completion_files_pause_on_remove_failure_then_remove_before_failing() {
+    for invalid_path in [false, true] {
+        let env = env(Opts {
+            engine: true,
+            ..Default::default()
+        })
+        .await;
+        let d = env.add(MAGNET).await;
+        let row = env.row(&d.id).await;
+        let engine_id = row.engine_id.clone().unwrap();
+        let folder = env.in_progress().join("Big Buck Bunny");
+        std::fs::remove_dir_all(&folder).unwrap();
+        env.engine().finish(&engine_id, 0);
+        if invalid_path {
+            env.engine().with(|e| {
+                e.torrents[0].output_dir =
+                    Some("/stash/Downloads/In Progress/unexpected/nested".into())
+            });
+        }
+        env.engine().with(|e| e.remove_failures = 1);
+        let torrent = env.engine().with(|e| e.torrents[0].clone());
+        super::torrents::apply(&env.manager, &row, &torrent)
+            .await
+            .unwrap();
+        assert_ne!(env.row(&d.id).await.state, DownloadState::Failed);
+        assert_eq!(
+            env.engine().with(|e| e.torrents[0].state),
+            EngineTorrentState::Paused
+        );
+        let torrent = env.engine().with(|e| e.torrents[0].clone());
+        let retry = env.row(&d.id).await;
+        if retry.state == DownloadState::Completed {
+            assert!(super::torrents::finish_completed(&env.manager, &retry).await);
+        } else {
+            super::torrents::apply(&env.manager, &retry, &torrent)
+                .await
+                .unwrap();
+        }
+        assert_eq!(env.row(&d.id).await.state, DownloadState::Failed);
+        assert!(env.engine().with(|e| e.torrents.is_empty()));
+        assert_eq!(
+            env.engine().with(|e| e.removed.clone()),
+            vec![(engine_id.clone(), false), (engine_id, false)]
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn seeding_time_limit_and_disabling_seeding_finish_even_paused_torrents() {
+    for by_time in [true, false] {
+        let env = env(Opts {
+            engine: true,
+            start: true,
+            ..Default::default()
+        })
+        .await;
+        env.settings.update(serde_json::json!({"torrent":{"seed_after_complete":true,"seed_ratio":100.0,"seed_hours":1}})).await.unwrap();
+        let d = env.add(MAGNET).await;
+        let engine_id = env.row(&d.id).await.engine_id.unwrap();
+        env.engine().finish(&engine_id, 0);
+        wait_until!(
+            "the seeding row",
+            env.row(&d.id).await.state == DownloadState::Seeding
+        );
+        if by_time {
+            sqlx::query("UPDATE downloads SET completed_at = ? WHERE id = ?")
+                .bind(stash_core::now() - 3601)
+                .bind(&d.id)
+                .execute(&env.db)
+                .await
+                .unwrap();
+        } else {
+            env.engine()
+                .with(|e| e.torrents[0].state = EngineTorrentState::Paused);
+            env.settings
+                .update(serde_json::json!({"torrent":{"seed_after_complete":false}}))
+                .await
+                .unwrap();
+        }
+        wait_until!(
+            "the completed torrent to be sorting",
+            env.row(&d.id).await.state == DownloadState::Sorting
+        );
+        assert!(env.engine().with(|e| e.torrents.is_empty()));
+        assert_eq!(
+            env.engine().with(|e| e.removed.clone()),
+            vec![(engine_id, false)]
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -43,11 +43,11 @@ class AdaptiveNavigationTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
     private val tokens = ToolbarTokens()
 
-    private fun show(direction: LayoutDirection = LayoutDirection.Ltr) {
+    private fun show(direction: LayoutDirection = LayoutDirection.Ltr, reduceMotion: Boolean = true) {
         compose.setContent {
             CompositionLocalProvider(LocalLayoutDirection provides direction) {
-                PopcornTheme(darkTheme = false, reduceMotion = true) {
-                    AppShell { page -> Box(Modifier.fillMaxSize().testTag("content")) { Text(page.tab.label) } }
+                PopcornTheme(darkTheme = false, reduceMotion = reduceMotion) {
+                    AppShell { page -> Box(Modifier.fillMaxSize().testTag("content ${page.tab.name}")) { Text(page.tab.label) } }
                 }
             }
         }
@@ -81,6 +81,22 @@ class AdaptiveNavigationTest {
         assertEquals(item.left, indicator.left, .5f)
     }
 
+    @Test fun bottomPagesFollowTheTappedSideInRtl() {
+        show(LayoutDirection.Rtl, reduceMotion = false)
+        val origin = compose.onNodeWithTag("content Home").getUnclippedBoundsInRoot().rect()
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("tab Settings").performClick()
+        repeat(6) { compose.mainClock.advanceTimeByFrame(); compose.waitForIdle() }
+        val entering = compose.onNodeWithTag("content Settings").getUnclippedBoundsInRoot().rect()
+        val leaving = compose.onNodeWithTag("content Home").getUnclippedBoundsInRoot().rect()
+        assertTrue("Settings enters from its square on the left", entering.left < origin.left - 1f)
+        assertTrue("Home leaves to the right", leaving.left > origin.left + 1f)
+        assertEquals(origin.top, entering.top, .5f)
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        assertEquals(origin.left, compose.onNodeWithTag("content Settings").getUnclippedBoundsInRoot().rect().left, .5f)
+    }
+
     @Test @Config(qualifiers = "w891dp-h411dp-land-xxhdpi")
     fun landscapePhoneKeepsBottomNavigation() { show(); assertBottom() }
 
@@ -91,7 +107,7 @@ class AdaptiveNavigationTest {
     fun unfoldedDisplayUsesRightRailAndReservesContentSpace() {
         show()
         val bar = compose.onNodeWithTag("toolbar").getUnclippedBoundsInRoot().rect()
-        val content = compose.onNodeWithTag("content").getUnclippedBoundsInRoot().rect()
+        val content = compose.onNodeWithTag("content Home").getUnclippedBoundsInRoot().rect()
         assertEquals(tokens.thickness.value, bar.width, .5f)
         assertEquals(tokens.length(3).value, bar.height, .5f)
         assertTrue(content.right <= bar.left - tokens.margin.value)

@@ -60,12 +60,21 @@ pub(crate) enum Flow {
     /// Discoverable sign-in.
     Login {
         auth: Box<DiscoverableAuthentication>,
+        native: bool,
     },
 }
 
 struct PendingFlow {
     created: Instant,
     flow: Flow,
+}
+
+fn log_expired_native(flow: &Flow) {
+    if matches!(flow, Flow::Login { native: true, .. }) {
+        tracing::info!(
+            "native passkey sign-in expired without finishing; Android may have refused it on the device"
+        );
+    }
 }
 
 /// Relying party plus short-lived ceremony state keyed by flow id (5 minute TTL).
@@ -110,7 +119,18 @@ fn build_webauthn(config: &Config) -> Option<Webauthn> {
         builder = builder.append_allowed_origin(extra);
     }
     if let Some(assetlinks) = &config.android_assetlinks {
-        for app in android_origins(assetlinks) {
+        let links = inspect_android_links(assetlinks);
+        for problem in &links.problems {
+            tracing::warn!(problem, "Android passkey configuration");
+        }
+        if probably_private_rp(&rp_id) {
+            tracing::warn!(
+                rp_id,
+                "Android passkeys need the RP host's HTTPS assetlinks.json to be reachable by Google; this name is probably private. Pairing still works."
+            );
+        }
+        for app in links.origins {
+            tracing::info!(origin = %app, "accepting Android passkey origin");
             builder = builder.append_allowed_origin(&app);
         }
     }
@@ -131,17 +151,37 @@ pub const ANDROID_PACKAGE: &str = "com.thekozugroup.popcornstash";
 /// certificate>` for each `sha256_cert_fingerprints` entry of a statement that grants
 /// [`ANDROID_PACKAGE`] `delegate_permission/common.get_login_creds`. Anything else in the
 /// file, and fingerprints that are not 32 hex bytes, are ignored.
+#[derive(Debug, Default)]
+pub struct AndroidLinks {
+    pub origins: Vec<Url>,
+    pub problems: Vec<String>,
+}
+
 pub fn android_origins(assetlinks: &str) -> Vec<Url> {
+    inspect_android_links(assetlinks).origins
+}
+
+pub fn probably_private_rp(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    !host.contains('.')
+        || host.parse::<std::net::IpAddr>().is_ok()
+        || [".ts.net", ".lan", ".local", ".home.arpa", ".localhost"]
+            .iter()
+            .any(|suffix| host.ends_with(suffix))
+}
+
+pub fn inspect_android_links(assetlinks: &str) -> AndroidLinks {
+    let mut result = AndroidLinks::default();
     let Ok(serde_json::Value::Array(statements)) =
         serde_json::from_str::<serde_json::Value>(assetlinks)
     else {
-        tracing::warn!(
+        result.problems.push(
             "STASH_ANDROID_ASSETLINKS is not a JSON list; the Android app cannot use passkeys"
+                .into(),
         );
-        return Vec::new();
+        return result;
     };
-    let mut origins = Vec::new();
-    for statement in &statements {
+    for (index, statement) in statements.iter().enumerate() {
         let grants = statement["relation"].as_array().is_some_and(|r| {
             r.iter()
                 .any(|v| v == "delegate_permission/common.get_login_creds")
@@ -153,29 +193,67 @@ pub fn android_origins(assetlinks: &str) -> Vec<Url> {
         {
             continue;
         }
+        if !statement["relation"].as_array().is_some_and(|r| {
+            r.iter()
+                .any(|v| v == "delegate_permission/common.handle_all_urls")
+        }) {
+            result.problems.push(format!(
+                "statement {} is missing delegate_permission/common.handle_all_urls",
+                index + 1
+            ));
+        }
+        if target["sha256_cert_fingerprints"]
+            .as_array()
+            .is_none_or(Vec::is_empty)
+        {
+            result.problems.push(format!(
+                "statement {} has no signing fingerprints",
+                index + 1
+            ));
+        }
         for fingerprint in target["sha256_cert_fingerprints"]
             .as_array()
             .into_iter()
             .flatten()
         {
             let Some(text) = fingerprint.as_str() else {
+                result.problems.push(format!(
+                    "statement {} skipped a fingerprint that is not text",
+                    index + 1
+                ));
                 continue;
             };
             let Ok(bytes) = hex::decode(text.replace(':', "")) else {
+                result.problems.push(format!(
+                    "statement {} skipped a non-hex fingerprint",
+                    index + 1
+                ));
                 continue;
             };
             if bytes.len() != 32 {
+                result.problems.push(format!(
+                    "statement {} skipped a fingerprint that is not 32 bytes",
+                    index + 1
+                ));
                 continue;
+            }
+            let canonical = bytes
+                .iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect::<Vec<_>>()
+                .join(":");
+            if text != canonical {
+                result.problems.push(format!("statement {} needs uppercase, colon-separated SHA-256 fingerprints for Android verification", index + 1));
             }
             let hash = URL_SAFE_NO_PAD.encode(bytes);
             if let Ok(url) = Url::parse(&format!("android:apk-key-hash:{hash}"))
-                && !origins.contains(&url)
+                && !result.origins.contains(&url)
             {
-                origins.push(url);
+                result.origins.push(url);
             }
         }
     }
-    origins
+    result
 }
 
 impl PasskeyState {
@@ -206,7 +284,7 @@ impl PasskeyState {
     pub(crate) fn begin(&self, flow: Flow) -> ApiResult<String> {
         self.sweep_if_due();
         if self.flows.len() >= self.max_flows {
-            self.flows.retain(|_, p| p.created.elapsed() <= FLOW_TTL);
+            self.remove_expired();
             if self.flows.len() >= self.max_flows {
                 tracing::warn!(
                     in_flight = self.flows.len(),
@@ -234,6 +312,7 @@ impl PasskeyState {
         let expired = || ApiError::bad_request("This passkey request expired. Start again.");
         let (_, pending) = self.flows.remove(flow_id).ok_or_else(expired)?;
         if pending.created.elapsed() > FLOW_TTL {
+            log_expired_native(&pending.flow);
             return Err(expired());
         }
         Ok(pending.flow)
@@ -253,7 +332,17 @@ impl PasskeyState {
         }
         *last = Instant::now();
         drop(last);
-        self.flows.retain(|_, p| p.created.elapsed() <= FLOW_TTL);
+        self.remove_expired();
+    }
+
+    fn remove_expired(&self) {
+        self.flows.retain(|_, p| {
+            let fresh = p.created.elapsed() <= FLOW_TTL;
+            if !fresh {
+                log_expired_native(&p.flow);
+            }
+            fresh
+        });
     }
 
     /// Start registering a discoverable, user-verified passkey.
@@ -500,6 +589,62 @@ mod tests {
     }
 
     #[test]
+    fn android_configuration_reports_problems_without_changing_valid_origins() {
+        let fingerprint = "DB:19:CF:5F:75:DB:CD:2C:BE:11:11:5E:67:51:B5:BC:B8:DD:19:FE:F7:F2:9C:89:E3:63:BE:D9:9E:87:9A:C0";
+        let statement = |fingerprint: &str| {
+            serde_json::json!([{
+                "relation": ["delegate_permission/common.get_login_creds"],
+                "target": {"namespace": "android_app", "package_name": ANDROID_PACKAGE,
+                    "sha256_cert_fingerprints": [fingerprint, "not hex", "AB:CD", 7]}
+            }])
+            .to_string()
+        };
+        let report = inspect_android_links(&statement(fingerprint));
+        assert_eq!(
+            report.origins[0].as_str(),
+            "android:apk-key-hash:2xnPX3XbzSy-ERFeZ1G1vLjdGf738pyJ42O-2Z6HmsA"
+        );
+        assert_eq!(report.problems.len(), 4);
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|p| p.contains("handle_all_urls"))
+        );
+        assert!(report.problems.iter().any(|p| p.contains("non-hex")));
+        assert!(report.problems.iter().any(|p| p.contains("not 32 bytes")));
+        assert!(report.problems.iter().any(|p| p.contains("not text")));
+        for alternate in [fingerprint.to_lowercase(), fingerprint.replace(':', "")] {
+            let report = inspect_android_links(&statement(&alternate));
+            assert_eq!(report.origins.len(), 1);
+            assert!(
+                report
+                    .problems
+                    .iter()
+                    .any(|p| p.contains("uppercase, colon-separated"))
+            );
+        }
+    }
+
+    #[test]
+    fn private_rp_names_get_a_reachability_warning() {
+        for host in [
+            "atlas.ts.net",
+            "ATLAS.LOCAL",
+            "nas.lan",
+            "nas.home.arpa",
+            "nas",
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        ] {
+            assert!(probably_private_rp(host), "{host}");
+        }
+        assert!(!probably_private_rp("stash.example.com"));
+        assert!(!probably_private_rp("local.example.com"));
+    }
+
+    #[test]
     fn the_android_app_is_an_allowed_origin_once_listed() {
         let mut c = config(Some("https://stash.example.com"));
         assert_eq!(allowed_origins(&PasskeyState::new(&c).unwrap()).len(), 1);
@@ -533,6 +678,7 @@ mod tests {
         let id = state
             .begin(Flow::Login {
                 auth: Box::new(auth),
+                native: false,
             })
             .unwrap();
         assert_eq!(id.len(), 22);
@@ -550,6 +696,7 @@ mod tests {
             let (_, auth) = state.start_login(false).unwrap();
             state.begin(Flow::Login {
                 auth: Box::new(auth),
+                native: false,
             })
         };
         let first = login(&state).unwrap();

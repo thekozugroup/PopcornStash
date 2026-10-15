@@ -39,17 +39,17 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
     suspend fun authState(): AuthState = get("/api/auth/state", AuthState.serializer())
 
     /**
-     * Whether the server's `/.well-known/assetlinks.json` lets this app use its passkeys
-     * (`delegate_permission/common.get_login_creds` for [packageName]). False when it
-     * answers anything else.
+     * Why the RP host's verification file does not permit this signed app, or null
+     * when its package, both permissions and a signing certificate match. The caller
+     * chooses the RP host address; this local fetch cannot prove Google reachability.
      */
-    suspend fun listsAppForPasskeys(packageName: String): Boolean {
+    suspend fun appPasskeyProblem(packageName: String, signingFingerprints: Set<String>): String? {
         val body = try {
             send(request("/.well-known/assetlinks.json").get().build(), allowEmpty = true)
         } catch (_: ApiException) {
-            return false
+            return "The server's app verification file could not be opened. Pair with a code instead."
         }
-        return assetLinksAllow(body, packageName)
+        return assetLinksProblem(body, packageName, signingFingerprints)
     }
 
     suspend fun requestPairing(clientName: String): PairingStarted =
@@ -339,17 +339,36 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
 }
 
 /**
- * Whether an assetlinks.json body has a statement that lets [packageName] use the site's
- * sign-in credentials (`delegate_permission/common.get_login_creds`).
+ * Validate the app-link statement for [packageName] and the installed signing certificates.
+ * Null means the local statement matches; a sentence explains why pairing is needed otherwise.
  */
-fun assetLinksAllow(body: String, packageName: String): Boolean {
-    val statements = runCatching { StashJson.parseToJsonElement(body).jsonArray }.getOrNull() ?: return false
-    return statements.any { statement ->
-        val obj = statement as? JsonObject ?: return@any false
-        val relations = (obj["relation"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.content }.orEmpty()
-        val target = obj["target"] as? JsonObject ?: return@any false
-        "delegate_permission/common.get_login_creds" in relations &&
-            (target["namespace"] as? JsonPrimitive)?.content == "android_app" &&
-            (target["package_name"] as? JsonPrimitive)?.content == packageName
+fun assetLinksProblem(body: String, packageName: String, signingFingerprints: Set<String>): String? {
+    val statements = runCatching { StashJson.parseToJsonElement(body).jsonArray }.getOrNull()
+        ?: return "The server's app verification file could not be read. Pair with a code instead."
+    val targets = statements.mapNotNull { statement ->
+        val obj = statement as? JsonObject ?: return@mapNotNull null
+        val target = obj["target"] as? JsonObject ?: return@mapNotNull null
+        if ((target["namespace"] as? JsonPrimitive)?.content != "android_app" ||
+            (target["package_name"] as? JsonPrimitive)?.content != packageName
+        ) return@mapNotNull null
+        obj
     }
+    if (targets.isEmpty()) return "The server has not enabled passkeys for this app. Pair with a code instead."
+    val grants = targets.filter { obj ->
+        val relations = (obj["relation"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.content }.orEmpty()
+        "delegate_permission/common.get_login_creds" in relations && "delegate_permission/common.handle_all_urls" in relations
+    }
+    if (grants.isEmpty()) return "The server's app verification file is missing a permission. Pair with a code instead."
+    val own = signingFingerprints.mapNotNull(::certificateHex).toSet()
+    if (own.isEmpty()) return "This app's signing certificate could not be checked. Pair with a code instead."
+    val matches = grants.any { obj ->
+        val target = obj["target"] as JsonObject
+        (target["sha256_cert_fingerprints"] as? JsonArray).orEmpty().any {
+            (it as? JsonPrimitive)?.content?.let(::certificateHex) in own
+        }
+    }
+    return if (matches) null else "The server lists a different build of this app. Ask its owner to add this build's signing certificate, or pair with a code."
 }
+
+private fun certificateHex(value: String): String? = value.replace(":", "").lowercase()
+    .takeIf { it.length == 64 && it.all { char -> char in '0'..'9' || char in 'a'..'f' } }

@@ -539,6 +539,7 @@ async fn push_limits(manager: &DownloadManager, poller: &mut Poller) {
     let limits = LimitsRequest {
         down_kbps: settings.down_limit_kbps,
         up_kbps: settings.up_limit_kbps,
+        seed: settings.seed_after_complete,
     };
     if poller.pushed_limits == Some(limits) {
         return;
@@ -757,7 +758,7 @@ async fn note_waiting(manager: &DownloadManager, row: &DownloadRow, message: &st
 }
 
 /// Mirror one engine torrent into its row; finish it when the seeding policy allows.
-async fn apply(
+pub(super) async fn apply(
     manager: &DownloadManager,
     row: &DownloadRow,
     torrent: &EngineTorrent,
@@ -907,6 +908,11 @@ async fn finish(
         .torrent_content(torrent, name)
         .and_then(|content| manager.layout.rel(&content))
     else {
+        // Keep this row active until the engine has let go. A failed DELETE must
+        // never strand a seeder outside the poller's active rows.
+        if !remove_finished(manager, row).await {
+            return Ok(());
+        }
         manager.fail(&row.id, MSG_FILES_MISSING).await;
         return Ok(());
     };
@@ -953,14 +959,8 @@ pub(crate) async fn finish_completed(manager: &DownloadManager, row: &DownloadRo
     else {
         return true;
     };
-    if let Some(engine_id) = row.engine_id.as_deref() {
-        match manager.torrentd.remove(engine_id, false).await {
-            Ok(()) | Err(TorrentdError::Api { status: 404, .. }) => {}
-            Err(e) => {
-                tracing::warn!(error = %e, download = %row.id, "could not remove a finished torrent from the engine");
-                return false;
-            }
-        }
+    if !remove_finished(manager, row).await {
+        return false;
     }
     // Only a real file or folder strictly inside In Progress is moved, never a link.
     let content = manager.layout.abs(rel).ok().filter(|p| {
@@ -1017,6 +1017,23 @@ pub(crate) async fn finish_completed(manager: &DownloadManager, row: &DownloadRo
             .await;
             if noted.is_ok_and(|r| r.rows_affected() > 0) {
                 let _ = manager.publish_id(&row.id).await;
+            }
+            false
+        }
+    }
+}
+
+/// Stop uploading even when removal fails, and leave the row eligible for retry.
+async fn remove_finished(manager: &DownloadManager, row: &DownloadRow) -> bool {
+    let Some(engine_id) = row.engine_id.as_deref() else {
+        return true;
+    };
+    match manager.torrentd.remove(engine_id, false).await {
+        Ok(()) | Err(TorrentdError::Api { status: 404, .. }) => true,
+        Err(e) => {
+            tracing::warn!(error = %e, download = %row.id, "could not remove a finished torrent; pausing and retrying");
+            if let Err(error) = manager.torrentd.pause(engine_id).await {
+                tracing::warn!(%error, download = %row.id, "could not pause the finished torrent");
             }
             false
         }

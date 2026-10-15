@@ -145,7 +145,7 @@ fun AppShell(
             CompositionLocalProvider(LocalToolbarRequests provides toolbarRequests) {
                 AnimatedContent(
                     targetState = current,
-                    transitionSpec = { tabTransition(initialState, targetState, reduceMotion, vertical) },
+                    transitionSpec = { tabTransition(initialState, targetState, reduceMotion, vertical, layoutDirection) },
                     label = "tab pages",
                     modifier = Modifier.fillMaxSize().glassSource(backdrop),
                 ) { tab ->

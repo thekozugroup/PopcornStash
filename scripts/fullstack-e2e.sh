@@ -309,6 +309,8 @@ seed_state_is() { seed_torrent | jq -e --arg s "$1" '.state == $s' >/dev/null; }
 note "starting the seeder"
 start_seeder
 eventually 30 seeder_running >/dev/null || die "the seeder's engine did not start: $(logs_of "$SEEDER" | tail -n 3 | tr '\n' ' ')"
+printf '{"down_kbps":0,"up_kbps":%s,"seed":true}' "$SEED_KIBPS" | seed_api PUT /limits >/dev/null ||
+  die "could not enable the fixture seeder"
 # The engine never reuses an existing folder for a new torrent (it would pick
 # "Name (2)"), so the seeder is primed in three steps: add the torrent (librqbit
 # makes the empty folder and file), stop, put the film in place and drop
@@ -323,7 +325,7 @@ docker run --rm --user 0:0 --network none --entrypoint /bin/sh -v "$WORK:/work" 
   sh "$FILM" "$RELEASE" "$INFO_HASH" || die "could not put the film in the seeder's folder"
 docker start "$SEEDER" >/dev/null
 check "the seeder re-checks the film and seeds it" eventually 60 seed_state_is seeding
-printf '{"down_kbps":0,"up_kbps":%s}' "$SEED_KIBPS" | seed_api PUT /limits >/dev/null ||
+printf '{"down_kbps":0,"up_kbps":%s,"seed":true}' "$SEED_KIBPS" | seed_api PUT /limits >/dev/null ||
   die "the seeder refused its upload limit"
 seeder_announced() {
   jq -e --arg ip "$SEEDER_IP" --arg h "$INFO_HASH" 'select(.ip == $ip and .info_hash == $h and .left == 0)' \

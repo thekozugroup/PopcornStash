@@ -18,6 +18,7 @@ import {
   announces,
   docker,
   engineHealth,
+  engineGet,
   ownedBy,
   ownersUnder,
   saveEvidence,
@@ -176,6 +177,8 @@ test('a magnet pasted on Downloads comes in through the VPN and is sorted into M
   await expect(done).toContainText('In Movies', {timeout: 180_000});
   await expect(done.getByRole('link', {name: 'Movies', exact: true})).toBeVisible();
   await expect(inProgress.getByRole('listitem').filter({hasText: stack.torrentName})).toHaveCount(0);
+  await expect.poll(() => engineGet<{info_hash: string}[]>('/torrents')
+    .some(torrent => torrent.info_hash === stack.infoHash)).toBe(false);
   await shoot('downloads-finished-1440-light.png');
 });
 

@@ -195,7 +195,7 @@ fun SignInMethodPage(
             else -> {
                 Heading("How to sign in")
                 Spacer(Modifier.height(Popcorn.spacing.xs))
-                Sentence("Passkeys work in the app once the server lists it. Pair with a code instead.")
+                Sentence(server.passkeyProblem ?: "Passkeys work in the app once the server lists it. Pair with a code instead.")
                 Spacer(Modifier.height(Popcorn.spacing.l))
                 PrimaryButton("Pair with a code", onClick = onPair, modifier = Modifier.fillMaxWidth())
             }

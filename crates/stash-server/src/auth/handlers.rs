@@ -394,6 +394,7 @@ pub struct LoginFinish {
 pub async fn login_start(
     State(state): State<AppState>,
     ip: ClientIp,
+    headers: HeaderMap,
     body: Bytes,
 ) -> ApiResult<Json<FlowStarted>> {
     state.rate_limiter.check(&ip.key("auth"))?;
@@ -412,9 +413,12 @@ pub async fn login_start(
         ));
     }
     let (options, auth) = pk.start_login(body.conditional)?;
+    let native = !headers.contains_key("origin") && !headers.contains_key("referer");
     let flow_id = pk.begin(Flow::Login {
         auth: Box::new(auth),
+        native,
     })?;
+    tracing::info!(native, "passkey sign-in started");
     Ok(Json(FlowStarted { flow_id, options }))
 }
 
@@ -429,7 +433,7 @@ pub async fn login_finish(
 ) -> ApiResult<Response> {
     state.rate_limiter.check(&ip.key("auth"))?;
     let pk = &state.auth.inner;
-    let Flow::Login { auth } = pk.take(&body.flow_id)? else {
+    let Flow::Login { auth, .. } = pk.take(&body.flow_id)? else {
         return Err(wrong_flow());
     };
     let (handle, _cred_id) = match pk.identify(&body.credential) {

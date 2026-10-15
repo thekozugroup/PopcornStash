@@ -67,6 +67,7 @@ pub fn limits(settings: &Settings) -> LimitsRequest {
     LimitsRequest {
         down_kbps: settings.torrent.down_limit_kbps,
         up_kbps: settings.torrent.up_limit_kbps,
+        seed: settings.torrent.seed_after_complete,
     }
 }
 
@@ -181,6 +182,7 @@ mod tests {
         assert_eq!(body["auto_sort"], true);
         assert_eq!(body["http_via_vpn"], "when_available");
         assert_eq!(body["torrent"]["seed_ratio"], 1.0);
+        assert_eq!(body["torrent"]["seed_after_complete"], false);
 
         let (code, body) = call(
             &app,
@@ -328,7 +330,8 @@ mod tests {
             *received.lock().unwrap(),
             Some(LimitsRequest {
                 down_kbps: 800,
-                up_kbps: 100
+                up_kbps: 100,
+                seed: false,
             })
         );
     }

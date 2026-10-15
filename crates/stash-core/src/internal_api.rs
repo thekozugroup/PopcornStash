@@ -197,6 +197,9 @@ pub const MIN_SPEED_LIMIT_KBPS: u64 = 16;
 pub struct LimitsRequest {
     pub down_kbps: u64,
     pub up_kbps: u64,
+    /// Permit uploading after completion. Older callers and saved limits default off.
+    #[serde(default)]
+    pub seed: bool,
 }
 
 /// One request line on the supervisor's adopt socket.

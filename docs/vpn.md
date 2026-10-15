@@ -71,6 +71,8 @@ Any provider with OpenVPN files works the same way through the **OpenVPN file** 
 
 When the VPN is not connected, new torrents are added and wait with the message **Waiting for the VPN to connect**. While torrents are stopped because the public address is not a VPN address, they wait with **Blocked: VPN not protecting** instead. Torrents beyond the **Torrents at once** setting (on the same page) wait with **Waiting for a free slot**.
 
+Seeding after completion is off by default. Finished torrents pause at once and are removed before sorting. Torrents still upload while downloading; the Upload limit goes down to 16 KiB/s. With no torrents left, the peer and DHT session closes; the VPN remains connected. The first magnet after an idle period may take a little longer to fetch its details.
+
 You can also check from the server. These commands should show the kill switch table and the routing rules for the engine user:
 
 ```sh

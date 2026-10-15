@@ -138,6 +138,7 @@ class AppContainer(context: Context) {
         deviceName = deviceName,
         packageName = app.packageName,
         allowLocalHttp = BuildConfig.DEBUG,
+        signingFingerprints = apks.installedSigners(),
     )
 }
 

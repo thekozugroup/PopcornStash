@@ -165,7 +165,7 @@ export function TorrentSettings({isPrimary, isNoVpn = false}: TorrentSettingsPro
             <div {...stylex.props(styles.pair)}>
               <NumberInput
                 label="Seed ratio"
-                description="Uploaded divided by downloaded."
+                description="Uploaded divided by the torrent’s size."
                 value={draft.seed_ratio}
                 onChange={value => set('seed_ratio', value)}
                 min={0}
