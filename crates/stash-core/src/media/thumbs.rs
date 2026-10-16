@@ -56,6 +56,21 @@ fn publish_updated(media: &MediaService, item_id: &str) {
     });
 }
 
+/// Call under the shared library/publication lock before installing generated media.
+async fn current_version(media: &MediaService, item: &ItemRow) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM items WHERE id = ? AND rel_path = ? AND size = ?
+         AND mtime = ? AND quick_hash IS ? AND status NOT IN ('missing', 'trashed'))",
+    )
+    .bind(&item.id)
+    .bind(&item.rel_path)
+    .bind(item.size)
+    .bind(item.mtime)
+    .bind(&item.quick_hash)
+    .fetch_one(&media.db)
+    .await?)
+}
+
 /// What the probe job learned about a file.
 #[derive(Debug, Default, Clone, PartialEq)]
 struct ProbeResult {
@@ -221,11 +236,11 @@ pub async fn process_item(media: &MediaService, item_id: &str, dating: Dating) -
         return Ok(());
     }
     let (taken_at, taken_local, taken_offset) = CaptureTime::columns(taken.as_ref());
-    sqlx::query(
+    let updated = sqlx::query(
         "UPDATE items SET mime = ?, duration_s = ?, width = ?, height = ?, media_json = ?,
                 camera = ?, taken_at = ?, taken_local = ?, taken_offset = ?, suggestion_json = ?,
                 updated_at = ?
-         WHERE id = ?",
+         WHERE id = ? AND rel_path = ? AND size = ? AND mtime = ? AND quick_hash IS ?",
     )
     .bind(&result.mime)
     .bind(result.duration_s)
@@ -239,9 +254,16 @@ pub async fn process_item(media: &MediaService, item_id: &str, dating: Dating) -
     .bind(&suggestion)
     .bind(now())
     .bind(item_id)
+    .bind(&item.rel_path)
+    .bind(item.size)
+    .bind(item.mtime)
+    .bind(&item.quick_hash)
     .execute(&media.db)
     .await?;
-    publish_updated(media, item_id);
+    // A slow probe of the old encoding must not overwrite its replacement.
+    if updated.rows_affected() > 0 {
+        publish_updated(media, item_id);
+    }
     Ok(())
 }
 
@@ -253,23 +275,24 @@ pub async fn thumbnail_item(media: &MediaService, item_id: &str) -> Result<()> {
     let Some(abs) = existing_file(media, &item, "thumb").await? else {
         return Ok(());
     };
-    let lg = media.thumb_path(item_id, ThumbSize::Lg);
-    let sm = media.thumb_path(item_id, ThumbSize::Sm);
-    if let Some(dir) = lg.parent() {
+    let final_lg = media.thumb_path(item_id, ThumbSize::Lg);
+    let lg = TempOutput::next_to(&final_lg);
+    let sm = TempOutput::next_to(&media.thumb_path(item_id, ThumbSize::Sm));
+    if let Some(dir) = final_lg.parent() {
         tokio::fs::create_dir_all(dir).await?;
     }
 
     let outcome = match item.kind {
-        MediaKind::Video => video_thumbs(&abs, &item, &lg, &sm)
+        MediaKind::Video => video_thumbs(&abs, &item, lg.path(), sm.path())
             .await
             .map(|()| ThumbState::Ready),
         MediaKind::Photo => {
-            let made = photo_thumbs(&abs, &lg, &sm).await;
+            let made = photo_thumbs(&abs, lg.path(), sm.path()).await;
             if made.is_ok() && needs_rendition(&abs) {
                 // Prepare the browser copy now so opening the photo is instant. A failure
                 // here is not a thumbnail failure; the view request will try again.
                 let prepared = match tokio::fs::metadata(&abs).await {
-                    Ok(source) => ensure_rendition(media, item_id, &abs, &source)
+                    Ok(source) => ensure_rendition(media, &item, &abs, &source)
                         .await
                         .map(|_| ()),
                     Err(err) => Err(err.into()),
@@ -280,7 +303,7 @@ pub async fn thumbnail_item(media: &MediaService, item_id: &str) -> Result<()> {
             }
             made.map(|()| ThumbState::Ready)
         }
-        MediaKind::Audio => audio_thumbs(&abs, &lg, &sm).await,
+        MediaKind::Audio => audio_thumbs(&abs, lg.path(), sm.path()).await,
         MediaKind::Other => Ok(ThumbState::None),
     };
     let (state, error) = match outcome {
@@ -290,23 +313,46 @@ pub async fn thumbnail_item(media: &MediaService, item_id: &str) -> Result<()> {
             (ThumbState::Failed, Some(err))
         }
     };
-    if state != ThumbState::Ready {
+    if !publish_thumbnails(media, &item, &lg, &sm, state).await? {
+        // A replacement or move won the race. Drop only this job's private outputs.
+        return Ok(());
+    }
+    match error {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
+async fn publish_thumbnails(
+    media: &MediaService,
+    item: &ItemRow,
+    lg: &TempOutput,
+    sm: &TempOutput,
+    state: ThumbState,
+) -> Result<bool> {
+    let _publication = media.publication.lock().await;
+    if !current_version(media, item).await? {
+        return Ok(false);
+    }
+    let final_lg = media.thumb_path(&item.id, ThumbSize::Lg);
+    let final_sm = media.thumb_path(&item.id, ThumbSize::Sm);
+    if state == ThumbState::Ready {
+        tokio::fs::rename(lg.path(), &final_lg).await?;
+        tokio::fs::rename(sm.path(), &final_sm).await?;
+    } else {
         // Never leave an old image behind for a file that now has none.
-        let _ = tokio::fs::remove_file(&lg).await;
-        let _ = tokio::fs::remove_file(&sm).await;
+        let _ = tokio::fs::remove_file(&final_lg).await;
+        let _ = tokio::fs::remove_file(&final_sm).await;
     }
 
     sqlx::query("UPDATE items SET thumb_state = ?, updated_at = ? WHERE id = ?")
         .bind(state.as_str())
         .bind(now())
-        .bind(item_id)
+        .bind(&item.id)
         .execute(&media.db)
         .await?;
-    publish_updated(media, item_id);
-    match error {
-        Some(err) => Err(err),
-        None => Ok(()),
-    }
+    publish_updated(media, &item.id);
+    Ok(true)
 }
 
 pub async fn photo_view(media: &MediaService, item: &ItemRow) -> Result<PathBuf> {
@@ -320,7 +366,7 @@ pub async fn photo_view(media: &MediaService, item: &ItemRow) -> Result<PathBuf>
     if !needs_rendition(&abs) {
         return Ok(abs);
     }
-    ensure_rendition(media, &item.id, &abs, &source).await
+    ensure_rendition(media, item, &abs, &source).await
 }
 
 /// HEIC, RAW and TIFF photos need a browser-friendly copy; the rest are shown as they are.
@@ -346,10 +392,11 @@ async fn fresh_rendition(rendition: &Path, source: &std::fs::Metadata) -> bool {
 /// The photo's rendition, made now unless a fresh one is cached.
 async fn ensure_rendition(
     media: &MediaService,
-    item_id: &str,
+    item: &ItemRow,
     abs: &Path,
     source: &std::fs::Metadata,
 ) -> Result<PathBuf> {
+    let item_id = &item.id;
     let rendition = media.rendition_path(item_id);
     if fresh_rendition(&rendition, source).await {
         return Ok(rendition);
@@ -365,8 +412,9 @@ async fn ensure_rendition(
     if let Some(dir) = rendition.parent() {
         tokio::fs::create_dir_all(dir).await?;
     }
+    let staged = TempOutput::next_to(&rendition);
     let made = if tools::has_vips().await {
-        vips_resize(abs, &rendition, RENDITION_EDGE, RENDITION_QUALITY).await
+        vips_resize(abs, staged.path(), RENDITION_EDGE, RENDITION_QUALITY).await
     } else {
         Err(CoreError::external(
             "vipsthumbnail is not installed on this server.",
@@ -380,11 +428,25 @@ async fn ensure_rendition(
             None,
             &filters::fit_box(RENDITION_EDGE),
             RENDITION_QUALITY,
-            &rendition,
+            staged.path(),
         )
         .await
         .map_err(|_| CoreError::external("This photo could not be converted for the browser."))?;
     }
+    publish_rendition(media, item, &staged).await
+}
+
+async fn publish_rendition(
+    media: &MediaService,
+    item: &ItemRow,
+    staged: &TempOutput,
+) -> Result<PathBuf> {
+    let _publication = media.publication.lock().await;
+    if !current_version(media, item).await? {
+        return Err(CoreError::NotFound);
+    }
+    let rendition = media.rendition_path(&item.id);
+    tokio::fs::rename(staged.path(), &rendition).await?;
     Ok(rendition)
 }
 
@@ -884,6 +946,69 @@ mod tests {
 
     async fn row(media: &MediaService, id: &str) -> ItemRow {
         load_item(media, id).await.unwrap().unwrap()
+    }
+
+    #[tokio::test]
+    async fn stale_image_jobs_cannot_replace_or_remove_a_replacements_images() {
+        let h = harness().await;
+        let id = insert_item(
+            &h.media,
+            "Movies/Film.mp4",
+            MediaKind::Video,
+            Category::Movie,
+        )
+        .await;
+        let old = row(&h.media, &id).await;
+        let lg = h.media.thumb_path(&id, ThumbSize::Lg);
+        let sm = h.media.thumb_path(&id, ThumbSize::Sm);
+        let rendition = h.media.rendition_path(&id);
+        std::fs::create_dir_all(lg.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(rendition.parent().unwrap()).unwrap();
+        let old_lg = TempOutput::next_to(&lg);
+        let old_sm = TempOutput::next_to(&sm);
+        let old_rendition = TempOutput::next_to(&rendition);
+        for path in [old_lg.path(), old_sm.path(), old_rendition.path()] {
+            std::fs::write(path, b"old image").unwrap();
+        }
+        // The scanner invalidated the old file and a newer job already published.
+        sqlx::query(
+            "UPDATE items SET quick_hash = 'replacement', thumb_state = 'ready' WHERE id = ?",
+        )
+        .bind(&id)
+        .execute(&h.media.db)
+        .await
+        .unwrap();
+        for path in [&lg, &sm, &rendition] {
+            std::fs::write(path, b"fresh image").unwrap();
+        }
+        let mut events = h.media.events.subscribe();
+        for state in [ThumbState::Ready, ThumbState::Failed, ThumbState::None] {
+            assert!(
+                !publish_thumbnails(&h.media, &old, &old_lg, &old_sm, state)
+                    .await
+                    .unwrap()
+            );
+        }
+        assert!(matches!(
+            publish_rendition(&h.media, &old, &old_rendition).await,
+            Err(CoreError::NotFound)
+        ));
+        for path in [&lg, &sm, &rendition] {
+            assert_eq!(std::fs::read(path).unwrap(), b"fresh image");
+        }
+        assert_eq!(row(&h.media, &id).await.thumb_state, ThumbState::Ready);
+        assert!(events.try_recv().is_err(), "stale work publishes no event");
+        let current = row(&h.media, &id).await;
+        assert!(
+            publish_thumbnails(&h.media, &current, &old_lg, &old_sm, ThumbState::Ready)
+                .await
+                .unwrap()
+        );
+        publish_rendition(&h.media, &current, &old_rendition)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(lg).unwrap(), b"old image");
+        assert_eq!(std::fs::read(rendition).unwrap(), b"old image");
     }
 
     fn ffmpeg(args: &[&str], out: &Path) {

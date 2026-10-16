@@ -1,5 +1,6 @@
 package com.thekozugroup.popcornstash.feature.downloads
 
+import com.thekozugroup.popcornstash.data.api.TorrentFileKind
 import com.thekozugroup.popcornstash.data.api.ApiClient
 import com.thekozugroup.popcornstash.data.api.ApiException
 import com.thekozugroup.popcornstash.data.api.Download
@@ -57,6 +58,7 @@ data class AddLinkState(
     val text: String = "",
     /** The field was filled from the clipboard when the sheet opened. */
     val fromClipboard: Boolean = false,
+    val fileTypes: List<TorrentFileKind> = TorrentFileKind.Default,
     val error: String? = null,
     val busy: Boolean = false,
     val libraryId: String? = null,
@@ -269,6 +271,11 @@ class DownloadsController(
 
     fun onAddLibrary(id: String?) = local.update { l -> l.copy(add = l.add?.takeIf { !it.busy }?.copy(libraryId = id, error = null) ?: l.add) }
 
+    fun onAddFileType(kind: TorrentFileKind) = local.update { l ->
+        val add = l.add ?: return@update l
+        if (add.busy) l else l.copy(add = add.copy(fileTypes = if (kind in add.fileTypes) add.fileTypes - kind else add.fileTypes + kind))
+    }
+
     fun onAddText(text: String) = local.update { l -> l.copy(add = l.add?.copy(text = text, fromClipboard = false, error = null)) }
 
     fun closeAdd() = local.update { if (it.add?.busy == true) it else it.copy(add = null) }
@@ -290,7 +297,7 @@ class DownloadsController(
         local.update { it.copy(add = add.copy(busy = true, error = null)) }
         scope.launch {
             try {
-                val download = api.addDownload(link.url, libraryId = add.libraryId)
+                val download = api.addDownload(link.url, libraryId = add.libraryId, fileTypes = add.fileTypes.takeIf { link.kind != LinkKind.Http })
                 data.apply(StashEvent.DownloadChanged(download))
                 local.update { it.copy(add = null) }
                 _messages.trySend("Added ${download.name}.")

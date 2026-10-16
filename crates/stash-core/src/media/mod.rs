@@ -52,6 +52,9 @@ pub struct MediaService {
     pub settings: SettingsStore,
     pub layout: Arc<StashLayout>,
     pub events: EventBus,
+    /// Shared with the library move lock: file-version checks and cache publication
+    /// must be atomic with replacement invalidation, without locking conversions.
+    pub(crate) publication: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl MediaService {
@@ -68,6 +71,7 @@ impl MediaService {
             settings,
             layout,
             events,
+            publication: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 

@@ -2908,3 +2908,216 @@ mod libraries {
         assert!(!h.exists(rel));
     }
 }
+
+#[tokio::test]
+async fn transcoded_video_with_a_new_container_keeps_identity_and_user_metadata() {
+    let h = harness().await;
+    let original = "Movies/Heat/Heat.mp4";
+    h.write(original, b"original h264 file");
+    let item = h.lib.index_path(original).await.unwrap().unwrap();
+    sqlx::query("UPDATE items SET favorite = 1, title = 'My title', source_download_id = 'synthetic-download', media_json = '{\"codec\":\"h264\"}', mime = 'video/mp4', duration_s = 100, width = 1920, height = 1080 WHERE id = ?")
+        .bind(&item.id).execute(&h.lib.db).await.unwrap();
+    sqlx::query("INSERT INTO users (id, display_name, role, webauthn_id, created_at) VALUES ('watcher-owner', 'Owner', 'owner', 'watcher-key', 0)")
+        .execute(&h.lib.db).await.unwrap();
+    sqlx::query("INSERT INTO item_progress (user_id, item_id, position_s, duration_s, updated_at) VALUES ('watcher-owner', ?, 42, 100, 0)")
+        .bind(&item.id).execute(&h.lib.db).await.unwrap();
+    let thumb = h
+        .lib
+        .media
+        .thumb_path(&item.id, crate::media::ThumbSize::Lg);
+    std::fs::create_dir_all(thumb.parent().unwrap()).unwrap();
+    std::fs::write(&thumb, b"old thumbnail").unwrap();
+    std::fs::remove_file(h.root.join(original)).unwrap();
+    h.write("Movies/Heat/Heat.mkv", b"smaller AV1");
+    // The create/rename notification is allowed to arrive before the old delete.
+    let replaced = h
+        .lib
+        .index_path("Movies/Heat/Heat.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(replaced.id, item.id);
+    assert_eq!(replaced.title, "My title");
+    assert!(replaced.favorite);
+    assert_eq!(
+        replaced.source_download_id.as_deref(),
+        Some("synthetic-download")
+    );
+    assert_eq!(replaced.size, 11);
+    let progress: f64 =
+        sqlx::query_scalar("SELECT position_s FROM item_progress WHERE item_id = ?")
+            .bind(&item.id)
+            .fetch_one(&h.lib.db)
+            .await
+            .unwrap();
+    assert_eq!(progress, 42.0);
+    assert!(replaced.media_json.is_none());
+    assert!(replaced.mime.is_none());
+    assert!(!thumb.exists());
+    assert_eq!(replaced.thumb_state, crate::models::ThumbState::Pending);
+    let report = h.lib.rescan().await.unwrap();
+    assert_eq!((report.added, report.missing), (0, 0));
+}
+
+#[tokio::test]
+async fn container_variants_and_ambiguous_replacements_stay_separate() {
+    let h = harness().await;
+    h.write("Movies/Heat.mp4", b"original");
+    let original = h.lib.index_path("Movies/Heat.mp4").await.unwrap().unwrap();
+    h.write("Movies/Heat.mkv", b"alternate encoding");
+    let alternate = h.lib.index_path("Movies/Heat.mkv").await.unwrap().unwrap();
+    assert_ne!(original.id, alternate.id, "both editions still exist");
+    std::fs::remove_file(h.root.join("Movies/Heat.mp4")).unwrap();
+    std::fs::remove_file(h.root.join("Movies/Heat.mkv")).unwrap();
+    h.write("Movies/Heat.webm", b"a third encoding");
+    let third = h.lib.index_path("Movies/Heat.webm").await.unwrap().unwrap();
+    assert_ne!(third.id, original.id);
+    assert_ne!(
+        third.id, alternate.id,
+        "do not guess which edition was replaced"
+    );
+}
+
+#[tokio::test]
+async fn external_folder_moves_are_matched_before_the_delete_event() {
+    let h = harness().await;
+    h.write("Movies/old/Heat.mkv", b"video content");
+    let original = h
+        .lib
+        .index_path("Movies/old/Heat.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    std::fs::rename(h.root.join("Movies/old"), h.root.join("Movies/new")).unwrap();
+    let moved = h
+        .lib
+        .index_path("Movies/new/Heat.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(moved.id, original.id);
+    assert_eq!(h.lib.rescan().await.unwrap().added, 0);
+}
+
+#[tokio::test]
+async fn same_size_same_second_replacements_refresh_on_watch_event() {
+    let h = harness().await;
+    let path = h.write("Movies/Heat.mkv", b"old codec");
+    let original = h.lib.index_path("Movies/Heat.mkv").await.unwrap().unwrap();
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::fs::write(&path, b"AV1 codec").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    let replaced = h.lib.index_path("Movies/Heat.mkv").await.unwrap().unwrap();
+    assert_eq!(replaced.id, original.id);
+    assert_ne!(replaced.quick_hash, original.quick_hash);
+}
+
+#[tokio::test]
+async fn av1_replacement_is_reprobed_and_playback_uses_the_new_codec() {
+    use crate::media::playback::{ClientCaps, PlaybackMode, decide};
+    if !ffmpeg_available() {
+        eprintln!("skipping AV1 test: ffmpeg/ffprobe unavailable");
+        return;
+    }
+    let h = harness().await;
+    let rel = "Movies/AV1 test.mp4";
+    make_phone_clip(&h.root.join(rel));
+    let item = h.lib.index_path(rel).await.unwrap().unwrap();
+    h.lib.media.process_item(&item.id).await.unwrap();
+    assert_eq!(
+        h.item(&item.id).await.media().unwrap().video.unwrap().codec,
+        "h264"
+    );
+    let encoded = h._dir.path().join("encoded.mp4");
+    let encoders = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .unwrap();
+    let encoders = String::from_utf8_lossy(&encoders.stdout);
+    let encoder_options: &[&str] = if encoders.contains("libaom-av1") {
+        &[
+            "-c:v",
+            "libaom-av1",
+            "-cpu-used",
+            "8",
+            "-crf",
+            "40",
+            "-b:v",
+            "0",
+        ]
+    } else if encoders.contains("libsvtav1") {
+        &[
+            "-c:v",
+            "libsvtav1",
+            "-preset",
+            "12",
+            "-crf",
+            "40",
+            "-svtav1-params",
+            "lp=1",
+        ]
+    } else {
+        panic!("AV1 verification needs libaom-av1 or libsvtav1 in ffmpeg");
+    };
+    let result = std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=128x128:r=5:d=1",
+            "-an",
+            "-pix_fmt",
+            "yuv420p",
+        ])
+        .args(encoder_options)
+        .arg(&encoded)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "AV1 encoding failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    std::fs::rename(&encoded, h.root.join(rel)).unwrap();
+    let changed = h.lib.index_path(rel).await.unwrap().unwrap();
+    assert_eq!(changed.id, item.id);
+    assert!(changed.media_json.is_none());
+    h.lib.media.process_item(&changed.id).await.unwrap();
+    let has_webp = encoders
+        .lines()
+        .any(|line| line.split_whitespace().nth(1) == Some("libwebp"));
+    if has_webp {
+        h.lib.media.thumbnail_item(&changed.id).await.unwrap();
+    } else {
+        eprintln!("AV1 probe/playback verified; thumbnail check needs ffmpeg's libwebp encoder");
+    }
+    let updated = h.item(&changed.id).await;
+    let summary = updated.media().unwrap();
+    assert_eq!(summary.video.as_ref().unwrap().codec, "av1");
+    if has_webp {
+        assert_eq!(updated.thumb_state, crate::models::ThumbState::Ready);
+    }
+    assert_eq!(
+        decide(
+            &summary,
+            "mp4",
+            &ClientCaps {
+                video_codecs: vec!["av1".into()],
+                ..Default::default()
+            }
+        ),
+        PlaybackMode::Direct
+    );
+    assert!(matches!(
+        decide(&summary, "mp4", &ClientCaps::default()),
+        PlaybackMode::Hls { .. }
+    ));
+}

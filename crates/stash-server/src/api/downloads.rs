@@ -89,6 +89,7 @@ pub fn routes() -> Router<AppState> {
             post(add_torrent).layer(DefaultBodyLimit::max(MAX_TORRENT_FILE + 1024 * 1024)),
         )
         .route("/api/downloads/{id}", axum::routing::delete(remove))
+        .route("/api/downloads/{id}/files", get(files).put(select_files))
         .route("/api/downloads/{id}/pause", post(pause))
         .route("/api/downloads/{id}/resume", post(resume))
 }
@@ -179,9 +180,24 @@ async fn add_torrent(
     let unreadable = || ApiError::bad_request("The upload could not be read. Try again.");
     let mut file = None;
     let mut library_id = None;
+    let mut file_types = None;
     while let Some(mut field) = multipart.next_field().await.map_err(|_| unreadable())? {
         let is_file = field.name() == Some("file");
         let is_library = field.name() == Some("library_id");
+        if field.name() == Some("file_types") {
+            if file_types.is_some() {
+                return Err(ApiError::bad_request("Send file types once."));
+            }
+            let bytes = field.bytes().await.map_err(|_| unreadable())?;
+            if bytes.len() > 256 {
+                return Err(ApiError::bad_request("Choose valid file types."));
+            }
+            file_types = Some(
+                serde_json::from_slice::<Vec<stash_core::internal_api::TorrentFileKind>>(&bytes)
+                    .map_err(|_| ApiError::bad_request("Choose valid file types."))?,
+            );
+            continue;
+        }
         if !is_file && !is_library {
             continue;
         }
@@ -215,7 +231,13 @@ async fn add_torrent(
     Ok(Json(
         state
             .downloads
-            .add_torrent_file_to(&user.user_id, bytes, filename, library_id.as_deref())
+            .add_torrent_file_selected(
+                &user.user_id,
+                bytes,
+                filename,
+                library_id.as_deref(),
+                file_types,
+            )
             .await?,
     ))
 }
@@ -235,6 +257,34 @@ async fn as_seen(state: &AppState, user: &AuthUser, id: &str) -> ApiResult<Downl
     crate::live::visible_download(&state.db, &access, id)
         .await?
         .ok_or_else(|| ApiError::not_found("That download no longer exists."))
+}
+
+async fn files(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> ApiResult<Json<stash_core::internal_api::TorrentFiles>> {
+    user.require(Scope::Full)?;
+    require_visible(&state, &user, &id).await?;
+    Ok(Json(state.downloads.torrent_files(&id).await?))
+}
+
+async fn select_files(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    ApiJson(selection): ApiJson<stash_core::internal_api::SelectTorrentFiles>,
+) -> ApiResult<StatusCode> {
+    user.require(Scope::Full)?;
+    require_visible(&state, &user, &id).await?;
+    if selection.indices.is_empty() || selection.indices.len() > 100_000 {
+        return Err(ApiError::bad_request("Select at least one file."));
+    }
+    state
+        .downloads
+        .select_torrent_files(&id, selection.indices)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn pause(

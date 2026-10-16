@@ -16,7 +16,7 @@ object OpenTab {
     fun intent(context: Context, tab: Tab): Intent =
         Intent(context, MainActivity::class.java)
             .putExtra(EXTRA_OPEN_TAB, tab.name)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            .addFlags(Intent.FLAG_ACTIVITY_NO_USER_ACTION or Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
 
     /** The tab an intent asks for, if any. */
     fun from(intent: Intent?): Tab? =

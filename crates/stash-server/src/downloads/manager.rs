@@ -103,6 +103,8 @@ impl ForwardedHeaders {
 /// `POST /api/downloads`.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AddDownloadRequest {
+    #[serde(default)]
+    pub file_types: Option<Vec<stash_core::internal_api::TorrentFileKind>>,
     pub library_id: Option<String>,
     pub url: String,
     pub filename: Option<String>,
@@ -358,6 +360,11 @@ impl DownloadManager {
             let magnet = Magnet::parse(raw)
                 .ok_or_else(|| ApiError::bad_request("That magnet link is not valid."))?;
             let add = stash_core::internal_api::AddTorrentRequest {
+                file_types: Some(
+                    request
+                        .file_types
+                        .unwrap_or_else(stash_core::internal_api::TorrentFileKind::media_default),
+                ),
                 magnet: Some(raw.to_string()),
                 torrent_base64: None,
             };
@@ -397,7 +404,13 @@ impl DownloadManager {
                 .await?;
             let filename = source::name_from_url(&url);
             return self
-                .add_torrent_file_to(user_id, bytes, filename, request.library_id.as_deref())
+                .add_torrent_file_selected(
+                    user_id,
+                    bytes,
+                    filename,
+                    request.library_id.as_deref(),
+                    request.file_types,
+                )
                 .await;
         }
 
@@ -486,6 +499,18 @@ impl DownloadManager {
         filename: Option<String>,
         library_id: Option<&str>,
     ) -> ApiResult<Download> {
+        self.add_torrent_file_selected(user_id, bytes, filename, library_id, None)
+            .await
+    }
+
+    pub async fn add_torrent_file_selected(
+        &self,
+        user_id: &str,
+        bytes: Vec<u8>,
+        filename: Option<String>,
+        library_id: Option<&str>,
+        file_types: Option<Vec<stash_core::internal_api::TorrentFileKind>>,
+    ) -> ApiResult<Download> {
         self.validate_destination(user_id, library_id).await?;
         self.require_torrents()?;
         if bytes.len() > MAX_TORRENT_FILE {
@@ -511,6 +536,9 @@ impl DownloadManager {
         let source = filename.unwrap_or_else(|| "upload.torrent".to_string());
         use base64::Engine as _;
         let add = stash_core::internal_api::AddTorrentRequest {
+            file_types: Some(
+                file_types.unwrap_or_else(stash_core::internal_api::TorrentFileKind::media_default),
+            ),
             magnet: None,
             torrent_base64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
         };
@@ -637,6 +665,49 @@ impl DownloadManager {
         let row = self.load_row(id).await?;
         let items = self.item_ids(id).await?;
         Ok(row.to_download(items))
+    }
+
+    pub async fn torrent_files(
+        &self,
+        id: &str,
+    ) -> ApiResult<stash_core::internal_api::TorrentFiles> {
+        let row = self.load_row(id).await?;
+        if row.kind != DownloadKind::Torrent {
+            return Err(ApiError::bad_request(
+                "Only torrents have a file selection.",
+            ));
+        }
+        let Some(engine_id) = row.engine_id else {
+            return Ok(Default::default());
+        };
+        self.torrentd
+            .files(&engine_id)
+            .await
+            .map_err(|e| engine_error(&e))
+    }
+
+    pub async fn select_torrent_files(&self, id: &str, indices: Vec<usize>) -> ApiResult<()> {
+        let _slots = self.torrent_slots.lock().await;
+        let row = self.load_row(id).await?;
+        if row.kind != DownloadKind::Torrent
+            || !matches!(
+                row.state,
+                DownloadState::Downloading | DownloadState::Paused | DownloadState::Seeding
+            )
+        {
+            return Err(ApiError::conflict(
+                "Files can only be chosen for an active torrent.",
+            ));
+        }
+        let engine_id = row
+            .engine_id
+            .ok_or_else(|| ApiError::conflict("Wait for the torrent's file list."))?;
+        self.torrentd
+            .select_files(&engine_id, indices)
+            .await
+            .map_err(|e| engine_error(&e))?;
+        self.torrent_wake.notify_one();
+        Ok(())
     }
 
     pub async fn pause(&self, id: &str) -> ApiResult<Download> {
@@ -1272,6 +1343,7 @@ mod tests {
         let shown = format!("{headers:?}");
         assert!(!shown.contains("SECRET"));
         let request = AddDownloadRequest {
+            file_types: None,
             library_id: None,
             url: "https://example.com/a.mkv?token=SECRET".into(),
             filename: None,

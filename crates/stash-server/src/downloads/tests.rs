@@ -235,6 +235,7 @@ impl Env {
             .add_url(
                 &self.owner.user_id,
                 AddDownloadRequest {
+                    file_types: None,
                     library_id: None,
                     url: url.into(),
                     filename: None,
@@ -520,6 +521,7 @@ impl FakeEngine {
         let router = Router::new()
             .route("/health", get(engine_health))
             .route("/torrents", get(engine_list).post(engine_add))
+            .route("/torrents/{id}/files", get(engine_files))
             .route("/torrents/{id}", axum::routing::delete(engine_remove))
             .route("/torrents/{id}/{action}", post(engine_action))
             .route("/limits", put(engine_limits))
@@ -624,6 +626,31 @@ async fn engine_list(State(s): State<EngineShared>, headers: HeaderMap) -> Respo
         return StatusCode::UNAUTHORIZED.into_response();
     }
     Json(s.inner.lock().unwrap().torrents.clone()).into_response()
+}
+
+async fn engine_files(
+    State(s): State<EngineShared>,
+    headers: HeaderMap,
+    AxPath(id): AxPath<String>,
+) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let inner = s.inner.lock().unwrap();
+    let Some(torrent) = inner.torrents.iter().find(|torrent| torrent.id == id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    Json(stash_core::internal_api::TorrentFiles {
+        ready: true,
+        files: vec![stash_core::internal_api::TorrentFile {
+            index: 0,
+            path: format!("{}.mkv", torrent.name.as_deref().unwrap_or("Fake Torrent")),
+            size: torrent.total_bytes.unwrap_or(1000),
+            kind: stash_core::internal_api::TorrentFileKind::Video,
+            selected: true,
+        }],
+    })
+    .into_response()
 }
 
 async fn engine_add(
@@ -978,6 +1005,7 @@ async fn chosen_filename_wins() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_types: None,
                 library_id: None,
                 url: files.url("/named"),
                 filename: Some("../Holiday.mp4".into()),
@@ -1015,6 +1043,7 @@ async fn ssrf_guard_refuses_local_destinations() {
             .add_url(
                 &env.owner.user_id,
                 AddDownloadRequest {
+                    file_types: None,
                     library_id: None,
                     url: url.clone(),
                     filename: None,
@@ -1044,6 +1073,7 @@ async fn ssrf_guard_refuses_local_destinations() {
             .add_url(
                 &env.owner.user_id,
                 AddDownloadRequest {
+                    file_types: None,
                     library_id: None,
                     url: bad.into(),
                     filename: None,
@@ -1141,6 +1171,7 @@ async fn forwarded_headers_reach_the_server_but_are_never_stored() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_types: None,
                 library_id: None,
                 url: files.url("/query.bin?id=7&token=SECRETTOKEN"),
                 filename: None,
@@ -1395,6 +1426,7 @@ async fn torrents_disabled_answer_vpn_unavailable() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_types: None,
                 library_id: None,
                 url: MAGNET.into(),
                 filename: None,
@@ -1479,6 +1511,40 @@ async fn magnet_completes_into_completed_and_leaves_the_engine() {
             Some(d.id.clone())
         )]
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn checked_initialization_and_empty_selection_never_finish_a_download() {
+    for (state, total, done) in [
+        (EngineTorrentState::Initializing, Some(100), 100),
+        (EngineTorrentState::Paused, None, 0),
+        (EngineTorrentState::Seeding, None, 0),
+    ] {
+        let env = env(Opts {
+            engine: true,
+            ..Default::default()
+        })
+        .await;
+        let d = env.add(MAGNET).await;
+        let row = env.row(&d.id).await;
+        let torrent = env.engine().with(|e| {
+            let torrent = &mut e.torrents[0];
+            torrent.state = state;
+            torrent.total_bytes = total;
+            torrent.done_bytes = done;
+            torrent.progress = 1.0;
+            torrent.clone()
+        });
+        super::torrents::apply(&env.manager, &row, &torrent)
+            .await
+            .unwrap();
+        assert!(env.engine().with(|e| e.removed.is_empty()));
+        assert!(env.sort_jobs().await.is_empty());
+        assert!(matches!(
+            env.row(&d.id).await.state,
+            DownloadState::Downloading | DownloadState::Paused
+        ));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1994,6 +2060,7 @@ async fn torrent_files_are_validated_and_added() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_types: None,
                 library_id: None,
                 url: files.url("/fake.torrent"),
                 filename: None,
@@ -2600,6 +2667,7 @@ async fn private_link_is_not_fetched_without_its_secret_after_a_restart() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_types: None,
                 library_id: None,
                 url: files.url("/query.bin?id=7&token=SECRETTOKEN"),
                 filename: None,
@@ -2631,6 +2699,7 @@ async fn private_link_is_not_fetched_without_its_secret_after_a_restart() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_types: None,
                 library_id: None,
                 url: d.source.clone(),
                 filename: None,
@@ -3002,6 +3071,7 @@ async fn a_stalled_torrent_link_gives_up() {
         env.manager.add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_types: None,
                 library_id: None,
                 url: files.url("/stall.torrent"),
                 filename: None,
@@ -3138,6 +3208,7 @@ async fn forwarded_cookies_never_follow_a_redirect_to_another_host() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_types: None,
                 library_id: None,
                 url: "http://127.0.0.1/start.bin".into(),
                 filename: None,
@@ -3166,6 +3237,7 @@ async fn forwarded_cookies_never_follow_a_redirect_to_another_host() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_types: None,
                 library_id: None,
                 url: "http://127.0.0.1/start.torrent".into(),
                 filename: None,

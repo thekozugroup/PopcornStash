@@ -32,4 +32,5 @@ Taste + Impeccable, built from Astryx components. Same world as Popcorn SR: rest
 - Other files (music, documents) are private: each file is seen by the person who added it and the owners. Folders on the share that are not a library are seen by owners only, until an owner makes them a library.
 - No online metadata scraping by default: nothing about the library leaves the server.
 - The Android app asks GitHub once a day whether a newer build of the app is out, unless that is turned off in Settings, This app. It sends only the app's name and version, and downloads the update from GitHub when the person taps Update; apart from that the app talks only to your own server. The server does not update itself: the owner updates the container.
+- The Android app requires the phone's secure screen-lock credential to open and after backgrounding; private previews are hidden and videos pause when leaving the app. Server passkeys remain required.
 - The Android app has three tabs (Downloads, Home, Settings); library management is native, the other admin areas open the web settings for now.

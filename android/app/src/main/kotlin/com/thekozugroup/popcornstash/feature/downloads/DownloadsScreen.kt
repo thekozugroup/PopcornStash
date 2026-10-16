@@ -56,6 +56,7 @@ class DownloadsActions(
     val onShowMoreFinished: () -> Unit = {},
     val onStopUpload: (String) -> Unit = {},
     val onOpenAdd: () -> Unit = {},
+    val onAddFileType: (com.thekozugroup.popcornstash.data.api.TorrentFileKind) -> Unit = {},
     val onAddLibrary: (String?) -> Unit = {},
     val onAddText: (String) -> Unit = {},
     val onSubmitAdd: () -> Unit = {},
@@ -214,7 +215,7 @@ fun DownloadsPage(
 
     state.add?.let { add ->
         DownloadsSheet(onDismiss = actions.onCloseAdd, tag = "add link sheet") {
-            AddLinkContent(add, viaVpn = !state.noVpnMode, onText = actions.onAddText, onAdd = actions.onSubmitAdd, onCancel = actions.onCloseAdd, libraries = state.destinationLibraries, onLibrary = actions.onAddLibrary)
+            AddLinkContent(add, viaVpn = !state.noVpnMode, onText = actions.onAddText, onAdd = actions.onSubmitAdd, onCancel = actions.onCloseAdd, libraries = state.destinationLibraries, onLibrary = actions.onAddLibrary, onFileType = actions.onAddFileType)
         }
     }
     val editing = state.editing

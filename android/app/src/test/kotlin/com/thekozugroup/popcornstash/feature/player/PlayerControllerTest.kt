@@ -473,6 +473,26 @@ class PlayerControllerTest {
     }
 
     @Test
+    fun delayedPlaybackDoesNotStartWhileTheAppIsLocked() = runTest {
+        val api = FakePlayerApi(PlayerItems.episodeOne)
+        val gate = CompletableDeferred<Unit>()
+        api.answers += api.held(gate, api.hls())
+        val player = player(api)
+        player.open(PlayerRequest("i-lantern-1"))
+        runCurrent()
+        player.onBackground()
+        gate.complete(Unit)
+        runCurrent()
+        assertFalse(engine.loads.single().third)
+        assertFalse(engine.playWhenReady)
+        player.play()
+        assertFalse(engine.playWhenReady)
+        player.onForeground()
+        player.play()
+        assertTrue(engine.playWhenReady)
+    }
+
+    @Test
     fun goingToTheBackgroundPausesAndSaves() = runTest {
         val api = FakePlayerApi(PlayerItems.episodeOne)
         val player = player(api)

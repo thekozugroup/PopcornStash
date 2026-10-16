@@ -3,8 +3,7 @@ package com.thekozugroup.popcornstash
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
+import com.thekozugroup.popcornstash.privacy.PrivateActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.background
@@ -57,7 +56,7 @@ import com.thekozugroup.popcornstash.update.AppUpdates
 import kotlinx.coroutines.launch
 import java.io.File
 
-class MainActivity : ComponentActivity() {
+class MainActivity : PrivateActivity() {
     /** A tab asked for by a notification or the share sheet ([OpenTab]), until the shell shows it. */
     private var requestedTab by mutableStateOf<Tab?>(null)
 
@@ -66,7 +65,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) requestedTab = OpenTab.from(intent)
         val container = (application as PopcornStashApplication).container
-        setContent {
+        setPrivateContent {
             PopcornTheme {
                 PopcornStashApp(container, this, requestedTab, onOpenedTab = { requestedTab = null })
             }

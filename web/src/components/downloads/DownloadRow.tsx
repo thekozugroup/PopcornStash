@@ -21,12 +21,13 @@ export const KIND_ICON: Record<DownloadKind, LucideIcon> = {
 
 export interface DownloadRowProps {
   download: Download;
+  onFiles: (download: Download) => void;
   onChanged: (download: Download) => void;
   onRemove: (download: Download) => void;
   onError: (message: string) => void;
 }
 
-export function DownloadRow({download, onChanged, onRemove, onError}: DownloadRowProps) {
+export function DownloadRow({download, onFiles, onChanged, onRemove, onError}: DownloadRowProps) {
   const [isBusy, setIsBusy] = useState(false);
   const pausable = canPause(download);
   const resumable = canResume(download);
@@ -88,7 +89,7 @@ export function DownloadRow({download, onChanged, onRemove, onError}: DownloadRo
           <MoreMenu
             label={`More for ${download.name}`}
             alignment="end"
-            items={[{label: 'Remove…', variant: 'destructive', onClick: () => onRemove(download)}]}
+            items={[...(download.kind === 'torrent' ? [{label: 'Choose files…', onClick: () => onFiles(download)}] : []), {label: 'Remove…', variant: 'destructive', onClick: () => onRemove(download)}]}
           />
         </>
       }

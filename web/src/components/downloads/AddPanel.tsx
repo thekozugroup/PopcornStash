@@ -15,11 +15,12 @@ import {TextInput} from '@astryxdesign/core/TextInput';
 import {CircleAlert, FileUp, Globe, Link2, Magnet, Upload, type LucideIcon} from 'lucide-react';
 import {useState, type ChangeEvent, type FormEvent, type RefObject} from 'react';
 import {ApiError, downloads as downloadsApi} from '../../api/client';
-import type {Download, VpnStatus} from '../../api/types';
+import type {Download, VpnStatus, TorrentFileKind} from '../../api/types';
 import {errorMessage} from '../../lib/errors';
 import {checkLink, describeLink, isTorrentLink} from './linkDetect';
 import {isNoVpnMode, showsVpnLine, torrentsOff, torrentsWait} from '../../lib/vpn';
 import {VpnLine} from './VpnLine';
+import {TorrentTypeChoices} from './TorrentTypeChoices';
 import {DestinationSelect} from './DestinationSelect';
 
 const styles = stylex.create({
@@ -111,6 +112,8 @@ const KIND_ICON: Record<'magnet' | 'torrent-url' | 'http', LucideIcon> = {
 };
 
 export interface AddPanelProps {
+  fileTypes: TorrentFileKind[];
+  onFileTypes: (value: TorrentFileKind[]) => void;
   libraryId: string;
   onLibrary: (value: string) => void;
   isOwner: boolean;
@@ -126,7 +129,7 @@ export interface AddPanelProps {
 }
 
 export function AddPanel({
-  libraryId, onLibrary,
+  libraryId, onLibrary, fileTypes, onFileTypes,
   isOwner,
   vpnStatus,
   vpnUnavailable,
@@ -188,7 +191,7 @@ export function AddPanel({
     if (check.status === 'invalid') return;
     setIsBusy(true);
     try {
-      const download = await downloadsApi.create({url: check.link.url, library_id: libraryId || undefined});
+      const download = await downloadsApi.create({url: check.link.url, library_id: libraryId || undefined, file_types: fileTypes});
       onAdded(download);
       setValue('');
       setTouched(false);
@@ -254,6 +257,7 @@ export function AddPanel({
         </p>
       </form>
 
+      <TorrentTypeChoices value={fileTypes} onChange={onFileTypes} disabled={isBusy || isAddingTorrents} />
       <DestinationSelect value={libraryId} onChange={onLibrary} disabled={isBusy || isAddingTorrents} />
       <div {...stylex.props(styles.others)}>
         <input

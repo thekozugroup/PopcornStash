@@ -179,6 +179,8 @@ pub struct EngineTorrent {
 pub struct AddTorrentRequest {
     pub magnet: Option<String>,
     pub torrent_base64: Option<String>,
+    #[serde(default)]
+    pub file_types: Option<Vec<TorrentFileKind>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -186,6 +188,59 @@ pub struct AddTorrentResponse {
     pub id: String,
     pub info_hash: String,
     pub name: Option<String>,
+}
+
+/// Content groups for a torrent's files. Extension matching is case insensitive;
+/// archives, documents and unknown extensions are Other (never executed).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TorrentFileKind {
+    Video,
+    Image,
+    Subtitle,
+    Other,
+}
+
+impl TorrentFileKind {
+    pub fn of(path: &str) -> Self {
+        let ext = std::path::Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        match ext.as_str() {
+            "mkv" | "mp4" | "m4v" | "mov" | "avi" | "webm" | "ts" | "m2ts" | "mpg" | "mpeg"
+            | "wmv" | "flv" | "ogv" | "vob" | "mts" | "3gp" => Self::Video,
+            "jpg" | "jpeg" | "png" | "gif" | "webp" | "heic" | "heif" | "avif" | "bmp" | "tif"
+            | "tiff" | "dng" | "cr2" | "cr3" | "nef" | "arw" | "orf" | "rw2" | "raf" => Self::Image,
+            "srt" | "ass" | "ssa" | "vtt" | "sub" | "idx" | "sup" => Self::Subtitle,
+            _ => Self::Other,
+        }
+    }
+    pub fn media_default() -> Vec<Self> {
+        vec![Self::Video, Self::Subtitle]
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TorrentFile {
+    pub index: usize,
+    /// Relative to this torrent's own output folder; never an absolute NAS path.
+    pub path: String,
+    pub size: u64,
+    pub kind: TorrentFileKind,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct TorrentFiles {
+    pub ready: bool,
+    pub files: Vec<TorrentFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelectTorrentFiles {
+    pub indices: Vec<usize>,
 }
 
 /// The lowest speed limit the engine can keep, in KiB/s. librqbit moves data in 16 KiB

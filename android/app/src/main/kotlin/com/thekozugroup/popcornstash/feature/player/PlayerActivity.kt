@@ -9,10 +9,9 @@ import android.graphics.Color
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import com.thekozugroup.popcornstash.privacy.PrivateActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.addCallback
-import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -53,24 +52,21 @@ import com.thekozugroup.popcornstash.ui.theme.Popcorn
 
 /**
  * The full-screen player (docs/architecture.md section 10, Item and player; android/DESIGN.md,
- * Player). Its own activity, so it can go into picture-in-picture, turn to landscape and hide
+ * Player). Its own private activity, so it can turn to landscape and hide
  * the system bars without touching the tabs; the floating toolbar is never on it.
  *
- * - Opened with [openPlayer]. It is `singleTask`, so playing something else while it is in
- *   picture-in-picture replaces what plays ([PlayerLauncher.request] from the new intent).
+ * - Opened with [openPlayer]. It is `singleTask`, so another request replaces what plays
+ *   ([PlayerLauncher.request] from the new intent).
  * - Landscape, either way round as the phone turns; a video taller than wide turns upright.
  * - The system bars hide with the chrome and come back with it.
- * - Leaving the app while a video plays shrinks it into picture-in-picture (by itself on
- *   Android 12 and later). Closing that window ends the player; expanding it brings the player back.
- * - Back or Close ends the player: the place is saved and the server's stream ended. After
- *   picture-in-picture the player has a task of its own, so closing it returns to the app.
+ * - Leaving the app pauses playback and locks its content. Picture-in-picture is disabled.
+ * - Back or Close ends the player: the place is saved and the server's stream ended.
  * - It plays only for the signed-in person: signing out (or a 401) closes it.
  */
-class PlayerActivity : ComponentActivity() {
+class PlayerActivity : PrivateActivity() {
     private val request = mutableStateOf<PlayerRequest?>(null)
     private val inPictureInPicture = mutableStateOf(false)
     private var controller: PlayerController? = null
-    private var pictureInPictureParams: android.app.PictureInPictureParams? = null
 
     private val pictureInPictureControls = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -104,14 +100,10 @@ class PlayerActivity : ComponentActivity() {
             // Leaving picture-in-picture while stopped means the person closed the window.
             if (!info.isInPictureInPictureMode && lifecycle.currentState == Lifecycle.State.CREATED) finishAndRemoveTask()
         }
-        addOnUserLeaveHintListener {
-            // Android 12 and later enter by themselves (auto-enter in the params).
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) enterPictureInPictureIfPlaying()
-        }
         onBackPressedDispatcher.addCallback(this) { closePlayer() }
 
         val container = (application as PopcornStashApplication).container
-        setContent {
+        setPrivateContent {
             val layoutFlow = remember { WindowInfoTracker.getOrCreate(this).windowLayoutInfo(this) }
             val layout by layoutFlow.collectAsStateWithLifecycle(initialValue = null)
             PlayerTheme {
@@ -137,7 +129,7 @@ class PlayerActivity : ComponentActivity() {
                 Intent(this, MainActivity::class.java)
                     .setAction(Intent.ACTION_MAIN)
                     .addCategory(Intent.CATEGORY_LAUNCHER)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION),
             )
             finishAndRemoveTask()
         } else {
@@ -145,8 +137,13 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    override fun onPrivateLocked() { controller?.onBackground() }
+    override fun onPrivateUnlocked() { controller?.onForeground() }
+
     internal fun attach(controller: PlayerController?) {
+        if (controller == null && !appLock.unlocked.value) this.controller?.onBackground()
         this.controller = controller
+        if (appLock.unlocked.value) controller?.onForeground() else controller?.onBackground()
     }
 
     internal fun showSystemBars(show: Boolean) {
@@ -168,21 +165,15 @@ class PlayerActivity : ComponentActivity() {
         val params = PictureInPicture.params(
             context = this,
             playing = playing,
+            allowAutoEnter = false,
             controllable = state.phase == PlayerPhase.Ready,
             aspect = PictureInPicture.aspect(state.videoWidth, state.videoHeight),
             sourceRect = videoBounds?.let { PictureInPicture.fittedRect(it, state.videoWidth, state.videoHeight) },
         )
-        pictureInPictureParams = params
         runCatching { setPictureInPictureParams(params) }
     }
 
-    private fun enterPictureInPictureIfPlaying() {
-        val state = controller?.state?.value ?: return
-        if (state.phase != PlayerPhase.Ready || !state.playWhenReady || !PictureInPicture.supported(this)) return
-        val params = pictureInPictureParams ?: return
-        // The person may have turned picture-in-picture off for the app.
-        runCatching { enterPictureInPictureMode(params) }
-    }
+
 }
 
 @Composable

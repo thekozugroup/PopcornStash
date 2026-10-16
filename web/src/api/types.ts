@@ -739,7 +739,12 @@ export interface DownloadList {
   items: Download[];
 }
 
+export type TorrentFileKind = 'video' | 'image' | 'subtitle' | 'other';
+export interface TorrentFile { index: number; path: string; size: number; kind: TorrentFileKind; selected: boolean }
+export interface TorrentFiles { ready: boolean; files: TorrentFile[] }
+
 export interface DownloadCreateRequest {
+  file_types?: TorrentFileKind[];
   library_id?: Id;
   url: string;
   filename?: string;

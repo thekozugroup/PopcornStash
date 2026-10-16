@@ -623,7 +623,23 @@ data class Download(
 data class DownloadList(val items: List<Download>)
 
 @Serializable
-data class AddDownload(val url: String, val filename: String? = null, val libraryId: String? = null)
+data class AddDownload(val url: String, val filename: String? = null, val libraryId: String? = null, val fileTypes: List<TorrentFileKind>? = null)
+
+@Serializable
+enum class TorrentFileKind {
+    @SerialName("video") Video,
+    @SerialName("subtitle") Subtitle,
+    @SerialName("image") Image,
+    @SerialName("other") Other;
+
+    val label: String get() = when (this) {
+        Video -> "Videos"
+        Subtitle -> "Subtitles"
+        Image -> "Images"
+        Other -> "Other files"
+    }
+    companion object { val Default = listOf(Video, Subtitle) }
+}
 
 // ------------------------------------------------------------------ uploads ----
 

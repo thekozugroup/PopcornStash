@@ -125,7 +125,7 @@ fun popcornFieldColors() = OutlinedTextFieldDefaults.colors(
  * ("Magnet link. Downloads as a torrent, only through the VPN."), or why it cannot be added.
  */
 @Composable
-fun AddLinkContent(state: AddLinkState, viaVpn: Boolean, onText: (String) -> Unit, onAdd: () -> Unit, onCancel: () -> Unit, libraries: List<com.thekozugroup.popcornstash.data.api.Library> = emptyList(), onLibrary: (String?) -> Unit = {}) {
+fun AddLinkContent(state: AddLinkState, viaVpn: Boolean, onText: (String) -> Unit, onAdd: () -> Unit, onCancel: () -> Unit, libraries: List<com.thekozugroup.popcornstash.data.api.Library> = emptyList(), onLibrary: (String?) -> Unit = {}, onFileType: (com.thekozugroup.popcornstash.data.api.TorrentFileKind) -> Unit = {}) {
     SheetTitle("Add a link")
     val check = checkLink(state.text)
     val helper = when {
@@ -160,6 +160,17 @@ fun AddLinkContent(state: AddLinkState, viaVpn: Boolean, onText: (String) -> Uni
         colors = popcornFieldColors(),
         modifier = Modifier.fillMaxWidth().testTag("link field"),
     )
+    if (check is LinkCheck.Ok && check.link.kind != LinkKind.Http) {
+        Spacer(Modifier.height(Popcorn.spacing.m))
+        Text("Download contents", style = Popcorn.type.section, color = Popcorn.colors.text)
+        com.thekozugroup.popcornstash.data.api.TorrentFileKind.entries.forEach { kind ->
+            com.thekozugroup.popcornstash.feature.settings.CheckRow(kind.label, kind in state.fileTypes,
+                onToggle = { onFileType(kind) }, enabled = !state.busy)
+        }
+        Text(if (state.fileTypes.isEmpty()) "Fetches details, then waits for a file choice in web Downloads."
+            else "Applies to this torrent. Choose individual files in web Downloads.",
+            style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
+    }
     Spacer(Modifier.height(Popcorn.spacing.l))
     com.thekozugroup.popcornstash.ui.components.DownloadDestinationPicker(libraries, state.libraryId, onLibrary, enabled = !state.busy)
     Spacer(Modifier.height(Popcorn.spacing.s))

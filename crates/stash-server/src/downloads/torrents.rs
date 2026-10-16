@@ -775,8 +775,15 @@ pub(super) async fn apply(
         .unwrap_or(&row.name)
         .to_string();
     let total = torrent.total_bytes.filter(|&b| b > 0);
-    let complete = torrent.state == EngineTorrentState::Seeding
-        || total.is_some_and(|total| torrent.done_bytes >= total);
+    // Initial checks report checked bytes, not verified payload completion. An
+    // empty selection has no positive total and must keep waiting for a choice.
+    let complete = total.is_some_and(|total| torrent.done_bytes >= total)
+        && matches!(
+            torrent.state,
+            EngineTorrentState::Downloading
+                | EngineTorrentState::Paused
+                | EngineTorrentState::Seeding
+        );
 
     if torrent.state == EngineTorrentState::Error && !complete {
         let message = torrent
@@ -898,6 +905,115 @@ pub(super) async fn apply(
     Ok(())
 }
 
+/// Only explicit deselections in this torrent's manifest are removed, after the
+/// engine has let go and adoption succeeded. Never follow links, touch siblings,
+/// remove selected files, or act outside Downloads/In Progress.
+async fn discard_unselected(
+    layout: &StashLayout,
+    content: &Path,
+    files: &stash_core::internal_api::TorrentFiles,
+) -> std::io::Result<()> {
+    let layout = layout.clone();
+    let content = content.to_path_buf();
+    let files = files.clone();
+    tokio::task::spawn_blocking(move || discard_unselected_blocking(&layout, &content, &files))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+fn discard_unselected_blocking(
+    layout: &StashLayout,
+    content: &Path,
+    files: &stash_core::internal_api::TorrentFiles,
+) -> std::io::Result<()> {
+    use nix::errno::Errno;
+    use nix::fcntl::{AtFlags, OFlag, open, openat};
+    use nix::sys::stat::{Mode, SFlag, fstatat};
+    use nix::unistd::{UnlinkatFlags, unlinkat};
+
+    let Some(name) = content.strip_prefix(layout.in_progress()).ok().filter(|p| {
+        p.components().count() == 1
+            && p.components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+    }) else {
+        return Err(std::io::Error::other("Invalid torrent folder"));
+    };
+    if std::fs::symlink_metadata(content)?.is_file() {
+        return Ok(());
+    }
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let root = open(
+        layout.root(),
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )?;
+    let downloads = openat(&root, "Downloads", flags, Mode::empty())?;
+    let in_progress = openat(&downloads, "In Progress", flags, Mode::empty())?;
+    let torrent = openat(&in_progress, name, flags, Mode::empty())?;
+    let mut paths = std::collections::HashSet::new();
+    for file in &files.files {
+        if !paths.insert(&file.path) {
+            return Err(std::io::Error::other("Duplicate torrent path"));
+        }
+    }
+    'files: for file in files.files.iter().filter(|f| !f.selected) {
+        let relative = Path::new(&file.path);
+        let parts = relative.components().collect::<Vec<_>>();
+        if parts.is_empty()
+            || parts
+                .iter()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+            || file.path.contains('\\')
+        {
+            return Err(std::io::Error::other("Invalid torrent path"));
+        }
+        // Retain directory handles throughout traversal and unlinking. A parent
+        // swapped for a symlink after validation cannot redirect a deletion.
+        let mut directories = vec![openat(&torrent, ".", flags, Mode::empty())?];
+        for part in &parts[..parts.len() - 1] {
+            match openat(
+                directories.last().unwrap(),
+                part.as_os_str(),
+                flags,
+                Mode::empty(),
+            ) {
+                Ok(dir) => directories.push(dir),
+                Err(Errno::ENOENT) => continue 'files,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let parent = directories.last().unwrap();
+        let filename = parts.last().unwrap().as_os_str();
+        match fstatat(parent, filename, AtFlags::AT_SYMLINK_NOFOLLOW) {
+            Ok(meta)
+                if SFlag::from_bits_truncate(meta.st_mode) & SFlag::S_IFMT == SFlag::S_IFREG =>
+            {
+                unlinkat(parent, filename, UnlinkatFlags::NoRemoveDir)?;
+            }
+            Ok(_) => {
+                return Err(std::io::Error::other(
+                    "Unselected path is not a regular file",
+                ));
+            }
+            Err(Errno::ENOENT) => {}
+            Err(error) => return Err(error.into()),
+        }
+        // Empty directories only, never the torrent root or its siblings.
+        for index in (0..parts.len() - 1).rev() {
+            if unlinkat(
+                &directories[index],
+                parts[index].as_os_str(),
+                UnlinkatFlags::RemoveDir,
+            )
+            .is_err()
+            {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The torrent is done: record that first (state `completed`, its files' place in
 /// `In Progress`), so a restart or a failed step carries on in [`finish_completed`]
 /// instead of losing track of a torrent the engine already let go.
@@ -919,6 +1035,19 @@ async fn finish(
         manager.fail(&row.id, MSG_FILES_MISSING).await;
         return Ok(());
     };
+    // Persist before releasing the engine; interrupted completion can still discard
+    // unselected boundary fragments without guessing from filenames or extensions.
+    let manifest = match row.engine_id.as_deref() {
+        Some(id) => match manager.torrentd.files(id).await {
+            Ok(files) if files.ready => {
+                Some(serde_json::to_string(&files).map_err(|_| ApiError::internal())?)
+            }
+            // Older engines have no selection API and only download whole torrents.
+            Err(crate::torrentd_client::TorrentdError::Api { status: 404, .. }) => None,
+            _ => return Ok(()),
+        },
+        None => None,
+    };
     let t = now();
     let total = torrent
         .total_bytes
@@ -928,7 +1057,7 @@ async fn finish(
         "UPDATE downloads SET state = 'completed', name = ?, rel_path = ?, progress = 1.0,
                 total_bytes = COALESCE(?, total_bytes), done_bytes = COALESCE(?, total_bytes, done_bytes),
                 down_bps = 0, up_bps = 0, peers = NULL, eta_s = NULL, error = NULL,
-                completed_at = COALESCE(completed_at, ?), updated_at = ?
+                completed_at = COALESCE(completed_at, ?), updated_at = ?, torrent_files_json = ?
          WHERE id = ? AND state IN ('queued', 'downloading', 'paused', 'seeding')",
     )
     .bind(name)
@@ -937,6 +1066,7 @@ async fn finish(
     .bind(total)
     .bind(t)
     .bind(t)
+    .bind(&manifest)
     .bind(&row.id)
     .execute(&manager.db)
     .await?
@@ -996,6 +1126,16 @@ pub(crate) async fn finish_completed(manager: &DownloadManager, row: &DownloadRo
     if let Err(e) = crate::supervisor_client::adopt(&manager.config, &component).await {
         tracing::warn!(error = %format!("{e:#}"), download = %row.id, "the supervisor could not adopt a torrent; will retry");
         return false;
+    }
+    if let Some(manifest) = &row.torrent_files_json {
+        let files: stash_core::internal_api::TorrentFiles = match serde_json::from_str(manifest) {
+            Ok(files) => files,
+            Err(_) => return false,
+        };
+        if let Err(e) = discard_unselected(&manager.layout, &content, &files).await {
+            tracing::warn!(error = %e, download = %row.id, "could not remove unselected torrent fragments; will retry");
+            return false;
+        }
     }
     match manager.move_to_completed(&content, &component).await {
         Ok((_, dest)) => {
@@ -1067,6 +1207,87 @@ mod tests {
 
     /// The engine names where a torrent's files are; only one entry directly in In
     /// Progress is ever taken out, so an engine cannot hand over anything else there.
+    #[tokio::test]
+    async fn selective_completion_removes_only_omitted_files_inside_this_download() {
+        use stash_core::internal_api::{TorrentFile, TorrentFileKind, TorrentFiles};
+        let dir = tempfile::tempdir().unwrap();
+        let layout = StashLayout::new(dir.path());
+        layout.ensure().await.unwrap();
+        let content = layout.in_progress().join("pack");
+        std::fs::create_dir_all(content.join("extras")).unwrap();
+        std::fs::write(content.join("film.mkv"), b"selected").unwrap();
+        std::fs::write(content.join("extras/instructions.txt"), b"fragment").unwrap();
+        let manifest = TorrentFiles {
+            ready: true,
+            files: vec![
+                TorrentFile {
+                    index: 0,
+                    path: "film.mkv".into(),
+                    size: 8,
+                    kind: TorrentFileKind::Video,
+                    selected: true,
+                },
+                TorrentFile {
+                    index: 1,
+                    path: "extras/instructions.txt".into(),
+                    size: 8,
+                    kind: TorrentFileKind::Other,
+                    selected: false,
+                },
+            ],
+        };
+        discard_unselected(&layout, &content, &manifest)
+            .await
+            .unwrap();
+        assert!(content.join("film.mkv").exists());
+        assert!(!content.join("extras").exists());
+        // Interrupted completion can safely retry the same manifest.
+        discard_unselected(&layout, &content, &manifest)
+            .await
+            .unwrap();
+        let outside = layout.in_progress().join("other.txt");
+        std::fs::write(&outside, b"keep").unwrap();
+        let mut invalid = manifest.clone();
+        invalid.files[1].path = "../other.txt".into();
+        assert!(
+            discard_unselected(&layout, &content, &invalid)
+                .await
+                .is_err()
+        );
+        assert!(outside.exists());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(layout.in_progress(), content.join("link")).unwrap();
+            invalid.files[1].path = "link/other.txt".into();
+            assert!(
+                discard_unselected(&layout, &content, &invalid)
+                    .await
+                    .is_err()
+            );
+            assert!(outside.exists());
+            std::os::unix::fs::symlink(&outside, content.join("linked.txt")).unwrap();
+            invalid.files[1].path = "linked.txt".into();
+            assert!(
+                discard_unselected(&layout, &content, &invalid)
+                    .await
+                    .is_err()
+            );
+            assert!(outside.exists());
+            assert!(content.join("linked.txt").is_symlink());
+            std::os::unix::fs::symlink(&content, layout.in_progress().join("linked-pack")).unwrap();
+            assert!(
+                discard_unselected(
+                    &layout,
+                    &layout.in_progress().join("linked-pack"),
+                    &manifest
+                )
+                .await
+                .is_err()
+            );
+            assert!(content.join("film.mkv").exists());
+        }
+    }
+
     #[test]
     fn torrent_content_is_one_entry_in_in_progress() {
         for ok in [

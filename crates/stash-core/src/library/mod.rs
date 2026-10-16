@@ -80,7 +80,7 @@ pub struct Library {
     /// (sorting, organize, review, trash, restore, indexing, marking missing), so the
     /// sorter, the watcher, rescans and API actions never act on stale state. Library
     /// writes that change where files belong hold it too (section 5, Move lock).
-    moves: tokio::sync::Mutex<()>,
+    moves: Arc<tokio::sync::Mutex<()>>,
     /// Goes up with every library write that can change where a file goes (create,
     /// delete, claims, type, structure). A sort job that sees it change stops moving files.
     generation: AtomicU64,
@@ -101,8 +101,8 @@ impl Library {
             events,
             jobs,
             settings,
+            moves: media.publication.clone(),
             media,
-            moves: tokio::sync::Mutex::new(()),
             generation: AtomicU64::new(0),
         }
     }

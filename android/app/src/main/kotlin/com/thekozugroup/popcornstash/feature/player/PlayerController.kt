@@ -141,6 +141,7 @@ class PlayerController(
     private var nextJob: Job? = null
     private var ticker: Job? = null
     private var closed = false
+    private var foreground = true
 
     init {
         engine.setListener(this)
@@ -169,7 +170,7 @@ class PlayerController(
         }
     }
 
-    fun play() = engine.play()
+    fun play() { if (foreground) engine.play() }
 
     fun pause() = engine.pause()
 
@@ -226,7 +227,10 @@ class PlayerController(
     }
 
     /** The screen went to the background without picture-in-picture: pause and save the place. */
+    fun onForeground() { foreground = true }
+
     fun onBackground() {
+        foreground = false
         engine.pause()
         saveNow(SaveReason.Leave)
     }
@@ -434,7 +438,7 @@ class PlayerController(
         sessions.adopt(session)
         hls = isHls
         _state.update { it.copy(converted = isHls) }
-        engine.load(StreamSource(url, isHls), startMs = (positionS * 1000).toLong(), playWhenReady = playWhenReady)
+        engine.load(StreamSource(url, isHls), startMs = (positionS * 1000).toLong(), playWhenReady = playWhenReady && foreground)
     }
 
     private suspend fun device(): PlaybackRequest = device ?: deviceCapabilities().also { device = it }

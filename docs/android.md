@@ -12,18 +12,24 @@ Three tabs sit in a floating bar: Downloads, Home (where the app opens), and Set
 
 Page and section headings use bundled Newsreader; controls and body text use the system sans font. The blue popcorn icon is flattened from Apple Icon Composer. Its gradient and glass treatment stay inside the icon.
 
-On a foldable in tabletop mode (a horizontal, half-open hinge), playback shows the picture above the hinge and persistent media controls below. Both panes avoid the hinge bounds. Opening flat returns to the normal player; picture-in-picture keeps only the picture. The device must report its fold through Android's WindowManager API.
+On a foldable in tabletop mode (a horizontal, half-open hinge), playback shows the picture above the hinge and persistent media controls below. Both panes avoid the hinge bounds. Opening flat returns to the normal player. The device must report its fold through Android's WindowManager API.
 
 - **Sign in:** type your server's address, then sign in with your passkey or pair the phone with a code that someone approves on the web.
 - **Home:** what you were watching, to carry on with one tap, then every library you can see with its icon, its name and its newest items.
 - **A library:** a grid of posters or video frames for films and clips, series then seasons and episodes for shows, and the month timeline for photos with a full-screen viewer (pinch to zoom, save the original to the phone).
 - **An item:** its picture, details and favourite, and Play or Resume.
-- **The player:** full screen, resumes where you stopped, saves your place as you watch, offers the next episode, and keeps playing in a small window (picture-in-picture) when you leave the app. It asks the server for a version this phone can decode.
-- **Downloads:** what is downloading, with live progress, the VPN line in the web app's words, pause, resume, remove and "Add a link" for a web link or a magnet; the files waiting to be imported, each with the server's suggestion, a library picker that lists only what fits, Edit (title, show, season, episode), Accept, Ignore and "Accept all"; finished downloads say which library they went into, and tapping that opens it.
+- **The player:** full screen, resumes where you stopped, saves your place as you watch, offers the next episode, and pauses when you leave the app so it stays behind the private app lock. It asks the server for a version this phone can decode.
+- **Downloads:** new magnets and .torrent links select videos and subtitles by default, with separate video, subtitle, image and other-file checkboxes. Use web Downloads to choose individual files in an existing torrent. Existing selections are preserved. What is downloading, with live progress, the VPN line in the web app's words, pause, resume, remove and "Add a link" for a web link or a magnet; the files waiting to be imported, each with the server's suggestion, a library picker that lists only what fits, Edit (title, show, season, episode), Accept, Ignore and "Accept all"; finished downloads say which library they went into, and tapping that opens it.
 - **The share sheet:** share a link from another app to add it to Downloads, or share photos, videos and other files to upload them (a notification shows the upload, which carries on in the background and can be stopped).
 - **Settings:** who is signed in, this server, and sign out. Owners also manage the libraries here: make one (from a new folder or a folder already on the share), edit its name, icon, type, the kinds of new file it takes and who sees it, reorder and delete. Sorting and Trash (including owner-only restore), VPN, people, devices, security and system open the web settings in the phone's browser for now. **This app** shows the app's version and build, checks for a newer build and installs it ([Updates](#updates)).
 
 Everything the app keeps (the sign-in, pictures it has loaded, files it opened) is deleted when you sign out, and none of it goes into the phone's backups.
+
+## Private app lock
+
+PopcornStash requires your phone's screen-lock PIN, password or pattern on opening and after it goes into the background. This applies to the main app, the player and incoming shares, including notification links. There is no switch to disable it. If the phone has no secure screen lock, set one in Android Settings before continuing. Cancelling verification keeps the app locked. Your device credential stays with Android; PopcornStash never receives or stores it. Server sign-in still requires a passkey or an approved pairing.
+
+Screenshots, screen recording, casting to insecure displays and Recents previews are blocked by Android's secure-window protection. Videos pause on leaving the app; picture-in-picture is disabled to keep them behind the lock. Background uploads continue. The browser opened from Settings has its own sign-in and Android/browser privacy settings.
 
 ## Build the app
 
@@ -141,7 +147,7 @@ Then remove the old copy of this phone from **Settings, Devices** on the web. Fr
 
 ## What is not done yet
 
-- **Not run on a phone or an emulator.** The build machine has no emulator, so gestures, the photo viewer's zoom, real video decoding, picture-in-picture, rotation, the share sheet's background uploads and the passkey prompt have only run under Robolectric and against a real server from the JVM.
+- **Device coverage is limited.** The Android 17 emulator verified device-PIN setup, cold launch, relocking after Home, cancelled verification, restored drafts, incoming-share protection and blocked screen capture. Real media decoding, photo zoom, rotation, background uploads and a real passkey prompt still need device testing. Picture-in-picture is disabled for privacy.
 - **The frosted toolbar on Android 17 QPR2 has not run.** From Android 17 QPR2 (SDK 37.2) the platform blurs the window behind the bar itself (`RenderNode.setBackdropRenderEffect`). That code compiles and passes lint, but there was no 37.2 phone or emulator image to run it on, and Robolectric runs Android 16, so it has never drawn. The same goes for how the bar fades in and out there: without a layer of its own (`CompositingStrategy.ModulateAlpha`), because the platform would otherwise blur that empty layer instead of the pages. The glass on Android 12 to 17.1 (the app records the pages and blurs them; most phones show this until Android 17 QPR2 reaches Pixels in December 2026) is covered by screenshots and pixel checks, and the opaque bar on Android 9 to 11 by a screenshot.
 - **No lock screen or headset controls** (no media session), **no subtitles**, and no double tap to seek in the player.
 - **A shared `.torrent` file is uploaded as a file**, not added as a download.

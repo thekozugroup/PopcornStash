@@ -29,8 +29,8 @@ use serde::{Deserialize, Serialize};
 pub use stash_core::internal_api::MSG_NOT_PROTECTED;
 use stash_core::internal_api::{
     AddTorrentResponse, EXIT_RELOAD, EngineHealth, EngineRunState, EngineState, EngineTorrent,
-    EngineTorrentState, LimitsRequest, MIN_SPEED_LIMIT_KBPS, TunnelState, TunnelStatus,
-    VpnProvider,
+    EngineTorrentState, LimitsRequest, MIN_SPEED_LIMIT_KBPS, TorrentFile, TorrentFileKind,
+    TorrentFiles, TunnelState, TunnelStatus, VpnProvider,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, RwLock, watch};
@@ -246,6 +246,8 @@ enum Stop {
 /// A magnet whose metadata is still being fetched.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PendingAdd {
+    #[serde(default)]
+    file_types: Option<Vec<TorrentFileKind>>,
     magnet: String,
     name: Option<String>,
     #[serde(default)]
@@ -361,8 +363,17 @@ fn torrent_state(state: &TorrentStatsState, finished: bool) -> EngineTorrentStat
 fn engine_torrent(handle: &ManagedTorrent) -> EngineTorrent {
     let stats = handle.stats();
     let id = handle.info_hash().as_string();
-    let total = stats.total_bytes;
-    let done = stats.progress_bytes.min(total.max(stats.progress_bytes));
+    let empty_selection = handle.only_files().is_some_and(|files| files.is_empty());
+    let total = if empty_selection {
+        0
+    } else {
+        stats.total_bytes
+    };
+    let done = if empty_selection || matches!(stats.state, TorrentStatsState::Initializing { .. }) {
+        0
+    } else {
+        stats.progress_bytes.min(total)
+    };
     let (down, up, peers) = stats
         .live
         .as_ref()
@@ -384,7 +395,11 @@ fn engine_torrent(handle: &ManagedTorrent) -> EngineTorrent {
         id: id.clone(),
         info_hash: id,
         name: handle.name(),
-        state: torrent_state(&stats.state, stats.finished),
+        state: if empty_selection {
+            EngineTorrentState::Paused
+        } else {
+            torrent_state(&stats.state, stats.finished)
+        },
         progress,
         total_bytes: (total > 0).then_some(total),
         done_bytes: done,
@@ -396,6 +411,24 @@ fn engine_torrent(handle: &ManagedTorrent) -> EngineTorrent {
         error: stats.error.clone(),
         output_dir: Some(handle.output_folder().display().to_string()),
     }
+}
+
+fn selected_indices(
+    bytes: &[u8],
+    types: Option<&[TorrentFileKind]>,
+) -> anyhow::Result<Option<Vec<usize>>> {
+    let Some(types) = types else { return Ok(None) };
+    let meta = librqbit::torrent_from_bytes(bytes)?;
+    let info = meta.info.data.validate()?;
+    let indices = info
+        .iter_file_details()
+        .enumerate()
+        .filter_map(|(index, f)| {
+            (!f.attrs().padding && types.contains(&TorrentFileKind::of(&f.filename.to_string())))
+                .then_some(index)
+        })
+        .collect();
+    Ok(Some(indices))
 }
 
 /// The sentence shown when the torrent session cannot start.
@@ -1035,7 +1068,14 @@ impl Engine {
         let name = list.info.name().map(|n| n.into_owned());
         let single = list.info.info().files.is_none();
         let folder = self.unique_folder(&folder_name(name.as_deref(), single, id));
+        let file_types = lock(&self.inner)
+            .pending
+            .get(id)
+            .and_then(|p| p.file_types.clone());
+        let only_files = selected_indices(&list.torrent_bytes, file_types.as_deref())?;
         let options = AddTorrentOptions {
+            paused: only_files.as_ref().is_some_and(Vec::is_empty),
+            only_files,
             sub_folder: Some(folder),
             initial_peers: Some(list.seen_peers.clone()),
             trackers: (!trackers.is_empty()).then_some(trackers),
@@ -1356,7 +1396,91 @@ impl TorrentBackend for Engine {
         torrents
     }
 
+    async fn files(&self, id: String) -> Result<TorrentFiles, BackendError> {
+        let hash = id.parse().map_err(|_| BackendError::NotFound)?;
+        if let Some(session) = self.live_session().await
+            && let Some(handle) = session.get(TorrentIdOrHash::Hash(hash))
+        {
+            let selected = handle.only_files();
+            return handle
+                .with_metadata(|meta| TorrentFiles {
+                    ready: true,
+                    files: meta
+                        .file_infos
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, f)| !f.attrs.padding)
+                        .map(|(index, f)| {
+                            let path = f.relative_filename.to_string_lossy().into_owned();
+                            TorrentFile {
+                                index,
+                                kind: TorrentFileKind::of(&path),
+                                path,
+                                size: f.len,
+                                selected: selected.as_ref().is_none_or(|ids| ids.contains(&index)),
+                            }
+                        })
+                        .collect(),
+                })
+                .map_err(|_| {
+                    BackendError::BadRequest(
+                        "Fetching the torrent's file list. Try again shortly.".into(),
+                    )
+                });
+        }
+        if lock(&self.inner).pending.contains_key(&id) {
+            return Ok(TorrentFiles::default());
+        }
+        if self
+            .persisted_torrents()
+            .iter()
+            .any(|torrent| torrent.id == id)
+        {
+            // A stopped VPN session still owns a persisted selection. Reporting
+            // 404 would make the server mistake this for an older, whole-file
+            // engine and sort unselected boundary fragments without its manifest.
+            return Err(BackendError::Blocked(MSG_VPN_WAIT.into()));
+        }
+        Err(BackendError::NotFound)
+    }
+
+    async fn select_files(&self, id: String, indices: Vec<usize>) -> Result<(), BackendError> {
+        let _operation = self.pending_ops.lock().await;
+        let session = self
+            .live_session()
+            .await
+            .ok_or_else(|| BackendError::Blocked(MSG_VPN_WAIT.into()))?;
+        let hash = id.parse().map_err(|_| BackendError::NotFound)?;
+        let handle = session
+            .get(TorrentIdOrHash::Hash(hash))
+            .ok_or(BackendError::NotFound)?;
+        let files = self.files(id).await?;
+        let valid: HashSet<_> = files.files.iter().map(|f| f.index).collect();
+        if indices.is_empty() || indices.iter().any(|i| !valid.contains(i)) {
+            return Err(BackendError::BadRequest(
+                "Choose at least one valid file.".into(),
+            ));
+        }
+        session
+            .update_only_files(&handle, &indices.into_iter().collect())
+            .await
+            .map_err(|_| {
+                BackendError::BadRequest(
+                    "Files cannot be changed while this torrent is checking. Try again shortly."
+                        .into(),
+                )
+            })
+    }
+
     async fn add(&self, torrent: NewTorrent) -> Result<AddTorrentResponse, BackendError> {
+        self.add_with_selection(torrent, None).await
+    }
+
+    async fn add_with_selection(
+        &self,
+        torrent: NewTorrent,
+        file_types: Option<Vec<TorrentFileKind>>,
+    ) -> Result<AddTorrentResponse, BackendError> {
         let _pending_op = self.pending_ops.lock().await;
         let session = match self.live_session().await {
             Some(session) => session,
@@ -1403,7 +1527,12 @@ impl TorrentBackend for Engine {
                     });
                 }
                 let folder = self.unique_folder(&folder_name(name.as_deref(), single, &id));
+                let only_files = selected_indices(&bytes, file_types.as_deref()).map_err(|_| {
+                    BackendError::BadRequest("The torrent file list is not valid.".into())
+                })?;
                 let options = AddTorrentOptions {
+                    paused: only_files.as_ref().is_some_and(Vec::is_empty),
+                    only_files,
                     sub_folder: Some(folder),
                     ..Default::default()
                 };
@@ -1450,6 +1579,7 @@ impl TorrentBackend for Engine {
                         .pending
                         .entry(id.clone())
                         .or_insert_with(|| PendingAdd {
+                            file_types: file_types.clone(),
                             magnet: link.clone(),
                             name: name.clone(),
                             paused: false,
@@ -1620,6 +1750,128 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicU32;
 
+    #[tokio::test]
+    async fn selecting_nested_files_persists_without_restarting_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        std::fs::create_dir_all(source.join("Season 1/Subs")).unwrap();
+        for (path, data) in [
+            ("Season 1/Episode.MKV", b"video".as_slice()),
+            ("Season 1/Subs/Episode.srt", b"subtitle"),
+            ("poster.jpg", b"image"),
+            ("Instructions.txt", b"do not run me"),
+        ] {
+            std::fs::write(source.join(path), data).unwrap();
+        }
+        let bytes = librqbit::create_torrent(
+            &source,
+            Default::default(),
+            &librqbit::spawn_utils::BlockingSpawner::new(1),
+        )
+        .await
+        .unwrap()
+        .as_bytes()
+        .unwrap()
+        .to_vec();
+        let opts = options(dir.path());
+        let engine = Engine::new(&opts);
+        let session = selection_session(&opts).await;
+        *engine.session.write().await = Some(Live {
+            session: session.clone(),
+            ifindex: None,
+        });
+        let added = engine
+            .add_with_selection(
+                NewTorrent::File(bytes.clone()),
+                Some(TorrentFileKind::media_default()),
+            )
+            .await
+            .unwrap();
+        let handle = session
+            .get(TorrentIdOrHash::Hash(added.id.parse().unwrap()))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while matches!(handle.stats().state, TorrentStatsState::Initializing { .. }) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let files = engine.files(added.id.clone()).await.unwrap();
+        assert_eq!(files.files.iter().filter(|f| f.selected).count(), 2);
+        assert!(
+            files.files.iter().all(|f| f.selected
+                == matches!(f.kind, TorrentFileKind::Video | TorrentFileKind::Subtitle))
+        );
+        let video = files
+            .files
+            .iter()
+            .find(|f| f.kind == TorrentFileKind::Video)
+            .unwrap()
+            .index;
+        engine
+            .select_files(added.id.clone(), vec![video])
+            .await
+            .unwrap();
+        assert_eq!(handle.only_files(), Some(vec![video]));
+        let files = engine.files(added.id.clone()).await.unwrap();
+        assert_eq!(files.files.iter().filter(|f| f.selected).count(), 1);
+        assert!(
+            engine
+                .select_files(added.id, vec![usize::MAX])
+                .await
+                .is_err()
+        );
+        let saved =
+            std::fs::read_to_string(opts.state_dir.join(SESSION_DIR).join("session.json")).unwrap();
+        assert!(saved.contains("only_files"));
+        session.stop().await;
+        assert_eq!(
+            selected_indices(&bytes, None).unwrap(),
+            None,
+            "old requests still select all files"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_torrent_without_matching_types_waits_for_a_file_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("instructions.txt");
+        std::fs::write(&source, b"not a video").unwrap();
+        let bytes = librqbit::create_torrent(
+            &source,
+            Default::default(),
+            &librqbit::spawn_utils::BlockingSpawner::new(1),
+        )
+        .await
+        .unwrap()
+        .as_bytes()
+        .unwrap()
+        .to_vec();
+        let opts = options(dir.path());
+        let engine = Engine::new(&opts);
+        let session = offline_session(&opts).await;
+        *engine.session.write().await = Some(Live {
+            session: session.clone(),
+            ifindex: None,
+        });
+        let added = engine
+            .add_with_selection(
+                NewTorrent::File(bytes),
+                Some(TorrentFileKind::media_default()),
+            )
+            .await
+            .unwrap();
+        let files = engine.files(added.id).await.unwrap();
+        assert!(files.ready);
+        assert!(files.files.iter().all(|f| !f.selected));
+        let listed = engine.list().await;
+        assert_eq!(listed[0].state, EngineTorrentState::Paused);
+        assert_eq!(listed[0].done_bytes, 0);
+        assert_eq!(listed[0].progress, 0.0);
+        session.stop().await;
+    }
+
     fn options(dir: &Path) -> EngineOptions {
         let downloads = dir.join("In Progress");
         let state = dir.join("engine");
@@ -1676,6 +1928,188 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    /// Synthetic peers and trackers only; no DHT, LSD, public trackers or listeners.
+    async fn selection_session(options: &EngineOptions) -> Arc<Session> {
+        Session::new_with_opts(
+            options.downloads_dir.clone(),
+            SessionOptions {
+                dht: None,
+                listen: None,
+                disable_local_service_discovery: true,
+                ipv4_only: true,
+                fastresume: true,
+                persistence: Some(SessionPersistenceConfig::Json {
+                    folder: Some(options.state_dir.join(SESSION_DIR)),
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn selected_nested_payload_resumes_after_restart_without_fetching_omitted_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("seed/pack");
+        std::fs::create_dir_all(source.join("Season 1/Subs")).unwrap();
+        let payload = (0..512 * 1024 + 137)
+            .map(|i| (i % 251) as u8)
+            .collect::<Vec<_>>();
+        for (path, data) in [
+            ("Season 1/Episode.MKV", payload.as_slice()),
+            ("Season 1/Subs/Episode.srt", &[3_u8; 48 * 1024 + 11]),
+            ("poster.jpg", &[4_u8; 128 * 1024 + 23]),
+            ("Instructions.txt", &[5_u8; 128 * 1024 + 37]),
+        ] {
+            std::fs::write(source.join(path), data).unwrap();
+        }
+        let seeder = Session::new_with_opts(
+            source.parent().unwrap().to_path_buf(),
+            SessionOptions {
+                dht: None,
+                disable_trackers: true,
+                disable_local_service_discovery: true,
+                ipv4_only: true,
+                listen: Some(ListenerOptions {
+                    mode: ListenerMode::TcpOnly,
+                    listen_addr: (Ipv4Addr::LOCALHOST, 0).into(),
+                    ipv4_only: true,
+                    ..Default::default()
+                }),
+                ratelimits: LimitsConfig {
+                    download_bps: None,
+                    upload_bps: kbps_to_bps(64),
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let tracker = one_peer_tracker(seeder.listen_addr().unwrap()).await;
+        let bytes = librqbit::create_torrent(
+            &source,
+            librqbit::CreateTorrentOptions {
+                name: None,
+                trackers: vec![tracker],
+                piece_length: Some(16 * 1024),
+            },
+            &librqbit::spawn_utils::BlockingSpawner::new(1),
+        )
+        .await
+        .unwrap()
+        .as_bytes()
+        .unwrap();
+        let seeded = seeder
+            .add_torrent(
+                AddTorrent::from_bytes(bytes.clone()),
+                Some(AddTorrentOptions {
+                    overwrite: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap()
+            .into_handle()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), seeded.wait_until_completed())
+            .await
+            .unwrap()
+            .unwrap();
+        let opts = options(&dir.path().join("client"));
+        let engine = Engine::new(&opts);
+        let session = selection_session(&opts).await;
+        *engine.session.write().await = Some(Live {
+            session: session.clone(),
+            ifindex: None,
+        });
+        let added = engine
+            .add_with_selection(
+                NewTorrent::File(bytes.to_vec()),
+                Some(TorrentFileKind::media_default()),
+            )
+            .await
+            .unwrap();
+        let hash = TorrentIdOrHash::Hash(added.id.parse().unwrap());
+        let handle = session.get(hash).unwrap();
+        wait_until("a verified selected piece", async || {
+            handle.stats().progress_bytes > 0
+                && !matches!(handle.stats().state, TorrentStatsState::Initializing { .. })
+        })
+        .await;
+        engine.pause(added.id.clone()).await.unwrap();
+        assert!(
+            !handle.stats().finished,
+            "the transfer was interrupted before completion"
+        );
+        let before = handle.stats().progress_bytes;
+        let files = engine.files(added.id.clone()).await.unwrap();
+        let video = files
+            .files
+            .iter()
+            .find(|f| f.kind == TorrentFileKind::Video)
+            .unwrap()
+            .index;
+        engine
+            .select_files(added.id.clone(), vec![video])
+            .await
+            .unwrap();
+        assert!(handle.is_paused(), "editing files preserves a user's pause");
+        engine.stop_session().await;
+        assert!(matches!(
+            engine.files(added.id.clone()).await,
+            Err(BackendError::Blocked(_))
+        ));
+        drop(handle);
+        drop(session);
+
+        let restored = Engine::new(&opts);
+        let session = selection_session(&opts).await;
+        *restored.session.write().await = Some(Live {
+            session: session.clone(),
+            ifindex: None,
+        });
+        let handle = session
+            .get(TorrentIdOrHash::Hash(added.id.parse().unwrap()))
+            .unwrap();
+        wait_until("restored files to be checked", async || {
+            !matches!(handle.stats().state, TorrentStatsState::Initializing { .. })
+        })
+        .await;
+        assert!(handle.is_paused());
+        assert_eq!(handle.only_files(), Some(vec![video]));
+        assert!(
+            handle.stats().progress_bytes > 0,
+            "verified pieces survive a restart ({before} bytes before stopping)"
+        );
+        let selected = restored.files(added.id.clone()).await.unwrap();
+        assert_eq!(selected.files.iter().filter(|f| f.selected).count(), 1);
+        restored.resume(added.id).await.unwrap();
+        seeder.ratelimits.set_upload_bps(None);
+        wait_until("selected payload to finish", async || {
+            handle.stats().finished
+        })
+        .await;
+        assert_eq!(
+            std::fs::read(handle.output_folder().join("Season 1/Episode.MKV")).unwrap(),
+            payload
+        );
+        for file in selected
+            .files
+            .iter()
+            .filter(|f| matches!(f.kind, TorrentFileKind::Image | TorrentFileKind::Other))
+        {
+            assert!(
+                handle.stats().file_progress[file.index] < file.size,
+                "omitted file {} must not transfer in full",
+                file.path
+            );
+        }
+        assert!(engine_torrent(&handle).done_bytes < seeded.stats().total_bytes);
+        restored.stop_session().await;
+        seeder.stop().await;
     }
 
     #[tokio::test]

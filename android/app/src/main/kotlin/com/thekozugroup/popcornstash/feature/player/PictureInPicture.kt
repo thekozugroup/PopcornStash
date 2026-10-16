@@ -51,7 +51,7 @@ object PictureInPicture {
         return Rect(left, top, left + w, top + h)
     }
 
-    fun params(context: Context, playing: Boolean, controllable: Boolean, aspect: Rational?, sourceRect: Rect?): PictureInPictureParams {
+    fun params(context: Context, playing: Boolean, controllable: Boolean, aspect: Rational?, sourceRect: Rect?, allowAutoEnter: Boolean = true): PictureInPictureParams {
         val builder = PictureInPictureParams.Builder()
         if (aspect != null) builder.setAspectRatio(aspect)
         // The window grows out of the picture itself (Android 12's smoother transition).
@@ -59,7 +59,7 @@ object PictureInPicture {
         builder.setActions(if (controllable) listOf(playPause(context, playing)) else emptyList())
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             // Leaving the app while a video plays shrinks it by itself; paused, it does not.
-            if (playing && controllable) builder.setAutoEnterEnabled(true) else builder.setAutoEnterEnabled(false)
+            if (allowAutoEnter && playing && controllable) builder.setAutoEnterEnabled(true) else builder.setAutoEnterEnabled(false)
             builder.setSeamlessResizeEnabled(true)
         }
         return builder.build()

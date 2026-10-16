@@ -423,6 +423,16 @@ class ApiClientTest {
     // ---------------------------------------------------------- downloads ----
 
     @Test
+    fun torrentTypeChoicesAreSentIncludingAnEmptyChoice() = runTest {
+        server.respond(Fixtures.DOWNLOAD)
+        server.respond(Fixtures.DOWNLOAD)
+        api.addDownload("magnet:?xt=urn:btih:abc", fileTypes = listOf(TorrentFileKind.Video))
+        assertEquals("[\"video\"]", json(server.next().bodyText)["file_types"].toString())
+        api.addDownload("magnet:?xt=urn:btih:abc", fileTypes = emptyList())
+        assertEquals("[]", json(server.next().bodyText)["file_types"].toString())
+    }
+
+    @Test
     fun downloads() = runTest {
         server.respond("""{"items":[${Fixtures.DOWNLOAD},${Fixtures.SORTED}]}""")
         server.respond(Fixtures.DOWNLOAD)

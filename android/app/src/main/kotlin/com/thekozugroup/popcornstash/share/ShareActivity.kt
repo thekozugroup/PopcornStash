@@ -7,8 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
+import com.thekozugroup.popcornstash.privacy.PrivateActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
@@ -33,7 +32,7 @@ import kotlinx.coroutines.withContext
  * videos and files (`content://` only) are uploaded by a WorkManager job after the
  * signed-in person confirms.
  */
-class ShareActivity : ComponentActivity() {
+class ShareActivity : PrivateActivity() {
     // The check is about FragmentActivity before Fragment 1.3.0. This is a ComponentActivity,
     // and the app runs with Fragment 1.5.7; only the credentials library compiles against 1.2.5.
     @SuppressLint("InvalidFragmentVersionForActivityResult")
@@ -68,7 +67,7 @@ class ShareActivity : ComponentActivity() {
                 }
             },
         )[ShareViewModel::class.java]
-        setContent {
+        setPrivateContent {
             PopcornTheme {
                 val state by model.controller.state.collectAsStateWithLifecycle()
                 ShareSheet(

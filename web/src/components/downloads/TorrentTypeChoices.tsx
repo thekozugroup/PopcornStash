@@ -1,0 +1,18 @@
+import {CheckboxInput} from '@astryxdesign/core/CheckboxInput';
+import {HStack, VStack} from '@astryxdesign/core/Layout';
+import {Text} from '@astryxdesign/core/Text';
+import type {TorrentFileKind} from '../../api/types';
+import {fileKinds} from './fileSelection';
+
+export function TorrentTypeChoices({value, onChange, disabled}: {
+  value: TorrentFileKind[]; onChange: (value: TorrentFileKind[]) => void; disabled?: boolean;
+}) {
+  return <VStack gap={2}>
+    <Text type="supporting">Include in new torrents</Text>
+    <HStack gap={4} wrap="wrap">
+      {fileKinds.map(kind => <CheckboxInput key={kind.value} label={kind.label} value={value.includes(kind.value)}
+        isDisabled={disabled} onChange={checked => onChange(checked ? [...value, kind.value] : value.filter(v => v !== kind.value))} />)}
+    </HStack>
+    <Text type="supporting" color="secondary">{value.length === 0 ? 'Torrents fetch details, then pause. Choose files from the torrent’s menu and resume when ready.' : 'Choose individual files from a torrent’s menu after its file list arrives. Folder structure is preserved until sorting.'}</Text>
+  </VStack>;
+}

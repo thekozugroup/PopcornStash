@@ -67,6 +67,7 @@ fun DownloadsTab(
             onStopUpload = controller::stopUpload,
             onOpenAdd = { scope.launch { controller.openAdd(clipboardText(clipboard.getClipEntry(), context)) } },
             onAddText = controller::onAddText,
+            onAddFileType = controller::onAddFileType,
             onAddLibrary = controller::onAddLibrary,
             onSubmitAdd = controller::submitAdd,
             onCloseAdd = controller::closeAdd,

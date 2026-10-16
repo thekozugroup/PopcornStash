@@ -474,14 +474,51 @@ pub(crate) async fn find_moved(
     hash: Option<&str>,
 ) -> Result<Option<ItemRow>> {
     let Some(hash) = hash else { return Ok(None) };
-    Ok(sqlx::query_as::<_, ItemRow>(
-        "SELECT * FROM items WHERE status = 'missing' AND size = ? AND quick_hash = ?
-         ORDER BY missing_since DESC, id LIMIT 1",
+    let candidates = sqlx::query_as::<_, ItemRow>(
+        "SELECT * FROM items WHERE status != 'trashed' AND size = ? AND quick_hash = ?
+         ORDER BY missing_since DESC, id",
     )
     .bind(size)
     .bind(hash)
-    .fetch_optional(&lib.db)
-    .await?)
+    .fetch_all(&lib.db)
+    .await?;
+    // A rename notification may arrive before the removal notification.
+    for item in candidates {
+        if is_gone(lib, &item.rel_path).await {
+            return Ok(Some(item));
+        }
+    }
+    Ok(None)
+}
+
+/// A transcoder can change the container extension as well as the bytes. Only
+/// reconcile one unambiguous, vanished video with the identical folder and stem.
+/// An original still on disk is a separate edition, never a replacement.
+async fn find_replaced_video(lib: &Library, rel: &str, kind: MediaKind) -> Result<Option<ItemRow>> {
+    if kind != MediaKind::Video {
+        return Ok(None);
+    }
+    let path = Path::new(rel);
+    let stem = path.with_extension("");
+    let candidates = sqlx::query_as::<_, ItemRow>(
+        "SELECT * FROM items WHERE kind = 'video' AND status != 'trashed' AND rel_path >= ? AND rel_path < ?",
+    )
+    .bind(format!("{}.", stem.to_string_lossy()))
+    .bind(format!("{}/", stem.to_string_lossy()))
+    .fetch_all(&lib.db)
+    .await?;
+    let mut found = None;
+    for item in candidates {
+        if Path::new(&item.rel_path).with_extension("") == stem
+            && is_gone(lib, &item.rel_path).await
+        {
+            if found.is_some() {
+                return Ok(None);
+            }
+            found = Some(item);
+        }
+    }
+    Ok(found)
 }
 
 /// Queue probe and thumbnail work for an item.
@@ -718,7 +755,10 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
             ItemStatus::Missing => ItemStatus::Ready,
             other => other,
         };
-        if item.size == size && item.mtime == mtime {
+        if item.size == size
+            && item.mtime == mtime
+            && item.quick_hash == quick_hash_async(&abs).await
+        {
             if item.status == ItemStatus::Missing {
                 sqlx::query("UPDATE items SET status = ?, missing_since = NULL, updated_at = ? WHERE id = ?")
                     .bind(restored_status.as_str())
@@ -759,7 +799,8 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
         };
         sqlx::query(
             "UPDATE items SET size = ?, mtime = ?, quick_hash = ?, status = ?, missing_since = NULL,
-                thumb_state = 'pending', suggestion_json = ?, updated_at = ?
+                thumb_state = 'pending', mime = NULL, duration_s = NULL, width = NULL, height = NULL,
+                media_json = NULL, suggestion_json = ?, updated_at = ?
              WHERE id = ?",
         )
         .bind(size)
@@ -771,6 +812,7 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
         .bind(&item.id)
         .execute(&lib.db)
         .await?;
+        organizer::remove_cached_media(lib, &item.id).await;
         enqueue_media_jobs(lib, &item.id).await?;
         publish_moved(lib, LibraryChange::Updated, &item.id, item.facts());
         let row = repo::get(&lib.db, &item.id)
@@ -796,13 +838,30 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
     };
 
     // Same bytes as a missing item: it was moved or renamed outside PopcornStash.
-    if let Some(old) = find_moved(lib, size, hash.as_deref()).await? {
+    let moved = find_moved(lib, size, hash.as_deref()).await?;
+    let replaced = if moved.is_none() {
+        find_replaced_video(lib, &rel, kind).await?
+    } else {
+        None
+    };
+    let is_replacement = replaced.is_some();
+    if let Some(old) = moved.or(replaced) {
         let category_changed = fixed.is_some_and(|c| c != old.category);
         let mut row = old.clone();
         row.rel_path = rel.clone();
         row.mtime = mtime;
         row.status = ItemStatus::Ready;
         row.kind = kind;
+        if is_replacement {
+            row.size = size;
+            row.quick_hash = hash.clone();
+            row.mime = None;
+            row.duration_s = None;
+            row.width = None;
+            row.height = None;
+            row.media_json = None;
+            row.thumb_state = ThumbState::Pending;
+        }
         if category_changed {
             row.category = category;
             row.title = meta.title.clone();
@@ -814,9 +873,15 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
             row.episode_title = meta.episode_title.clone();
             row.set_taken(kept_capture_time(category, old.taken(), meta.taken));
         }
-        row.source_download_id = None;
+        if !is_replacement {
+            row.source_download_id = None;
+        }
         overwrite_row(lib, &old.id, &row).await?;
-        if category_changed && old.taken().is_none() && row.taken().is_some() {
+        if is_replacement {
+            organizer::remove_cached_media(lib, &old.id).await;
+            enqueue_media_jobs(lib, &old.id).await?;
+        }
+        if !is_replacement && category_changed && old.taken().is_none() && row.taken().is_some() {
             // Dated from its name or file time only: the probe reads its EXIF or tags.
             lib.jobs
                 .enqueue(JobKind::Probe, Some(&old.id), serde_json::json!({}))

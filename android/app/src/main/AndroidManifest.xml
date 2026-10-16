@@ -3,6 +3,7 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <!-- Share sheet uploads: a foreground job with a progress notification (share/). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -53,10 +54,10 @@
         </provider>
 
         <!--
-          The player (feature/player): its own activity for picture-in-picture, landscape and
-          hidden system bars. singleTask, so playing something else while it is in
-          picture-in-picture replaces what plays. It handles size, orientation and theme
-          changes itself, so the video never stops for them.
+          The player (feature/player): a private activity for landscape and hidden system
+          bars. singleTask replaces the current video when another is opened. It handles
+          size, orientation and theme changes itself. Background playback and
+          picture-in-picture are disabled to keep media behind the device credential lock.
         -->
         <activity
             android:name=".feature.player.PlayerActivity"
@@ -64,7 +65,7 @@
             android:exported="false"
             android:launchMode="singleTask"
             android:resizeableActivity="true"
-            android:supportsPictureInPicture="true"
+            android:supportsPictureInPicture="false"
             android:theme="@style/Theme.PopcornStash.Player" />
 
         <!--

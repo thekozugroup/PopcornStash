@@ -305,6 +305,21 @@ class DownloadsControllerTest {
     }
 
     @Test
+    fun newTorrentsDefaultToVideoAndSubtitlesAndCanDisableEither() {
+        val controller = controller()
+        controller.loaded()
+        controller.openAdd(null)
+        assertEquals(com.thekozugroup.popcornstash.data.api.TorrentFileKind.Default,
+            eventually { controller.state.first { it.add != null } }.add!!.fileTypes)
+        controller.onAddFileType(com.thekozugroup.popcornstash.data.api.TorrentFileKind.Subtitle)
+        controller.onAddText("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
+        answers["POST /api/downloads"] = { json(StashJson.encodeToString(Download.serializer(), s.paused)) }
+        controller.submitAdd()
+        eventually { controller.state.first { it.add == null } }
+        assertEquals("[\"video\"]", sent("POST", "/api/downloads").json()["file_types"].toString())
+    }
+
+    @Test
     fun aTorrentOnAServerWithTorrentsOffSaysWhatStillWorks() {
         val controller = controller()
         controller.loaded()

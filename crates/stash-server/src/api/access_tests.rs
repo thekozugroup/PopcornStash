@@ -474,6 +474,7 @@ async fn a_member_learns_nothing_about_items_they_cannot_see() {
     );
     for id in ["d-sorted", "d-active"] {
         for (method, route) in [
+            ("GET", format!("/api/downloads/{id}/files")),
             ("POST", format!("/api/downloads/{id}/pause")),
             ("POST", format!("/api/downloads/{id}/resume")),
             ("DELETE", format!("/api/downloads/{id}")),
@@ -484,6 +485,15 @@ async fn a_member_learns_nothing_about_items_they_cannot_see() {
             assert_eq!(status, StatusCode::NOT_FOUND, "{route}");
         }
     }
+    let (status, _, _) = app
+        .send(request(
+            "PUT",
+            "/api/downloads/d-active/files",
+            Some(&w.member),
+            Some(serde_json::json!({"indices": [0]})),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 /// HLS sessions belong to the person who started them, and stop once that person can no

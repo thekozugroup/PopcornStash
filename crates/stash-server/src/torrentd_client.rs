@@ -199,6 +199,28 @@ impl TorrentdClient {
         decode(response).await
     }
 
+    pub async fn files(
+        &self,
+        id: &str,
+    ) -> Result<stash_core::internal_api::TorrentFiles, TorrentdError> {
+        decode(
+            self.request(Method::GET, &["torrents", id, "files"], &[], None)
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn select_files(&self, id: &str, indices: Vec<usize>) -> Result<(), TorrentdError> {
+        self.request(
+            Method::PUT,
+            &["torrents", id, "files"],
+            &[],
+            Some(&serde_json::json!({"indices": indices})),
+        )
+        .await
+        .map(drop)
+    }
+
     pub async fn pause(&self, id: &str) -> Result<(), TorrentdError> {
         self.request(Method::POST, &["torrents", id, "pause"], &[], None)
             .await
@@ -1054,6 +1076,7 @@ mod tests {
         assert_eq!(list[0].name.as_deref(), Some("Big Buck Bunny"));
         let added = client
             .add(&AddTorrentRequest {
+                file_types: None,
                 magnet: Some("magnet:?xt=urn:btih:abc".into()),
                 torrent_base64: None,
             })
@@ -1090,6 +1113,7 @@ mod tests {
         // Other errors keep the status and message.
         match client
             .add(&AddTorrentRequest {
+                file_types: None,
                 magnet: Some("magnet:?bad".into()),
                 torrent_base64: None,
             })
@@ -1136,6 +1160,7 @@ mod tests {
         let (client, _) = client_for(dir.path(), Some(url)).await;
         let err = client
             .add(&AddTorrentRequest {
+                file_types: None,
                 magnet: Some("magnet:?xt=urn:btih:abc".into()),
                 torrent_base64: None,
             })
@@ -1509,6 +1534,7 @@ mod tests {
             other => panic!("an oversized answer must be refused: {other:?}"),
         }
         let request = AddTorrentRequest {
+            file_types: None,
             magnet: Some("magnet:?xt=urn:btih:abc".into()),
             torrent_base64: None,
         };

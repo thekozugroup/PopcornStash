@@ -398,6 +398,7 @@ pub struct SubtitleStream {
 /// One row of `downloads`.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct DownloadRow {
+    pub torrent_files_json: Option<String>,
     pub id: String,
     pub library_id: Option<String>,
     pub kind: DownloadKind,

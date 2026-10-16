@@ -18,6 +18,7 @@ object PlayerLauncher {
 
     fun intent(context: Context, itemId: String, fromStart: Boolean = false): Intent =
         Intent(context, PlayerActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NO_USER_ACTION)
             .putExtra(EXTRA_ITEM, itemId)
             .putExtra(EXTRA_FROM_START, fromStart)
             // Two taps on the same item are two requests; the same intent seen again (the
