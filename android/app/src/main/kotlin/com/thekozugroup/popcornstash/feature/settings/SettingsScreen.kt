@@ -74,6 +74,7 @@ data class WebSettingsPage(val label: String, val path: String)
 fun webSettingsPages(role: PersonRole): List<WebSettingsPage> = if (role == PersonRole.Owner) {
     listOf(
         WebSettingsPage("Sorting and trash", "settings/libraries"),
+        WebSettingsPage("Clean files", "clean"),
         WebSettingsPage("VPN", "settings/vpn"),
         WebSettingsPage("People", "settings/people"),
         WebSettingsPage("Devices", "settings/devices"),
@@ -91,7 +92,7 @@ class LibrarySettingsActions(
     /** Opens the editor for a new library; [folder] when it is made from a folder that is already there. */
     val onNew: (folder: String?) -> Unit = {},
     val onMove: (Library, step: Int) -> Unit = { _, _ -> },
-    val onDelete: (Library) -> Unit = {},
+    val onDelete: (Library, Boolean) -> Unit = { _, _ -> },
 )
 
 /**
@@ -178,14 +179,11 @@ fun SettingsRootPage(
     }
     val deleting = confirmDeleteId?.let { id -> libraries?.shown?.firstOrNull { it.id == id } }
     if (deleting != null) {
-        ConfirmDialog(
-            title = "Delete ${deleting.name}?",
-            text = deleteSentence(deleting),
-            confirm = "Delete library",
-            destructive = true,
-            onConfirm = {
+        LibraryRemovalDialog(
+            deleting,
+            onConfirm = { removeFolder ->
                 confirmDeleteId = null
-                actions.onDelete(deleting)
+                actions.onDelete(deleting, removeFolder)
             },
             onDismiss = { confirmDeleteId = null },
         )

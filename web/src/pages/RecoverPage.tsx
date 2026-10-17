@@ -57,7 +57,7 @@ export default function RecoverPage() {
       const flow = await auth.recoverStart({code});
       const credential = await createPasskey(flow.options);
       await auth.recoverFinish({flow_id: flow.flow_id, credential, passkey_name: guessDeviceName()});
-      await refresh();
+      await refresh(true);
       navigate('/settings/security', {replace: true});
     } catch (cause) {
       if (isCancelled(cause)) return;

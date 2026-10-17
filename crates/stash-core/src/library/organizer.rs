@@ -2055,6 +2055,7 @@ pub async fn empty_trash(lib: &Library, older_than_days: Option<u32>) -> Result<
         remove_cached_media(lib, &item_id).await;
         deleted += 1;
     }
+    deleted += lib.empty_file_trash(cutoff).await?;
     if deleted > 0 {
         tracing::info!(count = deleted, "emptied the trash");
     }

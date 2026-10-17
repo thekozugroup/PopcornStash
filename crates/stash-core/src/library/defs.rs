@@ -1332,8 +1332,18 @@ impl Library {
         Ok(())
     }
 
-    /// `DELETE /api/libraries/:id` (section 8, Delete). Files are never touched.
+    /// Default removal keeps every file in place.
     pub async fn delete_library(&self, id: &str) -> Result<Written> {
+        self.delete_library_with_folder(id, None, None).await
+    }
+
+    /// Explicit opt-in moves the entire confirmed folder to recoverable Trash.
+    pub async fn delete_library_with_folder(
+        &self,
+        id: &str,
+        confirmed_folder: Option<&str>,
+        user: Option<&str>,
+    ) -> Result<Written> {
         let _moves = self.lock_moves().await;
         let mut tx = crate::db::begin_write(&self.db).await?;
         let row: LibraryRow = sqlx::query_as("SELECT * FROM libraries WHERE id = ?")
@@ -1345,23 +1355,49 @@ impl Library {
             .bind(id)
             .fetch_all(&mut *tx)
             .await?;
-        sqlx::query("UPDATE items SET library_id = NULL, place = 'folder' WHERE library_id = ?")
+        let staged = if let Some(confirmed) = confirmed_folder {
+            if confirmed != row.folder {
+                return Err(CoreError::bad_field(
+                    "confirm_folder",
+                    "Enter this library's exact folder name.",
+                ));
+            }
+            Some(super::cleanup::stage(self, &mut tx, &row.folder, true, user, None).await?)
+        } else {
+            None
+        };
+        let result = async {
+            sqlx::query(
+                "UPDATE items SET library_id = NULL, place = 'folder' WHERE library_id = ?",
+            )
             .bind(id)
             .execute(&mut *tx)
             .await?;
-        for table in ["library_claims", "library_members"] {
-            sqlx::query(&format!("DELETE FROM {table} WHERE library_id = ?"))
+            for table in ["library_claims", "library_members"] {
+                sqlx::query(&format!("DELETE FROM {table} WHERE library_id = ?"))
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            sqlx::query("DELETE FROM libraries WHERE id = ?")
                 .bind(id)
                 .execute(&mut *tx)
                 .await?;
+            let order = ordered_ids(&mut tx).await?;
+            write_order(&mut tx, &order).await?;
+            tx.commit().await?;
+            Result::Ok(item_ids)
         }
-        sqlx::query("DELETE FROM libraries WHERE id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        let order = ordered_ids(&mut tx).await?;
-        write_order(&mut tx, &order).await?;
-        tx.commit().await?;
+        .await;
+        let item_ids = match result {
+            Ok(ids) => ids,
+            Err(error) => {
+                if let Some(staged) = &staged {
+                    super::cleanup::undo_stage(self, staged, &row.folder)?;
+                }
+                return Err(error);
+            }
+        };
         self.bump_generation();
         drop(_moves);
         if !item_ids.is_empty() {
@@ -1372,7 +1408,7 @@ impl Library {
             });
         }
         self.events.publish(Event::Libraries);
-        tracing::info!(library = %id, name = %row.name, folder = %row.folder, "deleted a library; its files stay");
+        tracing::info!(library = %id, name = %row.name, folder = %row.folder, folder_trashed = staged.is_some(), "deleted a library");
         Ok(Written {
             id: id.to_string(),
             name: row.name,

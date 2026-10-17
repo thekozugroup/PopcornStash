@@ -9,6 +9,7 @@
  * refresh `/api/auth/state` and route to sign-in.
  */
 import type {
+  CleanupFile, FileTrashEntry,
   AuditEntry,
   AuthState,
   AuthenticationCredentialJSON,
@@ -289,6 +290,7 @@ export const health = {
 };
 
 export const auth = {
+  activity: () => post<{server_time: number; idle_expires_at: number}>('/api/auth/activity', {}),
   state: (signal?: AbortSignal) =>
     request<AuthState>('/api/auth/state', {signal, skipAuthRefresh: true}),
 
@@ -384,8 +386,10 @@ export const libraries = {
   update: (id: string, body: LibraryEditRequest) => patch<Library>(`/api/libraries/${enc(id)}`, body),
   /** Owner. Every library exactly once, in the new order. */
   reorder: (ids: string[]) => put<LibraryList>('/api/libraries/order', {ids}),
-  /** Owner. Takes the library out of the app; its folder and files stay. */
-  remove: (id: string) => del(`/api/libraries/${enc(id)}`),
+  /** Owner. Folder removal is a separate, explicit action and endpoint. */
+  remove: (id: string, folder?: string) => folder === undefined
+    ? del(`/api/libraries/${enc(id)}`)
+    : post<void>(`/api/libraries/${enc(id)}/trash`, {confirm_folder: folder}),
   /** Owner: top-level folders that are not a library. */
   folders: (signal?: AbortSignal) => get<{folders: UnassignedFolder[]}>('/api/libraries/folders', undefined, signal),
   /** The curated icon names, in picker order. */
@@ -562,3 +566,11 @@ export const api = {
 };
 
 export type {AuthenticationCredentialJSON, RegistrationCredentialJSON};
+
+export const files = {
+  list: (folder?: string, signal?: AbortSignal) => get<{files: CleanupFile[]; truncated: boolean}>('/api/files', {folder}, signal),
+  remove: (selection: Pick<CleanupFile, 'path' | 'fingerprint'>[]) =>
+    post<{removed: string[]; failed: {path: string; message: string}[]}>('/api/files/trash', {files: selection}),
+  trash: (signal?: AbortSignal) => get<FileTrashEntry[]>('/api/files/trash', undefined, signal),
+  restore: (id: string) => post<void>(`/api/files/trash/${enc(id)}/restore`, {}),
+};

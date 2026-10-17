@@ -510,6 +510,9 @@ export interface AuthState {
   rp_id: string | null;
   passkeys_ready: boolean;
   reason: string | null;
+  /** Optional while connecting to an older server. Unix seconds. */
+  server_time?: UnixSeconds;
+  idle_expires_at?: UnixSeconds | null;
 }
 
 export interface SetupStartRequest {
@@ -929,3 +932,24 @@ export interface StashEventMap {
 }
 
 export type StashEventName = keyof StashEventMap;
+
+/** Owner-only on-disk cleanup; unfinished downloads and system files are excluded. */
+export type CleanupKind = 'video' | 'image' | 'subtitle' | 'audio' | 'other';
+export interface CleanupFile {
+  path: string;
+  fingerprint: string;
+  kind: CleanupKind;
+  size: number;
+  review: 'waiting' | 'ignored' | 'none';
+  source_download_id: string | null;
+}
+export interface FileTrashEntry {
+  id: string;
+  original_rel_path: string;
+  trashed_rel_path: string;
+  is_dir: boolean;
+  size: number;
+  file_count: number;
+  trashed_at: UnixSeconds;
+  trashed_by: string | null;
+}

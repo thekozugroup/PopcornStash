@@ -82,7 +82,7 @@ export default function SetupPage() {
       const flow = await auth.setupStart({setup_code: code, display_name: displayName.trim()});
       const credential = await createPasskey(flow.options);
       await auth.setupFinish({flow_id: flow.flow_id, credential, passkey_name: guessDeviceName()});
-      await refresh();
+      await refresh(true);
       navigate('/', {replace: true});
     } catch (error) {
       if (isCancelled(error)) return;

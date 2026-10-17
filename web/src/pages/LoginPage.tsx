@@ -36,7 +36,7 @@ const styles = stylex.create({
 });
 
 export default function LoginPage() {
-  const {state, status, refresh} = useAuth();
+  const {state, status, refresh, idleExpired} = useAuth();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const next = safeNextPath(params.get('next'));
@@ -63,7 +63,7 @@ export default function LoginPage() {
       const flow = await auth.loginStart();
       const credential = await getPasskey(flow.options);
       await auth.loginFinish({flow_id: flow.flow_id, credential});
-      await refresh();
+      await refresh(true);
       navigate(next, {replace: true});
     } catch (cause) {
       if (isCancelled(cause)) return;
@@ -84,7 +84,7 @@ export default function LoginPage() {
   return (
     <AuthLayout
       title="Sign in to PopcornStash"
-      subtitle="Use the passkey saved on this device, or scan the code your browser shows with your phone."
+      subtitle={idleExpired ? "Locked after 15 minutes without activity. Use your passkey to continue." : "Use the passkey saved on this device, or scan the code your browser shows with your phone."}
       footnote="Private and self-hosted. Your videos and photos stay on your server.">
       <PasskeyNotice availability={availability} />
       {error ? (

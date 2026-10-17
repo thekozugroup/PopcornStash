@@ -212,5 +212,5 @@ private object NoEditorActions : LibraryEditorActions {
     override fun cancelClaims() = Unit
     override fun askDelete() = Unit
     override fun cancelDelete() = Unit
-    override fun confirmDelete() = Unit
+    override fun confirmDelete(removeFolder: Boolean) = Unit
 }

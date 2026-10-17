@@ -4,6 +4,7 @@
 
 pub mod access;
 pub mod classify;
+pub mod cleanup;
 pub mod defs;
 pub mod destinations;
 pub mod organizer;

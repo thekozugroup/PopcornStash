@@ -31,6 +31,7 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/auth/state", get(sessions::auth_state))
+        .route("/api/auth/activity", post(sessions::activity))
         .route("/api/auth/setup/start", post(setup_start))
         .route("/api/auth/setup/finish", post(setup_finish))
         .route("/api/auth/login/start", post(login_start))

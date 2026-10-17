@@ -124,7 +124,7 @@ export default function InvitePage() {
       const flow = await auth.inviteStart({code, display_name: trimmed});
       const credential = await createPasskey(flow.options);
       await auth.inviteFinish({flow_id: flow.flow_id, credential, passkey_name: guessDeviceName()});
-      await refresh();
+      await refresh(true);
       navigate('/', {replace: true});
     } catch (cause) {
       if (isCancelled(cause)) return;

@@ -4,6 +4,7 @@
 mod access_tests;
 pub mod downloads;
 pub mod events;
+pub mod files;
 pub mod inbox;
 pub mod items;
 pub mod libraries;
@@ -27,6 +28,7 @@ pub fn routes() -> Router<AppState> {
         .merge(items::routes())
         .merge(stream::routes())
         .merge(inbox::routes())
+        .merge(files::routes())
         .merge(trash::routes())
         .merge(downloads::routes())
         .merge(uploads::routes())

@@ -49,6 +49,7 @@ export const routes: RouteObject[] = [
               {path: 'photos', ...legacy(module => module.PhotosRedirect)},
               {path: 'other', ...page(() => import('../pages/OtherPage'))},
               {path: 'item/:id', ...page(() => import('../pages/ItemPage'))},
+              {path: 'clean', ...page(() => import('../pages/CleanFilesPage'))},
               {path: 'inbox', ...page(() => import('../pages/InboxPage'))},
               {path: 'downloads', ...page(() => import('../pages/DownloadsPage'))},
               {path: 'share', ...page(() => import('../pages/SharePage'))},

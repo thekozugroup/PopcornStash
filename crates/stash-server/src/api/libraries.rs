@@ -7,7 +7,7 @@
 
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, Uri};
-use axum::routing::{get, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use stash_core::CoreError;
@@ -31,6 +31,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/libraries/folders", get(folders))
         .route("/api/libraries/order", put(order))
         .route("/api/libraries/{id}", get(one).patch(edit).delete(remove))
+        .route("/api/libraries/{id}/trash", post(remove_folder))
         .route("/api/libraries/{id}/shows", get(shows))
         .route("/api/libraries/{id}/shows/{name}", get(show))
         .route("/api/libraries/{id}/timeline", get(timeline))
@@ -180,6 +181,32 @@ async fn remove(
             ip.as_string().as_deref(),
         )
         .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct RemoveFolder {
+    confirm_folder: String,
+}
+
+// A distinct verb/path fails closed against older servers which would ignore a new
+// DELETE query parameter. Keeping files still uses the original DELETE endpoint.
+async fn remove_folder(
+    State(state): State<AppState>,
+    user: AuthUser,
+    ip: ClientIp,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<RemoveFolder>,
+) -> ApiResult<StatusCode> {
+    user.require(Scope::LibraryRead)?;
+    let access = user.access(&state.db).await?;
+    visible_library(&state, &access, &id).await?;
+    user.require_owner()?;
+    let written = state
+        .library
+        .delete_library_with_folder(&id, Some(&body.confirm_folder), Some(&user.user_id))
+        .await?;
+    state.auth.audit(Some(&user.user_id), "library_deleted", serde_json::json!({"library_id": id, "name": written.name, "folder": written.folder, "folder_trashed": true}), ip.as_string().as_deref()).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -125,14 +125,14 @@ class LibrarySettingsController(
     }
 
     /** Takes a library out of the app; its folder and files stay where they are. */
-    fun delete(library: Library) {
+    fun delete(library: Library, removeFolder: Boolean = false) {
         if (_state.value.deletingId != null) return
         _state.update { it.copy(deletingId = library.id) }
         scope.launch {
             try {
-                api.deleteLibrary(library.id)
+                api.deleteLibrary(library.id, library.folder.takeIf { removeFolder })
                 data.refreshLibraries().join()
-                _notices.trySend(deletedNotice(library))
+                _notices.trySend(deletedNotice(library, removeFolder))
             } catch (e: ApiException) {
                 _notices.trySend("${library.name} was not deleted. ${e.message}")
             } finally {

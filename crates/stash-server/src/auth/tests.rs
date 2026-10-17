@@ -1550,3 +1550,92 @@ async fn owner_cannot_mint_full_access_for_someone_else() {
         .await;
     assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.body);
 }
+
+#[tokio::test]
+async fn browser_idle_rejects_polls_and_requires_a_fresh_passkey() {
+    use super::sessions::BROWSER_IDLE_S;
+    let h = harness().await;
+    let mut device = Device::new();
+    let cookie = h.setup_owner(&mut device).await;
+    let initial = h.get("/api/auth/state", As::Cookie(&cookie)).await;
+    assert_eq!(
+        initial.body["idle_expires_at"].as_i64().unwrap()
+            - initial.body["server_time"].as_i64().unwrap(),
+        BROWSER_IDLE_S
+    );
+    // Polling touches last_seen_at, never human activity.
+    let activity = stash_core::now() - BROWSER_IDLE_S + 5;
+    sqlx::query("UPDATE sessions SET last_activity_at = ?, last_seen_at = last_seen_at - 600")
+        .bind(activity)
+        .execute(&h.state.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        h.get("/api/me", As::Cookie(&cookie)).await.status,
+        StatusCode::OK
+    );
+    let actual: i64 = sqlx::query_scalar("SELECT last_activity_at FROM sessions")
+        .fetch_one(&h.state.db)
+        .await
+        .unwrap();
+    assert_eq!(actual, activity);
+    // Only the explicit activity endpoint extends the deadline.
+    let touched = h
+        .post("/api/auth/activity", As::Cookie(&cookie), json!({}))
+        .await;
+    assert_eq!(touched.status, StatusCode::OK);
+    assert!(touched.body["idle_expires_at"].as_i64().unwrap() > activity + BROWSER_IDLE_S);
+    sqlx::query("UPDATE sessions SET last_activity_at = ?")
+        .bind(stash_core::now() - BROWSER_IDLE_S)
+        .execute(&h.state.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        h.post("/api/auth/activity", As::Cookie(&cookie), json!({}))
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        h.get("/api/me", As::Cookie(&cookie)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        h.get("/api/auth/state", As::Cookie(&cookie)).await.body["authenticated"],
+        false
+    );
+    let signed_in = h.login(&mut device, json!({})).await;
+    assert_eq!(signed_in.status, StatusCode::OK);
+    assert_eq!(
+        h.get("/api/me", As::Cookie(&signed_in.cookie().unwrap()))
+            .await
+            .status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn browser_idle_does_not_expire_android_or_device_tokens() {
+    let h = harness().await;
+    let mut device = Device::new();
+    h.setup_owner(&mut device).await;
+    let login = h.login(&mut device, json!({"want_token": true})).await;
+    let bearer = login.body["token"].as_str().unwrap();
+    sqlx::query("UPDATE sessions SET last_activity_at = 0")
+        .execute(&h.state.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        h.get("/api/me", As::Bearer(bearer)).await.status,
+        StatusCode::OK
+    );
+    let state = h.get("/api/auth/state", As::Bearer(bearer)).await;
+    assert_eq!(state.body["authenticated"], true);
+    assert_eq!(state.body["idle_expires_at"], Value::Null);
+    assert_eq!(
+        h.post("/api/auth/activity", As::Bearer(bearer), json!({}))
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+}

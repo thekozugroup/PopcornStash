@@ -48,6 +48,7 @@ import type {
 import {useLibraries} from '../../app/LibrariesProvider';
 import {useDocumentTitle} from '../../components/PageHeader';
 import {IconPicker} from '../../components/settings/IconPicker';
+import {DeleteLibraryDialog} from '../../components/settings/DeleteLibraryDialog';
 import {OwnerOnly} from '../../components/settings/OwnerOnly';
 import {LoadError} from '../../components/settings/SectionStates';
 import {SettingsGroup} from '../../components/settings/SettingsGroup';
@@ -291,6 +292,7 @@ function LibraryEditor() {
   const [errors, setErrors] = useState<Partial<Record<FieldKey, string>>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [nonce, setNonce] = useState(0);
   const formRef = useRef<HTMLFormElement | null>(null);
 
@@ -506,22 +508,6 @@ function LibraryEditor() {
     });
   };
 
-  const remove = () => {
-    if (!library) return;
-    const sentence = `Takes ${library.name} out of the app. Its files stay in ${library.folder ?? 'its folder'}/ and only owners will see them.`;
-    ask({
-      title: `Delete ${library.name}?`,
-      description: sentence,
-      actionLabel: 'Delete library',
-      failure: 'The library was not deleted. Try again.',
-      run: async () => {
-        await librariesApi.remove(library.id);
-        await reload();
-        showToast({body: `${library.name} is no longer in the app. Its files stay in ${library.folder ?? 'its folder'}/.`});
-        navigate('/settings/libraries');
-      },
-    });
-  };
 
   const shown = chosenFolder ? shownWords(chosenFolder, draft) : null;
   const hidden = chosenFolder ? hiddenCounts(chosenFolder, draft) : null;
@@ -794,7 +780,7 @@ function LibraryEditor() {
             <SettingsGroup
               title="Delete library"
               description={`Takes ${library.name} out of the app. Its files stay in ${library.folder ?? 'its folder'}/ and only owners will see them.`}
-              actions={<Button label="Delete library" variant="destructive" onClick={remove} isDisabled={isSaving} />}
+              actions={<Button label="Delete library" variant="destructive" onClick={() => setDeleting(true)} isDisabled={isSaving} />}
             />
           ) : null}
         </div>
@@ -810,6 +796,11 @@ function LibraryEditor() {
         </div>
       </form>
       {dialog}
+      {deleting && library ? <DeleteLibraryDialog library={library} onClose={() => setDeleting(false)} onDeleted={removed => {
+        setDeleting(false); void reload();
+        showToast({body: removed ? `${library.name} and its folder moved to Trash.` : `${library.name} is no longer in the app. Its files stay where they are.`});
+        navigate('/settings/libraries');
+      }} /> : null}
     </>
   );
 }

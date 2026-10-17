@@ -177,5 +177,6 @@ fun deleteSentence(library: Library): String =
     "Takes ${library.name} out of the app. Its files stay in ${library.folder?.let(::folderInSentence) ?: "its folder/"} and only owners will see them."
 
 /** The note after a library was deleted. */
-fun deletedNotice(library: Library): String =
+fun deletedNotice(library: Library, folderRemoved: Boolean = false): String =
+    if (folderRemoved) "${library.name} and its folder moved to Trash. Restore them in Sorting and trash on the web." else
     "${library.name} is no longer in the app. Its files stay in ${library.folder?.let(::folderInSentence) ?: "its folder/"}."

@@ -265,6 +265,7 @@ export default function DownloadsPage() {
     <>
       <PageHeader
         title="Downloads"
+        actions={isOwner ? <Button label="Clean completed files" variant="secondary" href="/clean?folder=Downloads%2FCompleted" /> : undefined}
         subtitle="New files land here first, then move into your library."
       />
 

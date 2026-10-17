@@ -22,6 +22,8 @@ export async function listOpenInvites(signal?: AbortSignal): Promise<InviteListE
 
 export interface TrashRow {
   id: string;
+  fileEntry?: boolean;
+  detail?: string;
   title: string;
   kind: ItemKind | null;
   category: ItemCategory | null;

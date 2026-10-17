@@ -13,6 +13,8 @@
 import * as stylex from '@stylexjs/stylex';
 import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {Button} from '@astryxdesign/core/Button';
+import {CheckboxInput} from '@astryxdesign/core/CheckboxInput';
+import {HStack} from '@astryxdesign/core/Layout';
 import {Selector} from '@astryxdesign/core/Selector';
 import {Text} from '@astryxdesign/core/Text';
 import {FileQuestion, Film, ImageIcon, Info} from 'lucide-react';
@@ -126,6 +128,8 @@ const styles = stylex.create({
 
 export interface InboxRowProps {
   item: ItemDetail;
+  selected?: boolean;
+  onSelect?: (selected: boolean) => void;
   libraries: Library[];
   /** Where this person may send the file. */
   choices: Target[];
@@ -151,6 +155,8 @@ export interface InboxRowProps {
 
 export function InboxRow({
   item,
+  selected = false,
+  onSelect,
   libraries,
   choices,
   target,
@@ -200,9 +206,10 @@ export function InboxRow({
         />
       </span>
       <div {...stylex.props(styles.heading)}>
-        <Text type="label" as="p" maxLines={2} wordBreak="break-word">
-          <BreakableName name={fileName} />
-        </Text>
+        <HStack gap={2} vAlign="center">
+          {onSelect ? <CheckboxInput label={`Select ${fileName}`} isLabelHidden value={selected} isDisabled={isLocked} onChange={onSelect} /> : null}
+          <Text type="label" as="p" maxLines={2} wordBreak="break-word"><BreakableName name={fileName} /></Text>
+        </HStack>
         <ul {...stylex.props(styles.meta)} aria-label="Details">
           {meta.map(entry => (
             <li key={entry}>{entry}</li>

@@ -1,5 +1,16 @@
 # PopcornStash, iteration 1
 
+## Current continuation: cleanup, bulk imports and browser inactivity, 2026-10-16
+
+- Current evidence: web check/build passed (68 tests), extension check/ZIP passed (78 tests), Android test/lint/debug/golden/glyph gates passed (820 tests, zero failures/errors, four integration skips), 15 updated native goldens reviewed, four real-browser regressions passed (cleanup, folder opt-in, selected import, actual server idle expiry and fresh passkey). Strict Linux workspace clippy passed; workspace tests/release image verification in progress. The first Linux web-asset test exposed Mac AppleDouble archive entries, removed from owned build input before rerunning.
+- Pixel updated over ADB with data preserved; private debug APK SHA256 `166cd857249b81489bd717ed5cfc9b686c48b5976109d6d221e5a57084f2496c` at `evidence/file-cleanup/android/popcornstash-private-debug.apk`. Production release signing inputs remain unavailable; do not substitute a key.
+- Additional scope: Inbox filters by source download/type/review, matching selection and bulk destinations; browser passkey lock after 15 idle minutes, excluding background traffic and native bearer sessions.
+- Deployment steering: owner explicitly authorized a brief pause/restart of active Atlas downloads for this update and reinstall on Pixel (2026-10-16); preserve identities, progress and file selections, resume only previously active jobs.
+- Scope: owner file inventory grouped by folder/type, including ignored imports and unindexed subtitles/instructions/artwork. Explicit selection and bulk cleanup with recovery in Trash. Library removal keeps files by default, with an opt-in to trash its entire folder. Android exposes the same library choice and links to cleanup.
+- Safety: never list or mutate unfinished downloads; reject stale selections, traversal, symlink parents and Linux mount crossings. Preserve existing download selections, VPN and production container. No restart while downloading.
+- Atlas: removed only `/mnt/user/F-Stash/test` and its empty child after verifying no files, symlinks, mount point, indexed items or registered library. Production ID/start time/restarts unchanged.
+- In progress: implementation and synthetic verification. No cleanup of personal media authorized or performed.
+
 ## Current continuation: AV1 replacements and selective downloads, 2026-10-16
 
 - Scope: follow external Atlas moves/renames and in-place video transcoding without losing item identity, favorites or watch progress. New torrents select videos/subtitles by default, with type and individual file selection. No in-app filesystem manager requested.

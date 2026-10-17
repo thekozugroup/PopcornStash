@@ -115,7 +115,7 @@ class LibraryWordsTest {
     @Test
     fun ownersGetTheirWebPagesAndMembersTheirOwn() {
         val owner = webSettingsPages(com.thekozugroup.popcornstash.data.api.Role.Owner).map { it.label }
-        assertEquals(listOf("Sorting and trash", "VPN", "People", "Devices", "Security", "System"), owner)
+        assertEquals(listOf("Sorting and trash", "Clean files", "VPN", "People", "Devices", "Security", "System"), owner)
         val member = webSettingsPages(com.thekozugroup.popcornstash.data.api.Role.Member).map { it.path }
         assertEquals(listOf("settings/devices", "settings/security"), member)
         assertTrue("libraries are managed in the app", "Libraries" !in owner)

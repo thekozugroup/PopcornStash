@@ -84,7 +84,7 @@ interface LibraryEditorActions {
     fun cancelClaims()
     fun askDelete()
     fun cancelDelete()
-    fun confirmDelete()
+    fun confirmDelete(removeFolder: Boolean = false)
 }
 
 /**
@@ -505,14 +505,7 @@ private fun Dialogs(state: LibraryEditorUi, draft: LibraryDraft, actions: Librar
     }
     val library = state.library
     if (state.confirmingDelete && library != null) {
-        ConfirmDialog(
-            title = "Delete ${library.name}?",
-            text = deleteSentence(library),
-            confirm = "Delete library",
-            destructive = true,
-            onConfirm = actions::confirmDelete,
-            onDismiss = actions::cancelDelete,
-        )
+        LibraryRemovalDialog(library, onConfirm = actions::confirmDelete, onDismiss = actions::cancelDelete)
     }
 }
 

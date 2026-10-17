@@ -4,6 +4,12 @@ Changes to PopcornStash, newest first. Version numbers follow [Semantic Versioni
 
 ## [Unreleased]
 
+- Owner file inventory and selective cleanup by folder, file type and ignored status, including unindexed companions; recover files and whole folders from Trash.
+- Optional confirmed library-folder removal on web and Android; default deletion keeps files.
+- Inbox selection by download and file type, with bulk import destinations.
+- Browser passkey lock after 15 minutes of inactivity, enforced independently of background requests. Android sessions and server downloads continue.
+
+
 - Optional public tracker list in VPN settings, using ngosang's maintained best list through the VPN, with daily refresh, last-good fallback and private-torrent exclusion.
 - Consistent nested menu and media corners; download percentages aligned with the speed/peer chips on web and Android.
 

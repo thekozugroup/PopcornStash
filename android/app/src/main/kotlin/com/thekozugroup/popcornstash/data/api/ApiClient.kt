@@ -128,8 +128,12 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
             LibraryList.serializer(),
         ).libraries
 
-    /** Removes the library from the app; its folder and files stay. */
-    suspend fun deleteLibrary(id: String) = sendEmpty(request("/api/libraries/${seg(id)}").delete().build())
+    /** Optional confirmed folder removal uses a distinct endpoint: old servers fail closed. */
+    suspend fun deleteLibrary(id: String, folder: String? = null) = sendEmpty(
+        if (folder == null) request("/api/libraries/${seg(id)}").delete().build()
+        else request("/api/libraries/${seg(id)}/trash")
+            .post(buildJsonObject { put("confirm_folder", folder) }.toString().toRequestBody(JSON)).build(),
+    )
 
     suspend fun shows(libraryId: String): List<ShowSummary> =
         get("/api/libraries/${seg(libraryId)}/shows", ListSerializer(ShowSummary.serializer()))

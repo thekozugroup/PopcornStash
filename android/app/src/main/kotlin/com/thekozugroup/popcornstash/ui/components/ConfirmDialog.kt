@@ -26,6 +26,7 @@ fun ConfirmDialog(
     onDismiss: () -> Unit,
     destructive: Boolean = false,
     enabled: Boolean = true,
+    confirmEnabled: Boolean = enabled,
     text: @Composable () -> Unit,
 ) {
     val colors = Popcorn.colors
@@ -36,7 +37,7 @@ fun ConfirmDialog(
         confirmButton = {
             TextButton(
                 onClick = onConfirm,
-                enabled = enabled,
+                enabled = confirmEnabled,
                 shape = Popcorn.shapes.control,
                 colors = ButtonDefaults.textButtonColors(
                     contentColor = if (destructive) colors.error else colors.text,

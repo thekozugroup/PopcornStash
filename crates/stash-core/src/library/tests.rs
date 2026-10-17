@@ -3121,3 +3121,275 @@ async fn av1_replacement_is_reprobed_and_playback_uses_the_new_codec() {
         PlaybackMode::Hls { .. }
     ));
 }
+
+#[tokio::test]
+async fn cleanup_inventory_includes_unindexed_companions_and_ignored_files_only_in_safe_zones() {
+    let h = harness().await;
+    h.write("Inbox/pack/clip.mkv", b"video");
+    h.write("Inbox/pack/clip.en.srt", b"subtitle");
+    h.write("Inbox/pack/instructions.txt", b"readme");
+    h.write("Inbox/pack/art.jpg", b"image");
+    h.write("Other/song.flac", b"audio");
+    h.write("Downloads/In Progress/live/clip.mkv", b"unfinished");
+    h.write("Downloads/Other/live.mkv", b"unfinished");
+    h.write("Inbox/hidden.part", b"unfinished");
+    h.write("Inbox/.hidden", b"hidden");
+    h.write("Inbox/manual.pdf", b"document");
+    let ids = h.lib.sort_path("Inbox/manual.pdf", None).await.unwrap();
+    let mut ignored = None;
+    for id in ids {
+        if repo::get(&h.lib.db, &id)
+            .await
+            .unwrap()
+            .unwrap()
+            .rel_path
+            .ends_with("manual.pdf")
+        {
+            ignored = Some(id);
+            break;
+        }
+    }
+    let ignored = ignored.unwrap();
+    h.lib.review(&ignored, ReviewAction::Ignore).await.unwrap();
+    std::os::unix::fs::symlink(h.root.join("Other"), h.root.join("Inbox/link")).unwrap();
+    let list = h.lib.cleanup_inventory(None).await.unwrap();
+    assert!(!list.truncated);
+    assert!(
+        list.files
+            .iter()
+            .any(|f| f.choice.path.ends_with(".srt") && f.kind == "subtitle")
+    );
+    assert!(
+        list.files
+            .iter()
+            .any(|f| f.choice.path.ends_with("manual.pdf") && f.review == "ignored")
+    );
+    assert!(
+        !list
+            .files
+            .iter()
+            .any(|f| f.choice.path.contains("In Progress")
+                || f.choice.path.contains("Downloads/Other")
+                || f.choice.path.ends_with(".part")
+                || f.choice.path.contains("/link/"))
+    );
+}
+
+#[tokio::test]
+async fn cleanup_removes_only_selected_files_and_restores_without_replacing_a_video() {
+    let h = harness().await;
+    h.write("Inbox/pack/clip.mkv", b"video");
+    h.write("Inbox/pack/clip.srt", b"subtitle");
+    h.write("Inbox/pack/cover.jpg", b"image");
+    let files = h.lib.cleanup_inventory(Some("Inbox")).await.unwrap().files;
+    let choices: Vec<_> = files
+        .into_iter()
+        .filter(|f| f.kind != "video")
+        .map(|f| f.choice)
+        .collect();
+    sqlx::query("INSERT INTO users VALUES ('owner','Owner','owner','cleanup-owner',0)")
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    let out = h.lib.cleanup_files(&choices, "owner").await.unwrap();
+    assert_eq!(out.removed.len(), 2);
+    assert!(out.failed.is_empty());
+    assert!(h.exists("Inbox/pack/clip.mkv"));
+    assert!(!h.exists("Inbox/pack/clip.srt"));
+    for entry in h.lib.file_trash().await.unwrap() {
+        h.lib.restore_file_trash(&entry.id).await.unwrap();
+    }
+    assert_eq!(
+        std::fs::read(h.root.join("Inbox/pack/clip.srt")).unwrap(),
+        b"subtitle"
+    );
+    assert_eq!(
+        std::fs::read(h.root.join("Inbox/pack/clip.mkv")).unwrap(),
+        b"video"
+    );
+    assert!(h.lib.file_trash().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn cleanup_rejects_changed_files_and_unsafe_batches_before_removing_anything() {
+    let h = harness().await;
+    h.write("Inbox/readme.txt", b"old");
+    let choice = h
+        .lib
+        .cleanup_inventory(Some("Inbox"))
+        .await
+        .unwrap()
+        .files
+        .remove(0)
+        .choice;
+    h.write("Inbox/readme.txt", b"new content");
+    let result = h
+        .lib
+        .cleanup_files(std::slice::from_ref(&choice), "owner")
+        .await
+        .unwrap();
+    assert_eq!(result.failed.len(), 1);
+    assert!(h.exists("Inbox/readme.txt"));
+    for path in [
+        "../outside",
+        "/Inbox/readme.txt",
+        "Inbox/../Other/file",
+        "Downloads/In Progress/a",
+        ".popcornstash/Trash/a",
+        "Inbox/.hidden",
+    ] {
+        let bad = super::cleanup::FileChoice {
+            path: path.into(),
+            fingerprint: choice.fingerprint.clone(),
+        };
+        assert!(
+            h.lib
+                .cleanup_files(&[choice.clone(), bad], "owner")
+                .await
+                .is_err()
+        );
+        assert!(h.exists("Inbox/readme.txt"));
+    }
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("keep.txt"), b"keep").unwrap();
+    std::os::unix::fs::symlink(outside.path(), h.root.join("Inbox/link")).unwrap();
+    let linked = super::cleanup::FileChoice {
+        path: "Inbox/link/keep.txt".into(),
+        fingerprint: choice.fingerprint,
+    };
+    assert_eq!(
+        h.lib
+            .cleanup_files(&[linked], "owner")
+            .await
+            .unwrap()
+            .failed
+            .len(),
+        1
+    );
+    assert_eq!(
+        std::fs::read(outside.path().join("keep.txt")).unwrap(),
+        b"keep"
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_library_optionally_trashes_the_folder_and_preserves_history_for_restore() {
+    use super::defs::{self, STARTING_MOVIES};
+    let h = harness().await;
+    let def = defs::load_one(&h.lib.db, STARTING_MOVIES)
+        .await
+        .unwrap()
+        .unwrap();
+    let folder = def.folder().to_string();
+    let path = format!("{folder}/Harbor (2020)/Harbor.mkv");
+    h.write(&path, b"video");
+    h.write(&format!("{folder}/Harbor (2020)/Harbor.srt"), b"subtitles");
+    h.write(&format!("{folder}/.private.txt"), b"extra");
+    let item = h.lib.index_path(&path).await.unwrap().unwrap();
+    sqlx::query("UPDATE items SET favorite=1 WHERE id=?")
+        .bind(&item.id)
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    assert!(
+        h.lib
+            .delete_library_with_folder(STARTING_MOVIES, Some("wrong"), None)
+            .await
+            .is_err()
+    );
+    assert!(h.exists(&path));
+    h.lib
+        .delete_library_with_folder(STARTING_MOVIES, Some(&folder), None)
+        .await
+        .unwrap();
+    assert!(!h.root.join(&folder).exists());
+    assert!(
+        defs::load_one(&h.lib.db, STARTING_MOVIES)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        repo::get(&h.lib.db, &item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ItemStatus::Trashed
+    );
+    let entry = h.lib.file_trash().await.unwrap().remove(0);
+    assert!(entry.is_dir);
+    assert_eq!(entry.file_count, 3);
+    // Do not overwrite a new folder at the original name.
+    h.write(&format!("{folder}/new.txt"), b"new");
+    assert!(h.lib.restore_file_trash(&entry.id).await.is_err());
+    std::fs::remove_dir_all(h.root.join(&folder)).unwrap();
+    h.lib.restore_file_trash(&entry.id).await.unwrap();
+    assert!(h.exists(&path));
+    let restored = repo::get(&h.lib.db, &item.id).await.unwrap().unwrap();
+    assert!(restored.favorite);
+    assert_eq!(restored.rel_path, path);
+    assert!(restored.library_id.is_none());
+    assert!(
+        defs::load_one(&h.lib.db, STARTING_MOVIES)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn default_library_deletion_keeps_the_folder_and_cleanup_empty_trash_removes_its_records() {
+    use super::defs::{self, STARTING_MOVIES, STARTING_PHOTOS};
+    let h = harness().await;
+    let movies = defs::load_one(&h.lib.db, STARTING_MOVIES)
+        .await
+        .unwrap()
+        .unwrap();
+    h.write(&format!("{}/keep.mkv", movies.folder()), b"keep");
+    h.lib.delete_library(STARTING_MOVIES).await.unwrap();
+    assert!(h.root.join(movies.folder()).is_dir());
+    let photos = defs::load_one(&h.lib.db, STARTING_PHOTOS)
+        .await
+        .unwrap()
+        .unwrap();
+    let path = format!("{}/photo.jpg", photos.folder());
+    h.write(&path, b"image");
+    let item = h.lib.index_path(&path).await.unwrap().unwrap();
+    h.lib
+        .delete_library_with_folder(STARTING_PHOTOS, Some(photos.folder()), None)
+        .await
+        .unwrap();
+    assert_eq!(h.lib.empty_trash(None).await.unwrap(), 1);
+    assert!(h.lib.file_trash().await.unwrap().is_empty());
+    assert!(repo::get(&h.lib.db, &item.id).await.unwrap().is_none());
+    assert!(h.root.join(movies.folder()).is_dir());
+}
+
+#[tokio::test]
+async fn cleanup_database_failure_restores_the_original_file_and_preserves_the_item() {
+    let h = harness().await;
+    h.write("Other/record.jpg", b"photo");
+    let item = h.lib.index_path("Other/record.jpg").await.unwrap().unwrap();
+    let choice = h
+        .lib
+        .cleanup_inventory(Some("Other"))
+        .await
+        .unwrap()
+        .files
+        .remove(0)
+        .choice;
+    sqlx::query("CREATE TRIGGER refuse_cleanup BEFORE UPDATE OF status ON items WHEN NEW.status = 'trashed' BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END").execute(&h.lib.db).await.unwrap();
+    let result = h.lib.cleanup_files(&[choice], "owner").await.unwrap();
+    assert_eq!(result.failed.len(), 1);
+    assert!(h.exists("Other/record.jpg"));
+    assert!(h.lib.file_trash().await.unwrap().is_empty());
+    assert_eq!(
+        repo::get(&h.lib.db, &item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .rel_path,
+        "Other/record.jpg"
+    );
+}

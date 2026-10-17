@@ -5,8 +5,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
@@ -361,6 +364,24 @@ class SettingsScreenshotTest {
     }
 
     @Test
+    fun confirmFolderRemovalLight() {
+        editor(dark = false, editMovies.copy(confirmingDelete = true))
+        compose.onNodeWithText("Also remove the folder and all its files").performClick()
+        compose.onNodeWithText("Type Movies to confirm").performTextInput("Movies")
+        compose.onNodeWithText("Delete library and folder").assertIsEnabled()
+        screen("editor-confirm-folder-light")
+    }
+
+    @Test
+    fun confirmFolderRemovalDark() {
+        editor(dark = true, editMovies.copy(confirmingDelete = true))
+        compose.onNodeWithText("Also remove the folder and all its files").performClick()
+        compose.onNodeWithText("Delete library and folder").assertIsNotEnabled()
+        compose.onNodeWithText("Cancel").assertIsEnabled()
+        screen("editor-confirm-folder-dark")
+    }
+
+    @Test
     fun existingFolderPickerLight() {
         editor(dark = false, newLibrary.copy(draft = LibraryDraft(folderMode = FolderMode.Existing)))
         // Scroll past the picker so the floating toolbar does not sit over it, then open it.
@@ -387,5 +408,5 @@ private object NoActions : LibraryEditorActions {
     override fun cancelClaims() = Unit
     override fun askDelete() = Unit
     override fun cancelDelete() = Unit
-    override fun confirmDelete() = Unit
+    override fun confirmDelete(removeFolder: Boolean) = Unit
 }

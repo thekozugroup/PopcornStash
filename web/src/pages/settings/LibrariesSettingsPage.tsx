@@ -4,8 +4,7 @@
  * the top-level folders that are not a library yet with "Make a library",
  * then sorting, the folder layout, a rescan and the trash.
  *
- * Nothing here moves, renames or deletes a file: libraries are views of
- * folders (docs/architecture.md section 3.1).
+ * Folder removal is explicit, optional and recoverable in Trash.
  */
 import * as stylex from '@stylexjs/stylex';
 import {colorVars, typographyVars} from '@astryxdesign/core/theme/tokens.stylex';
@@ -22,11 +21,12 @@ import {useToast} from '@astryxdesign/core/Toast';
 import {useMediaQuery} from '@astryxdesign/core/hooks';
 import {Folder} from 'lucide-react';
 import {useEffect, useRef, useState} from 'react';
-import {libraries as librariesApi, library, system, trash, users as usersApi} from '../../api/client';
+import {files as filesApi, libraries as librariesApi, library, system, trash, users as usersApi} from '../../api/client';
 import {useStashEvent} from '../../api/events';
 import type {Library, UnassignedFolder, User} from '../../api/types';
 import {useLibraries} from '../../app/LibrariesProvider';
 import {BreakableAddress} from '../../components/BreakableName';
+import {DeleteLibraryDialog} from '../../components/settings/DeleteLibraryDialog';
 import {OwnerOnly} from '../../components/settings/OwnerOnly';
 import {EmptyRows, LoadError, LoadingRows, PanelList, RowsPanel} from '../../components/settings/SectionStates';
 import {SettingsGroup} from '../../components/settings/SettingsGroup';
@@ -241,7 +241,7 @@ function LibraryRow({
 function LibrariesGroup({people}: {people: User[]}) {
   const showToast = useToast();
   const {libraries, status, error, reload} = useLibraries();
-  const {ask, dialog} = useConfirm();
+  const [deleting, setDeleting] = useState<Library | null>(null);
   const [order, setOrder] = useState<Library[] | null>(null);
   /** The row whose More button keeps focus once the moved list has re-rendered. */
   const focusId = useRef<string | null>(null);
@@ -276,18 +276,6 @@ function LibrariesGroup({people}: {people: User[]}) {
     }
   };
 
-  const remove = (target: Library) =>
-    ask({
-      title: `Delete ${target.name}?`,
-      description: `Takes ${target.name} out of the app. Its files stay in ${target.folder ?? 'its folder'}/ and only owners will see them.`,
-      actionLabel: 'Delete library',
-      failure: 'The library was not deleted. Try again.',
-      run: async () => {
-        await librariesApi.remove(target.id);
-        await reload();
-        showToast({body: `${target.name} is no longer in the app. Its files stay in ${target.folder ?? 'its folder'}/.`});
-      },
-    });
 
   return (
     <SettingsGroup
@@ -310,12 +298,15 @@ function LibrariesGroup({people}: {people: User[]}) {
               index={index}
               total={list.length}
               onMove={(target, step) => void move(target, step)}
-              onDelete={remove}
+              onDelete={setDeleting}
             />
           ))}
         </PanelList>
       )}
-      {dialog}
+      {deleting ? <DeleteLibraryDialog library={deleting} onClose={() => setDeleting(null)} onDeleted={removed => {
+        const name = deleting.name; setDeleting(null); void reload();
+        showToast({body: removed ? `${name} and its folder moved to Trash.` : `${name} is no longer in the app. Its files stay where they are.`});
+      }} /> : null}
     </SettingsGroup>
   );
 }
@@ -515,7 +506,8 @@ function TrashRowItem({row, onRestore}: {row: TrashRow; onRestore: (row: TrashRo
       description={
         <span {...stylex.props(styles.trashMeta)}>
           <span>Moved to trash {formatRelative(row.trashedAt).toLowerCase()}</span>
-          <span {...stylex.props(styles.example)}>From {folderOf(row.originalPath)}</span>
+          <span {...stylex.props(styles.example)}>From {row.originalPath}</span>
+          {row.detail ? <Text type="supporting">{row.detail}</Text> : null}
           {/* Its library would no longer show it: no Restore, and the server says why. */}
           {row.restoreRefusal ? <span {...stylex.props(styles.refusal)}>{row.restoreRefusal}</span> : null}
         </span>
@@ -535,16 +527,29 @@ function TrashGroup() {
   const form = useSettingsDraft(settings => settings.trash_retention_days);
   const [retentionError, setRetentionError] = useState<string | null>(null);
   const {ask, dialog} = useConfirm();
-  const rows = items.data ?? [];
+  const fileTrash = useResource(signal => filesApi.trash(signal), {key: 'file-trash'});
+  const extraRows: TrashRow[] = (fileTrash.data ?? []).map(entry => ({
+    id: entry.id, title: entry.original_rel_path.split('/').at(-1) ?? entry.original_rel_path,
+    kind: null, category: null, thumb: null, originalPath: entry.original_rel_path,
+    trashedAt: entry.trashed_at, restoreRefusal: null, fileEntry: true,
+    detail: entry.is_dir ? `Folder with ${formatCount(entry.file_count, 'file')}. Restoring keeps it private to owners until made a library.` : 'Selected file only; companion files stayed in place.',
+  }));
+  const rows = [...(items.data ?? []), ...extraRows].sort((a, b) => b.trashedAt - a.trashedAt);
 
   const restore = async (row: TrashRow) => {
     try {
-      await trash.restore(row.id);
-      items.mutate(list => list.filter(item => item.id !== row.id));
+      if (row.fileEntry) {
+        await filesApi.restore(row.id);
+        fileTrash.mutate(list => list.filter(item => item.id !== row.id));
+      } else {
+        await trash.restore(row.id);
+        items.mutate(list => list.filter(item => item.id !== row.id));
+      }
       showToast({body: `${row.title} is back in ${folderOf(row.originalPath)}.`});
     } catch (cause) {
       showToast({type: 'error', body: errorMessage(cause, 'It was not restored. Try again.')});
       items.reload();
+      fileTrash.reload();
     }
   };
 
@@ -557,6 +562,7 @@ function TrashGroup() {
       run: async () => {
         await trash.empty();
         items.mutate(() => []);
+        fileTrash.mutate(() => []);
         showToast({body: 'Trash emptied.'});
       },
     });
@@ -589,10 +595,10 @@ function TrashGroup() {
           : 'Deleted items wait here before they are removed from the disk for good.'
       }
       actions={rows.length > 0 ? <Button label="Empty trash" variant="secondary" onClick={emptyTrash} /> : undefined}>
-      {items.isLoading ? (
+      {items.isLoading || fileTrash.isLoading ? (
         <LoadingRows rows={3} label="Loading the trash" />
-      ) : items.error !== undefined && !items.data ? (
-        <LoadError title="The trash did not load" error={items.error} onRetry={items.reload} />
+      ) : (items.error !== undefined && !items.data) || (fileTrash.error !== undefined && !fileTrash.data) ? (
+        <LoadError title="The trash did not load" error={items.error ?? fileTrash.error} onRetry={() => { items.reload(); fileTrash.reload(); }} />
       ) : rows.length === 0 ? (
         <EmptyRows>The trash is empty.</EmptyRows>
       ) : (
@@ -636,7 +642,7 @@ function LibrariesSettings() {
         <UnassignedFoldersGroup />
         <SortingGroup />
         <FoldersGroup />
-        <TrashGroup />
+        <section id="trash" aria-label="Trash"><TrashGroup /></section>
       </div>
     </>
   );

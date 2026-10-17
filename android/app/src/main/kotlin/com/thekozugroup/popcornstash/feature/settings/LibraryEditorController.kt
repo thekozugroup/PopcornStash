@@ -411,14 +411,14 @@ class LibraryEditorController(
     override fun cancelDelete() = _state.update { it.copy(confirmingDelete = false) }
 
     /** Takes the library out of the app. Its folder and files stay where they are. */
-    override fun confirmDelete() {
+    override fun confirmDelete(removeFolder: Boolean) {
         val library = _state.value.library ?: return
         if (_state.value.busy) return
         _state.update { it.copy(confirmingDelete = false, deleting = true, deleteError = null) }
         scope.launch {
             try {
-                api.deleteLibrary(library.id)
-                _state.update { it.copy(deleting = false, finished = EditorFinished(deletedNotice(library))) }
+                api.deleteLibrary(library.id, library.folder.takeIf { removeFolder })
+                _state.update { it.copy(deleting = false, finished = EditorFinished(deletedNotice(library, removeFolder))) }
                 data.refreshLibraries()
             } catch (e: ApiException) {
                 _state.update { it.copy(deleting = false, deleteError = e.message) }

@@ -30,6 +30,8 @@ pub const SESSION_TTL_S: i64 = 30 * 24 * 3600;
 pub const SESSION_MAX_AGE_S: i64 = 180 * 24 * 3600;
 /// `last_seen_at`/`expires_at` are refreshed at most this often.
 pub const SESSION_REFRESH_S: i64 = 300;
+/// Cookie sessions require a new passkey after fifteen minutes without input.
+pub const BROWSER_IDLE_S: i64 = 15 * 60;
 /// `api_tokens.last_used_at` is updated at most this often.
 pub const TOKEN_TOUCH_S: i64 = 60;
 
@@ -144,8 +146,8 @@ pub async fn create_session(
         .execute(db)
         .await?;
     sqlx::query(
-        "INSERT INTO sessions (id, user_id, kind, created_at, last_seen_at, expires_at, user_agent, ip) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO sessions (id, user_id, kind, created_at, last_seen_at, expires_at, user_agent, ip, last_activity_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(user_id)
@@ -155,6 +157,7 @@ pub async fn create_session(
     .bind(expires_at)
     .bind(user_agent)
     .bind(ip)
+    .bind(now)
     .execute(db)
     .await?;
     Ok(NewSession {
@@ -205,7 +208,7 @@ pub async fn authenticate(parts: &mut Parts, state: &AppState) -> ApiResult<Auth
     Ok(user)
 }
 
-type SessionRow = (String, i64, i64, i64, String, Role);
+type SessionRow = (String, i64, i64, i64, String, Role, i64);
 
 async fn session_user(
     db: &Db,
@@ -214,19 +217,23 @@ async fn session_user(
     ip: Option<&str>,
 ) -> ApiResult<Option<AuthUser>> {
     let row: Option<SessionRow> = sqlx::query_as(
-        "SELECT s.user_id, s.created_at, s.last_seen_at, s.expires_at, u.display_name, u.role \
+        "SELECT s.user_id, s.created_at, s.last_seen_at, s.expires_at, u.display_name, u.role, s.last_activity_at \
          FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ? AND s.kind = ?",
     )
     .bind(id)
     .bind(kind.as_str())
     .fetch_optional(db)
     .await?;
-    let Some((user_id, created_at, last_seen_at, expires_at, display_name, role)) = row else {
+    let Some((user_id, created_at, last_seen_at, expires_at, display_name, role, activity)) = row
+    else {
         return Ok(None);
     };
     let now = now();
     let hard_limit = created_at + SESSION_MAX_AGE_S;
-    if expires_at <= now || hard_limit <= now {
+    if expires_at <= now
+        || hard_limit <= now
+        || (kind == SessionKind::Cookie && activity + BROWSER_IDLE_S <= now)
+    {
         sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(id)
             .execute(db)
@@ -312,6 +319,9 @@ pub struct AuthState {
     pub rp_id: Option<String>,
     pub passkeys_ready: bool,
     pub reason: Option<String>,
+    pub server_time: i64,
+    /// Null for native bearer sessions and signed-out callers.
+    pub idle_expires_at: Option<i64>,
 }
 
 pub async fn auth_state(
@@ -321,6 +331,18 @@ pub async fn auth_state(
     let (users,): (i64,) = sqlx::query_as("SELECT count(*) FROM users")
         .fetch_one(&state.db)
         .await?;
+    let idle_expires_at = match user.as_ref().and_then(|u| u.session_id.as_ref()) {
+        Some(id) => {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT last_activity_at + ? FROM sessions WHERE id = ? AND kind = 'cookie'",
+            )
+            .bind(BROWSER_IDLE_S)
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?
+        }
+        None => None,
+    };
     let user = match user {
         Some(u) => super::users::load_user(&state.db, &u.user_id).await?,
         None => None,
@@ -335,6 +357,45 @@ pub async fn auth_state(
         rp_id: config.rp_id(),
         passkeys_ready: ready,
         reason: (!ready).then(|| super::passkeys::unavailable_reason(config)),
+        server_time: now(),
+        idle_expires_at,
+    }))
+}
+
+#[derive(Serialize)]
+pub struct BrowserActivity {
+    pub server_time: i64,
+    pub idle_expires_at: i64,
+}
+
+/// Explicit human input only. Authentication and this conditional update both
+/// reject expired sessions; racing requests cannot revive an idle cookie.
+pub async fn activity(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> ApiResult<Json<BrowserActivity>> {
+    let id = user
+        .session_id
+        .as_deref()
+        .ok_or_else(ApiError::unauthorized)?;
+    let now = now();
+    let updated = sqlx::query(
+        "UPDATE sessions SET last_activity_at = MAX(last_activity_at, ?) WHERE id = ? \
+         AND kind = 'cookie' AND last_activity_at > ? AND expires_at > ? AND created_at > ?",
+    )
+    .bind(now)
+    .bind(id)
+    .bind(now - BROWSER_IDLE_S)
+    .bind(now)
+    .bind(now - SESSION_MAX_AGE_S)
+    .execute(&state.db)
+    .await?;
+    if updated.rows_affected() == 0 {
+        return Err(ApiError::unauthorized());
+    }
+    Ok(Json(BrowserActivity {
+        server_time: now,
+        idle_expires_at: now + BROWSER_IDLE_S,
     }))
 }
 
@@ -401,10 +462,11 @@ pub async fn list_sessions(
     user.require(Scope::Full)?;
     let mut rows: Vec<SessionView> = sqlx::query_as(
         "SELECT id, kind, created_at, last_seen_at, user_agent, ip FROM sessions \
-         WHERE user_id = ? AND expires_at > ? ORDER BY last_seen_at DESC",
+         WHERE user_id = ? AND expires_at > ? AND (kind != 'cookie' OR last_activity_at > ?) ORDER BY last_seen_at DESC",
     )
     .bind(&user.user_id)
     .bind(now())
+    .bind(now() - BROWSER_IDLE_S)
     .fetch_all(&state.db)
     .await?;
     for row in &mut rows {

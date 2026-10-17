@@ -40,6 +40,7 @@ export default function OtherPage() {
     <>
       <PageHeader
         title="Other files"
+        actions={isOwner ? <Button label="Clean files" variant="secondary" href="/clean?folder=Other" /> : undefined}
         subtitle={
           isOwner
             ? 'Music, documents and anything else. Each file is seen by the person who added it and the owners.'

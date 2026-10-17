@@ -17,18 +17,21 @@ import {AlertDialog} from '@astryxdesign/core/AlertDialog';
 import {Banner} from '@astryxdesign/core/Banner';
 import {Button} from '@astryxdesign/core/Button';
 import {Collapsible} from '@astryxdesign/core/Collapsible';
+import {Selector} from '@astryxdesign/core/Selector';
 import {Text} from '@astryxdesign/core/Text';
+import {HStack} from '@astryxdesign/core/Layout';
 import {useToast} from '@astryxdesign/core/Toast';
 import {Inbox} from 'lucide-react';
 import {useEffect, useState} from 'react';
-import {ApiError, inbox as inboxApi} from '../api/client';
+import {ApiError, downloads as downloadsApi, inbox as inboxApi} from '../api/client';
 import type {InboxDecision, ItemDetail} from '../api/types';
 import {useLibraries} from '../app/LibrariesProvider';
 import {useAuth} from '../auth/AuthProvider';
 import {ListSkeleton} from '../components/downloads/ListSkeleton';
 import {EmptyPanel} from '../components/EmptyPanel';
 import {InboxRow} from '../components/inbox/InboxRow';
-import {fieldOfServerError, type MoveFieldErrors} from '../components/inbox/MoveFields';
+import {bulkReady, matchingInbox} from '../components/inbox/bulk';
+import {fieldOfServerError, targetSelectorOptions, type MoveFieldErrors} from '../components/inbox/MoveFields';
 import {
   baseName,
   needsDetails,
@@ -89,6 +92,20 @@ export default function InboxPage() {
   const [editError, setEditError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<MoveFieldErrors>({});
   const [busy, setBusy] = useState<Busy | null>(null);
+  const [downloadFilter, setDownloadFilter] = useState('all');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [reviewFilter, setReviewFilter] = useState('all');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkTarget, setBulkTarget] = useState('rows');
+  const [confirmSelected, setConfirmSelected] = useState(false);
+  const [downloadNames, setDownloadNames] = useState<Record<string, string>>({});
+  useEffect(() => {
+    const controller = new AbortController();
+    void downloadsApi.list('all', 200, controller.signal).then(result => {
+      setDownloadNames(Object.fromEntries(result.items.map(download => [download.id, download.name])));
+    }).catch(() => undefined);
+    return () => controller.abort();
+  }, []);
   const [confirmAll, setConfirmAll] = useState(false);
   const [allProgress, setAllProgress] = useState<{done: number; total: number} | null>(null);
   /** What each row's selector shows, once the person changed it. */
@@ -108,6 +125,14 @@ export default function InboxPage() {
     return choices.length === 1 ? (choices[0] ?? null) : null;
   };
 
+  const resetFilters = (change: () => void) => { setSelected(new Set()); change(); };
+  const visibleItems = matchingInbox(reviewFilter === 'ignored' ? [] : items, downloadFilter, typeFilter);
+  const visibleIgnored = matchingInbox(reviewFilter === 'waiting' ? [] : ignored, downloadFilter, typeFilter);
+  const matching = [...visibleItems, ...visibleIgnored];
+  const selection = matching.filter(item => selected.has(item.id));
+  const commonTargets = selection.length ? choicesOf(selection[0]!).filter(choice => selection.every(item => choicesOf(item).some(candidate => targetValue(candidate) === targetValue(choice)))) : [];
+  const selectionReady = bulkReady(selection, libraries, isOwner, item => bulkTarget === 'rows' ? targetOf(item) : bulkTarget as TargetValue);
+  const sourceIds = [...new Set([...items, ...ignored].map(item => item.source_download_id).filter((id): id is string => id !== null))];
   const ready = items.filter(item => {
     const target = resolveTarget(targetOf(item), libraries);
     return target !== null && !needsDetails(target, item);
@@ -124,6 +149,7 @@ export default function InboxPage() {
   const decide = async (item: ItemDetail, decision: InboxDecision) => {
     await inboxApi.decide(item.id, decision);
     removeItem(item.id);
+    setSelected(current => new Set([...current].filter(id => id !== item.id)));
   };
 
   /** The request for a plain Accept: exactly the place and library the row shows. */
@@ -205,8 +231,8 @@ export default function InboxPage() {
     }
   };
 
-  const acceptAll = async () => {
-    const targets = ready.map(item => ({item, value: targetOf(item)}));
+  const acceptAll = async (onlySelected = false) => {
+    const targets = onlySelected ? selectionReady : ready.map(item => ({item, value: targetOf(item)}));
     setBusy({id: '*', kind: 'all'});
     setAllProgress({done: 0, total: targets.length});
     let moved = 0;
@@ -225,6 +251,7 @@ export default function InboxPage() {
     setBusy(null);
     setAllProgress(null);
     setConfirmAll(false);
+    setConfirmSelected(false);
     setFocusNext({id: items.find(item => !ready.includes(item))?.id ?? null});
     if (failed === 0) {
       showToast({body: `${formatCount(moved, 'file')} moved to the places shown.`});
@@ -238,7 +265,7 @@ export default function InboxPage() {
   };
 
   const subtitle =
-    status === 'ready' && count > 0
+    status === 'ready' && visibleItems.length > 0
       ? `${count === 1 ? 'One file needs' : `${formatCount(count, 'file')} need`} a decision. Nothing moves until you choose.`
       : 'Files PopcornStash is not sure about wait here until you choose where they go.';
 
@@ -246,6 +273,8 @@ export default function InboxPage() {
     <li key={item.id} {...stylex.props(styles.item)}>
       <InboxRow
         item={item}
+        selected={selected.has(item.id)}
+        onSelect={checked => setSelected(current => { const next = new Set(current); if (checked) next.add(item.id); else next.delete(item.id); return next; })}
         libraries={libraries}
         choices={choicesOf(item)}
         target={targetOf(item)}
@@ -278,18 +307,41 @@ export default function InboxPage() {
       <PageHeader
         title="Inbox"
         subtitle={subtitle}
-        actions={
-          ready.length >= 2 && status === 'ready' ? (
+        actions={<HStack gap={2} wrap="wrap">
+          {isOwner ? <Button label="Clean files" variant="secondary" href="/clean?folder=Inbox" /> : null}
+          {ready.length >= 2 && status === 'ready' ? (
             <Button
               label="Accept all suggestions"
               variant="secondary"
               isDisabled={busy !== null}
               onClick={() => setConfirmAll(true)}
             />
-          ) : undefined
-        }
+          ) : null}
+        </HStack>}
       />
 
+      {status === 'ready' && items.length + ignored.length > 0 ? (
+        <HStack gap={3} wrap="wrap" vAlign="end" paddingBlock={4}>
+          <Selector label="Download" value={downloadFilter} options={[
+            {value: 'all', label: 'Every download'}, {value: 'none', label: 'Uploads and copied files'},
+            ...sourceIds.map((id, index) => ({value: id, label: downloadNames[id] ?? `Download ${index + 1}`})),
+          ]} onChange={value => resetFilters(() => setDownloadFilter(value))} />
+          <Selector label="File type" value={typeFilter} options={[
+            {value: 'all', label: 'Every file type'}, {value: 'video', label: 'Videos'}, {value: 'photo', label: 'Images'},
+            {value: 'subtitle', label: 'Subtitles'}, {value: 'audio', label: 'Audio'}, {value: 'other', label: 'Other files'},
+          ]} onChange={value => resetFilters(() => setTypeFilter(value))} />
+          <Selector label="Review" value={reviewFilter} options={[{value: 'waiting', label: 'Waiting'}, {value: 'ignored', label: 'Ignored'}, {value: 'all', label: 'Waiting and ignored'}]} onChange={value => resetFilters(() => setReviewFilter(value))} />
+          <Button label={`Select matching (${matching.length})`} variant="secondary" isDisabled={busy !== null || matching.length === 0} onClick={() => setSelected(new Set(matching.map(item => item.id)))} />
+          {selection.length ? <>
+            <Selector label="Import selected to" value={bulkTarget} options={[{value: 'rows', label: 'Each file’s chosen library'}, ...targetSelectorOptions(commonTargets)]} onChange={setBulkTarget} isDisabled={busy !== null} />
+            <Button label={`Import selected (${selectionReady.length})`} variant="primary" isDisabled={busy !== null || selectionReady.length === 0} onClick={() => setConfirmSelected(true)} />
+            <Button label="Clear selection" variant="ghost" isDisabled={busy !== null} onClick={() => setSelected(new Set())} />
+            {selectionReady.length < selection.length ? <Text type="supporting">{selection.length - selectionReady.length} need a compatible library or episode details.</Text> : null}
+          </> : null}
+          {isOwner ? <Text type="supporting" color="secondary">Unindexed subtitles, artwork and instructions are in Clean files.</Text> : null}
+        </HStack>
+      ) : null}
+      {status === 'ready' && items.length + ignored.length > 0 && matching.length === 0 ? <Text as="p">No files match these filters.</Text> : null}
       {status === 'error' ? (
         <Banner
           status="error"
@@ -307,7 +359,7 @@ export default function InboxPage() {
         </div>
       ) : null}
 
-      {status === 'ready' && count === 0 ? (
+      {status === 'ready' && count === 0 && ignored.length === 0 ? (
         <EmptyPanel
           title="Nothing needs a decision"
           description="Everything new was sorted on its own."
@@ -315,30 +367,41 @@ export default function InboxPage() {
         />
       ) : null}
 
-      {status === 'ready' && count > 0 ? (
+      {status === 'ready' && visibleItems.length > 0 ? (
         <div {...stylex.props(styles.panel)}>
           <ul {...stylex.props(styles.list)} aria-label="Files waiting for a decision">
-            {items.map((item, index) => renderRow(item, index, false))}
+            {visibleItems.map((item, index) => renderRow(item, index, false))}
           </ul>
         </div>
       ) : null}
 
-      {status === 'ready' && ignored.length > 0 ? (
+      {status === 'ready' && visibleIgnored.length > 0 ? (
         <Collapsible
-          trigger={<Text weight="semibold">{`Left where they are (${ignored.length})`}</Text>}
-          defaultIsOpen={false}
+          trigger={<Text weight="semibold">{`Left where they are (${visibleIgnored.length})`}</Text>}
+          key={reviewFilter}
+          defaultIsOpen={reviewFilter === 'ignored'}
           chevronPosition="start"
           xstyle={styles.ignored}>
           <div {...stylex.props(styles.ignoredBody)}>
             <div {...stylex.props(styles.panel)}>
               <ul {...stylex.props(styles.list)} aria-label="Ignored files">
-                {ignored.map((item, index) => renderRow(item, index, true))}
+                {visibleIgnored.map((item, index) => renderRow(item, index, true))}
               </ul>
             </div>
           </div>
         </Collapsible>
       ) : null}
 
+      <AlertDialog
+        isOpen={confirmSelected}
+        onOpenChange={open => { if (!open && busy === null) setConfirmSelected(false); }}
+        title={`Import ${selectionReady.length} selected files?`}
+        description={allProgress ? `Moving ${allProgress.done} of ${allProgress.total}…` : 'Only the selected files with a compatible destination and complete details will move. Unselected files stay here.'}
+        actionLabel="Import selected"
+        actionVariant="primary"
+        isActionLoading={busy?.kind === 'all'}
+        onAction={() => void acceptAll(true)}
+      />
       <AlertDialog
         isOpen={confirmAll}
         onOpenChange={open => {

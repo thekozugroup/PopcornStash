@@ -178,4 +178,18 @@ class LibrarySettingsControllerTest {
         assertFalse(LibrarySettingsUi(libraries = Loadable.Ready(many)).canMakeMore)
         assertTrue(LibrarySettingsUi(libraries = Loadable.Ready(many.drop(1))).canMakeMore)
     }
+    @Test
+    fun folderRemovalUsesAnExplicitPostAndNeverFallsBackToDeletingOnlyTheDefinition() = runTest {
+        serve(F.ownerServer(F.FIVE).on("POST", "/api/libraries/${F.KIDS_ID}/trash", code = 404))
+        val settings = controller()
+        settings.refresh()
+        val kids = settings.until { it.libraries is Loadable.Ready }.shown!!.first { it.id == F.KIDS_ID }
+        settings.delete(kids, removeFolder = true)
+        val request = routes.nextWrite()
+        assertEquals("POST /api/libraries/${F.KIDS_ID}/trash", "${request.method} ${request.path}")
+        assertEquals(Json.parseToJsonElement("""{"confirm_folder":"Kids"}"""), Json.parseToJsonElement(request.bodyText))
+        settings.until { it.deletingId == null }
+        assertTrue(settings.state.value.shown!!.any { it.id == F.KIDS_ID })
+    }
+
 }
