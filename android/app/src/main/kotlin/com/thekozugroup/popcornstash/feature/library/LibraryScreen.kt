@@ -72,6 +72,8 @@ class LibraryActions(
     val openPhoto: (Item) -> Unit = {},
     val play: (Item) -> Unit = {},
     val edit: () -> Unit = {},
+    val search: () -> Unit = {},
+    val folders: () -> Unit = {},
 )
 
 /**
@@ -104,6 +106,8 @@ fun LibraryScreen(
                 if (content is LibraryViewModel.Content.Items && library != null) {
                     SortAction(content.sort, ItemSort.optionsFor(library.layout), actions.sort)
                 }
+                TopBarAction(PopcornIcons.Search, "Search library", actions.search)
+                TopBarAction(PopcornIcons.Folder, if (isOwner) "Organize files" else "Browse folders", actions.folders)
                 if (isOwner) TopBarAction(PopcornIcons.EditLibrary, "Edit library", actions.edit)
             },
         )

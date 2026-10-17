@@ -169,6 +169,7 @@ fun SignedInApp(
                     session = session,
                     uploads = uploads,
                     openUrl = openUrl,
+                    onManageInbox = { requests.openHome(HomeRoute.InboxFiles) },
                     // "In Kids" opens the library in Home; "In Other files", Other files.
                     onOpenPlace = { place ->
                         requests.openHome(place.libraryId?.let { HomeRoute.Library(it, place.name, place.icon.orEmpty()) } ?: HomeRoute.OtherFiles)
@@ -185,6 +186,11 @@ fun SignedInApp(
                     },
                     open = requests.home,
                     onOpened = requests::homeOpened,
+                )
+                Tab.Search -> com.thekozugroup.popcornstash.feature.library.FileBrowserScreen(
+                    services = library, bottomClearance = page.bottomClearance,
+                    isOwner = user.role == com.thekozugroup.popcornstash.data.api.Role.Owner,
+                    onOpen = { requests.openHome(HomeRoute.Item(it.id, it.title)) },
                 )
                 Tab.Settings -> SettingsTab(
                     page = page,

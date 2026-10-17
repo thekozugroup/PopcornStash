@@ -93,9 +93,18 @@ fun HomeTab(
         PageStackHost(stack, services.pages, name = "home") { entry ->
             when (val route = entry.route) {
                 HomeRoute.Root -> HomeRootPage(page.copy(reselections = rootReselections), services, isOwner, nav)
+                is HomeRoute.Files -> com.thekozugroup.popcornstash.feature.library.FileBrowserScreen(
+                    services = services, bottomClearance = page.bottomClearance, libraryId = route.id, libraryName = route.name,
+                    organize = route.organize, isOwner = isOwner, onBack = nav::back,
+                    onOpen = { nav.open(HomeRoute.Item(it.id, it.title)) },
+                )
                 is HomeRoute.Library -> LibraryPage(route, page.bottomClearance, services, isOwner, nav)
                 is HomeRoute.Show -> ShowPage(route, page.bottomClearance, services, nav)
                 is HomeRoute.Item -> ItemPage(route, page.bottomClearance, services, nav)
+                HomeRoute.InboxFiles -> com.thekozugroup.popcornstash.feature.library.FileBrowserScreen(
+                    services = services, bottomClearance = page.bottomClearance, isOwner = isOwner,
+                    inbox = true, onBack = nav::back, onOpen = { nav.open(HomeRoute.Item(it.id, it.title)) },
+                )
                 HomeRoute.OtherFiles -> OtherFilesPage(page.bottomClearance, services, isOwner, nav)
             }
         }
@@ -106,6 +115,7 @@ fun HomeTab(
 private val HomeRoute.libraryName: String
     get() = when (this) {
         is HomeRoute.Library -> name
+        is HomeRoute.Files -> name
         is HomeRoute.Show -> libraryName
         else -> "This library"
     }

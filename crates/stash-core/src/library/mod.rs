@@ -7,6 +7,7 @@ pub mod classify;
 pub mod cleanup;
 pub mod defs;
 pub mod destinations;
+pub mod folders;
 pub mod organizer;
 pub mod parse;
 pub mod repo;

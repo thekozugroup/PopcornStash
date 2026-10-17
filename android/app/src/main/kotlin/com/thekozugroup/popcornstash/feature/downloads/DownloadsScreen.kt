@@ -56,6 +56,7 @@ class DownloadsActions(
     val onShowMoreFinished: () -> Unit = {},
     val onStopUpload: (String) -> Unit = {},
     val onOpenAdd: () -> Unit = {},
+    val onManageInbox: (() -> Unit)? = null,
     val onAddFileType: (com.thekozugroup.popcornstash.data.api.TorrentFileKind) -> Unit = {},
     val onAddLibrary: (String?) -> Unit = {},
     val onAddText: (String) -> Unit = {},
@@ -160,6 +161,7 @@ fun DownloadsPage(
     Box(modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             PageTopBar(title = "Downloads", scrolled = listState.canScrollBackward) {
+                if (state.isOwner) actions.onManageInbox?.let { TopBarAction(PopcornIcons.ReadyToImport, "Manage Inbox", it) }
                 TopBarAction(PopcornIcons.Add, "Add a link", actions.onOpenAdd)
             }
             val pullState = rememberPullToRefreshState()

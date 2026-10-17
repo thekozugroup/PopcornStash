@@ -1761,6 +1761,19 @@ fn trash_dir_for(lib: &Library, item_id: &str) -> PathBuf {
 }
 
 pub async fn trash_item(lib: &Library, item_id: &str, user_id: Option<&str>) -> Result<()> {
+    trash_selected_item(lib, item_id, user_id, false).await
+}
+
+pub(super) async fn trash_inbox_item(lib: &Library, item_id: &str, user_id: &str) -> Result<()> {
+    trash_selected_item(lib, item_id, Some(user_id), true).await
+}
+
+async fn trash_selected_item(
+    lib: &Library,
+    item_id: &str,
+    user_id: Option<&str>,
+    inbox_only: bool,
+) -> Result<()> {
     let _moves = lib.lock_moves().await;
     let item = repo::get(&lib.db, item_id)
         .await?
@@ -1774,6 +1787,15 @@ pub async fn trash_item(lib: &Library, item_id: &str, user_id: Option<&str>) -> 
             "This file cannot be moved to the trash.",
         ));
     }
+    if inbox_only
+        && (item.place != Place::Incoming
+            || !zone.auto_sorts()
+            || !matches!(item.status, ItemStatus::Ready | ItemStatus::NeedsReview))
+    {
+        return Err(CoreError::conflict(
+            "This file left Inbox. Refresh and select it again.",
+        ));
+    }
     let review_before = repo::needs_review_count(&lib.db).await?;
     let src = lib.layout.abs(&item.rel_path)?;
     let name = Path::new(&item.rel_path)
@@ -1783,9 +1805,22 @@ pub async fn trash_item(lib: &Library, item_id: &str, user_id: Option<&str>) -> 
     let dest = trash_dir_for(lib, &item.id).join(name);
     if tokio::fs::symlink_metadata(&src).await.is_ok() {
         let dest_free = paths::unique_path(&dest);
-        paths::move_path(&src, &dest_free).await?;
-        move_sidecars(&src, &dest_free).await;
-        record_trash(lib, &item, &dest_free, user_id).await?;
+        if inbox_only {
+            let root = super::cleanup::Root::open(lib.layout.root())?;
+            let dest_rel = lib.layout.rel(&dest_free).ok_or(CoreError::NotFound)?;
+            if !root.metadata(&item.rel_path)?.is_file() {
+                return Err(CoreError::invalid("Choose a regular file."));
+            }
+            root.rename(&item.rel_path, &dest_rel)?;
+            if let Err(e) = record_trash(lib, &item, &dest_free, user_id).await {
+                root.rename(&dest_rel, &item.rel_path)?;
+                return Err(e);
+            }
+        } else {
+            paths::move_path(&src, &dest_free).await?;
+            move_sidecars(&src, &dest_free).await;
+            record_trash(lib, &item, &dest_free, user_id).await?;
+        }
         if zone.auto_sorts()
             && let Some(parent) = src.parent()
         {

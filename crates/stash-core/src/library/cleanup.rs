@@ -120,15 +120,37 @@ fn fingerprint(meta: &Metadata) -> String {
 
 // Directory descriptors anchor both ends of every rename. Linux also refuses mount
 // crossings, including same-device bind mounts. Never resolve a request through a link.
-struct Root(File);
+pub(super) struct Root(File);
 impl Root {
-    fn open(path: &Path) -> Result<Self> {
+    pub(super) fn open(path: &Path) -> Result<Self> {
         Ok(Self(
             OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
                 .open(path)?,
         ))
+    }
+
+    pub(super) fn directory(&self, rel: &str) -> Result<File> {
+        let mut dir = self.0.try_clone()?;
+        for part in rel.split('/') {
+            if part.is_empty() || part == "." || part == ".." {
+                return Err(CoreError::invalid("Choose a folder inside the library."));
+            }
+            dir = open_dir(&dir, &cstr(part)?)?;
+        }
+        Ok(dir)
+    }
+
+    pub(super) fn mkdir(&self, rel: &str) -> Result<()> {
+        let (parent, name) = self.parent(rel, false)?;
+        nix::sys::stat::mkdirat(
+            &parent,
+            name.as_c_str(),
+            nix::sys::stat::Mode::from_bits_truncate(0o755),
+        )
+        .map_err(std::io::Error::from)?;
+        Ok(())
     }
 
     fn parent(&self, rel: &str, create: bool) -> Result<(File, CString)> {
@@ -157,7 +179,7 @@ impl Root {
         Ok((dir, cstr(parts[parts.len() - 1])?))
     }
 
-    fn metadata(&self, rel: &str) -> Result<Metadata> {
+    pub(super) fn metadata(&self, rel: &str) -> Result<Metadata> {
         let (parent, name) = self.parent(rel, false)?;
         let flags = nix::fcntl::OFlag::O_RDONLY
             | nix::fcntl::OFlag::O_NOFOLLOW
@@ -177,7 +199,7 @@ impl Root {
     // SAFETY: CString paths live for the call; both borrowed descriptors are open
     // directories. Kernel no-replace flags make the single rename atomic.
     #[allow(unsafe_code)]
-    fn rename(&self, from: &str, to: &str) -> Result<()> {
+    pub(super) fn rename(&self, from: &str, to: &str) -> Result<()> {
         let (src, from) = self.parent(from, false)?;
         let (dst, to) = self.parent(to, true)?;
         #[cfg(target_os = "linux")]

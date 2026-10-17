@@ -134,7 +134,7 @@ class AppShellTest {
         assertEquals(screen.left + tokens.margin.value, bar.left, 0.5f)
         assertEquals(screen.center.y, bar.center.y, 0.5f)
         assertEquals(tokens.thickness.value, bar.width, 0.5f)
-        assertEquals(tokens.length(3).value, bar.height, 0.5f)
+        assertEquals(tokens.length(Tab.entries.size).value, bar.height, 0.5f)
     }
 
     @Test
@@ -144,16 +144,16 @@ class AppShellTest {
             compose.onNodeWithContentDescription(tab.label)
                 .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Tab))
                 .assert(
-                    SemanticsMatcher("position ${index + 1} of 3, top to bottom") {
+                    SemanticsMatcher("position ${index + 1} of 4, top to bottom") {
                         val info = it.config.getOrNull(SemanticsProperties.CollectionItemInfo)
                         info?.rowIndex == index && info.columnIndex == 0 && info.rowSpan == 1 && info.columnSpan == 1
                     },
                 )
         }
         compose.onNodeWithTag("toolbar").assert(
-            SemanticsMatcher("a selectable group of 3 rows in 1 column") {
+            SemanticsMatcher("a selectable group of 4 rows in 1 column") {
                 val info = it.config.getOrNull(SemanticsProperties.CollectionInfo)
-                info?.rowCount == 3 && info.columnCount == 1 && it.config.contains(SemanticsProperties.SelectableGroup)
+                info?.rowCount == Tab.entries.size && info.columnCount == 1 && it.config.contains(SemanticsProperties.SelectableGroup)
             },
         )
     }
@@ -510,7 +510,7 @@ class AppShellTest {
         showShell(dark = true)
         val home = bounds("tab Home")
         compose.mainClock.autoAdvance = false
-        tab(Tab.Settings).performClick()
+        tab(Tab.Search).performClick()
         var square = bounds("toolbar indicator")
         var frames = 0
         // Until the square's top edge is in the middle of Home's 24dp icon (14dp to 38dp down).
@@ -528,7 +528,7 @@ class AppShellTest {
         fun Color.greyish() = abs(red - blue) < 0.1f && red > 0.45f && red < 0.8f
         var whiteOnSquare = 0
         var mutedBeside = 0
-        for (name in listOf("tab Home", "tab Settings")) {
+        for (name in listOf("tab Home", "tab Search")) {
             val target = bounds(name)
             var y = target.top + 12f
             while (y <= target.bottom - 12f) {

@@ -9,7 +9,7 @@
  * place, and no library can look like Home or Inbox (their glyphs are not in
  * the curated list).
  */
-import {ArrowDownToLine, FileText, House, Inbox, Settings, type LucideIcon} from 'lucide-react';
+import {ArrowDownToLine, FileText, House, Inbox, Search, Settings, type LucideIcon} from 'lucide-react';
 import type {Item, Library} from '../api/types';
 import {libraryHref} from '../lib/libraries';
 import {libraryIcon} from '../lib/libraryIcons';
@@ -36,13 +36,14 @@ export const NAV_ICON_SIZE = 18;
 export const NAV_ICON_STROKE = 1.5;
 
 export const HOME: NavDestination = {path: '/', label: 'Home', icon: House, exact: true};
+export const SEARCH: NavDestination = {path: '/search', label: 'Search', icon: Search};
 export const OTHER_FILES: NavDestination = {path: '/other', label: 'Other files', icon: FileText};
 export const INBOX: NavDestination = {path: '/inbox', label: 'Inbox', icon: Inbox};
 export const DOWNLOADS: NavDestination = {path: '/downloads', label: 'Downloads', icon: ArrowDownToLine};
 export const SETTINGS: NavDestination = {path: '/settings', label: 'Settings', icon: Settings};
 
-/** How many libraries the phone quick links hold, after Home. */
-const QUICK_LIBRARIES = 3;
+/** How many libraries the phone quick links hold, after Home and Search. */
+const QUICK_LIBRARIES = 2;
 
 export function libraryDestination(library: Pick<Library, 'id' | 'name' | 'icon'>): NavDestination {
   return {path: libraryHref(library.id), label: library.name, icon: libraryIcon(library.icon), libraryId: library.id};
@@ -50,15 +51,15 @@ export function libraryDestination(library: Pick<Library, 'id' | 'name' | 'icon'
 
 export function navGroups(libraries: Library[]): NavGroup[] {
   return [
-    {title: 'Library', items: [HOME, ...libraries.map(libraryDestination), OTHER_FILES]},
+    {title: 'Library', items: [HOME, SEARCH, ...libraries.map(libraryDestination), OTHER_FILES]},
     {title: 'Incoming', items: [INBOX, DOWNLOADS]},
     {title: 'Manage', items: [SETTINGS]},
   ];
 }
 
-/** Kept one tap away on narrow screens: Home, the first three libraries, Downloads. */
+/** Kept one tap away on narrow screens: Home, Search, the first two libraries, Downloads. */
 export function quickDestinations(libraries: Library[]): NavDestination[] {
-  return [HOME, ...libraries.slice(0, QUICK_LIBRARIES).map(libraryDestination), DOWNLOADS];
+  return [HOME, SEARCH, ...libraries.slice(0, QUICK_LIBRARIES).map(libraryDestination), DOWNLOADS];
 }
 
 /**

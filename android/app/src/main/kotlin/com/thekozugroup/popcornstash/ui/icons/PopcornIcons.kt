@@ -2,6 +2,7 @@ package com.thekozugroup.popcornstash.ui.icons
 
 /** The fixed glyphs (android/DESIGN.md, Touch and icons), the same Lucide glyphs the web app uses. */
 object PopcornIcons {
+    val Search = LucideGlyphs.Search
     val Home = LucideGlyphs.House
     val Downloads = LucideGlyphs.ArrowDownToLine
     val Settings = LucideGlyphs.Settings

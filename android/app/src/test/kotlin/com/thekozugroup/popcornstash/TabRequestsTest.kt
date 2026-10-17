@@ -35,6 +35,7 @@ class TabRequestsTest {
             PopcornTheme(darkTheme = false, reduceMotion = true) {
                 AppShell(openTab = requests.tab, onOpenedTab = requests::tabShown) { page ->
                     when (page.tab) {
+                        Tab.Search -> Text("search page")
                         Tab.Downloads -> Text("downloads page")
                         Tab.Home -> {
                             Text("home page")

@@ -414,3 +414,8 @@ and text centered; actions retain their full touch targets.
 The optional public-tracker setting lives with the existing torrent settings and Save
 action. State the daily refresh, VPN use, private-torrent exception and brief reconnect
 in the switch's description; link the maintained source, without showing a wall of URLs.
+
+
+### Search and explicit organization
+
+Search is always one tap away. Use one labeled scope selector and the existing search/list patterns. Library folder browsing shows the current path, Up one folder and immediate child folders. Owners select files with named checkboxes and an explicit selected count. Destination browsing and confirmation state where the files will move; partial failures stay visible and selected. Inbox deletion uses the same selection pattern and a recoverable Trash confirmation. The Android toolbar has four evenly spaced targets: Downloads, Home, Search, Settings; compact windows keep the bottom row and large windows keep the centered left rail. Player double-tap feedback is brief, on the chosen side, with no decorative motion; physical left means back and right means forward in every language.

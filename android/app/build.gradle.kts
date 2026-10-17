@@ -223,6 +223,7 @@ dependencies {
 
 /** Every Lucide icon the app draws: the library icon list (docs/architecture.md section 8) and the fixed glyphs. */
 val lucideIconNames = listOf(
+    "search",
     // Library icons, in picker order (stash-core LIBRARY_ICONS).
     "film", "clapperboard", "tv", "popcorn", "projector", "video", "drama",
     "image", "images", "camera", "aperture",

@@ -41,6 +41,10 @@ pub enum SortOrder {
 pub struct ItemQuery {
     /// Items of one library (the caller must see it; the API checks).
     pub library_id: Option<String>,
+    /// Library-relative folder, including descendants. Requires library_id.
+    pub folder: Option<String>,
+    /// Search includes waiting Inbox files, never missing or trashed ones.
+    pub include_inbox: bool,
     pub place: Option<Place>,
     pub category: Option<Category>,
     pub q: Option<String>,
@@ -462,11 +466,32 @@ pub async fn list(db: &Db, query: &ItemQuery, viewer: &Viewer) -> Result<Page<It
 
     let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
     qb.push_bind(user_id.to_string());
-    qb.push(" WHERE i.status = ").push_bind(status.as_str());
+    if query.include_inbox && query.status.is_none() {
+        qb.push(" WHERE i.status IN ('ready', 'needs_review')");
+    } else {
+        qb.push(" WHERE i.status = ").push_bind(status.as_str());
+    }
     push_visible(&mut qb, viewer);
     if let Some(library_id) = &query.library_id {
         qb.push(" AND i.library_id = ")
             .push_bind(library_id.clone());
+    }
+    if let Some(folder) = &query.folder {
+        super::folders::validate_folder(folder)?;
+        let id = query
+            .library_id
+            .as_deref()
+            .ok_or_else(|| CoreError::invalid("Choose a library before filtering by folder."))?;
+        let def = defs::load_one(db, id).await?.ok_or(CoreError::NotFound)?;
+        let prefix = if folder.is_empty() {
+            format!("{}/", def.folder())
+        } else {
+            format!("{}/{folder}/", def.folder())
+        };
+        qb.push(" AND substr(i.rel_path, 1, ")
+            .push_bind(prefix.chars().count() as i64)
+            .push(") = ")
+            .push_bind(prefix);
     }
     if let Some(place) = query.place {
         qb.push(" AND i.place = ").push_bind(place.as_str());

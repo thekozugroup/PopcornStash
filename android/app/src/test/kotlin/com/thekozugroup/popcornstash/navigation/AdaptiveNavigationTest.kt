@@ -57,16 +57,16 @@ class AdaptiveNavigationTest {
         val bar = compose.onNodeWithTag("toolbar").getUnclippedBoundsInRoot().rect()
         val root = compose.onRoot().getUnclippedBoundsInRoot().rect()
         assertEquals(tokens.thickness.value, bar.height, .5f)
-        assertEquals(tokens.length(3).value, bar.width, .5f)
+        assertEquals(tokens.length(Tab.entries.size).value, bar.width, .5f)
         assertEquals(root.center.x, bar.center.x, .5f)
         val items = Tab.entries.map { compose.onNodeWithTag("tab ${it.name}").getUnclippedBoundsInRoot().rect() }
         assertEquals(items[0].top, items[1].top, .5f)
         assertEquals(items[1].top, items[2].top, .5f)
         assertEquals(items[1].left - items[0].left, items[2].left - items[1].left, .5f)
         items.forEach { assertTrue(it.width >= 48f && it.height >= 48f) }
-        compose.onNodeWithTag("toolbar").assert(SemanticsMatcher("one row of three tabs") {
+        compose.onNodeWithTag("toolbar").assert(SemanticsMatcher("one row of four tabs") {
             val info = it.config[SemanticsProperties.CollectionInfo]
-            info.rowCount == 1 && info.columnCount == 3
+            info.rowCount == 1 && info.columnCount == Tab.entries.size
         })
     }
 
@@ -109,7 +109,7 @@ class AdaptiveNavigationTest {
         val bar = compose.onNodeWithTag("toolbar").getUnclippedBoundsInRoot().rect()
         val content = compose.onNodeWithTag("content Home").getUnclippedBoundsInRoot().rect()
         assertEquals(tokens.thickness.value, bar.width, .5f)
-        assertEquals(tokens.length(3).value, bar.height, .5f)
+        assertEquals(tokens.length(Tab.entries.size).value, bar.height, .5f)
         assertEquals(tokens.margin.value, bar.left, .5f)
         assertEquals(compose.onRoot().getUnclippedBoundsInRoot().rect().center.y, bar.center.y, .5f)
         assertTrue(content.left >= bar.right + tokens.margin.value)

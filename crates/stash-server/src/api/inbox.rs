@@ -20,6 +20,7 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/inbox", get(list))
+        .route("/api/inbox/trash", post(trash_selected))
         .route("/api/inbox/{id}", post(decide))
 }
 
@@ -190,6 +191,20 @@ async fn decide(
         Err(e) => return Err(e.into()),
     }
     Ok(Json(visible_detail(&state, &user, &id).await?))
+}
+
+async fn trash_selected(
+    State(state): State<AppState>,
+    user: AuthUser,
+    JsonBody(body): JsonBody<stash_core::library::folders::ItemIds>,
+) -> ApiResult<Json<stash_core::library::folders::BatchResult>> {
+    user.require_owner()?;
+    Ok(Json(
+        state
+            .library
+            .trash_inbox_items(&body.item_ids, &user.user_id)
+            .await?,
+    ))
 }
 
 #[cfg(test)]

@@ -50,6 +50,32 @@ class ApiClientTest {
     private fun assertAuthorized(request: mockwebserver3.RecordedRequest) =
         assertEquals("Bearer ${Fixtures.TOKEN}", request.headers["Authorization"])
 
+    @Test
+    fun foldersAndBulkActionsUseExplicitScopedRequests() = runTest {
+        server.respond("""{"folder":"Box sets","folders":["Box sets/Series"]}""")
+        assertEquals(listOf("Box sets/Series"), api.libraryFolders("lib-1", "Box sets").folders)
+        assertEquals("/api/libraries/lib-1/folders?folder=Box%20sets", server.next().target)
+        server.respondEmpty(201)
+        api.createLibraryFolder("lib-1", "Box sets", "Series")
+        val created = server.next()
+        assertEquals("POST", created.method)
+        assertEquals("Box sets", json(created.bodyText)["parent"]?.jsonPrimitive?.content)
+        server.respond("""{"completed":["one"],"failed":[{"id":"two","message":"File exists"}]}""")
+        val moved = api.moveLibraryFiles("lib-1", listOf("one", "two"), "Box sets")
+        assertEquals(listOf("one"), moved.completed)
+        assertEquals("two", moved.failed.single().id)
+        assertEquals("/api/libraries/lib-1/move", server.next().target)
+        server.respond("""{"completed":["one"],"failed":[]}""")
+        api.trashInboxFiles(listOf("one"))
+        assertEquals("/api/inbox/trash", server.next().target)
+        server.respond("""{"items":[],"next_cursor":null}""")
+        api.items(ItemQuery(libraryId = "lib-1", folder = "Box sets", includeInbox = false, q = "common title"))
+        val search = server.next()
+        assertTrue(search.target.contains("folder=Box%20sets"))
+        assertTrue(search.target.contains("include_inbox=false"))
+        assertTrue(search.target.contains("q=common%20title"))
+    }
+
     // ------------------------------------------------------------ public ----
 
     @Test

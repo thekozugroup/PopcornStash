@@ -97,6 +97,8 @@ export default function InboxPage() {
   const [reviewFilter, setReviewFilter] = useState('all');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkTarget, setBulkTarget] = useState('rows');
+  const [confirmTrash, setConfirmTrash] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [confirmSelected, setConfirmSelected] = useState(false);
   const [downloadNames, setDownloadNames] = useState<Record<string, string>>({});
   useEffect(() => {
@@ -231,6 +233,26 @@ export default function InboxPage() {
     }
   };
 
+  const trashSelected = async () => {
+    setBusy({id: '*', kind: 'all'}); setDeleteError(null);
+    const completed: string[] = [];
+    const failed: string[] = [];
+    try {
+      for (let start = 0; start < selection.length; start += 500) {
+        const result = await inboxApi.trash(selection.slice(start, start + 500).map(item => item.id));
+        completed.push(...result.completed);
+        result.completed.forEach(removeItem);
+        failed.push(...result.failed.map(f => f.message));
+      }
+      if (failed.length) setDeleteError(`${failed.length} files stayed in Inbox. ${failed.slice(0, 3).join(' ')}`);
+    } catch (e) { setDeleteError(errorMessage(e, 'Deletion was interrupted. Refresh before trying again.')); }
+    finally {
+      setSelected(current => new Set([...current].filter(id => !completed.includes(id))));
+      setBusy(null); setConfirmTrash(false);
+      if (completed.length) showToast({body: `${completed.length} files moved to Trash.`});
+    }
+  };
+
   const acceptAll = async (onlySelected = false) => {
     const targets = onlySelected ? selectionReady : ready.map(item => ({item, value: targetOf(item)}));
     setBusy({id: '*', kind: 'all'});
@@ -335,6 +357,7 @@ export default function InboxPage() {
           {selection.length ? <>
             <Selector label="Import selected to" value={bulkTarget} options={[{value: 'rows', label: 'Each file’s chosen library'}, ...targetSelectorOptions(commonTargets)]} onChange={setBulkTarget} isDisabled={busy !== null} />
             <Button label={`Import selected (${selectionReady.length})`} variant="primary" isDisabled={busy !== null || selectionReady.length === 0} onClick={() => setConfirmSelected(true)} />
+            {isOwner ? <Button label={`Delete selected (${selection.length})`} variant="destructive" isDisabled={busy !== null} onClick={() => setConfirmTrash(true)} /> : null}
             <Button label="Clear selection" variant="ghost" isDisabled={busy !== null} onClick={() => setSelected(new Set())} />
             {selectionReady.length < selection.length ? <Text type="supporting">{selection.length - selectionReady.length} need a compatible library or episode details.</Text> : null}
           </> : null}
@@ -342,6 +365,7 @@ export default function InboxPage() {
         </HStack>
       ) : null}
       {status === 'ready' && items.length + ignored.length > 0 && matching.length === 0 ? <Text as="p">No files match these filters.</Text> : null}
+      {deleteError ? <Banner status="error" title="Some files stayed in Inbox" description={deleteError} collapsible={false} endContent={<Button label="Refresh" variant="secondary" onClick={() => { setDeleteError(null); reload(); }} />} /> : null}
       {status === 'error' ? (
         <Banner
           status="error"
@@ -392,6 +416,9 @@ export default function InboxPage() {
         </Collapsible>
       ) : null}
 
+      <AlertDialog isOpen={confirmTrash} onOpenChange={open => { if (busy === null) setConfirmTrash(open); }} title={`Delete ${selection.length} selected files?`}
+        description="Selected files move to Trash and leave Inbox. Owners can restore them from Settings. Unselected files stay."
+        actionLabel="Move to Trash" isActionLoading={busy?.kind === 'all'} onAction={() => void trashSelected()} />
       <AlertDialog
         isOpen={confirmSelected}
         onOpenChange={open => { if (!open && busy === null) setConfirmSelected(false); }}

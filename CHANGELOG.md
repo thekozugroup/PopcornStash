@@ -4,6 +4,10 @@ Changes to PopcornStash, newest first. Version numbers follow [Semantic Versioni
 
 ## [Unreleased]
 
+- Double tap the left/right player picture to seek back/forward 15 seconds on web and Android.
+- Search navigation across all accessible files or one library; library subfolder browsing, creation and searched bulk moves that preserve watch history.
+- Direct Inbox bulk deletion to recoverable Trash, including ignored images; stale background reads cannot restore deleted rows.
+
 - Owner file inventory and selective cleanup by folder, file type and ignored status, including unindexed companions; recover files and whole folders from Trash.
 - Optional confirmed library-folder removal on web and Android; default deletion keeps files.
 - Inbox selection by download and file type, with bulk import destinations.

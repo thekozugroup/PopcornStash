@@ -49,7 +49,7 @@ test('cleanup removes only selected companions and whole-folder removal is opt i
 
 test('Inbox imports a selected file type without importing other matching uploads', async ({page}) => {
   await page.goto('/');
-  await page.request.patch('/api/settings', {headers: {Origin: env.publicUrl}, data: {auto_sort: false}});
+  await page.request.put('/api/settings', {headers: {Origin: env.publicUrl}, data: {auto_sort: false}});
   for (const name of ['bulk-one.txt', 'bulk-two.txt']) {
     const file = path.join(env.stash, 'Inbox', name);
     fs.writeFileSync(file, 'Synthetic bulk import fixture');
@@ -78,5 +78,6 @@ test('background traffic cannot keep private pages open after fifteen idle minut
   await expect(page.getByRole('heading', {name: 'Home', exact: true})).toHaveCount(0);
   expect((await page.request.get('/api/me')).status()).toBe(401);
   await signInWithPasskey(page);
+  await page.context().storageState({path: env.ownerState});
   await expect(page.getByRole('heading', {name: 'Home', exact: true})).toBeVisible();
 });

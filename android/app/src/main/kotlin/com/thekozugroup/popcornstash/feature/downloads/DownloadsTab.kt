@@ -37,6 +37,7 @@ fun DownloadsTab(
     uploads: UploadQueue,
     openUrl: (String) -> Unit,
     onOpenPlace: ((OutcomePlace) -> Unit)? = null,
+    onManageInbox: (() -> Unit)? = null,
 ) {
     val held = remember(session) { DownloadsHolders.forSession(session, uploads.progress) { id -> session.scope.launch { uploads.stop(id, session.api) } } }
     val controller = held.controller
@@ -56,6 +57,7 @@ fun DownloadsTab(
     val web: (String) -> String = { path -> session.api.url(path).toString() }
     val actions = remember(controller) {
         DownloadsActions(
+            onManageInbox = onManageInbox,
             onRefresh = controller::refreshNow,
             onOpenVpnSettings = { openUrl(web("/settings/vpn")) },
             onPauseOrResume = controller::pauseOrResume,

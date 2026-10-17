@@ -420,6 +420,8 @@ data class ItemPage(val items: List<Item>, val nextCursor: String? = null)
 
 /** `GET /api/items` filters; null ones are left out. */
 data class ItemQuery(
+    val folder: String? = null,
+    val includeInbox: Boolean? = null,
     val libraryId: String? = null,
     val place: Place? = null,
     val category: Category? = null,
@@ -692,3 +694,15 @@ data class VpnStatus(
     val allowNoVpn: Boolean = false,
     val torrentsOff: Boolean = false,
 )
+
+
+@Serializable
+data class LibraryFolders(val folder: String = "", val folders: List<String> = emptyList())
+@Serializable
+data class FileBatchResult(val completed: List<String> = emptyList(), val failed: List<FileBatchFailure> = emptyList())
+@Serializable
+data class FileBatchFailure(val id: String, val message: String)
+@Serializable
+data class MoveFiles(val itemIds: List<String>, val folder: String)
+@Serializable
+data class SelectedFiles(val itemIds: List<String>)

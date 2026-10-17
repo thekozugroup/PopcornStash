@@ -37,3 +37,6 @@ Taste + Impeccable, built from Astryx components. Same world as Popcorn SR: rest
 
 - Browser sessions lock after 15 minutes without keyboard, pointer, scrolling or touch input. A fresh passkey is required; background requests and media playback do not keep them open. Native bearer sessions keep their existing lifetime.
 - Inbox supports selection by source download, file type and review state, then import to each row’s chosen destination or one compatible library. Owners can inspect unindexed companions in Clean files and select the exact files to move to Trash. Cleanup never scans unfinished downloads.
+
+
+Owners can create subfolders inside a library and explicitly move selected indexed files into them. Search works across accessible libraries and Inbox, or within one library. Inbox offers file-type selection and recoverable bulk deletion. Both players seek 15 seconds back or forward when the left or right of the picture is double tapped.

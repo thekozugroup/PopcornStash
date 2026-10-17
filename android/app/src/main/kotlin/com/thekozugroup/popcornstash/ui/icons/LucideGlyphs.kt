@@ -7,6 +7,14 @@ package com.thekozugroup.popcornstash.ui.icons
 object LucideGlyphs {
     const val LUCIDE_VERSION = "1.55.0"
 
+    val Search = LucideGlyph(
+        "search",
+        listOf(
+            "m21 21-4.34-4.34",
+            "M3 11a8 8 0 1 0 16 0a8 8 0 1 0 -16 0Z",
+        ),
+    )
+
     val Film = LucideGlyph(
         "film",
         listOf(
@@ -580,6 +588,7 @@ object LucideGlyphs {
     )
 
     val all: List<LucideGlyph> = listOf(
+        Search,
         Film,
         Clapperboard,
         Tv,

@@ -13,6 +13,9 @@ import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.doubleClick
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -57,6 +60,27 @@ class PlayerScreenTest {
             }
         }
         compose.waitForIdle()
+    }
+
+    @Test
+    fun doubleTappingThePictureSeeksFifteenSecondsInEitherDirection() {
+        show(PlayerSamples.episode)
+        compose.onNodeWithTag("player tap area").performTouchInput { doubleClick(Offset(width * .1f, height * .5f)) }
+        compose.onNodeWithText("−15 seconds").assertIsDisplayed()
+        compose.onNodeWithTag("player tap area").performTouchInput { doubleClick(Offset(width * .9f, height * .5f)) }
+        assertEquals(listOf("seek ${PlayerSamples.clock.positionMs - 15_000}", "seek ${PlayerSamples.clock.positionMs + 15_000}"), done)
+    }
+
+    @Test
+    fun doubleTapStopsAtTheBeginningAndEndWithoutChangingPlayState() {
+        compose.setContent {
+            PlayerTheme {
+                PlayerScreen(PlayerSamples.episode.copy(durationMs = 10_000), { PlayerClock(5_000, 10_000) }, actions, true, {}) { SampleFrame(it) }
+            }
+        }
+        compose.onNodeWithTag("player tap area").performTouchInput { doubleClick(Offset(width * .1f, height * .5f)) }
+        compose.onNodeWithTag("player tap area").performTouchInput { doubleClick(Offset(width * .9f, height * .5f)) }
+        assertEquals(listOf("seek 0", "seek 10000"), done)
     }
 
     @Test

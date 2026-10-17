@@ -94,6 +94,19 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
 
     suspend fun library(id: String): Library = get("/api/libraries/${seg(id)}", Library.serializer())
 
+    suspend fun libraryFolders(id: String, folder: String): LibraryFolders =
+        get("/api/libraries/${seg(id)}/folders", LibraryFolders.serializer(), "folder" to folder)
+
+    suspend fun createLibraryFolder(id: String, parent: String, name: String) = sendEmpty(
+        request("/api/libraries/${seg(id)}/folders").post(buildJsonObject { put("parent", parent); put("name", name) }.toString().toRequestBody(JSON)).build(),
+    )
+
+    suspend fun moveLibraryFiles(id: String, itemIds: List<String>, folder: String): FileBatchResult =
+        post("/api/libraries/${seg(id)}/move", MoveFiles(itemIds, folder), MoveFiles.serializer(), FileBatchResult.serializer())
+
+    suspend fun trashInboxFiles(itemIds: List<String>): FileBatchResult =
+        post("/api/inbox/trash", SelectedFiles(itemIds), SelectedFiles.serializer(), FileBatchResult.serializer())
+
     suspend fun libraryIcons(): List<String> = get("/api/libraries/icons", LibraryIconList.serializer()).icons
 
     /** Owners: top-level folders that are not a library, by name. */
@@ -156,6 +169,8 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
             "/api/items",
             ItemPage.serializer(),
             "library_id" to query.libraryId,
+            "folder" to query.folder,
+            "include_inbox" to query.includeInbox?.toString(),
             "place" to query.place?.let { wire(Place.serializer(), it) },
             "category" to query.category?.wire,
             "q" to query.q,

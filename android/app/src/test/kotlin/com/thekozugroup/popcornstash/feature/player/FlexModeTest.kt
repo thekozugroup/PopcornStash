@@ -9,6 +9,9 @@ import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.doubleClick
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.semantics.SemanticsActions
@@ -49,6 +52,8 @@ class FlexModeTest {
         compose.onNodeWithTag("seek bar").performSemanticsAction(SemanticsActions.SetProgress) { it(0.5f) }
         assertEquals(1, toggles)
         assertEquals(1568000L, seek)
+        compose.onNodeWithTag("player tap area").performTouchInput { doubleClick(Offset(width * .9f, height * .5f)) }
+        assertEquals(PlayerSamples.clock.positionMs + 15_000L, seek)
         compose.mainClock.advanceTimeBy(10000)
         compose.onNodeWithTag("play pause").assertExists()
         compose.runOnIdle { hinge = null }

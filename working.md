@@ -1,5 +1,12 @@
 # PopcornStash, iteration 1
 
+## Current continuation: library organization and search, 2026-10-16
+
+- Implemented on web and native Android: physical left/right double taps seek −/+15 seconds with boundary clamps and feedback; permanent global/library Search; subfolder browsing/creation and explicit searched bulk moves (up to 500 files per batch); direct Inbox bulk deletion to owner-restorable Trash. Only selected files move, collisions never overwrite, partial failures stay selected, and item IDs/favorites/watch progress survive library moves. Inbox mutations invalidate older list reads so deleted rows cannot reappear.
+- Checks: web check/build (68 tests), extension check/ZIP (78), Android test/lint/assembleDebug/verifyRoborazziDebug/checkLucideGlyphs (829 tests, zero failures/errors, four optional integration skips). All 171 changed native goldens reviewed, including the three new screens at full size; design detector reports zero findings. Desktop/390px browser journeys pass (8), including actual disk moves, retained watch position, selected-only image deletion, delayed-read race, rescan persistence and the existing 15-minute idle lock.
+- APK signature verified, installed and launched on the headed API 37 emulator. Pixel is currently disconnected. Production signing key/certificate remain unavailable; publication must use the existing key. Linux release, final backend gates, Docker smoke, deployment and cleanup are being completed below. Unrelated untracked source/image duplicates remain untouched.
+- Extended local regression boundaries: the standalone macOS server harness cannot execute the Linux-only application CLI recovery journey. Native server integration initially passed 9/10; the photo-date fixture lacked optional exiftool. These extra checks do not replace the required passing gates above; final results will be recorded after resolving the environment.
+
 ## Current continuation: cleanup, bulk imports and browser inactivity, 2026-10-16
 
 - Complete: owner file inventory includes ignored imports and unindexed sidecars, with folder/type/review filters, matching selection, and recoverable cleanup in Trash. Removing a library keeps files by default; opting into folder removal requires its exact name. Android offers the same choice and opens the web cleanup page.

@@ -9,7 +9,7 @@
  * refresh `/api/auth/state` and route to sign-in.
  */
 import type {
-  CleanupFile, FileTrashEntry,
+  CleanupFile, FileTrashEntry, FolderList, BatchResult,
   AuditEntry,
   AuthState,
   AuthenticationCredentialJSON,
@@ -376,6 +376,9 @@ export const home = {
 };
 
 export const libraries = {
+  subfolders: (id: string, folder: string, signal?: AbortSignal) => get<FolderList>(`/api/libraries/${enc(id)}/folders`, {folder}, signal),
+  createFolder: (id: string, parent: string, name: string) => post<void>(`/api/libraries/${enc(id)}/folders`, {parent, name}),
+  moveItems: (id: string, item_ids: string[], folder: string) => post<BatchResult>(`/api/libraries/${enc(id)}/move`, {item_ids, folder}),
   /** The libraries the caller sees, in order. */
   list: (signal?: AbortSignal) => get<LibraryList>('/api/libraries', undefined, signal),
   /** 404 for a library the caller cannot see. */
@@ -446,6 +449,7 @@ export const stream = {
 };
 
 export const inbox = {
+  trash: (item_ids: string[]) => post<BatchResult>('/api/inbox/trash', {item_ids}),
   list: (signal?: AbortSignal) => get<InboxResponse>('/api/inbox', undefined, signal),
   decide: (id: string, body: InboxDecision) => post<ItemDetail>(`/api/inbox/${enc(id)}`, body),
 };

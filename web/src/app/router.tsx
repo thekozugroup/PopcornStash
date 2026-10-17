@@ -40,6 +40,8 @@ export const routes: RouteObject[] = [
             element: <AppLayout />,
             children: [
               {index: true, ...page(() => import('../pages/HomePage'))},
+              {path: 'search', ...page(() => import('../pages/SearchPage'))},
+              {path: 'libraries/:id/folders', ...page(() => import('../pages/LibraryFoldersPage'))},
               {path: 'libraries/:id', ...page(() => import('../pages/LibraryPage'))},
               {path: 'libraries/:id/shows/:name', ...page(() => import('../pages/ShowPage'))},
               {path: 'movies', ...legacy(module => module.MoviesRedirect)},

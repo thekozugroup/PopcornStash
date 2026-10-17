@@ -24,12 +24,20 @@ sealed interface HomeRoute {
     data class Library(val id: String, val name: String, val icon: String) : HomeRoute
 
     @Serializable
+    @SerialName("files")
+    data class Files(val id: String, val name: String, val organize: Boolean) : HomeRoute
+
+    @Serializable
     @SerialName("show")
     data class Show(val libraryId: String, val libraryName: String, val icon: String, val name: String) : HomeRoute
 
     @Serializable
     @SerialName("item")
     data class Item(val id: String, val title: String) : HomeRoute
+
+    @Serializable
+    @SerialName("inbox_files")
+    data object InboxFiles : HomeRoute
 
     @Serializable
     @SerialName("other_files")
@@ -40,6 +48,7 @@ sealed interface HomeRoute {
 val HomeRoute.libraryId: String?
     get() = when (this) {
         is HomeRoute.Library -> id
+        is HomeRoute.Files -> id
         is HomeRoute.Show -> libraryId
         else -> null
     }

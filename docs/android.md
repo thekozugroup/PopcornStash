@@ -149,7 +149,7 @@ Then remove the old copy of this phone from **Settings, Devices** on the web. Fr
 
 - **Device coverage is limited.** The Android 17 emulator verified device-PIN setup, cold launch, relocking after Home, cancelled verification, restored drafts, incoming-share protection and blocked screen capture. Real media decoding, photo zoom, rotation, background uploads and a real passkey prompt still need device testing. Picture-in-picture is disabled for privacy.
 - **The frosted toolbar on Android 17 QPR2 has not run.** From Android 17 QPR2 (SDK 37.2) the platform blurs the window behind the bar itself (`RenderNode.setBackdropRenderEffect`). That code compiles and passes lint, but there was no 37.2 phone or emulator image to run it on, and Robolectric runs Android 16, so it has never drawn. The same goes for how the bar fades in and out there: without a layer of its own (`CompositingStrategy.ModulateAlpha`), because the platform would otherwise blur that empty layer instead of the pages. The glass on Android 12 to 17.1 (the app records the pages and blurs them; most phones show this until Android 17 QPR2 reaches Pixels in December 2026) is covered by screenshots and pixel checks, and the opaque bar on Android 9 to 11 by a screenshot.
-- **No lock screen or headset controls** (no media session), **no subtitles**, and no double tap to seek in the player.
+- **No lock screen or headset controls** (no media session), **no subtitles**, and no background playback.
 - **A shared `.torrent` file is uploaded as a file**, not added as a download.
 - **Admin pages on the web:** VPN, people, devices, security, system, sorting and the trash open in the phone's browser, which has its own sign-in.
 - **Imports for members:** the API does not say who added a waiting file, so a member's row whose suggestion names a library offers only that library, even for a file the member added (the web does the same).
@@ -163,3 +163,12 @@ Then remove the old copy of this phone from **Settings, Devices** on the web. Fr
 Downloads use a centered magnet glyph, a truncated filename, one status, progress and separate download/upload/peer chips. Unknown peer counts say “Peers pending”. Rates have arrow icons and accessibility labels as well as color; actions retain 48dp targets and chips wrap with large text.
 
 Web admin pages use their own browser passkey session, which locks after 15 minutes without input. This does not end the native Android bearer sign-in or interrupt server downloads.
+
+
+### Search and file organization
+
+Search is a fourth navigation tab. Choose all accessible libraries and Inbox, or one library; results search titles and filenames. A library also offers Search and Organize files (Browse folders for members) in its top bar. Owners can create subfolders, search, select shown files, and choose an existing destination within the same library. Moves preserve watch history and never overwrite existing filenames. Load more to add files to the selection view, up to 500; narrow the search for larger sets.
+
+Downloads → Manage Inbox opens owner bulk selection, including ignored files. Choose Images, Subtitles, Videos, Audio or Other files, select shown entries and Delete selected. Confirmation moves them to recoverable Trash; failed entries stay selected with a reason. Restore continues to open the web Trash page.
+
+Double tap the left or right of the player picture to go back or forward 15 seconds. Each double tap adds one jump. This also works on the upper picture in foldable tabletop mode. TalkBack exposes Back 15 seconds and Forward 15 seconds actions.

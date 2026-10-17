@@ -60,6 +60,8 @@ internal fun LibraryPage(route: HomeRoute.Library, bottomClearance: Dp, services
         format = format,
         actions = LibraryActions(
             back = nav::back,
+            search = { nav.open(HomeRoute.Files(route.id, route.name, false)) },
+            folders = { nav.open(HomeRoute.Files(route.id, route.name, true)) },
             retry = model::retry,
             loadMore = model::loadMore,
             sort = model::setSort,

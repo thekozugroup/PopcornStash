@@ -3393,3 +3393,242 @@ async fn cleanup_database_failure_restores_the_original_file_and_preserves_the_i
         "Other/record.jpg"
     );
 }
+
+#[tokio::test]
+async fn folders_move_selected_files_preserving_identity_and_reject_collisions() {
+    use super::defs::STARTING_MOVIES;
+    use super::folders::{CreateFolder, MoveItems};
+    let h = harness().await;
+    h.write("Movies/First.mkv", b"first");
+    h.write("Movies/Second.mkv", b"second");
+    let first = h.lib.index_path("Movies/First.mkv").await.unwrap().unwrap();
+    let second = h
+        .lib
+        .index_path("Movies/Second.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query("INSERT INTO users VALUES ('folder-owner','Owner','owner','folder-key',0)")
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO item_progress (user_id,item_id,position_s,duration_s,updated_at) VALUES ('folder-owner',?,42,100,0)").bind(&first.id).execute(&h.lib.db).await.unwrap();
+    sqlx::query("UPDATE items SET favorite = 1 WHERE id = ?")
+        .bind(&first.id)
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    h.lib
+        .create_library_folder(
+            STARTING_MOVIES,
+            &CreateFolder {
+                parent: String::new(),
+                name: "Collection".into(),
+            },
+        )
+        .await
+        .unwrap();
+    h.lib
+        .create_library_folder(
+            STARTING_MOVIES,
+            &CreateFolder {
+                parent: "Collection".into(),
+                name: "Classics".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let folders = h
+        .lib
+        .library_folders(STARTING_MOVIES, "Collection")
+        .await
+        .unwrap();
+    assert_eq!(folders.folders, ["Collection/Classics"]);
+    h.write("Movies/Collection/Second.mkv", b"occupied");
+    let result = h
+        .lib
+        .move_library_items(
+            STARTING_MOVIES,
+            &MoveItems {
+                item_ids: vec![first.id.clone(), second.id.clone()],
+                folder: "Collection".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.completed, std::slice::from_ref(&first.id));
+    assert_eq!(result.failed.len(), 1);
+    let moved = h.item(&first.id).await;
+    assert_eq!(moved.rel_path, "Movies/Collection/First.mkv");
+    assert!(moved.favorite);
+    let progress: f64 =
+        sqlx::query_scalar("SELECT position_s FROM item_progress WHERE item_id = ?")
+            .bind(&first.id)
+            .fetch_one(&h.lib.db)
+            .await
+            .unwrap();
+    assert_eq!(progress, 42.0);
+    let scoped = repo::list(
+        &h.lib.db,
+        &ItemQuery {
+            library_id: Some(STARTING_MOVIES.into()),
+            folder: Some("Collection".into()),
+            ..ItemQuery::default()
+        },
+        &h.owner(),
+    )
+    .await
+    .unwrap();
+    assert!(scoped.items.iter().any(|i| i.id == first.id));
+    assert!(!scoped.items.iter().any(|i| i.id == second.id));
+    assert_eq!(moved.added_at, first.added_at);
+    assert_eq!(moved.quick_hash, first.quick_hash);
+    assert!(h.exists("Movies/Second.mkv"));
+    assert_eq!(
+        std::fs::read(h.root.join("Movies/Collection/Second.mkv")).unwrap(),
+        b"occupied"
+    );
+    h.lib.rescan().await.unwrap();
+    assert_eq!(h.item(&first.id).await.rel_path, moved.rel_path);
+}
+
+#[tokio::test]
+async fn folders_refuse_traversal_links_foreign_items_and_rollback_failed_database_write() {
+    use super::defs::{STARTING_MOVIES, STARTING_PHOTOS};
+    use super::folders::{CreateFolder, MoveItems};
+    let h = harness().await;
+    for name in ["../escape", "a/b", ".hidden", " ", "a\\b"] {
+        assert!(
+            h.lib
+                .create_library_folder(
+                    STARTING_MOVIES,
+                    &CreateFolder {
+                        parent: String::new(),
+                        name: name.into()
+                    }
+                )
+                .await
+                .is_err()
+        );
+    }
+    std::os::unix::fs::symlink(h.root.join("Photos"), h.root.join("Movies/link")).unwrap();
+    assert!(
+        h.lib
+            .library_folders(STARTING_MOVIES, "link")
+            .await
+            .is_err()
+    );
+    assert!(
+        h.lib
+            .library_folders(STARTING_MOVIES, "../Photos")
+            .await
+            .is_err()
+    );
+    assert!(
+        !h.lib
+            .library_folders(STARTING_MOVIES, "")
+            .await
+            .unwrap()
+            .folders
+            .contains(&"link".into())
+    );
+    h.lib
+        .create_library_folder(
+            STARTING_MOVIES,
+            &CreateFolder {
+                parent: String::new(),
+                name: "New".into(),
+            },
+        )
+        .await
+        .unwrap();
+    h.write("Movies/Keep.mkv", b"keep");
+    let item = h.lib.index_path("Movies/Keep.mkv").await.unwrap().unwrap();
+    let body = MoveItems {
+        item_ids: vec![item.id.clone()],
+        folder: String::new(),
+    };
+    assert_eq!(
+        h.lib
+            .move_library_items(STARTING_PHOTOS, &body)
+            .await
+            .unwrap()
+            .failed
+            .len(),
+        1
+    );
+    sqlx::query("CREATE TRIGGER refuse_folder_move BEFORE UPDATE OF rel_path ON items BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END").execute(&h.lib.db).await.unwrap();
+    assert_eq!(
+        h.lib
+            .move_library_items(
+                STARTING_MOVIES,
+                &MoveItems {
+                    folder: "New".into(),
+                    ..body
+                }
+            )
+            .await
+            .unwrap()
+            .failed
+            .len(),
+        1
+    );
+    assert!(h.exists("Movies/Keep.mkv"));
+    assert!(!h.exists("Movies/New/Keep.mkv"));
+}
+
+#[tokio::test]
+async fn inbox_bulk_delete_removes_only_selected_images_and_stays_deleted_after_rescan() {
+    let h = harness().await;
+    h.lib
+        .settings
+        .update(serde_json::json!({"auto_sort": false}))
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO users VALUES ('owner','Owner','owner','bulk-owner',0)")
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    for name in ["cover.jpg", "keep.jpg", "cover.mkv"] {
+        h.write(&format!("Inbox/{name}"), name.as_bytes());
+    }
+    h.lib.sort_path("Inbox/cover.jpg", None).await.unwrap();
+    h.lib.sort_path("Inbox/keep.jpg", None).await.unwrap();
+    h.lib.sort_path("Inbox/cover.mkv", None).await.unwrap();
+    let image = repo::get_by_path(&h.lib.db, "Inbox/cover.jpg")
+        .await
+        .unwrap()
+        .unwrap();
+    let keep = repo::get_by_path(&h.lib.db, "Inbox/keep.jpg")
+        .await
+        .unwrap()
+        .unwrap();
+    if image.status == ItemStatus::NeedsReview {
+        h.lib.review(&image.id, ReviewAction::Ignore).await.unwrap();
+    }
+    let result = h
+        .lib
+        .trash_inbox_items(std::slice::from_ref(&image.id), "owner")
+        .await
+        .unwrap();
+    assert_eq!(
+        result.completed,
+        std::slice::from_ref(&image.id),
+        "{:?}",
+        result.failed
+    );
+    assert!(!h.exists("Inbox/cover.jpg"));
+    assert!(h.exists("Inbox/cover.mkv"));
+    assert!(h.exists("Inbox/keep.jpg"));
+    h.lib.rescan().await.unwrap();
+    assert_eq!(h.item(&image.id).await.status, ItemStatus::Trashed);
+    assert_ne!(h.item(&keep.id).await.status, ItemStatus::Trashed);
+    let query = ItemQuery {
+        include_inbox: true,
+        ..ItemQuery::default()
+    };
+    let page = repo::list(&h.lib.db, &query, &h.owner()).await.unwrap();
+    assert!(!page.items.iter().any(|i| i.id == image.id));
+    h.lib.restore_item(&image.id).await.unwrap();
+    assert!(h.exists("Inbox/cover.jpg"));
+}

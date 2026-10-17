@@ -59,7 +59,7 @@ class DownloadsScreenshotTest {
         WithSampleImages {
             AppShell(initialTab = Tab.Downloads, readyToImport = state.imports.size) { page ->
                 // As the app wires it: a finished row's library opens (MainActivity).
-                val actions = DownloadsActions(onOpenPlace = {})
+                val actions = DownloadsActions(onOpenPlace = {}, onManageInbox = {})
                 if (list != null) {
                     DownloadsPage(page, state, actions, s.NOW, listState = list)
                 } else {

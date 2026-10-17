@@ -89,6 +89,8 @@ export function useInbox(): InboxData {
   });
 
   const removeItem = useCallback((id: string) => {
+    // A request started before this mutation must never put the old row back.
+    generation.current += 1;
     setItems(current => {
       const next = current.filter(item => item.id !== id);
       countRef.current = next.length;

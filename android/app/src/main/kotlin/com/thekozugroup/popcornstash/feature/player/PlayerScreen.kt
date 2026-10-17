@@ -7,7 +7,11 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -137,6 +141,10 @@ fun PlayerScreen(
     val playing = ready && state.playWhenReady
     var menuOpen by remember { mutableStateOf(menuInitiallyOpen) }
     var seeking by remember { mutableStateOf(false) }
+    var seekNotice by remember { mutableStateOf<String?>(null) }
+    var seekSide by remember { mutableStateOf(false) }
+    var seekSerial by remember { mutableIntStateOf(0) }
+    LaunchedEffect(seekSerial) { if (seekNotice != null) { delay(900); seekNotice = null } }
     var touches by remember { mutableIntStateOf(0) }
     val touched: () -> Unit = { touches++ }
 
@@ -174,6 +182,41 @@ fun PlayerScreen(
             PictureInPictureOverlay(state)
             return@BoxWithConstraints
         }
+        val seekBy: (Long) -> Unit = { delta ->
+            if (ready && state.durationMs > 0) {
+                touched()
+                actions.onSeek((clock().positionMs + delta).coerceIn(0L, state.durationMs))
+                seekSide = delta > 0
+                seekNotice = if (delta > 0) "+15 seconds" else "−15 seconds"
+                seekSerial++
+            }
+        }
+        val currentSeek by androidx.compose.runtime.rememberUpdatedState(seekBy)
+        val currentToggle by androidx.compose.runtime.rememberUpdatedState {
+            touched()
+            onChromeVisibleChange(!chromeVisible)
+        }
+        Box(
+            (if (flex) Modifier.fillMaxWidth().height(top) else Modifier.fillMaxSize())
+                .testTag("player tap area")
+                .semantics {
+                    onClick(label = if (chromeShown) "Hide controls" else "Show controls") { currentToggle(); true }
+                    customActions = listOf(
+                        CustomAccessibilityAction("Back 15 seconds") { currentSeek(-15_000L); true },
+                        CustomAccessibilityAction("Forward 15 seconds") { currentSeek(15_000L); true },
+                    )
+                }
+                .pointerInput(Unit) {
+                    detectTapGestures(onTap = { currentToggle() }, onDoubleTap = { point -> currentSeek(if (point.x < size.width / 2f) -15_000L else 15_000L) })
+                },
+        ) {
+            seekNotice?.let { notice ->
+                Text(notice, style = Popcorn.type.action, color = colors.onMedia,
+                    modifier = Modifier.align(if (seekSide) Alignment.CenterEnd else Alignment.CenterStart)
+                        .padding(24.dp).clip(Popcorn.shapes.control).background(colors.mediaControl).padding(16.dp)
+                        .semantics { liveRegion = LiveRegionMode.Polite })
+            }
+        }
         if (flex) {
             Box(Modifier.offset(y = bottom).fillMaxWidth().height(maxHeight - bottom).background(colors.page).testTag("flex controls")) {
                 Chrome(
@@ -189,18 +232,6 @@ fun PlayerScreen(
             }
             return@BoxWithConstraints
         }
-        Box(
-            Modifier
-                .fillMaxSize()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClickLabel = if (chromeShown) "Hide controls" else "Show controls",
-                ) {
-                    touched()
-                    onChromeVisibleChange(!chromeVisible)
-                },
-        )
         if (phase is PlayerPhase.Ended || phase is PlayerPhase.Failed) {
             Box(Modifier.fillMaxSize().background(colors.mediaControl))
         }

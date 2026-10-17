@@ -38,7 +38,8 @@ val SampleLibrarySettings = LibrarySettingsUi(
 fun SampleTabRoot(page: TabPage, user: User = SampleOwner) {
     when (page.tab) {
         // As the app wires it: a finished row's library opens (MainActivity).
-        Tab.Downloads -> DownloadsPage(page, DownloadsSamples.content(), DownloadsActions(onOpenPlace = {}), DownloadsSamples.NOW)
+        Tab.Downloads -> DownloadsPage(page, DownloadsSamples.content(), DownloadsActions(onOpenPlace = {}, onManageInbox = {}), DownloadsSamples.NOW)
+        Tab.Search -> androidx.compose.material3.Text("Search")
         Tab.Home -> WithSampleImages {
             HomeScreen(page, Loadable.Ready(SampleMedia.home), isOwner = user.role == Role.Owner, actions = HomeActions(), format = SampleFormat)
         }

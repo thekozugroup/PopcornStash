@@ -10,6 +10,7 @@
  */
 import * as stylex from '@stylexjs/stylex';
 import {Button} from '@astryxdesign/core/Button';
+import {HStack} from '@astryxdesign/core/Layout';
 import {Skeleton} from '@astryxdesign/core/Skeleton';
 import {useEffect, useState} from 'react';
 import {useParams} from 'react-router';
@@ -160,7 +161,10 @@ export default function LibraryPage() {
 
   return (
     <>
-      <PageHeader title={library.name} subtitle={libraryCountLine(library)} />
+      <PageHeader title={library.name} subtitle={libraryCountLine(library)} actions={<HStack gap={2} wrap="wrap">
+        <Button label="Search" variant="ghost" href={`/search?library=${encodeURIComponent(library.id)}`} />
+        <Button label={isOwner ? 'Organize files' : 'Browse folders'} variant="secondary" href={`/libraries/${encodeURIComponent(library.id)}/folders`} />
+      </HStack>} />
       {view}
     </>
   );

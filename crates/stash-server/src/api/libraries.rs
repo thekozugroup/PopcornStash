@@ -32,6 +32,11 @@ pub fn routes() -> Router<AppState> {
         .route("/api/libraries/order", put(order))
         .route("/api/libraries/{id}", get(one).patch(edit).delete(remove))
         .route("/api/libraries/{id}/trash", post(remove_folder))
+        .route(
+            "/api/libraries/{id}/folders",
+            get(subfolders).post(create_subfolder),
+        )
+        .route("/api/libraries/{id}/move", post(move_items))
         .route("/api/libraries/{id}/shows", get(shows))
         .route("/api/libraries/{id}/shows/{name}", get(show))
         .route("/api/libraries/{id}/timeline", get(timeline))
@@ -325,6 +330,54 @@ async fn timeline(
         )
         .await?,
     ))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct FolderQuery {
+    folder: String,
+}
+
+async fn subfolders(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    uri: Uri,
+) -> ApiResult<Json<stash_core::library::folders::FolderList>> {
+    user.require(Scope::LibraryRead)?;
+    let access = user.access(&state.db).await?;
+    visible_library(&state, &access, &id).await?;
+    let query: FolderQuery = parse_query(&uri)?;
+    Ok(Json(
+        state.library.library_folders(&id, &query.folder).await?,
+    ))
+}
+
+async fn create_subfolder(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<stash_core::library::folders::CreateFolder>,
+) -> ApiResult<StatusCode> {
+    user.require(Scope::LibraryRead)?;
+    let access = user.access(&state.db).await?;
+    visible_library(&state, &access, &id).await?;
+    user.require_owner()?;
+    state.library.create_library_folder(&id, &body).await?;
+    Ok(StatusCode::CREATED)
+}
+
+async fn move_items(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<stash_core::library::folders::MoveItems>,
+) -> ApiResult<Json<stash_core::library::folders::BatchResult>> {
+    user.require(Scope::LibraryRead)?;
+    let access = user.access(&state.db).await?;
+    visible_library(&state, &access, &id).await?;
+    user.require_owner()?;
+    Ok(Json(state.library.move_library_items(&id, &body).await?))
 }
 
 #[cfg(test)]
@@ -961,5 +1014,105 @@ mod tests {
         let (status, json) = app.json(&format!("{base}?limit=1000"), &token).await;
         assert_eq!(status, StatusCode::OK, "{json}");
         assert_eq!(photos(&json), 500);
+    }
+    #[tokio::test]
+    async fn folder_routes_are_scoped_owner_only_and_search_excludes_hidden_libraries() {
+        let app = TestApp::new().await;
+        let (_, owner) = app.user("owner").await;
+        let (_, member) = app.user("member").await;
+        let base = format!("/api/libraries/{STARTING_MOVIES}");
+        let folders = format!("{base}/folders");
+        let body = serde_json::json!({"parent": "", "name": "Collection"});
+        assert_eq!(app.json(&folders, &member).await.0, StatusCode::OK);
+        assert_eq!(
+            app.send_json("POST", &folders, &member, body.clone())
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            app.send_json("POST", &folders, &owner, body).await.0,
+            StatusCode::CREATED
+        );
+        let (_, list) = app.json(&folders, &owner).await;
+        assert_eq!(list["folders"], serde_json::json!(["Collection"]));
+        assert_eq!(
+            app.send_json(
+                "POST",
+                &folders,
+                &owner,
+                serde_json::json!({"name": "../escape"})
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            app.send_json(
+                "POST",
+                &format!("{base}/move"),
+                &owner,
+                serde_json::json!({"item_ids": [], "folder": "Collection"})
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        app.send_json(
+            "PATCH",
+            &base,
+            &owner,
+            serde_json::json!({"visibility":"selected", "member_ids":[]}),
+        )
+        .await;
+        for route in [&folders, &format!("{folders}?folder=../bad")] {
+            assert_eq!(app.json(route, &member).await.0, StatusCode::NOT_FOUND);
+        }
+        assert_eq!(
+            app.send_json(
+                "POST",
+                &folders,
+                &member,
+                serde_json::json!({"name":"Other"})
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            app.send_json(
+                "POST",
+                &format!("{base}/move"),
+                &member,
+                serde_json::json!({"item_ids":["unknown"],"folder":""})
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            app.json(
+                &format!("/api/items?library_id={STARTING_MOVIES}&include_inbox=true&q=test"),
+                &member
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            app.json("/api/items?folder=Collection", &owner).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            app.send_json(
+                "POST",
+                "/api/inbox/trash",
+                &member,
+                serde_json::json!({"item_ids":["unknown"]})
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
     }
 }

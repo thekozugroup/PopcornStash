@@ -618,7 +618,12 @@ export interface OkResponse {
 export type ItemSort = 'added' | 'title' | 'taken' | 'size';
 export type SortOrder = 'asc' | 'desc';
 
+export interface FolderList { folder: string; folders: string[] }
+export interface BatchResult { completed: string[]; failed: {id: string; message: string}[] }
+
 export interface ItemQuery extends PageParams {
+  folder?: string;
+  include_inbox?: boolean;
   /** Items of one library (404 when the caller cannot see it). */
   library_id?: Id;
   place?: ItemPlace;
