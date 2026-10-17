@@ -1,5 +1,12 @@
 # PopcornStash, iteration 1
 
+## Current continuation: Atlas file deletion error 22, 2026-10-17
+
+- Reproduced with disposable files on the actual Atlas share: anchored directory resolution succeeds, but shfs rejects Linux atomic no-replace rename with EINVAL (22). The same operation succeeds on local storage; an exclusive hard link succeeds on shfs. Production remains healthy; 893 item records and three sorted downloads are unchanged, with zero active transfers at inspection.
+- Implemented a bounded Trash compatibility path: native no-replace rename remains preferred; unsupported shares can move selected regular files into an exclusively allocated, owner-only final Trash entry and restore through exclusive hard links. Public sources are never unlinked by the fallback. New Inbox restores use the same helper; fresh private directories normalize inherited setgid permissions. Folder Trash and public library moves still require filesystem support and remain fail-closed.
+- Passed on the real Atlas shfs share as UID 1000: disposable image/text/subtitle cleanup, video preservation, occupied restore names and retry, database-failure rollback, Inbox delete/restore and empty Trash. The isolated fixture and test executable were removed. No user media was deleted or retried.
+- Web check/build (68 tests), extension check/ZIP (78), Android test/lint/assembly/screenshot/glyph verification (829 tests, four optional integration skips), and eight real-browser journeys pass. Linux formatting and strict all-target clippy pass. All 591 workspace tests pass; the explicit filesystem fixture also passes separately. Optimized image smoke checks, deployment and work-resource cleanup are pending. Independent review findings about restore exclusion and inherited permissions were fixed and re-reviewed.
+
 ## Current continuation: library organization and search, 2026-10-16
 
 - Implemented on web and native Android: physical left/right double taps seek −/+15 seconds with boundary clamps and feedback; permanent global/library Search; subfolder browsing/creation and explicit searched bulk moves (up to 500 files per batch); direct Inbox bulk deletion to owner-restorable Trash. Only selected files move, collisions never overwrite, partial failures stay selected, and item IDs/favorites/watch progress survive library moves. Inbox mutations invalidate older list reads so deleted rows cannot reappear.

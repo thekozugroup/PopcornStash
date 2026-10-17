@@ -25,7 +25,10 @@ struct Harness {
 }
 
 async fn harness() -> Harness {
-    let dir = tempfile::tempdir().unwrap();
+    harness_in(tempfile::tempdir().unwrap()).await
+}
+
+async fn harness_in(dir: tempfile::TempDir) -> Harness {
     let root = dir.path().join("stash");
     let config_dir = dir.path().join("config");
     std::fs::create_dir_all(&root).unwrap();
@@ -3631,4 +3634,143 @@ async fn inbox_bulk_delete_removes_only_selected_images_and_stays_deleted_after_
     assert!(!page.items.iter().any(|i| i.id == image.id));
     h.lib.restore_item(&image.id).await.unwrap();
     assert!(h.exists("Inbox/cover.jpg"));
+}
+
+/// Run on the production filesystem, under a disposable hidden fixture only:
+/// STASH_TEST_ROOT=/stash cargo test -p stash-core shfs_cleanup_trash_restore -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "requires STASH_TEST_ROOT on the filesystem being verified"]
+async fn shfs_cleanup_trash_restore() {
+    let base = std::env::var_os("STASH_TEST_ROOT").expect("set STASH_TEST_ROOT to /stash");
+    let parent = tempfile::Builder::new()
+        .prefix(".stash-cleanup-test-")
+        .tempdir_in(base)
+        .unwrap();
+    let h = harness_in(tempfile::tempdir_in(parent.path()).unwrap()).await;
+    sqlx::query("INSERT INTO users VALUES ('owner','Owner','owner','fixture-owner',0)")
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    for (name, bytes) in [
+        ("companion.srt", b"synthetic subtitle".as_slice()),
+        ("cover.jpg", b"synthetic image".as_slice()),
+        ("instructions.txt", b"synthetic instructions".as_slice()),
+        ("keep.mkv", b"synthetic keeper".as_slice()),
+    ] {
+        h.write(&format!("Inbox/{name}"), bytes);
+    }
+    let choices: Vec<_> = h
+        .lib
+        .cleanup_inventory(Some("Inbox"))
+        .await
+        .unwrap()
+        .files
+        .into_iter()
+        .filter(|f| f.choice.path != "Inbox/keep.mkv")
+        .map(|f| f.choice)
+        .collect();
+    let out = h.lib.cleanup_files(&choices, "owner").await.unwrap();
+    assert!(out.failed.is_empty(), "{:?}", out.failed);
+    assert_eq!(out.removed.len(), 3);
+    for entry in h.lib.file_trash().await.unwrap() {
+        let payload = std::fs::read(h.root.join(&entry.trashed_rel_path)).unwrap();
+        h.write(&entry.original_rel_path, b"synthetic collision");
+        assert!(h.lib.restore_file_trash(&entry.id).await.is_err());
+        assert_eq!(
+            std::fs::read(h.root.join(&entry.original_rel_path)).unwrap(),
+            b"synthetic collision"
+        );
+        assert_eq!(
+            std::fs::read(h.root.join(&entry.trashed_rel_path)).unwrap(),
+            payload
+        );
+        // Only our synthetic collision is removed before retrying.
+        std::fs::remove_file(h.root.join(&entry.original_rel_path)).unwrap();
+        h.lib.restore_file_trash(&entry.id).await.unwrap();
+        assert_eq!(
+            std::fs::read(h.root.join(&entry.original_rel_path)).unwrap(),
+            payload
+        );
+    }
+    h.write("Other/rollback.jpg", b"synthetic photo");
+    let item = h
+        .lib
+        .index_path("Other/rollback.jpg")
+        .await
+        .unwrap()
+        .unwrap();
+    let choice = h
+        .lib
+        .cleanup_inventory(Some("Other"))
+        .await
+        .unwrap()
+        .files
+        .remove(0)
+        .choice;
+    sqlx::query("CREATE TRIGGER refuse_cleanup BEFORE UPDATE OF status ON items WHEN NEW.status = 'trashed' BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END")
+        .execute(&h.lib.db).await.unwrap();
+    let out = h.lib.cleanup_files(&[choice], "owner").await.unwrap();
+    assert_eq!(out.failed.len(), 1);
+    assert_eq!(h.item(&item.id).await.rel_path, "Other/rollback.jpg");
+    assert_eq!(
+        std::fs::read(h.root.join("Other/rollback.jpg")).unwrap(),
+        b"synthetic photo"
+    );
+    assert!(h.lib.file_trash().await.unwrap().is_empty());
+    sqlx::query("DROP TRIGGER refuse_cleanup")
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    h.write("Inbox/trash.jpg", b"synthetic Inbox photo");
+    h.lib
+        .settings
+        .update(serde_json::json!({"auto_sort": false}))
+        .await
+        .unwrap();
+    h.lib.sort_path("Inbox/trash.jpg", None).await.unwrap();
+    let item = repo::get_by_path(&h.lib.db, "Inbox/trash.jpg")
+        .await
+        .unwrap()
+        .unwrap();
+    let out = h
+        .lib
+        .trash_inbox_items(std::slice::from_ref(&item.id), "owner")
+        .await
+        .unwrap();
+    assert!(out.failed.is_empty(), "{:?}", out.failed);
+    assert_eq!(out.completed.len(), 1);
+    assert!(!h.exists("Inbox/trash.jpg"));
+    h.write("Inbox/trash.jpg", b"synthetic Inbox collision");
+    let restored = h.lib.restore_item(&item.id).await.unwrap();
+    assert_eq!(restored.rel_path, "Inbox/trash (2).jpg");
+    assert_eq!(
+        std::fs::read(h.root.join("Inbox/trash.jpg")).unwrap(),
+        b"synthetic Inbox collision"
+    );
+    assert_eq!(
+        std::fs::read(h.root.join(&restored.rel_path)).unwrap(),
+        b"synthetic Inbox photo"
+    );
+    assert_eq!(
+        std::fs::read(h.root.join("Inbox/keep.mkv")).unwrap(),
+        b"synthetic keeper"
+    );
+    let out = h
+        .lib
+        .trash_inbox_items(std::slice::from_ref(&item.id), "owner")
+        .await
+        .unwrap();
+    assert!(out.failed.is_empty(), "{:?}", out.failed);
+    let trashed = h.item(&item.id).await.rel_path;
+    let parent = h.root.join(&trashed).parent().unwrap().to_path_buf();
+    assert_eq!(h.lib.empty_trash(None).await.unwrap(), 1);
+    assert!(!h.exists(&trashed));
+    assert!(!parent.exists());
+    assert!(repo::get(&h.lib.db, &item.id).await.unwrap().is_none());
+    assert!(repo::trash_list(&h.lib.db).await.unwrap().is_empty());
+    h.lib.db.close().await;
+    println!(
+        "cleanup, file restore, DB rollback, Inbox trash and restore passed in {}",
+        h.root.display()
+    );
 }

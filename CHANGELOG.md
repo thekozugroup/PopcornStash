@@ -76,6 +76,8 @@ Libraries the owner defines, each with its own icon and its own audience, and th
 
 ### Fixed
 
+- Moving selected images, subtitles and other files to Trash works on Unraid shfs shares that reject atomic no-replace rename. File restores retain collision protection.
+
 - Pausing and resuming a magnet link that is still fetching its details works, also while torrents are blocked because the VPN is not protecting them, and a paused magnet stays paused after a restart.
 
 ## [0.1.0] - 2026-10-13

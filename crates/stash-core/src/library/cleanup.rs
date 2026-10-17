@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fs::{File, Metadata, OpenOptions};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -196,37 +196,188 @@ impl Root {
         Ok(file.metadata()?)
     }
 
-    // SAFETY: CString paths live for the call; both borrowed descriptors are open
-    // directories. Kernel no-replace flags make the single rename atomic.
-    #[allow(unsafe_code)]
+    /// Public moves always require an atomic, exclusive native rename.
     pub(super) fn rename(&self, from: &str, to: &str) -> Result<()> {
         let (src, from) = self.parent(from, false)?;
         let (dst, to) = self.parent(to, true)?;
-        #[cfg(target_os = "linux")]
-        let result = unsafe {
-            libc::syscall(
-                libc::SYS_renameat2,
-                src.as_raw_fd(),
-                from.as_ptr(),
-                dst.as_raw_fd(),
-                to.as_ptr(),
-                libc::RENAME_NOREPLACE,
+        rename_exclusive(&src, &from, &dst, &to)?;
+        Ok(())
+    }
+
+    /// An exclusive, unpredictable final Trash entry, never an intermediate stage.
+    pub(super) fn new_trash_dir(&self, prefix: &str) -> Result<String> {
+        let rel = format!(
+            ".popcornstash/Trash/{prefix}-{:032x}",
+            rand::random::<u128>()
+        );
+        let (parent, name) = self.parent(&rel, true)?;
+        nix::sys::stat::mkdirat(&parent, name.as_c_str(), nix::sys::stat::Mode::S_IRWXU)
+            .map_err(std::io::Error::from)?;
+        let created = open_dir(&parent, &name)?;
+        // A setgid Trash parent gives new children 2700 even with mkdir(0700).
+        // Normalize only the directory we just created exclusively.
+        created.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+        validate_private(&created)?;
+        Ok(rel)
+    }
+
+    /// Only a verified private Trash endpoint permits a filesystem fallback.
+    pub(super) fn rename_trash(&self, from: &str, to: &str) -> Result<()> {
+        self.rename_trash_with(from, to, rename_exclusive)
+    }
+
+    fn rename_trash_with(
+        &self,
+        from: &str,
+        to: &str,
+        native: impl FnOnce(&File, &CString, &File, &CString) -> std::io::Result<()>,
+    ) -> Result<()> {
+        let into = private_trash_leaf(to);
+        if !into && !private_trash_leaf(from) {
+            return Err(CoreError::invalid("A move needs a private Trash entry."));
+        }
+        let (src, from) = self.parent(from, false)?;
+        let (dst, to) = self.parent(to, !into)?;
+        validate_private(if into { &dst } else { &src })?;
+        match native(&src, &from, &dst, &to) {
+            Ok(()) => return Ok(()),
+            Err(e)
+                if matches!(
+                    e.raw_os_error(),
+                    Some(libc::EINVAL | libc::EOPNOTSUPP | libc::ENOSYS)
+                ) => {}
+            Err(e) => return Err(e.into()),
+        }
+        use nix::fcntl::AtFlags;
+        use nix::sys::stat::{SFlag, fstatat};
+        let source = fstatat(&src, from.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW)
+            .map_err(std::io::Error::from)?;
+        let kind = SFlag::from_bits_truncate(source.st_mode);
+        if kind != SFlag::S_IFREG && (into || kind != SFlag::S_IFLNK) {
+            return Err(CoreError::conflict(
+                "This filesystem cannot safely move this folder or symbolic link. The item was kept.",
+            ));
+        }
+        if into {
+            rename_into_private(&src, &from, &dst, &to, || {})?;
+        } else {
+            // linkat is exclusive, including dangling symlinks, and never follows
+            // the source leaf. Only the protected source is ever unlinked.
+            nix::unistd::linkat(&src, from.as_c_str(), &dst, to.as_c_str(), AtFlags::empty())
+                .map_err(std::io::Error::from)?;
+            let linked = fstatat(&dst, to.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW)
+                .map_err(std::io::Error::from)?;
+            let kept = fstatat(&src, from.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW)
+                .map_err(std::io::Error::from)?;
+            if source.st_dev != linked.st_dev
+                || source.st_ino != linked.st_ino
+                || source.st_dev != kept.st_dev
+                || source.st_ino != kept.st_ino
+            {
+                return Err(CoreError::conflict(
+                    "The file changed during restore. The Trash source was kept.",
+                ));
+            }
+            nix::unistd::unlinkat(
+                &src,
+                from.as_c_str(),
+                nix::unistd::UnlinkatFlags::NoRemoveDir,
             )
-        };
-        #[cfg(target_os = "macos")]
-        let result = unsafe {
-            libc::renameatx_np(
-                src.as_raw_fd(),
-                from.as_ptr(),
-                dst.as_raw_fd(),
-                to.as_ptr(),
-                libc::RENAME_EXCL,
-            )
-        };
-        if result < 0 {
-            return Err(std::io::Error::last_os_error().into());
+            .map_err(|e| CoreError::conflict(format!(
+                "Restore linked the destination but could not remove the protected Trash source. Both copies were kept: {e}"
+            )))?;
         }
         Ok(())
+    }
+}
+
+fn rename_into_private(
+    src: &File,
+    from: &CString,
+    dst: &File,
+    to: &CString,
+    before_claim: impl FnOnce(),
+) -> Result<()> {
+    validate_private(dst)?;
+    before_claim();
+    // Claim a regular leaf exclusively. A late source-directory substitution
+    // cannot replace it; no public source is unlinked on failure.
+    let placeholder = nix::fcntl::openat(
+        dst,
+        to.as_c_str(),
+        nix::fcntl::OFlag::O_WRONLY
+            | nix::fcntl::OFlag::O_CREAT
+            | nix::fcntl::OFlag::O_EXCL
+            | nix::fcntl::OFlag::O_NOFOLLOW
+            | nix::fcntl::OFlag::O_CLOEXEC,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+    )
+    .map_err(std::io::Error::from)?;
+    let result = nix::fcntl::renameat(src, from.as_c_str(), dst, to.as_c_str());
+    if let Err(e) = result {
+        // Only our protected placeholder is removed, never a public path.
+        nix::unistd::unlinkat(dst, to.as_c_str(), nix::unistd::UnlinkatFlags::NoRemoveDir)
+            .map_err(std::io::Error::from)?;
+        return Err(std::io::Error::from(e).into());
+    }
+    drop(placeholder);
+    Ok(())
+}
+
+fn private_trash_leaf(rel: &str) -> bool {
+    rel.strip_prefix(".popcornstash/Trash/")
+        .is_some_and(|rest| rest.split('/').count() == 2)
+}
+
+fn validate_private(dir: &File) -> Result<()> {
+    let meta = dir.metadata()?;
+    if meta.uid() != nix::unistd::geteuid().as_raw() || meta.mode() & 0o7777 != 0o700 {
+        return Err(CoreError::conflict(
+            "The Trash entry must be owned by the server with folder permissions 0700.",
+        ));
+    }
+    Ok(())
+}
+
+// SAFETY: live CString paths and directory descriptors; the kernel enforces exclusion.
+#[allow(unsafe_code)]
+fn rename_exclusive(src: &File, from: &CString, dst: &File, to: &CString) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            src.as_raw_fd(),
+            from.as_ptr(),
+            dst.as_raw_fd(),
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    #[cfg(target_os = "macos")]
+    let result = unsafe {
+        libc::renameatx_np(
+            src.as_raw_fd(),
+            from.as_ptr(),
+            dst.as_raw_fd(),
+            to.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn rename_cleanup(root: &Root, from: &str, to: &str, directory: bool) -> Result<()> {
+    if directory {
+        root.rename(from, to).map_err(|e| match e {
+            CoreError::Io(ref io) if matches!(io.raw_os_error(), Some(libc::EINVAL | libc::EOPNOTSUPP | libc::ENOSYS)) =>
+                CoreError::conflict("This filesystem cannot safely move folders to or from Trash. The folder was kept."),
+            other => other,
+        })
+    } else {
+        root.rename_trash(from, to)
     }
 }
 
@@ -406,7 +557,7 @@ impl Library {
                 )
                 .await?;
                 if let Err(e) = tx.commit().await {
-                    root.rename(&staged.trashed_rel_path, &choice.path)?;
+                    root.rename_trash(&staged.trashed_rel_path, &choice.path)?;
                     return Err(e.into());
                 }
                 for (id, facts) in staged.facts {
@@ -452,7 +603,7 @@ impl Library {
         allowed(&entry.original_rel_path)?;
         let root = Root::open(self.layout.root())?;
         let items: Vec<(String, String, String)> = sqlx::query_as("SELECT item_id, original_rel_path, original_status FROM file_trash_items WHERE trash_id = ?").bind(id).fetch_all(&mut *tx).await?;
-        root.rename(&entry.trashed_rel_path, &entry.original_rel_path).map_err(|e| CoreError::conflict(format!("Restore could not finish. The original name may be occupied or the folder unavailable. {e}")))?;
+        rename_cleanup(&root, &entry.trashed_rel_path, &entry.original_rel_path, entry.is_dir).map_err(|e| CoreError::conflict(format!("Restore could not finish. The original name may be occupied or the folder unavailable. {e}")))?;
         let result = async {
             for (item_id, path, status) in &items {
                 sqlx::query(
@@ -474,7 +625,12 @@ impl Library {
         }
         .await;
         if let Err(e) = result {
-            root.rename(&entry.original_rel_path, &entry.trashed_rel_path)?;
+            rename_cleanup(
+                &root,
+                &entry.original_rel_path,
+                &entry.trashed_rel_path,
+                entry.is_dir,
+            )?;
             return Err(e);
         }
         let _ = tokio::fs::remove_dir(
@@ -606,9 +762,14 @@ pub(crate) async fn stage(
     } else {
         (i64::try_from(meta.len()).unwrap_or(i64::MAX), 1)
     };
-    let id = format!("cleanup-{}", new_id());
+    let dir = if directory {
+        format!(".popcornstash/Trash/cleanup-{}", new_id())
+    } else {
+        root.new_trash_dir("cleanup")?
+    };
+    let id = dir.rsplit('/').next().unwrap().to_string();
     let name = Path::new(rel).file_name().unwrap().to_string_lossy();
-    let target = format!(".popcornstash/Trash/{id}/{name}");
+    let target = format!("{dir}/{name}");
     let rows: Vec<(String, String, String)> = sqlx::query_as("SELECT id, rel_path, status FROM items WHERE status != 'trashed' AND (rel_path = ? OR (? AND substr(rel_path, 1, length(?)) = ?))")
         .bind(rel).bind(directory).bind(format!("{rel}/")).bind(format!("{rel}/")).fetch_all(&mut *conn).await?;
     let mut facts = Vec::new();
@@ -622,7 +783,7 @@ pub(crate) async fn stage(
             facts.push((item_id.clone(), item.facts()));
         }
     }
-    root.rename(rel, &target)?;
+    rename_cleanup(&root, rel, &target, directory)?;
     // External filesystem edits do not hold our move lock. Check the renamed
     // inode too, so a replacement between stat and rename is preserved.
     let moved = root.metadata(&target);
@@ -633,7 +794,7 @@ pub(crate) async fn stage(
             || m.mtime() != meta.mtime()
             || m.mtime_nsec() != meta.mtime_nsec()
     }) {
-        root.rename(&target, rel)?;
+        rename_cleanup(&root, &target, rel, directory)?;
         return Err(CoreError::conflict(
             "This file changed during cleanup. Refresh and select it again.",
         ));
@@ -672,7 +833,7 @@ pub(crate) async fn stage(
     }
     .await;
     if let Err(e) = result {
-        root.rename(&target, rel)?;
+        rename_cleanup(&root, &target, rel, directory)?;
         return Err(e);
     }
     Ok(Staged {
@@ -682,5 +843,251 @@ pub(crate) async fn stage(
 }
 
 pub(crate) fn undo_stage(lib: &Library, staged: &Staged, original: &str) -> Result<()> {
-    Root::open(lib.layout.root())?.rename(&staged.trashed_rel_path, original)
+    let root = Root::open(lib.layout.root())?;
+    rename_cleanup(
+        &root,
+        &staged.trashed_rel_path,
+        original,
+        root.metadata(&staged.trashed_rel_path)?.is_dir(),
+    )
+}
+
+#[cfg(test)]
+mod trash_move_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    fn fixture() -> (tempfile::TempDir, Root, String) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("Inbox")).unwrap();
+        let root = Root::open(dir.path()).unwrap();
+        let private = root.new_trash_dir("test").unwrap();
+        (dir, root, format!("{private}/payload"))
+    }
+
+    fn unsupported(_: &File, _: &CString, _: &File, _: &CString) -> std::io::Result<()> {
+        Err(std::io::Error::from_raw_os_error(libc::EINVAL))
+    }
+
+    #[test]
+    fn fallback_roundtrip_and_database_rollback_directions() {
+        let (dir, root, trash) = fixture();
+        std::fs::write(dir.path().join("Inbox/file"), b"original").unwrap();
+        let before = root.metadata("Inbox/file").unwrap();
+        for errno in [libc::EINVAL, libc::EOPNOTSUPP, libc::ENOSYS] {
+            root.rename_trash_with("Inbox/file", &trash, |_, _, _, _| {
+                Err(std::io::Error::from_raw_os_error(errno))
+            })
+            .unwrap();
+            assert!(!dir.path().join("Inbox/file").exists());
+            root.rename_trash_with(&trash, "Inbox/file", unsupported)
+                .unwrap();
+            let after = root.metadata("Inbox/file").unwrap();
+            assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+            assert_eq!(
+                std::fs::read(dir.path().join("Inbox/file")).unwrap(),
+                b"original"
+            );
+        }
+        assert!(
+            root.rename_trash_with("Inbox/file", "Inbox/other", unsupported)
+                .is_err()
+        );
+        assert!(
+            root.rename_trash_with("Inbox/file", &trash, |_, _, _, _| {
+                Err(std::io::Error::from_raw_os_error(libc::EACCES))
+            })
+            .is_err()
+        );
+        assert!(dir.path().join("Inbox/file").exists());
+    }
+
+    #[test]
+    fn fallback_collisions_include_dangling_links_in_both_directions() {
+        let (dir, root, trash) = fixture();
+        for dangling in [false, true] {
+            std::fs::write(dir.path().join("Inbox/file"), b"public").unwrap();
+            if dangling {
+                symlink("absent", dir.path().join(&trash)).unwrap();
+            } else {
+                std::fs::write(dir.path().join(&trash), b"private").unwrap();
+            }
+            assert!(
+                root.rename_trash_with("Inbox/file", &trash, unsupported)
+                    .is_err()
+            );
+            assert_eq!(
+                std::fs::read(dir.path().join("Inbox/file")).unwrap(),
+                b"public"
+            );
+            if dangling {
+                assert_eq!(
+                    std::fs::read_link(dir.path().join(&trash)).unwrap(),
+                    Path::new("absent")
+                );
+            } else {
+                assert_eq!(std::fs::read(dir.path().join(&trash)).unwrap(), b"private");
+            }
+            std::fs::remove_file(dir.path().join(&trash)).unwrap();
+            std::fs::write(dir.path().join(&trash), b"private").unwrap();
+            if dangling {
+                std::fs::remove_file(dir.path().join("Inbox/file")).unwrap();
+                symlink("absent", dir.path().join("Inbox/file")).unwrap();
+            }
+            assert!(
+                root.rename_trash_with(&trash, "Inbox/file", unsupported)
+                    .is_err()
+            );
+            assert_eq!(std::fs::read(dir.path().join(&trash)).unwrap(), b"private");
+            if dangling {
+                assert_eq!(
+                    std::fs::read_link(dir.path().join("Inbox/file")).unwrap(),
+                    Path::new("absent")
+                );
+            } else {
+                assert_eq!(
+                    std::fs::read(dir.path().join("Inbox/file")).unwrap(),
+                    b"public"
+                );
+            }
+            std::fs::remove_file(dir.path().join("Inbox/file")).unwrap();
+            std::fs::remove_file(dir.path().join(&trash)).unwrap();
+        }
+    }
+
+    #[test]
+    fn fallback_refuses_substituted_symlinks_and_unprotected_directories() {
+        let (dir, root, trash) = fixture();
+        std::fs::write(dir.path().join("Inbox/file"), b"original").unwrap();
+        std::fs::write(dir.path().join("Inbox/keep"), b"keep").unwrap();
+        assert!(
+            root.rename_trash_with("Inbox/file", &trash, |_, _, _, _| {
+                std::fs::remove_file(dir.path().join("Inbox/file")).unwrap();
+                symlink("keep", dir.path().join("Inbox/file")).unwrap();
+                unsupported(
+                    &root.0,
+                    &cstr("unused").unwrap(),
+                    &root.0,
+                    &cstr("unused").unwrap(),
+                )
+            })
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("Inbox/keep")).unwrap(),
+            b"keep"
+        );
+        assert!(dir.path().join("Inbox/file").is_symlink());
+        symlink(dir.path().join("Inbox/keep"), dir.path().join(&trash)).unwrap();
+        root.rename_trash_with(&trash, "Inbox/restored", unsupported)
+            .unwrap();
+        assert!(dir.path().join("Inbox/restored").is_symlink());
+        assert_eq!(
+            std::fs::read(dir.path().join("Inbox/keep")).unwrap(),
+            b"keep"
+        );
+        std::fs::write(dir.path().join(&trash), b"private").unwrap();
+        let parent = dir.path().join(&trash).parent().unwrap().to_path_buf();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            root.rename_trash_with(&trash, "Inbox/restored", unsupported)
+                .is_err()
+        );
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // A substituted parent is refused even when its target has the right mode.
+        std::fs::rename(&parent, parent.with_extension("saved")).unwrap();
+        symlink(parent.with_extension("saved"), &parent).unwrap();
+        assert!(
+            root.rename_trash_with(&trash, "Inbox/restored", unsupported)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn fallback_rejects_folders_and_native_moves_remain_exclusive() {
+        let (dir, root, trash) = fixture();
+        std::fs::create_dir(dir.path().join("Inbox/folder")).unwrap();
+        let err = root
+            .rename_trash_with("Inbox/folder", &trash, unsupported)
+            .unwrap_err();
+        assert!(err.to_string().contains("cannot safely move"));
+        std::fs::write(dir.path().join("Inbox/file"), b"source").unwrap();
+        symlink("absent", dir.path().join("Inbox/occupied")).unwrap();
+        assert!(root.rename("Inbox/file", "Inbox/occupied").is_err());
+        assert_eq!(
+            std::fs::read(dir.path().join("Inbox/file")).unwrap(),
+            b"source"
+        );
+        assert!(dir.path().join("Inbox/occupied").is_symlink());
+    }
+    #[test]
+    fn claimed_leaf_blocks_directory_swap_and_captured_symlink_rolls_back() {
+        let (dir, root, trash) = fixture();
+        std::fs::write(dir.path().join("Inbox/file"), b"original").unwrap();
+        let (src, from) = root.parent("Inbox/file", false).unwrap();
+        let (dst, to) = root.parent(&trash, false).unwrap();
+        assert!(
+            rename_into_private(&src, &from, &dst, &to, || {
+                std::fs::rename(
+                    dir.path().join("Inbox/file"),
+                    dir.path().join("Inbox/saved"),
+                )
+                .unwrap();
+                std::fs::create_dir(dir.path().join("Inbox/file")).unwrap();
+            })
+            .is_err()
+        );
+        assert!(dir.path().join("Inbox/file").is_dir());
+        assert!(!dir.path().join(&trash).exists());
+        std::fs::remove_dir(dir.path().join("Inbox/file")).unwrap();
+        std::fs::write(dir.path().join("Inbox/file"), b"replacement").unwrap();
+        rename_into_private(&src, &from, &dst, &to, || {
+            std::fs::remove_file(dir.path().join("Inbox/file")).unwrap();
+            symlink("saved", dir.path().join("Inbox/file")).unwrap();
+        })
+        .unwrap();
+        assert!(root.metadata(&trash).is_err());
+        root.rename_trash_with(&trash, "Inbox/file", unsupported)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_link(dir.path().join("Inbox/file")).unwrap(),
+            Path::new("saved")
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("Inbox/saved")).unwrap(),
+            b"original"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn new_trash_dir_clears_inherited_setgid_but_existing_entries_stay_strict() {
+        let (dir, root, _) = fixture();
+        let trash = dir.path().join(".popcornstash/Trash");
+        std::fs::set_permissions(&trash, std::fs::Permissions::from_mode(0o2775)).unwrap();
+        let inherited = trash.join("inherited");
+        std::fs::create_dir(&inherited).unwrap();
+        assert_ne!(std::fs::metadata(&inherited).unwrap().mode() & 0o2000, 0);
+        let entry = root.new_trash_dir("inbox").unwrap();
+        let meta = root.directory(&entry).unwrap().metadata().unwrap();
+        assert_eq!(meta.mode() & 0o7777, 0o700);
+        assert_eq!(meta.uid(), nix::unistd::geteuid().as_raw());
+        std::fs::set_permissions(
+            dir.path().join(&entry),
+            std::fs::Permissions::from_mode(0o2700),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("Inbox/file"), b"keep").unwrap();
+        assert!(
+            root.rename_trash_with("Inbox/file", &format!("{entry}/payload"), unsupported)
+                .is_err()
+        );
+        assert_eq!(
+            root.directory(&entry).unwrap().metadata().unwrap().mode() & 0o7777,
+            0o2700
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("Inbox/file")).unwrap(),
+            b"keep"
+        );
+    }
 }

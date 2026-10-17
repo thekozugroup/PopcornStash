@@ -1807,13 +1807,29 @@ async fn trash_selected_item(
         let dest_free = paths::unique_path(&dest);
         if inbox_only {
             let root = super::cleanup::Root::open(lib.layout.root())?;
-            let dest_rel = lib.layout.rel(&dest_free).ok_or(CoreError::NotFound)?;
-            if !root.metadata(&item.rel_path)?.is_file() {
+            let dir = root.new_trash_dir("inbox")?;
+            let dest_rel = format!("{dir}/{}", dest.file_name().unwrap().to_string_lossy());
+            let dest_free = lib.layout.abs(&dest_rel)?;
+            let before = root.metadata(&item.rel_path)?;
+            if !before.is_file() {
                 return Err(CoreError::invalid("Choose a regular file."));
             }
-            root.rename(&item.rel_path, &dest_rel)?;
+            root.rename_trash(&item.rel_path, &dest_rel)?;
+            use std::os::unix::fs::MetadataExt;
+            if root.metadata(&dest_rel).ok().is_none_or(|m| {
+                m.dev() != before.dev()
+                    || m.ino() != before.ino()
+                    || m.len() != before.len()
+                    || m.mtime() != before.mtime()
+                    || m.mtime_nsec() != before.mtime_nsec()
+            }) {
+                root.rename_trash(&dest_rel, &item.rel_path)?;
+                return Err(CoreError::conflict(
+                    "This file changed during deletion. Refresh and select it again.",
+                ));
+            }
             if let Err(e) = record_trash(lib, &item, &dest_free, user_id).await {
-                root.rename(&dest_rel, &item.rel_path)?;
+                root.rename_trash(&dest_rel, &item.rel_path)?;
                 return Err(e);
             }
         } else {
@@ -1961,18 +1977,24 @@ pub async fn restore_item(lib: &Library, item_id: &str) -> Result<ItemRow> {
     let review_before = repo::needs_review_count(&lib.db).await?;
     let original_abs = lib.layout.abs(&original_rel)?;
     let dest = free_destination(lib, &original_abs, Some(item_id)).await?;
-    paths::move_path(&src, &dest).await?;
-    move_sidecars(&src, &dest).await;
+    let new_rel = lib
+        .layout
+        .rel(&dest)
+        .ok_or_else(|| CoreError::invalid("That destination is outside the stash."))?;
+    if trashed_rel.starts_with(".popcornstash/Trash/inbox-") {
+        // The marker selects the new layout; rename_trash also validates its
+        // anchored parent ownership and permissions. These entries have no sidecars.
+        super::cleanup::Root::open(lib.layout.root())?.rename_trash(&trashed_rel, &new_rel)?;
+    } else {
+        paths::move_path(&src, &dest).await?;
+        move_sidecars(&src, &dest).await;
+    }
     if let Some(dir) = src.parent()
         && dir.starts_with(lib.layout.trash())
         && dir != lib.layout.trash()
     {
         let _ = tokio::fs::remove_dir(dir).await;
     }
-    let new_rel = lib
-        .layout
-        .rel(&dest)
-        .ok_or_else(|| CoreError::invalid("That destination is outside the stash."))?;
     let status = if StashLayout::zone(&new_rel).auto_sorts() && item.suggestion_json.is_some() {
         ItemStatus::NeedsReview
     } else {
@@ -2072,7 +2094,15 @@ pub async fn empty_trash(lib: &Library, older_than_days: Option<u32>) -> Result<
             && !path.starts_with(&dir)
         {
             match tokio::fs::remove_file(&path).await {
-                Ok(()) => {}
+                Ok(()) => {
+                    if let Some(parent) = path.parent()
+                        && parent.parent() == Some(trash_root.as_path())
+                    {
+                        // Random private Inbox entries have no item-id directory.
+                        // Remove only an empty direct Trash child after its payload.
+                        let _ = tokio::fs::remove_dir(parent).await;
+                    }
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => {
                     tracing::warn!(error = %e, item = %item_id, "could not delete a trashed file");
