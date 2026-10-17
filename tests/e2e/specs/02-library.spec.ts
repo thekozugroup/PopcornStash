@@ -4,6 +4,7 @@
  * fixed-category addresses that now lead to the library that takes that kind.
  */
 import {execFileSync} from 'node:child_process';
+import fs from 'node:fs';
 import {expect, test, type Locator} from '@playwright/test';
 import {LIBRARY, env, libraryPath, showPath, stashPath} from '../helpers/env';
 
@@ -52,7 +53,7 @@ test('Home has a shelf for each library, in order, each with its icon', async ({
   await expect(nav.getByRole('link', {name: 'Inbox 1'})).toBeVisible();
   // Home, then every library with the icon its owner chose, then the fixed places with theirs.
   const icons: [RegExp, string][] = [
-    [/^Home$/, 'house'], [/^Movies$/, 'film'], [/^Shows$/, 'tv'], [/^Home Videos$/, 'clapperboard'],
+    [/^Home$/, 'house'], [/^Search$/, 'search'], [/^Movies$/, 'film'], [/^Shows$/, 'tv'], [/^Home Videos$/, 'clapperboard'],
     [/^Photos$/, 'image'], [/^Other files$/, 'file-text'], [/^Inbox/, 'inbox'], [/^Downloads$/, 'arrow-down-to-line'],
     [/^Settings$/, 'settings'],
   ];
@@ -62,7 +63,7 @@ test('Home has a shelf for each library, in order, each with its icon', async ({
   // The brand (a link to Home) leads the sidebar; the places follow.
   const order = await nav.getByRole('link').filter({hasNotText: 'Popcorn'}).allInnerTexts();
   expect(order.map(text => text.trim().split('\n')[0])).toEqual([
-    'Home', 'Movies', 'Shows', 'Home Videos', 'Photos', 'Other files', 'Inbox', 'Downloads', 'Settings',
+    'Home', 'Search', 'Movies', 'Shows', 'Home Videos', 'Photos', 'Other files', 'Inbox', 'Downloads', 'Settings',
   ]);
 
   // One shelf per library in the same order, its icon before its name, its count beside it.
@@ -78,7 +79,8 @@ test('Home has a shelf for each library, in order, each with its icon', async ({
   await expect(shows.getByText('2 shows, 4 episodes')).toBeVisible();
   await expect(shows.getByRole('link', {name: /^Quiet Meadow/})).toBeVisible();
   // Every library keeps its shelf (its own newest items, not the newest overall), photos included.
-  await expect(page.getByRole('region', {name: 'Photos', exact: true}).getByRole('listitem')).toHaveCount(3);
+  const photoCount = 3 + Number(fs.existsSync(stashPath('Photos/2022/08/PXL_20220814_093000.heic')));
+  await expect(page.getByRole('region', {name: 'Photos', exact: true}).getByRole('listitem')).toHaveCount(photoCount);
   const homeVideos = page.getByRole('region', {name: 'Home Videos', exact: true});
   await expect(homeVideos.getByRole('listitem')).toHaveCount(2);
   await expect(homeVideos.getByRole('link', {name: /^IMG_1234 /})).toBeVisible();
