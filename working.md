@@ -1,5 +1,12 @@
 # PopcornStash, iteration 1
 
+## Current continuation: remove recovered videos after owner validation, 2026-10-18
+
+- Scope: the owner confirmed the recovery test worked and explicitly requested deletion of the recovered videos again. Target only the 493 files in the private recovery manifest, their Recovered Videos library/catalog and derived previews. Preserve accounts, settings, download state, the live deployment and unrelated NAS services/data.
+- Complete: rechecked the production container/mounts, exact recovered file identities and sizes, sole library, database integrity, and empty download/upload queues. Briefly stopped only PopcornStash, permanently removed 493 MP4 files (279,268,076,319 bytes), 986 cached previews (23,022,738 bytes), their processing jobs and catalog rows, and the empty library folder/definition; restarted the same container. No files outside the explicit recovery manifest or its derived previews were deletion targets. The array stayed online.
+- Verified after restart: zero libraries, media items, viewing-progress rows, Trash entries, downloads, uploads or cached media files. The share contains only its unchanged 36-byte internal marker and normal empty system folders. SQLite integrity and foreign keys pass. Nine authentication/settings/migration table fingerprints, static secret/VPN file hashes and download/upload state match the fresh baseline. All 21 container identities, images, bind mounts, running states and health states match; HTTPS home/health 200 and anonymous private APIs 401. VPN connected with kill switch enabled; read-only application root preserved.
+- No temporary server files, helper mounts, containers or tools were created. Private validation evidence is local under ignored `evidence/recovery/`. No application code changed; code-release checks and an APK release are not applicable. Next: none required for this cleanup; create new libraries when wanted.
+
 ## Current continuation: keep recovered videos only, 2026-10-18
 
 - Scope: the owner requested that recovered images previously in Trash remain deleted, and specified videos only. Previous Trash membership could not be reconstructed; applied that instruction to all 503 recovered images and the recovered text sidecar, using the exact private recovery manifest. Preserve every recovered video, accounts/security, downloads and unrelated NAS services.
