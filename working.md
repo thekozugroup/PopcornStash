@@ -1,5 +1,12 @@
 # PopcornStash, iteration 1
 
+## Current continuation: keep recovered videos only, 2026-10-18
+
+- Scope: the owner requested that recovered images previously in Trash remain deleted, and specified videos only. Previous Trash membership could not be reconstructed; applied that instruction to all 503 recovered images and the recovered text sidecar, using the exact private recovery manifest. Preserve every recovered video, accounts/security, downloads and unrelated NAS services.
+- Complete: verified the original container/mounts and an empty download queue, then briefly stopped only PopcornStash. Permanently removed the 503 recovered JPEGs and one 34-byte NFO (504 files, 424,566,308 bytes), their 1,006 cached previews (84,315,394 bytes), the Recovered Photos library/folder, its catalog and processing-job rows, and the empty sidecar folder. No other share files were deletion targets. The share now contains 493 MP4 videos and the unchanged internal marker; both Trash catalogs are empty.
+- Verified after restarting the same deployment: all 493 videos remain ready in the owner-only Recovered Videos library. Every video file's identity, size, modification time, ownership and mode match the baseline; video catalog rows, all 986 video previews, library settings, viewing progress, download/upload rows, nine authentication/settings/migration table fingerprints, static secret/VPN files and the share marker are unchanged. Database integrity and foreign keys pass. All 21 original container identities, images and running states are unchanged; every running healthcheck is healthy. The array stayed online. VPN connected with kill switch enabled, read-only application root preserved, HTTPS home/health 200, anonymous library/download/Trash APIs 401.
+- No temporary server files, helper mounts, containers or tools were created. Private cleanup manifests and verification remain local under ignored `evidence/recovery/`. No application code changed; code-release checks and another APK are not applicable. Next: review the remaining Recovered Videos library and organize it as desired.
+
 ## Current continuation: Atlas deleted-file recovery, 2026-10-18
 
 - Scope: undo the owner's prior stash deletion as far as surviving disk data permits. The owner reports no known backup and explicitly authorized stopping the array for recovery. Preserve current accounts, passkeys, settings, VPN configuration, deployment and unrelated NAS data/services.
