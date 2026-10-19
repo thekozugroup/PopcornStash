@@ -90,6 +90,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/api/downloads/{id}", axum::routing::delete(remove))
         .route("/api/downloads/{id}/files", get(files).put(select_files))
+        .route("/api/downloads/{id}/rules", axum::routing::put(set_rules))
         .route("/api/downloads/{id}/pause", post(pause))
         .route("/api/downloads/{id}/resume", post(resume))
 }
@@ -181,9 +182,27 @@ async fn add_torrent(
     let mut file = None;
     let mut library_id = None;
     let mut file_types = None;
+    let mut file_rules = None;
     while let Some(mut field) = multipart.next_field().await.map_err(|_| unreadable())? {
         let is_file = field.name() == Some("file");
         let is_library = field.name() == Some("library_id");
+        if field.name() == Some("file_rules") {
+            if file_rules.is_some() {
+                return Err(ApiError::bad_request("Send file rules once."));
+            }
+            let mut bytes = Vec::new();
+            while let Some(chunk) = field.chunk().await.map_err(|_| unreadable())? {
+                if bytes.len() + chunk.len() > 16 * 1024 {
+                    return Err(ApiError::bad_request("File rules are too long."));
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            let rules: stash_core::internal_api::TorrentFileRules = serde_json::from_slice(&bytes)
+                .map_err(|_| ApiError::bad_request("Choose valid file rules."))?;
+            rules.validate().map_err(ApiError::bad_request)?;
+            file_rules = Some(rules);
+            continue;
+        }
         if field.name() == Some("file_types") {
             if file_types.is_some() {
                 return Err(ApiError::bad_request("Send file types once."));
@@ -231,12 +250,13 @@ async fn add_torrent(
     Ok(Json(
         state
             .downloads
-            .add_torrent_file_selected(
+            .add_torrent_file_with_rules(
                 &user.user_id,
                 bytes,
                 filename,
                 library_id.as_deref(),
                 file_types,
+                file_rules,
             )
             .await?,
     ))
@@ -284,6 +304,19 @@ async fn select_files(
         .downloads
         .select_torrent_files(&id, selection.indices)
         .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn set_rules(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    ApiJson(rules): ApiJson<stash_core::internal_api::TorrentFileRules>,
+) -> ApiResult<StatusCode> {
+    user.require(Scope::Full)?;
+    require_visible(&state, &user, &id).await?;
+    rules.validate().map_err(ApiError::bad_request)?;
+    state.downloads.set_torrent_rules(&id, rules).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

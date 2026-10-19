@@ -104,6 +104,8 @@ impl ForwardedHeaders {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AddDownloadRequest {
     #[serde(default)]
+    pub file_rules: Option<stash_core::internal_api::TorrentFileRules>,
+    #[serde(default)]
     pub file_types: Option<Vec<stash_core::internal_api::TorrentFileKind>>,
     pub library_id: Option<String>,
     pub url: String,
@@ -346,6 +348,9 @@ impl DownloadManager {
 
     /// Add an http(s) link or magnet link.
     pub async fn add_url(&self, user_id: &str, request: AddDownloadRequest) -> ApiResult<Download> {
+        if let Some(rules) = &request.file_rules {
+            rules.validate().map_err(ApiError::bad_request)?;
+        }
         self.validate_destination(user_id, request.library_id.as_deref())
             .await?;
         let raw = request.url.trim();
@@ -360,6 +365,7 @@ impl DownloadManager {
             let magnet = Magnet::parse(raw)
                 .ok_or_else(|| ApiError::bad_request("That magnet link is not valid."))?;
             let add = stash_core::internal_api::AddTorrentRequest {
+                file_rules: request.file_rules,
                 file_types: Some(
                     request
                         .file_types
@@ -404,12 +410,13 @@ impl DownloadManager {
                 .await?;
             let filename = source::name_from_url(&url);
             return self
-                .add_torrent_file_selected(
+                .add_torrent_file_with_rules(
                     user_id,
                     bytes,
                     filename,
                     request.library_id.as_deref(),
                     request.file_types,
+                    request.file_rules,
                 )
                 .await;
         }
@@ -511,6 +518,22 @@ impl DownloadManager {
         library_id: Option<&str>,
         file_types: Option<Vec<stash_core::internal_api::TorrentFileKind>>,
     ) -> ApiResult<Download> {
+        self.add_torrent_file_with_rules(user_id, bytes, filename, library_id, file_types, None)
+            .await
+    }
+
+    pub async fn add_torrent_file_with_rules(
+        &self,
+        user_id: &str,
+        bytes: Vec<u8>,
+        filename: Option<String>,
+        library_id: Option<&str>,
+        file_types: Option<Vec<stash_core::internal_api::TorrentFileKind>>,
+        file_rules: Option<stash_core::internal_api::TorrentFileRules>,
+    ) -> ApiResult<Download> {
+        if let Some(rules) = &file_rules {
+            rules.validate().map_err(ApiError::bad_request)?;
+        }
         self.validate_destination(user_id, library_id).await?;
         self.require_torrents()?;
         if bytes.len() > MAX_TORRENT_FILE {
@@ -536,6 +559,7 @@ impl DownloadManager {
         let source = filename.unwrap_or_else(|| "upload.torrent".to_string());
         use base64::Engine as _;
         let add = stash_core::internal_api::AddTorrentRequest {
+            file_rules,
             file_types: Some(
                 file_types.unwrap_or_else(stash_core::internal_api::TorrentFileKind::media_default),
             ),
@@ -704,6 +728,34 @@ impl DownloadManager {
             .ok_or_else(|| ApiError::conflict("Wait for the torrent's file list."))?;
         self.torrentd
             .select_files(&engine_id, indices)
+            .await
+            .map_err(|e| engine_error(&e))?;
+        self.torrent_wake.notify_one();
+        Ok(())
+    }
+
+    pub async fn set_torrent_rules(
+        &self,
+        id: &str,
+        rules: stash_core::internal_api::TorrentFileRules,
+    ) -> ApiResult<()> {
+        let _slots = self.torrent_slots.lock().await;
+        let row = self.load_row(id).await?;
+        if row.kind != DownloadKind::Torrent
+            || !matches!(
+                row.state,
+                DownloadState::Downloading | DownloadState::Paused | DownloadState::Seeding
+            )
+        {
+            return Err(ApiError::conflict(
+                "Rules can only be changed for an active torrent.",
+            ));
+        }
+        let engine_id = row
+            .engine_id
+            .ok_or_else(|| ApiError::conflict("Wait for the torrent's file list."))?;
+        self.torrentd
+            .set_rules(&engine_id, &rules)
             .await
             .map_err(|e| engine_error(&e))?;
         self.torrent_wake.notify_one();
@@ -1343,6 +1395,7 @@ mod tests {
         let shown = format!("{headers:?}");
         assert!(!shown.contains("SECRET"));
         let request = AddDownloadRequest {
+            file_rules: None,
             file_types: None,
             library_id: None,
             url: "https://example.com/a.mkv?token=SECRET".into(),

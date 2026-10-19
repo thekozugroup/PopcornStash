@@ -181,6 +181,8 @@ pub struct AddTorrentRequest {
     pub torrent_base64: Option<String>,
     #[serde(default)]
     pub file_types: Option<Vec<TorrentFileKind>>,
+    #[serde(default)]
+    pub file_rules: Option<TorrentFileRules>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -236,6 +238,83 @@ pub struct TorrentFile {
 pub struct TorrentFiles {
     pub ready: bool,
     pub files: Vec<TorrentFile>,
+    #[serde(default)]
+    pub rules: Option<TorrentFileRules>,
+}
+
+/// All specified conditions must match. Names match any listed term, ignoring
+/// case and filename punctuation; exclusions always win. File size is read from
+/// torrent metadata before payload downloading begins.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct TorrentFileRules {
+    pub file_types: Option<Vec<TorrentFileKind>>,
+    pub name_contains: Vec<String>,
+    pub name_excludes: Vec<String>,
+    pub min_size: Option<u64>,
+    pub max_size: Option<u64>,
+}
+
+impl TorrentFileRules {
+    pub fn validate(&self) -> Result<(), String> {
+        if self
+            .file_types
+            .as_ref()
+            .is_some_and(|v| v.is_empty() || v.len() > 4)
+        {
+            return Err("Choose at least one file type.".into());
+        }
+        for names in [&self.name_contains, &self.name_excludes] {
+            if names.len() > 32
+                || names.iter().any(|s| {
+                    normalized_name(s).is_empty()
+                        || s.len() > 128
+                        || s.chars().any(char::is_control)
+                })
+            {
+                return Err("Use up to 32 names, each between 1 and 128 bytes.".into());
+            }
+        }
+        if self.min_size.zip(self.max_size).is_some_and(|(a, b)| a > b)
+            || [self.min_size, self.max_size]
+                .into_iter()
+                .flatten()
+                .any(|v| v > 9_007_199_254_740_991)
+        {
+            return Err(
+                "Choose a valid file size range, with minimum no greater than maximum.".into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn matches(&self, path: &str, size: u64) -> bool {
+        let kind = TorrentFileKind::of(path);
+        let name = normalized_name(path);
+        self.file_types
+            .as_ref()
+            .is_none_or(|types| types.contains(&kind))
+            && self.min_size.is_none_or(|v| size >= v)
+            && self.max_size.is_none_or(|v| size <= v)
+            && (self.name_contains.is_empty()
+                || self
+                    .name_contains
+                    .iter()
+                    .any(|s| name.contains(&normalized_name(s))))
+            && !self
+                .name_excludes
+                .iter()
+                .any(|s| name.contains(&normalized_name(s)))
+    }
+}
+
+fn normalized_name(value: &str) -> String {
+    value
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -275,4 +354,66 @@ pub enum SupervisorRequest {
 pub struct SupervisorResponse {
     pub ok: bool,
     pub error: Option<String>,
+}
+
+#[cfg(test)]
+mod file_rule_tests {
+    use super::*;
+
+    #[test]
+    fn rules_combine_type_name_exclusions_and_inclusive_size() {
+        let rules = TorrentFileRules {
+            file_types: Some(vec![TorrentFileKind::Video]),
+            name_contains: vec!["Jane Doe".into(), "Álex Smith".into()],
+            name_excludes: vec!["trailer".into()],
+            min_size: Some(100),
+            max_size: Some(200),
+        };
+        assert!(rules.validate().is_ok());
+        assert!(rules.matches("CAST/JANE.DOE/Feature.MKV", 100));
+        assert!(rules.matches("Álex_Smith/film.mp4", 200));
+        for (path, size) in [
+            ("Jane Doe/subtitle.srt", 150),
+            ("Jane Doe/trailer.mp4", 150),
+            ("Other/film.mp4", 150),
+            ("Jane Doe/film.mp4", 99),
+            ("Jane Doe/film.mp4", 201),
+        ] {
+            assert!(!rules.matches(path, size), "{path} {size}");
+        }
+    }
+
+    #[test]
+    fn invalid_rules_are_rejected_and_old_requests_still_decode() {
+        for rules in [
+            TorrentFileRules {
+                file_types: Some(vec![]),
+                ..Default::default()
+            },
+            TorrentFileRules {
+                name_contains: vec!["...".into()],
+                ..Default::default()
+            },
+            TorrentFileRules {
+                name_excludes: vec!["x\ny".into()],
+                ..Default::default()
+            },
+            TorrentFileRules {
+                min_size: Some(2),
+                max_size: Some(1),
+                ..Default::default()
+            },
+            TorrentFileRules {
+                max_size: Some(u64::MAX),
+                ..Default::default()
+            },
+        ] {
+            assert!(rules.validate().is_err());
+        }
+        let old: AddTorrentRequest =
+            serde_json::from_str(r#"{"magnet":"magnet:?xt=test"}"#).unwrap();
+        assert!(old.file_rules.is_none());
+        assert!(TorrentFileRules::default().matches("readme.txt", 0));
+        assert!(serde_json::from_str::<TorrentFileRules>(r#"{"min_szie":10}"#).is_err());
+    }
 }

@@ -44,6 +44,9 @@ use crate::status;
 use crate::sys::{self, now_unix};
 use crate::vpn::killswitch::{ENGINE_DHT_PORT, ENGINE_LISTEN_PORT};
 
+#[path = "file_rules.rs"]
+mod file_rules;
+
 /// Public IP check interval while running (section 5, "Proof of protection").
 pub const IP_CHECK_INTERVAL: Duration = Duration::from_secs(600);
 const POLL: Duration = Duration::from_secs(1);
@@ -286,6 +289,8 @@ struct Inner {
 }
 
 pub struct Engine {
+    rules: Mutex<file_rules::RuleBook>,
+    rules_load_failed: bool,
     downloads_dir: PathBuf,
     state_dir: PathBuf,
     status_file: PathBuf,
@@ -476,7 +481,11 @@ impl Engine {
     pub fn new(options: &EngineOptions) -> Self {
         let (running_tx, _) = watch::channel(false);
         let (tunnel_tx, _) = watch::channel(false);
+        let saved_rules = file_rules::load(&options.state_dir);
+        let rules_load_failed = saved_rules.is_err();
         let engine = Self {
+            rules: Mutex::new(saved_rules.unwrap_or_default()),
+            rules_load_failed,
             downloads_dir: options.downloads_dir.clone(),
             state_dir: options.state_dir.clone(),
             status_file: options.status_file.clone(),
@@ -837,6 +846,11 @@ impl Engine {
     }
 
     async fn start_session_locked(&self, ifindex: Option<u32>) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.rules_load_failed,
+            "Saved file rules could not be read. Repair file-rules.json before restarting downloads."
+        );
+        self.reconcile_rules()?;
         let mut last_error = None;
         // Fixed ports first (the kill switch opens them on the tunnel); a port
         // still held by the previous session is retried, then any port is used.
@@ -1072,7 +1086,7 @@ impl Engine {
             .pending
             .get(id)
             .and_then(|p| p.file_types.clone());
-        let only_files = selected_indices(&list.torrent_bytes, file_types.as_deref())?;
+        let only_files = self.rule_indices(&list.torrent_bytes, id, file_types.as_deref())?;
         let options = AddTorrentOptions {
             paused: only_files.as_ref().is_some_and(Vec::is_empty),
             only_files,
@@ -1390,6 +1404,15 @@ impl TorrentBackend for Engine {
             }
             None => self.persisted_torrents(),
         };
+        for torrent in &mut torrents {
+            if lock(&self.rules).contains_key(&torrent.id)
+                && torrent.total_bytes.is_none()
+                && torrent.state == EngineTorrentState::Paused
+            {
+                torrent.error =
+                    Some("No files match these rules. Edit the rules or choose files.".into());
+            }
+        }
         let known: HashSet<String> = torrents.iter().map(|t| t.id.clone()).collect();
         torrents.extend(self.pending_entries(&known));
         torrents.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1402,9 +1425,11 @@ impl TorrentBackend for Engine {
             && let Some(handle) = session.get(TorrentIdOrHash::Hash(hash))
         {
             let selected = handle.only_files();
+            let rule = lock(&self.rules).get(&id).cloned();
             return handle
                 .with_metadata(|meta| TorrentFiles {
                     ready: true,
+                    rules: rule.clone(),
                     files: meta
                         .file_infos
                         .iter()
@@ -1454,7 +1479,7 @@ impl TorrentBackend for Engine {
         let handle = session
             .get(TorrentIdOrHash::Hash(hash))
             .ok_or(BackendError::NotFound)?;
-        let files = self.files(id).await?;
+        let files = self.files(id.clone()).await?;
         let valid: HashSet<_> = files.files.iter().map(|f| f.index).collect();
         if indices.is_empty() || indices.iter().any(|i| !valid.contains(i)) {
             return Err(BackendError::BadRequest(
@@ -1469,7 +1494,8 @@ impl TorrentBackend for Engine {
                     "Files cannot be changed while this torrent is checking. Try again shortly."
                         .into(),
                 )
-            })
+            })?;
+        self.forget_rules(&id)
     }
 
     async fn add(&self, torrent: NewTorrent) -> Result<AddTorrentResponse, BackendError> {
@@ -1481,6 +1507,29 @@ impl TorrentBackend for Engine {
         torrent: NewTorrent,
         file_types: Option<Vec<TorrentFileKind>>,
     ) -> Result<AddTorrentResponse, BackendError> {
+        self.add_with_rules(torrent, file_types, None).await
+    }
+
+    async fn set_rules(
+        &self,
+        id: String,
+        rules: stash_core::internal_api::TorrentFileRules,
+    ) -> Result<(), BackendError> {
+        self.apply_rules(id, rules).await
+    }
+
+    async fn add_with_rules(
+        &self,
+        torrent: NewTorrent,
+        file_types: Option<Vec<TorrentFileKind>>,
+        mut rules: Option<stash_core::internal_api::TorrentFileRules>,
+    ) -> Result<AddTorrentResponse, BackendError> {
+        if let Some(rules) = rules.as_mut() {
+            rules.validate().map_err(BackendError::BadRequest)?;
+            if rules.file_types.is_none() {
+                rules.file_types = file_types.clone();
+            }
+        }
         let _pending_op = self.pending_ops.lock().await;
         let session = match self.live_session().await {
             Some(session) => session,
@@ -1527,9 +1576,12 @@ impl TorrentBackend for Engine {
                     });
                 }
                 let folder = self.unique_folder(&folder_name(name.as_deref(), single, &id));
-                let only_files = selected_indices(&bytes, file_types.as_deref()).map_err(|_| {
-                    BackendError::BadRequest("The torrent file list is not valid.".into())
-                })?;
+                self.remember_rules(&id, rules.clone())?;
+                let only_files = self
+                    .rule_indices(&bytes, &id, file_types.as_deref())
+                    .map_err(|_| {
+                        BackendError::BadRequest("The torrent file list is not valid.".into())
+                    })?;
                 let options = AddTorrentOptions {
                     paused: only_files.as_ref().is_some_and(Vec::is_empty),
                     only_files,
@@ -1573,6 +1625,9 @@ impl TorrentBackend for Engine {
                     });
                 }
                 let name = magnet.name.clone();
+                if !lock(&self.inner).pending.contains_key(&id) {
+                    self.remember_rules(&id, rules)?;
+                }
                 let pending = {
                     let mut inner = lock(&self.inner);
                     let entry = inner
@@ -1661,6 +1716,7 @@ impl TorrentBackend for Engine {
     async fn remove(&self, id: String, delete_files: bool) -> Result<(), BackendError> {
         let hash = parse_id(&id)?;
         let _pending_op = self.pending_ops.lock().await;
+        self.forget_rules(&id)?;
         let was_pending = {
             let mut inner = lock(&self.inner);
             let removed = inner
@@ -1749,6 +1805,154 @@ impl TorrentBackend for Engine {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicU32;
+
+    #[tokio::test]
+    async fn file_rules_select_before_transfer_persist_and_allow_manual_override() {
+        use stash_core::internal_api::TorrentFileRules;
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        std::fs::create_dir_all(source.join("Jane.Doe")).unwrap();
+        for (path, size) in [
+            ("Jane.Doe/film.mkv", 100),
+            ("Jane.Doe/trailer.mkv", 100),
+            ("Jane.Doe/photo.jpg", 100),
+            ("Jane.Doe/tiny.mp4", 10),
+            ("Other.mp4", 100),
+        ] {
+            std::fs::write(source.join(path), vec![0u8; size]).unwrap();
+        }
+        let bytes = librqbit::create_torrent(
+            &source,
+            Default::default(),
+            &librqbit::spawn_utils::BlockingSpawner::new(1),
+        )
+        .await
+        .unwrap()
+        .as_bytes()
+        .unwrap()
+        .to_vec();
+        let opts = options(dir.path());
+        let engine = Engine::new(&opts);
+        let session = selection_session(&opts).await;
+        *engine.session.write().await = Some(Live {
+            session: session.clone(),
+            ifindex: None,
+        });
+        let rules = TorrentFileRules {
+            file_types: Some(vec![TorrentFileKind::Video]),
+            name_contains: vec!["jane doe".into()],
+            name_excludes: vec!["trailer".into()],
+            min_size: Some(50),
+            max_size: Some(100),
+        };
+        let added = engine
+            .add_with_rules(
+                NewTorrent::File(bytes.clone()),
+                Some(TorrentFileKind::media_default()),
+                Some(rules.clone()),
+            )
+            .await
+            .unwrap();
+        let handle = session
+            .get(TorrentIdOrHash::Hash(added.id.parse().unwrap()))
+            .unwrap();
+        wait_until("rule torrent checked", async || {
+            !matches!(handle.stats().state, TorrentStatsState::Initializing { .. })
+        })
+        .await;
+        let files = engine.files(added.id.clone()).await.unwrap();
+        assert_eq!(files.rules, Some(rules.clone()));
+        let chosen: Vec<_> = files.files.iter().filter(|f| f.selected).collect();
+        assert_eq!(chosen.len(), 1);
+        assert!(chosen[0].path.ends_with("film.mkv"));
+        assert_eq!(
+            Engine::new(&opts)
+                .rule_indices(&bytes, &added.id, None)
+                .unwrap(),
+            handle.only_files()
+        );
+        assert!(
+            engine
+                .select_files(added.id.clone(), vec![usize::MAX])
+                .await
+                .is_err()
+        );
+        assert!(
+            engine
+                .files(added.id.clone())
+                .await
+                .unwrap()
+                .rules
+                .is_some()
+        );
+        let no_matches = TorrentFileRules {
+            name_contains: vec!["nobody".into()],
+            ..rules.clone()
+        };
+        engine
+            .set_rules(added.id.clone(), no_matches.clone())
+            .await
+            .unwrap();
+        assert!(handle.is_paused());
+        assert_eq!(handle.only_files(), Some(vec![]));
+        assert_eq!(
+            engine.list().await[0].error.as_deref(),
+            Some("No files match these rules. Edit the rules or choose files.")
+        );
+        session.stop().await;
+        let mut persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(engine.session_db()).unwrap()).unwrap();
+        for t in persisted["torrents"].as_object_mut().unwrap().values_mut() {
+            t["only_files"] = serde_json::Value::Null;
+            t["is_paused"] = false.into();
+        }
+        std::fs::write(engine.session_db(), serde_json::to_vec(&persisted).unwrap()).unwrap();
+        let restored = Engine::new(&opts);
+        restored.reconcile_rules().unwrap();
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(engine.session_db()).unwrap()).unwrap();
+        for t in persisted["torrents"].as_object().unwrap().values() {
+            assert_eq!(t["only_files"], serde_json::json!([]));
+            assert_eq!(t["is_paused"], true);
+        }
+        let session = selection_session(&opts).await;
+        *restored.session.write().await = Some(Live {
+            session: session.clone(),
+            ifindex: None,
+        });
+        let handle = session
+            .get(TorrentIdOrHash::Hash(added.id.parse().unwrap()))
+            .unwrap();
+        wait_until("restored rule torrent checked", async || {
+            !matches!(handle.stats().state, TorrentStatsState::Initializing { .. })
+        })
+        .await;
+        restored
+            .select_files(added.id.clone(), vec![chosen[0].index])
+            .await
+            .unwrap();
+        assert!(restored.files(added.id).await.unwrap().rules.is_none());
+        assert!(handle.is_paused(), "manual selection preserves user pause");
+        session.stop().await;
+    }
+
+    #[tokio::test]
+    async fn unreadable_rules_block_session_instead_of_downloading_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let opts = options(dir.path());
+        std::fs::create_dir_all(&opts.state_dir).unwrap();
+        std::fs::write(opts.state_dir.join("file-rules.json"), b"invalid").unwrap();
+        let engine = Engine::new(&opts);
+        assert!(
+            engine
+                .start_session(None)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("Saved file rules")
+        );
+        assert!(engine.live_session().await.is_none());
+    }
 
     #[tokio::test]
     async fn selecting_nested_files_persists_without_restarting_the_session() {
@@ -2215,6 +2419,67 @@ mod tests {
             .await;
         assert!(lock(&engine.inner).pending[PENDING_HASH].error.is_none());
         session.stop().await;
+    }
+
+    #[tokio::test]
+    async fn magnet_rules_survive_metadata_wait_and_filter_before_payload() {
+        use stash_core::internal_api::TorrentFileRules;
+        let dir = tempfile::tempdir().unwrap();
+        let opts = options(dir.path());
+        let engine = Engine::new(&opts);
+        let session = offline_session(&opts).await;
+        *engine.session.write().await = Some(Live {
+            session: session.clone(),
+            ifindex: None,
+        });
+        let bytes = b"d4:infod6:lengthi4e4:name11:fixture.bin12:piece lengthi16384e6:pieces20:11111111111111111111ee";
+        let hash = librqbit::torrent_from_bytes(bytes)
+            .unwrap()
+            .info_hash
+            .as_string();
+        let magnet = format!("magnet:?xt=urn:btih:{hash}");
+        let rules = TorrentFileRules {
+            min_size: Some(5),
+            ..Default::default()
+        };
+        engine
+            .add_with_rules(
+                NewTorrent::Magnet(magnet.clone()),
+                None,
+                Some(rules.clone()),
+            )
+            .await
+            .unwrap();
+        assert!(
+            engine.list().await[0].error.is_none(),
+            "pending metadata is not a no-match error"
+        );
+        assert_eq!(file_rules::load(&opts.state_dir).unwrap()[&hash], rules);
+        let current = Arc::new(CancellationToken::new());
+        lock(&engine.inner)
+            .pending
+            .get_mut(&hash)
+            .unwrap()
+            .resolving = Some(current.clone());
+        let metadata = session
+            .add_torrent(
+                AddTorrent::from_bytes(bytes.as_slice()),
+                Some(AddTorrentOptions {
+                    list_only: true,
+                    ..Default::default()
+                }),
+            )
+            .await;
+        engine
+            .finish_resolution(&session, &hash, &magnet, &current, Some(metadata))
+            .await;
+        let handle = session
+            .get(TorrentIdOrHash::Hash(parse_id(&hash).unwrap()))
+            .unwrap();
+        assert_eq!(handle.only_files(), Some(vec![]));
+        assert!(handle.is_paused());
+        assert_eq!(engine.files(hash).await.unwrap().rules, Some(rules));
+        engine.stop_session().await;
     }
 
     #[tokio::test]

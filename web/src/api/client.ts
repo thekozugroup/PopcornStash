@@ -21,6 +21,7 @@ import type {
   DownloadList,
   TorrentFiles,
   TorrentFileKind,
+  TorrentFileRules,
   ErrorCode,
   HealthResponse,
   HomeResponse,
@@ -469,15 +470,17 @@ export const downloads = {
   /** http(s) URL or magnet link. */
   create: (body: DownloadCreateRequest) => post<Download>('/api/downloads', body),
   /** `.torrent` file up to 10 MB. */
-  addTorrent: (file: File, libraryId?: string, fileTypes?: TorrentFileKind[]) => {
+  addTorrent: (file: File, libraryId?: string, fileTypes?: TorrentFileKind[], fileRules?: TorrentFileRules) => {
     const form = new FormData();
     form.append('file', file, file.name);
     if (libraryId) form.append('library_id', libraryId);
     if (fileTypes) form.append('file_types', JSON.stringify(fileTypes));
+    if (fileRules) form.append('file_rules', JSON.stringify(fileRules));
     return request<Download>('/api/downloads/torrent', {method: 'POST', body: form});
   },
   files: (id: string, signal?: AbortSignal) => get<TorrentFiles>(`/api/downloads/${enc(id)}/files`, {}, signal),
   selectFiles: (id: string, indices: number[]) => put<void>(`/api/downloads/${enc(id)}/files`, {indices}),
+  setRules: (id: string, rules: TorrentFileRules) => put<void>(`/api/downloads/${enc(id)}/rules`, rules),
   pause: (id: string) => post<Download>(`/api/downloads/${enc(id)}/pause`, {}),
   resume: (id: string) => post<Download>(`/api/downloads/${enc(id)}/resume`, {}),
   remove: (id: string, deleteFiles = false) =>

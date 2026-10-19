@@ -625,7 +625,16 @@ data class Download(
 data class DownloadList(val items: List<Download>)
 
 @Serializable
-data class AddDownload(val url: String, val filename: String? = null, val libraryId: String? = null, val fileTypes: List<TorrentFileKind>? = null)
+data class AddDownload(val url: String, val filename: String? = null, val libraryId: String? = null, val fileTypes: List<TorrentFileKind>? = null, val fileRules: TorrentFileRules? = null)
+
+@Serializable
+data class TorrentFileRules(
+    val fileTypes: List<TorrentFileKind>? = null,
+    val nameContains: List<String> = emptyList(),
+    val nameExcludes: List<String> = emptyList(),
+    val minSize: Long? = null,
+    val maxSize: Long? = null,
+)
 
 @Serializable
 enum class TorrentFileKind {

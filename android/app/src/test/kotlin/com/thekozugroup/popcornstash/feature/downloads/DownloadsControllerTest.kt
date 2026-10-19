@@ -312,11 +312,15 @@ class DownloadsControllerTest {
         assertEquals(com.thekozugroup.popcornstash.data.api.TorrentFileKind.Default,
             eventually { controller.state.first { it.add != null } }.add!!.fileTypes)
         controller.onAddFileType(com.thekozugroup.popcornstash.data.api.TorrentFileKind.Subtitle)
+        controller.onAddRules(TorrentRuleDraft(enabled = true, include = "Jane Doe", minimum = "500"))
         controller.onAddText("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")
         answers["POST /api/downloads"] = { json(StashJson.encodeToString(Download.serializer(), s.paused)) }
         controller.submitAdd()
         eventually { controller.state.first { it.add == null } }
-        assertEquals("[\"video\"]", sent("POST", "/api/downloads").json()["file_types"].toString())
+        val request = sent("POST", "/api/downloads").json()
+        assertEquals("[\"video\"]", request["file_types"].toString())
+        assertEquals("[\"Jane Doe\"]", request["file_rules"]!!.jsonObject["name_contains"].toString())
+        assertEquals("500000000", request["file_rules"]!!.jsonObject["min_size"].toString())
     }
 
     @Test

@@ -59,6 +59,7 @@ data class AddLinkState(
     /** The field was filled from the clipboard when the sheet opened. */
     val fromClipboard: Boolean = false,
     val fileTypes: List<TorrentFileKind> = TorrentFileKind.Default,
+    val rules: TorrentRuleDraft = TorrentRuleDraft(),
     val error: String? = null,
     val busy: Boolean = false,
     val libraryId: String? = null,
@@ -276,6 +277,8 @@ class DownloadsController(
         if (add.busy) l else l.copy(add = add.copy(fileTypes = if (kind in add.fileTypes) add.fileTypes - kind else add.fileTypes + kind))
     }
 
+    fun onAddRules(rules: TorrentRuleDraft) = local.update { l -> l.copy(add = l.add?.takeIf { !it.busy }?.copy(rules = rules, error = null) ?: l.add) }
+
     fun onAddText(text: String) = local.update { l -> l.copy(add = l.add?.copy(text = text, fromClipboard = false, error = null)) }
 
     fun closeAdd() = local.update { if (it.add?.busy == true) it else it.copy(add = null) }
@@ -294,10 +297,15 @@ class DownloadsController(
             }
             is LinkCheck.Ok -> check.link
         }
+        val rules = try { if (link.kind != LinkKind.Http) add.rules.rules(add.fileTypes) else null }
+        catch (e: IllegalArgumentException) {
+            local.update { it.copy(add = add.copy(error = e.message)) }
+            return
+        }
         local.update { it.copy(add = add.copy(busy = true, error = null)) }
         scope.launch {
             try {
-                val download = api.addDownload(link.url, libraryId = add.libraryId, fileTypes = add.fileTypes.takeIf { link.kind != LinkKind.Http })
+                val download = api.addDownload(link.url, libraryId = add.libraryId, fileTypes = add.fileTypes.takeIf { link.kind != LinkKind.Http }, fileRules = rules)
                 data.apply(StashEvent.DownloadChanged(download))
                 local.update { it.copy(add = null) }
                 _messages.trySend("Added ${download.name}.")

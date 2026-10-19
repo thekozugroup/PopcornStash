@@ -221,6 +221,21 @@ impl TorrentdClient {
         .map(drop)
     }
 
+    pub async fn set_rules(
+        &self,
+        id: &str,
+        rules: &stash_core::internal_api::TorrentFileRules,
+    ) -> Result<(), TorrentdError> {
+        self.request(
+            Method::PUT,
+            &["torrents", id, "rules"],
+            &[],
+            Some(&serde_json::to_value(rules).expect("validated rules")),
+        )
+        .await
+        .map(drop)
+    }
+
     pub async fn pause(&self, id: &str) -> Result<(), TorrentdError> {
         self.request(Method::POST, &["torrents", id, "pause"], &[], None)
             .await
@@ -1076,6 +1091,7 @@ mod tests {
         assert_eq!(list[0].name.as_deref(), Some("Big Buck Bunny"));
         let added = client
             .add(&AddTorrentRequest {
+                file_rules: None,
                 file_types: None,
                 magnet: Some("magnet:?xt=urn:btih:abc".into()),
                 torrent_base64: None,
@@ -1113,6 +1129,7 @@ mod tests {
         // Other errors keep the status and message.
         match client
             .add(&AddTorrentRequest {
+                file_rules: None,
                 file_types: None,
                 magnet: Some("magnet:?bad".into()),
                 torrent_base64: None,
@@ -1160,6 +1177,7 @@ mod tests {
         let (client, _) = client_for(dir.path(), Some(url)).await;
         let err = client
             .add(&AddTorrentRequest {
+                file_rules: None,
                 file_types: None,
                 magnet: Some("magnet:?xt=urn:btih:abc".into()),
                 torrent_base64: None,
@@ -1534,6 +1552,7 @@ mod tests {
             other => panic!("an oversized answer must be refused: {other:?}"),
         }
         let request = AddTorrentRequest {
+            file_rules: None,
             file_types: None,
             magnet: Some("magnet:?xt=urn:btih:abc".into()),
             torrent_base64: None,

@@ -1218,6 +1218,7 @@ mod tests {
         std::fs::write(content.join("film.mkv"), b"selected").unwrap();
         std::fs::write(content.join("extras/instructions.txt"), b"fragment").unwrap();
         let manifest = TorrentFiles {
+            rules: None,
             ready: true,
             files: vec![
                 TorrentFile {

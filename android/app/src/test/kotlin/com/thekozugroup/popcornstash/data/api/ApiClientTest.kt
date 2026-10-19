@@ -459,6 +459,16 @@ class ApiClientTest {
     }
 
     @Test
+    fun fileRulesAreSentWithSnakeCaseFieldsAndExactByteSizes() = runTest {
+        server.respond(Fixtures.DOWNLOAD)
+        api.addDownload("magnet:?xt=urn:btih:abc", fileRules = TorrentFileRules(
+            fileTypes = listOf(TorrentFileKind.Video), nameContains = listOf("Jane Doe"),
+            nameExcludes = listOf("trailer"), minSize = 500000000, maxSize = 2000000000))
+        val body = json(server.next().bodyText)
+        assertEquals(json("""{"file_types":["video"],"name_contains":["Jane Doe"],"name_excludes":["trailer"],"min_size":500000000,"max_size":2000000000}"""), body["file_rules"])
+    }
+
+    @Test
     fun downloads() = runTest {
         server.respond("""{"items":[${Fixtures.DOWNLOAD},${Fixtures.SORTED}]}""")
         server.respond(Fixtures.DOWNLOAD)

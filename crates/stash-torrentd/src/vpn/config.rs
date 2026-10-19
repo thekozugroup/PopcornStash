@@ -758,7 +758,7 @@ impl OpenVpnPlan {
                 "The block that starts on line {line} of the OpenVPN file is never closed with {close}."
             )));
         }
-        if !client && !(tls_client && pull) {
+        if !(client || tls_client && pull) {
             return Err(err(
                 "The OpenVPN file is missing the client line. Upload the client .ovpn file from your VPN provider.",
             ));

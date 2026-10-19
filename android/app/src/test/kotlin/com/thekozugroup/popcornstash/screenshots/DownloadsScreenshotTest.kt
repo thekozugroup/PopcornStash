@@ -175,6 +175,16 @@ class DownloadsScreenshotTest {
         captureScreenRoboImage(screenshot("downloads-add-dark"))
     }
 
+    @Test fun torrentRulesLight() = torrentRules(dark = false)
+    @Test fun torrentRulesDark() = torrentRules(dark = true)
+
+    private fun torrentRules(dark: Boolean) {
+        val add = AddLinkState(text = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+            rules = com.thekozugroup.popcornstash.feature.downloads.TorrentRuleDraft(enabled = true, include = "Jane Doe", exclude = "sample, trailer", minimum = "100", maximum = "2000"))
+        show(s.content().copy(add = add), dark)
+        captureScreenRoboImage(screenshot(if (dark) "downloads-rules-dark" else "downloads-rules-light"))
+    }
+
     @Test
     fun addLinkRefusedLight() {
         val add = AddLinkState(text = "example.org/clip.mp4", error = "Add https:// to the start of the web address.")

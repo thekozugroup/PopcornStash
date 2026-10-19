@@ -235,6 +235,7 @@ impl Env {
             .add_url(
                 &self.owner.user_id,
                 AddDownloadRequest {
+                    file_rules: None,
                     file_types: None,
                     library_id: None,
                     url: url.into(),
@@ -641,6 +642,7 @@ async fn engine_files(
         return StatusCode::NOT_FOUND.into_response();
     };
     Json(stash_core::internal_api::TorrentFiles {
+        rules: None,
         ready: true,
         files: vec![stash_core::internal_api::TorrentFile {
             index: 0,
@@ -1005,6 +1007,7 @@ async fn chosen_filename_wins() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_rules: None,
                 file_types: None,
                 library_id: None,
                 url: files.url("/named"),
@@ -1043,6 +1046,7 @@ async fn ssrf_guard_refuses_local_destinations() {
             .add_url(
                 &env.owner.user_id,
                 AddDownloadRequest {
+                    file_rules: None,
                     file_types: None,
                     library_id: None,
                     url: url.clone(),
@@ -1073,6 +1077,7 @@ async fn ssrf_guard_refuses_local_destinations() {
             .add_url(
                 &env.owner.user_id,
                 AddDownloadRequest {
+                    file_rules: None,
                     file_types: None,
                     library_id: None,
                     url: bad.into(),
@@ -1171,6 +1176,7 @@ async fn forwarded_headers_reach_the_server_but_are_never_stored() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_rules: None,
                 file_types: None,
                 library_id: None,
                 url: files.url("/query.bin?id=7&token=SECRETTOKEN"),
@@ -1426,6 +1432,7 @@ async fn torrents_disabled_answer_vpn_unavailable() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_rules: None,
                 file_types: None,
                 library_id: None,
                 url: MAGNET.into(),
@@ -2060,6 +2067,7 @@ async fn torrent_files_are_validated_and_added() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_rules: None,
                 file_types: None,
                 library_id: None,
                 url: files.url("/fake.torrent"),
@@ -2667,6 +2675,7 @@ async fn private_link_is_not_fetched_without_its_secret_after_a_restart() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_rules: None,
                 file_types: None,
                 library_id: None,
                 url: files.url("/query.bin?id=7&token=SECRETTOKEN"),
@@ -2699,6 +2708,7 @@ async fn private_link_is_not_fetched_without_its_secret_after_a_restart() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_rules: None,
                 file_types: None,
                 library_id: None,
                 url: d.source.clone(),
@@ -3071,6 +3081,7 @@ async fn a_stalled_torrent_link_gives_up() {
         env.manager.add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_rules: None,
                 file_types: None,
                 library_id: None,
                 url: files.url("/stall.torrent"),
@@ -3208,6 +3219,7 @@ async fn forwarded_cookies_never_follow_a_redirect_to_another_host() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_rules: None,
                 file_types: None,
                 library_id: None,
                 url: "http://127.0.0.1/start.bin".into(),
@@ -3237,6 +3249,7 @@ async fn forwarded_cookies_never_follow_a_redirect_to_another_host() {
         .add_url(
             &env.owner.user_id,
             AddDownloadRequest {
+                file_rules: None,
                 file_types: None,
                 library_id: None,
                 url: "http://127.0.0.1/start.torrent".into(),

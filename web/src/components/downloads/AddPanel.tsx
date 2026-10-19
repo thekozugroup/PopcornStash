@@ -22,6 +22,8 @@ import {isNoVpnMode, showsVpnLine, torrentsOff, torrentsWait} from '../../lib/vp
 import {VpnLine} from './VpnLine';
 import {TorrentTypeChoices} from './TorrentTypeChoices';
 import {DestinationSelect} from './DestinationSelect';
+import {FileRulesEditor} from './FileRulesEditor';
+import {parseFileRules, type FileRuleDraft} from './fileRules';
 
 const styles = stylex.create({
   panel: {
@@ -112,6 +114,8 @@ const KIND_ICON: Record<'magnet' | 'torrent-url' | 'http', LucideIcon> = {
 };
 
 export interface AddPanelProps {
+  fileRules: FileRuleDraft;
+  onFileRules: (value: FileRuleDraft) => void;
   fileTypes: TorrentFileKind[];
   onFileTypes: (value: TorrentFileKind[]) => void;
   libraryId: string;
@@ -129,6 +133,7 @@ export interface AddPanelProps {
 }
 
 export function AddPanel({
+  fileRules, onFileRules,
   libraryId, onLibrary, fileTypes, onFileTypes,
   isOwner,
   vpnStatus,
@@ -189,9 +194,11 @@ export function AddPanel({
       return;
     }
     if (check.status === 'invalid') return;
+    const rules = parseFileRules(fileRules, fileTypes);
+    if (isTorrentLink(check.link) && rules.error) { setServerError(rules.error); return; }
     setIsBusy(true);
     try {
-      const download = await downloadsApi.create({url: check.link.url, library_id: libraryId || undefined, file_types: fileTypes});
+      const download = await downloadsApi.create({url: check.link.url, library_id: libraryId || undefined, file_types: fileTypes, file_rules: isTorrentLink(check.link) ? rules.rules : undefined});
       onAdded(download);
       setValue('');
       setTouched(false);
@@ -258,6 +265,7 @@ export function AddPanel({
       </form>
 
       <TorrentTypeChoices value={fileTypes} onChange={onFileTypes} disabled={isBusy || isAddingTorrents} />
+      <FileRulesEditor value={fileRules} onChange={onFileRules} disabled={isBusy || isAddingTorrents} error={parseFileRules(fileRules, fileTypes).error} />
       <DestinationSelect value={libraryId} onChange={onLibrary} disabled={isBusy || isAddingTorrents} />
       <div {...stylex.props(styles.others)}>
         <input

@@ -1153,7 +1153,7 @@ pub fn validate_openvpn(text: &str) -> Result<OpenvpnSummary, String> {
             "The block that starts on line {line} is never closed with {close}."
         ));
     }
-    if !client && !(tls_client && pull) {
+    if !(client || tls_client && pull) {
         return Err("This file is missing the client line. Upload the client .ovpn file from your VPN provider.".into());
     }
     let remote_host = remotes.first().cloned().ok_or(

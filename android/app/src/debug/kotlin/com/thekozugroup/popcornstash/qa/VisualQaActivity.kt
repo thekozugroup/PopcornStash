@@ -56,6 +56,17 @@ class VisualQaActivity : ComponentActivity() {
                         onTogglePlay = { playing = !playing; player.playWhenReady = playing }, onSeek = player::seekTo),
                     chromeVisible = chrome, onChromeVisibleChange = { chrome = it }, flexHinge = layout?.flexHinge(),
                 ) { ContentFrame(player = player, modifier = it) }
+            } else if (intent.getBooleanExtra("torrent_rules", false)) PopcornTheme {
+                var add by remember { mutableStateOf(com.thekozugroup.popcornstash.feature.downloads.AddLinkState(
+                    text = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")) }
+                Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+                com.thekozugroup.popcornstash.feature.downloads.SheetBody("torrent rules preview") {
+                    com.thekozugroup.popcornstash.feature.downloads.AddLinkContent(add, viaVpn = true,
+                        onText = { add = add.copy(text = it) }, onAdd = {}, onCancel = { finish() },
+                        onFileType = { kind -> add = add.copy(fileTypes = if (kind in add.fileTypes) add.fileTypes - kind else add.fileTypes + kind) },
+                        onRules = { add = add.copy(rules = it) })
+                }
+                }
             } else PopcornTheme {
                 AppShell { page ->
                     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(Popcorn.spacing.l)) {

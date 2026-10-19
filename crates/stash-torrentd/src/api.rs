@@ -17,7 +17,7 @@ use base64::Engine as _;
 use serde::Deserialize;
 use stash_core::internal_api::{
     AddTorrentRequest, AddTorrentResponse, EngineHealth, EngineTorrent, LimitsRequest,
-    SelectTorrentFiles, TorrentFileKind, TorrentFiles,
+    SelectTorrentFiles, TorrentFileKind, TorrentFileRules, TorrentFiles,
 };
 
 use crate::sys::constant_time_eq;
@@ -69,6 +69,21 @@ pub trait TorrentBackend: Send + Sync + 'static {
         _id: String,
     ) -> impl Future<Output = Result<TorrentFiles, BackendError>> + Send {
         async { Err(BackendError::NotFound) }
+    }
+    fn set_rules(
+        &self,
+        _id: String,
+        _rules: TorrentFileRules,
+    ) -> impl Future<Output = Result<(), BackendError>> + Send {
+        async { Err(BackendError::NotFound) }
+    }
+    fn add_with_rules(
+        &self,
+        torrent: NewTorrent,
+        types: Option<Vec<TorrentFileKind>>,
+        _rules: Option<TorrentFileRules>,
+    ) -> impl Future<Output = Result<AddTorrentResponse, BackendError>> + Send {
+        self.add_with_selection(torrent, types)
     }
     fn select_files(
         &self,
@@ -152,6 +167,7 @@ pub fn router<B: TorrentBackend>(backend: Arc<B>, token: &str) -> Router {
         )
         .route("/torrents/{id}/pause", post(pause::<B>))
         .route("/torrents/{id}/resume", post(resume::<B>))
+        .route("/torrents/{id}/rules", axum::routing::put(set_rules::<B>))
         .route("/torrents/{id}", delete(remove::<B>))
         .route("/limits", put(limits::<B>))
         .route("/vpn/reload", post(reload::<B>))
@@ -253,11 +269,17 @@ async fn add<B: TorrentBackend>(
         );
     };
     let types = request.file_types.clone();
+    let rules = request.file_rules.clone();
+    if let Some(rules) = &rules
+        && let Err(message) = rules.validate()
+    {
+        return BackendError::BadRequest(message).into_response();
+    }
     let torrent = match decode_add(request) {
         Ok(torrent) => torrent,
         Err(e) => return e.into_response(),
     };
-    match state.backend.add_with_selection(torrent, types).await {
+    match state.backend.add_with_rules(torrent, types, rules).await {
         Ok(added) => (StatusCode::OK, Json(added)).into_response(),
         Err(e) => e.into_response(),
     }
@@ -291,6 +313,19 @@ async fn select_files<B: TorrentBackend>(
         return Err(BackendError::BadRequest("Select at least one file.".into()));
     }
     state.backend.select_files(id, selection.indices).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn set_rules<B: TorrentBackend>(
+    State(state): State<ApiState<B>>,
+    Path(id): Path<String>,
+    body: Result<Json<TorrentFileRules>, axum::extract::rejection::JsonRejection>,
+) -> Result<StatusCode, BackendError> {
+    valid_id(&id)?;
+    let Json(rules) =
+        body.map_err(|_| BackendError::BadRequest("Choose valid file rules.".into()))?;
+    rules.validate().map_err(BackendError::BadRequest)?;
+    state.backend.set_rules(id, rules).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -699,6 +734,7 @@ pub(crate) mod tests {
         let huge = "A".repeat(MAX_TORRENT_BYTES / 3 * 4 + 100);
         assert!(
             decode_add(AddTorrentRequest {
+                file_rules: None,
                 file_types: None,
                 magnet: None,
                 torrent_base64: Some(huge)
@@ -707,6 +743,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             decode_add(AddTorrentRequest {
+                file_rules: None,
                 file_types: None,
                 magnet: Some(" magnet:?xt=urn:btih:abc ".into()),
                 torrent_base64: None
