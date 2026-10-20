@@ -22,10 +22,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -35,6 +38,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import com.thekozugroup.popcornstash.ui.components.PopcornMenuItem
@@ -122,6 +127,7 @@ data class PlayerActions(
  * [surface] draws the video ([androidx.media3.ui.compose.ContentFrame] on a phone).
  */
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 fun PlayerScreen(
     state: PlayerUiState,
     clock: () -> PlayerClock,
@@ -154,17 +160,9 @@ fun PlayerScreen(
         containsText = true,
         containsControls = true,
     ) ?: tokens.hideAfterMs
-    val mayHide = playing && !menuOpen && !seeking && !inPictureInPicture && flexHinge == null
-    LaunchedEffect(chromeVisible, mayHide, touches) {
-        if (chromeVisible && mayHide) {
-            delay(hideAfter)
-            onChromeVisibleChange(false)
-        }
-    }
     // Pausing by any route (headphones unplugged, the end, a failure) brings the chrome back.
     LaunchedEffect(playing) { if (!playing) onChromeVisibleChange(true) }
 
-    val chromeShown = chromeVisible || !ready || flexHinge != null
     var windowTop by remember { mutableFloatStateOf(0f) }
     val density = LocalDensity.current
     BoxWithConstraints(
@@ -177,7 +175,26 @@ fun PlayerScreen(
         val top = with(density) { ((flexHinge?.top ?: 0) - windowTop).toDp() }
         val bottom = with(density) { ((flexHinge?.bottom ?: 0) - windowTop).toDp() }
         val flex = !inPictureInPicture && flexHinge != null && top > 0.dp && bottom >= top && bottom < maxHeight
-        surface(if (flex) Modifier.fillMaxWidth().height(top).testTag("flex video") else Modifier.fillMaxSize())
+        val portrait = !inPictureInPicture && !flex && maxHeight > maxWidth && !state.portrait
+        val split = flex || portrait
+        val chromeShown = chromeVisible || !ready || split
+        val mayHide = playing && !menuOpen && !seeking && !inPictureInPicture && !split
+        LaunchedEffect(chromeVisible, mayHide, touches) {
+            if (chromeVisible && mayHide) {
+                delay(hideAfter)
+                onChromeVisibleChange(false)
+            }
+        }
+        LaunchedEffect(split) { if (split) onChromeVisibleChange(true) }
+        val safe = WindowInsets.systemBarsIgnoringVisibility.union(WindowInsets.displayCutout)
+        val pictureHeight = if (flex) top else {
+            val ratio = if (state.videoWidth > 0 && state.videoHeight > 0) state.videoWidth.toFloat() / state.videoHeight else 16f / 9f
+            (maxWidth / ratio + with(density) { safe.getTop(this).toDp() }).coerceAtMost(maxHeight / 2)
+        }
+        val controlsTop = if (flex) bottom else pictureHeight
+        Box(if (split) Modifier.fillMaxWidth().height(pictureHeight).testTag(if (flex) "flex video" else "portrait video") else Modifier.fillMaxSize()) {
+            surface(if (split) Modifier.fillMaxSize().windowInsetsPadding(safe.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)) else Modifier.fillMaxSize())
+        }
         if (inPictureInPicture) {
             PictureInPictureOverlay(state)
             return@BoxWithConstraints
@@ -194,13 +211,13 @@ fun PlayerScreen(
         val currentSeek by androidx.compose.runtime.rememberUpdatedState(seekBy)
         val currentToggle by androidx.compose.runtime.rememberUpdatedState {
             touched()
-            onChromeVisibleChange(!chromeVisible)
+            onChromeVisibleChange(if (split) true else !chromeVisible)
         }
         Box(
-            (if (flex) Modifier.fillMaxWidth().height(top) else Modifier.fillMaxSize())
+            (if (split) Modifier.fillMaxWidth().height(pictureHeight) else Modifier.fillMaxSize())
                 .testTag("player tap area")
                 .semantics {
-                    onClick(label = if (chromeShown) "Hide controls" else "Show controls") { currentToggle(); true }
+                    onClick(label = if (chromeShown && !split) "Hide controls" else "Show controls") { currentToggle(); true }
                     customActions = listOf(
                         CustomAccessibilityAction("Back 15 seconds") { currentSeek(-15_000L); true },
                         CustomAccessibilityAction("Forward 15 seconds") { currentSeek(15_000L); true },
@@ -217,9 +234,9 @@ fun PlayerScreen(
                         .semantics { liveRegion = LiveRegionMode.Polite })
             }
         }
-        if (flex) {
-            Box(Modifier.offset(y = bottom).fillMaxWidth().height(maxHeight - bottom).background(colors.page).testTag("flex controls")) {
-                Chrome(
+        if (split) {
+            Box(Modifier.offset(y = controlsTop).fillMaxWidth().height(maxHeight - controlsTop).background(colors.page).testTag(if (flex) "flex controls" else "portrait controls")) {
+                ControlPanel(
                     state = state,
                     clock = clock,
                     actions = actions,
@@ -262,6 +279,37 @@ fun PlayerScreen(
                 },
                 touched = touched,
             )
+        }
+    }
+}
+
+/** A separate, scrollable lower pane. Its top is the hinge/picture edge, not a status bar. */
+@Composable
+@OptIn(ExperimentalLayoutApi::class)
+private fun ControlPanel(
+    state: PlayerUiState,
+    clock: () -> PlayerClock,
+    actions: PlayerActions,
+    waiting: Boolean,
+    menuOpen: Boolean,
+    onMenuOpen: (Boolean) -> Unit,
+    onSeeking: (Boolean) -> Unit,
+    touched: () -> Unit,
+) {
+    val tokens = LocalPlayerTokens.current
+    val safe = WindowInsets.systemBarsIgnoringVisibility.union(WindowInsets.displayCutout)
+    BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(safe.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).heightIn(min = maxHeight).padding(tokens.edge),
+            horizontalAlignment = Alignment.CenterHorizontally) {
+            TopRow(state, actions, menuOpen, { touched(); onMenuOpen(it) })
+            Spacer(Modifier.weight(1f).height(24.dp))
+            when (val phase = state.phase) {
+                PlayerPhase.Loading, PlayerPhase.Ready -> CentreDisc(state, waiting, { touched(); actions.onTogglePlay() })
+                PlayerPhase.Ended -> EndMessage(state, actions)
+                is PlayerPhase.Failed -> FailedMessage(phase, actions)
+            }
+            Spacer(Modifier.weight(1f).height(24.dp))
+            if (state.phase == PlayerPhase.Ready) BottomRow(state, clock, actions, { touched(); onSeeking(it) }, stacked = true)
         }
     }
 }
@@ -393,6 +441,7 @@ private fun BottomRow(
     actions: PlayerActions,
     onSeeking: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    stacked: Boolean = false,
 ) {
     val tokens = LocalPlayerTokens.current
     val colors = Popcorn.colors
@@ -403,6 +452,15 @@ private fun BottomRow(
             now = clock()
             delay(tokens.tickMs)
         }
+    }
+    if (stacked) {
+        Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(tokens.gap), horizontalAlignment = Alignment.End) {
+            MediaPlate(Modifier.fillMaxWidth()) {
+                SeekBar(now.positionMs, now.bufferedMs, state.durationMs, actions.onSeek, onSeeking)
+            }
+            NextEpisodeButton(state, actions)
+        }
+        return
     }
     Row(
         modifier.fillMaxWidth(),
@@ -418,15 +476,20 @@ private fun BottomRow(
                 onSeeking = onSeeking,
             )
         }
-        state.next?.let { next ->
-            val description = next.label?.let { "Next episode: $it" } ?: "Next episode"
-            MediaPlate(
-                Modifier
-                    .clickable(role = Role.Button, onClick = actions.onPlayNext)
-                    .semantics(mergeDescendants = true) { contentDescription = description },
-            ) {
-                Text("Next episode", style = Popcorn.type.action, color = colors.onMedia, maxLines = 1)
-            }
+        NextEpisodeButton(state, actions)
+    }
+}
+
+@Composable
+private fun NextEpisodeButton(state: PlayerUiState, actions: PlayerActions) {
+    state.next?.let { next ->
+        val description = next.label?.let { "Next episode: $it" } ?: "Next episode"
+        MediaPlate(
+            Modifier
+                .clickable(role = Role.Button, onClick = actions.onPlayNext)
+                .semantics(mergeDescendants = true) { contentDescription = description },
+        ) {
+            Text("Next episode", style = Popcorn.type.action, color = Popcorn.colors.onMedia, maxLines = 1)
         }
     }
 }
@@ -449,7 +512,6 @@ private fun RowScope.SeekBar(
     val shownMs = dragFraction?.let { (it * duration).toLong() } ?: positionMs
     val shownS = shownMs / 1000.0
     val totalS = duration / 1000.0
-    var lastFraction by remember { mutableFloatStateOf(0f) }
 
     Text(
         PlayerFormat.clock(shownS),
@@ -464,10 +526,11 @@ private fun RowScope.SeekBar(
         onValueChange = {
             if (dragFraction == null) onSeeking(true)
             dragFraction = it
-            lastFraction = it
         },
         onValueChangeFinished = {
-            val target = dragFraction ?: lastFraction
+            // A tap on the current thumb can finish without onValueChange. Keep its
+            // current position instead of using an uninitialized/stale drag value.
+            val target = dragFraction ?: fraction
             dragFraction = null
             onSeeking(false)
             onSeek((target * duration).toLong())
@@ -477,6 +540,7 @@ private fun RowScope.SeekBar(
             Box(
                 Modifier
                     .size(tokens.seekThumb)
+                    .testTag("seek thumb")
                     .background(colors.accent, CircleShape)
                     .border(tokens.seekThumbRing, colors.onMedia, CircleShape),
             )
@@ -508,6 +572,7 @@ private fun RowScope.SeekBar(
 private fun SeekTrack(played: Float, buffered: Float) {
     val tokens = LocalPlayerTokens.current
     val colors = Popcorn.colors
+    val rtl = androidx.compose.ui.platform.LocalLayoutDirection.current == androidx.compose.ui.unit.LayoutDirection.Rtl
     Canvas(
         Modifier
             .fillMaxWidth()
@@ -516,10 +581,10 @@ private fun SeekTrack(played: Float, buffered: Float) {
         val radius = CornerRadius(size.height / 2, size.height / 2)
         drawRoundRect(colors.onMedia.copy(alpha = 0.28f), cornerRadius = radius)
         if (buffered > played) {
-            drawRoundRect(colors.onMedia.copy(alpha = 0.5f), size = Size(size.width * buffered, size.height), cornerRadius = radius)
+            drawRoundRect(colors.onMedia.copy(alpha = 0.5f), topLeft = Offset(if (rtl) size.width * (1 - buffered) else 0f, 0f), size = Size(size.width * buffered, size.height), cornerRadius = radius)
         }
         if (played > 0f) {
-            drawRoundRect(colors.accent, topLeft = Offset.Zero, size = Size(size.width * played, size.height), cornerRadius = radius)
+            drawRoundRect(colors.accent, topLeft = Offset(if (rtl) size.width * (1 - played) else 0f, 0f), size = Size(size.width * played, size.height), cornerRadius = radius)
         }
     }
 }

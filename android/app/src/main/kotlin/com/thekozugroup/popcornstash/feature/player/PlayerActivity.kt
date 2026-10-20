@@ -41,7 +41,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.compose.ContentFrame
 import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
-import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
 import androidx.window.layout.WindowLayoutInfo
 import com.thekozugroup.popcornstash.AppContainer
@@ -57,7 +56,7 @@ import com.thekozugroup.popcornstash.ui.theme.Popcorn
  *
  * - Opened with [openPlayer]. It is `singleTask`, so another request replaces what plays
  *   ([PlayerLauncher.request] from the new intent).
- * - Landscape, either way round as the phone turns; a video taller than wide turns upright.
+ * - Follows the phone's orientation, including portrait for wide videos and tabletop folds.
  * - The system bars hide with the chrome and come back with it.
  * - Leaving the app pauses playback and locks its content. Picture-in-picture is disabled.
  * - Back or Close ends the player: the place is saved and the server's stream ended.
@@ -87,7 +86,9 @@ class PlayerActivity : PrivateActivity() {
             return
         }
         request.value = first
-        orient(portrait = false)
+        // Never rotate to match the file: doing so prevents portrait watching and can turn
+        // a tabletop hinge vertical before WindowManager reports the fold.
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_USER
         ContextCompat.registerReceiver(
             this,
             pictureInPictureControls,
@@ -152,13 +153,6 @@ class PlayerActivity : PrivateActivity() {
         if (show) insets.show(WindowInsetsCompat.Type.systemBars()) else insets.hide(WindowInsetsCompat.Type.systemBars())
     }
 
-    /** Landscape either way round as the phone turns, or upright for a video taller than wide. */
-    internal fun orient(portrait: Boolean, foldable: Boolean = false) {
-        val wanted = if (foldable) ActivityInfo.SCREEN_ORIENTATION_USER
-            else if (portrait) ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT else ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
-        if (requestedOrientation != wanted) requestedOrientation = wanted
-    }
-
     internal fun updatePictureInPicture(state: PlayerUiState, videoBounds: Rect?) {
         if (!PictureInPicture.supported(this)) return
         val playing = state.phase == PlayerPhase.Ready && state.playWhenReady
@@ -206,10 +200,8 @@ private fun PlayerActivity.PlayerRoute(model: PlayerViewModel, request: PlayerRe
     var videoBounds by remember { mutableStateOf<Rect?>(null) }
 
     val flexHinge = layout?.flexHinge()
-    val foldable = layout?.displayFeatures?.any { it is FoldingFeature } == true
     val barsShown = !inPictureInPicture && (flexHinge != null || chromeVisible || state.phase != PlayerPhase.Ready)
     LaunchedEffect(barsShown) { showSystemBars(barsShown) }
-    LaunchedEffect(state.portrait, foldable) { orient(state.portrait, foldable) }
     LaunchedEffect(state.phase, state.playWhenReady, state.videoWidth, state.videoHeight, videoBounds) {
         updatePictureInPicture(state, videoBounds)
     }

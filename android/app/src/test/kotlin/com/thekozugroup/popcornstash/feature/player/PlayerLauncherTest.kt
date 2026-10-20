@@ -13,11 +13,18 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 
 /** How the rest of the app opens the player, and how the player is declared. */
 @RunWith(AndroidJUnit4::class)
 class PlayerLauncherTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
+
+    @Test fun openingAWideVideoDoesNotForceLandscape() {
+        val activity = Robolectric.buildActivity(PlayerActivity::class.java, PlayerLauncher.intent(context, "i-lantern-1")).create()
+        assertEquals(ActivityInfo.SCREEN_ORIENTATION_USER, activity.get().requestedOrientation)
+        activity.destroy()
+    }
 
     @Test
     fun anIntentCarriesTheItemAndWhereToStart() {

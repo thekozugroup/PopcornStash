@@ -71,6 +71,18 @@ class PlayerScreenshotTest {
         shoot("player-flex")
     }
 
+    @Test @Config(qualifiers = PHONE)
+    fun wideVideoOnUprightPhone() {
+        player(PlayerSamples.episode)
+        shoot("player-wide-portrait")
+    }
+
+    @Test @Config(qualifiers = "w393dp-h851dp-mdpi", fontScale = 1.5f)
+    fun portraitWithLargeText() {
+        player(PlayerSamples.episode)
+        shoot("player-wide-portrait-large-text")
+    }
+
     @Test
     fun loading() {
         player(PlayerSamples.loading, frame = false)

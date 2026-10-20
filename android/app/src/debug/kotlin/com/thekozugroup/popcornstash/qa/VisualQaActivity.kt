@@ -14,6 +14,8 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.ui.compose.ContentFrame
 import androidx.window.layout.WindowInfoTracker
 import com.thekozugroup.popcornstash.R
@@ -33,13 +35,19 @@ class VisualQaActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             val context = LocalContext.current
-            val player = remember { ExoPlayer.Builder(context).build().apply {
+            val player = remember { ExoPlayer.Builder(context,
+                DefaultRenderersFactory(context).apply {
+                    // Optional emulator workaround; production keeps its real device decoder policy.
+                    if (intent.getBooleanExtra("software_decode", false)) setMediaCodecSelector { mime, secure, tunneled ->
+                        MediaCodecUtil.getDecoderInfos(mime, secure, tunneled).filter { it.softwareOnly }
+                    }
+                }).build().apply {
                 setMediaItem(MediaItem.fromUri("android.resource://${context.packageName}/${R.raw.qa_clip}"))
                 repeatMode = Player.REPEAT_MODE_ONE
                 prepare()
             } }
             DisposableEffect(player) { onDispose { player.release() } }
-            var showPlayer by remember { mutableStateOf(false) }
+            var showPlayer by remember { mutableStateOf(intent.getBooleanExtra("player", false)) }
             var playing by remember { mutableStateOf(false) }
             var position by remember { mutableLongStateOf(0) }
             var chrome by remember { mutableStateOf(true) }
@@ -53,7 +61,8 @@ class VisualQaActivity : ComponentActivity() {
                         playWhenReady = playing, durationMs = 12000, videoWidth = 640, videoHeight = 360),
                     { PlayerClock(position, 12000) },
                     PlayerActions(onClose = { player.pause(); playing = false; showPlayer = false },
-                        onTogglePlay = { playing = !playing; player.playWhenReady = playing }, onSeek = player::seekTo),
+                        onTogglePlay = { playing = !playing; player.playWhenReady = playing },
+                        onSeek = { target -> player.seekTo(target); android.util.Log.i("PopcornPlayerQa", "Seek target=$target position=${player.currentPosition} playing=${player.playWhenReady}") }),
                     chromeVisible = chrome, onChromeVisibleChange = { chrome = it }, flexHinge = layout?.flexHinge(),
                 ) { ContentFrame(player = player, modifier = it) }
             } else if (intent.getBooleanExtra("torrent_rules", false)) PopcornTheme {

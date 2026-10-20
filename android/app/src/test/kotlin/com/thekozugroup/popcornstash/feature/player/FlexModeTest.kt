@@ -13,6 +13,10 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.doubleClick
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.unit.dp
@@ -85,5 +89,45 @@ class FlexModeTest {
         assertNull(WindowLayoutInfo(listOf(feature(FoldingFeature.State.FLAT, FoldingFeature.Orientation.HORIZONTAL))).flexHinge())
         assertNull(WindowLayoutInfo(listOf(feature(FoldingFeature.State.HALF_OPENED, FoldingFeature.Orientation.VERTICAL))).flexHinge())
         assertEquals(FlexHinge(410, 430), WindowLayoutInfo(listOf(feature(FoldingFeature.State.HALF_OPENED, FoldingFeature.Orientation.HORIZONTAL))).flexHinge())
+    }
+
+    @Test @Config(qualifiers = "w393dp-h851dp-mdpi")
+    fun wideVideoPlaysInPortraitWithFullWidthTapSeekingBelowThePicture() {
+        var target = -1L
+        var visible by mutableStateOf(false)
+        compose.setContent {
+            PlayerTheme {
+                PlayerScreen(PlayerSamples.episode.copy(playWhenReady = true), { PlayerSamples.clock },
+                    PlayerActions(onSeek = { target = it }), visible, { visible = it }) { SampleFrame(it) }
+            }
+        }
+        val picture = compose.onNodeWithTag("portrait video").getUnclippedBoundsInRoot()
+        val controls = compose.onNodeWithTag("portrait controls").getUnclippedBoundsInRoot()
+        val bar = compose.onNodeWithTag("seek bar").getUnclippedBoundsInRoot()
+        assertTrue(picture.bottom <= controls.top)
+        assertTrue(bar.top >= controls.top)
+        assertTrue("Next episode has its own row, leaving room to seek", bar.right - bar.left > 200.dp)
+        compose.onNodeWithTag("seek bar").performTouchInput { click(Offset(width * .75f, centerY)) }
+        compose.runOnIdle { assertTrue("target=$target", target in 2_300_000..2_550_000) }
+        compose.mainClock.advanceTimeBy(10_000)
+        compose.onNodeWithContentDescription("Pause").assertIsDisplayed()
+        compose.onNodeWithText("Next episode").assertIsDisplayed()
+    }
+
+    @Test fun foldingAndUnfoldingKeepsTheSameMediaSurface() {
+        var hinge by mutableStateOf<FlexHinge?>(null)
+        var surfaces = 0
+        var releases = 0
+        compose.setContent { PlayerTheme {
+            PlayerScreen(PlayerSamples.episode, { PlayerSamples.clock }, PlayerActions(), true, {}, flexHinge = hinge) {
+                DisposableEffect(Unit) { surfaces++; onDispose { releases++ } }
+                SampleFrame(it)
+            }
+        } }
+        compose.runOnIdle { hinge = FlexHinge(410, 430) }
+        compose.onNodeWithTag("flex controls").assertExists()
+        compose.runOnIdle { hinge = null }
+        compose.onNodeWithTag("portrait controls").assertExists()
+        compose.runOnIdle { assertEquals(1, surfaces); assertEquals(0, releases) }
     }
 }

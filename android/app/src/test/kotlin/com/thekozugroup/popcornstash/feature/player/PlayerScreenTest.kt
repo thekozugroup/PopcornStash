@@ -15,6 +15,11 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.doubleClick
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.swipe
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
@@ -25,9 +30,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
 
 /** The player's chrome on Robolectric: what it says to TalkBack, what each control does, when it hides. */
 @RunWith(AndroidJUnit4::class)
+@Config(qualifiers = "w891dp-h411dp-land-mdpi")
 class PlayerScreenTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
@@ -104,6 +111,39 @@ class PlayerScreenTest {
         compose.onNodeWithTag("seek bar").performSemanticsAction(SemanticsActions.SetProgress) { it(0.5f) }
         compose.waitForIdle()
         assertEquals(listOf("seek 1568000"), done)
+    }
+
+    @Test fun tappingTheTrackJumpsImmediatelyWithoutTogglingPlayback() {
+        show(PlayerSamples.film)
+        compose.onNodeWithTag("seek bar").performTouchInput { click(Offset(width * .75f, centerY)) }
+        compose.runOnIdle {
+            val target = done.single().removePrefix("seek ").toLong()
+            assertTrue(target in 4_700_000..5_000_000)
+        }
+    }
+
+    @Test fun tappingTheThumbKeepsItsPositionAndDraggingStillSeeks() {
+        show(PlayerSamples.film)
+        compose.onNodeWithTag("seek thumb", useUnmergedTree = true).performTouchInput { click(center) }
+        compose.runOnIdle { assertTrue("actions=$done", done.single().removePrefix("seek ").toLong() in 700_000..750_000) }
+        compose.onNodeWithTag("seek bar").performTouchInput { swipe(Offset(width * .2f, centerY), Offset(width * .6f, centerY), 300) }
+        compose.runOnIdle { assertTrue("actions=$done", done.last().removePrefix("seek ").toLong() in 3_700_000..4_100_000) }
+    }
+
+    @Test fun unknownDurationDoesNotSeek() {
+        show(PlayerSamples.film.copy(durationMs = 0))
+        compose.onNodeWithTag("seek bar").performTouchInput { click(Offset(width * .75f, centerY)) }
+        compose.runOnIdle { assertTrue(done.isEmpty()) }
+    }
+
+    @Test fun rightToLeftTrackTapsMatchTheThumbDirection() {
+        compose.setContent {
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                PlayerTheme { PlayerScreen(PlayerSamples.film, { PlayerSamples.clock }, actions, true, {}) { SampleFrame(it) } }
+            }
+        }
+        compose.onNodeWithTag("seek bar").performTouchInput { click(Offset(width * .25f, centerY)) }
+        compose.runOnIdle { assertTrue(done.single().removePrefix("seek ").toLong() in 4_700_000..5_000_000) }
     }
 
     @Test
