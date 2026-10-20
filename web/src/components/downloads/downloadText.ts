@@ -33,7 +33,7 @@ export function activeStateWords(download: Download): string {
       if (download.kind === 'torrent' && !download.peers && download.down_bps === 0) return 'Looking for peers';
       return 'Downloading';
     case 'paused':
-      return 'Paused';
+      return download.error === 'Ready to choose files.' ? 'Ready to choose files' : 'Paused';
     case 'seeding':
       return 'Downloaded. Sharing with peers before sorting';
     default:

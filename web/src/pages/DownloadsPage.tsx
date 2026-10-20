@@ -19,12 +19,10 @@ import {useToast} from '@astryxdesign/core/Toast';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {useLocation, useNavigate} from 'react-router';
 import {ApiError, downloads as downloadsApi} from '../api/client';
-import type {Download, TorrentFileKind} from '../api/types';
+import type {Download} from '../api/types';
 import {useAuth} from '../auth/AuthProvider';
 import {AddPanel} from '../components/downloads/AddPanel';
-import {defaultFileKinds} from '../components/downloads/fileSelection';
 import {TorrentFilesDialog} from '../components/downloads/TorrentFilesDialog';
-import {emptyFileRules, parseFileRules} from '../components/downloads/fileRules';
 import {DownloadRow} from '../components/downloads/DownloadRow';
 import {DownloadsEmpty} from '../components/downloads/DownloadsEmpty';
 import {isActive} from '../components/downloads/downloadText';
@@ -121,8 +119,6 @@ export default function DownloadsPage() {
   const queue = useUploadQueue();
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [fileTypes, setFileTypes] = useState<TorrentFileKind[]>(defaultFileKinds);
-  const [fileRules, setFileRules] = useState({...emptyFileRules});
   const [filesTarget, setFilesTarget] = useState<Download | null>(null);
   const [libraryId, setLibraryId] = useState('');
   const [removeTarget, setRemoveTarget] = useState<Download | null>(null);
@@ -149,8 +145,6 @@ export default function DownloadsPage() {
 
   const addTorrents = useCallback(
     async (files: File[], destination = libraryId) => {
-      const parsed = parseFileRules(fileRules, fileTypes);
-      if (parsed.error) { toastError(parsed.error); return; }
       setIsAddingTorrents(true);
       let added = 0;
       try {
@@ -160,7 +154,9 @@ export default function DownloadsPage() {
             continue;
           }
           try {
-            upsert(await downloadsApi.addTorrent(file, destination || undefined, fileTypes, parsed.rules));
+            const next = await downloadsApi.addTorrent(file, destination || undefined);
+            upsert(next);
+            if (added === 0) setFilesTarget(next);
             added += 1;
           } catch (error) {
             const fallback =
@@ -175,7 +171,7 @@ export default function DownloadsPage() {
       }
       if (added > 0) showToast({body: added === 1 ? 'Torrent added.' : `${formatCount(added, 'torrent')} added.`});
     },
-    [showToast, toastError, upsert, libraryId, fileTypes, fileRules],
+    [showToast, toastError, upsert, libraryId],
   );
 
   const handleFiles = useCallback(
@@ -275,8 +271,7 @@ export default function DownloadsPage() {
 
       {filesTarget ? <TorrentFilesDialog download={filesTarget} onClose={() => setFilesTarget(null)} onSaved={() => { data.reload(); showToast({body: 'File selection saved.'}); }} /> : null}
       <AddPanel
-        libraryId={libraryId} onLibrary={setLibraryId} fileTypes={fileTypes} onFileTypes={setFileTypes}
-        fileRules={fileRules} onFileRules={setFileRules}
+        libraryId={libraryId} onLibrary={setLibraryId}
         isOwner={isOwner}
         vpnStatus={vpn.status}
         vpnUnavailable={vpn.isUnavailable}
@@ -285,6 +280,7 @@ export default function DownloadsPage() {
         isAddingTorrents={isAddingTorrents}
         onAdded={download => {
           upsert(download);
+          if (download.kind === 'torrent') setFilesTarget(download);
           showToast({body: `Added ${download.name}.`});
         }}
         onPickFiles={handleFiles}

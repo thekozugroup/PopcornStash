@@ -15,15 +15,12 @@ import {TextInput} from '@astryxdesign/core/TextInput';
 import {CircleAlert, FileUp, Globe, Link2, Magnet, Upload, type LucideIcon} from 'lucide-react';
 import {useState, type ChangeEvent, type FormEvent, type RefObject} from 'react';
 import {ApiError, downloads as downloadsApi} from '../../api/client';
-import type {Download, VpnStatus, TorrentFileKind} from '../../api/types';
+import type {Download, VpnStatus} from '../../api/types';
 import {errorMessage} from '../../lib/errors';
 import {checkLink, describeLink, isTorrentLink} from './linkDetect';
 import {isNoVpnMode, showsVpnLine, torrentsOff, torrentsWait} from '../../lib/vpn';
 import {VpnLine} from './VpnLine';
-import {TorrentTypeChoices} from './TorrentTypeChoices';
 import {DestinationSelect} from './DestinationSelect';
-import {FileRulesEditor} from './FileRulesEditor';
-import {parseFileRules, type FileRuleDraft} from './fileRules';
 
 const styles = stylex.create({
   panel: {
@@ -114,10 +111,6 @@ const KIND_ICON: Record<'magnet' | 'torrent-url' | 'http', LucideIcon> = {
 };
 
 export interface AddPanelProps {
-  fileRules: FileRuleDraft;
-  onFileRules: (value: FileRuleDraft) => void;
-  fileTypes: TorrentFileKind[];
-  onFileTypes: (value: TorrentFileKind[]) => void;
   libraryId: string;
   onLibrary: (value: string) => void;
   isOwner: boolean;
@@ -133,8 +126,7 @@ export interface AddPanelProps {
 }
 
 export function AddPanel({
-  fileRules, onFileRules,
-  libraryId, onLibrary, fileTypes, onFileTypes,
+  libraryId, onLibrary,
   isOwner,
   vpnStatus,
   vpnUnavailable,
@@ -194,11 +186,9 @@ export function AddPanel({
       return;
     }
     if (check.status === 'invalid') return;
-    const rules = parseFileRules(fileRules, fileTypes);
-    if (isTorrentLink(check.link) && rules.error) { setServerError(rules.error); return; }
     setIsBusy(true);
     try {
-      const download = await downloadsApi.create({url: check.link.url, library_id: libraryId || undefined, file_types: fileTypes, file_rules: isTorrentLink(check.link) ? rules.rules : undefined});
+      const download = await downloadsApi.create({url: check.link.url, library_id: libraryId || undefined});
       onAdded(download);
       setValue('');
       setTouched(false);
@@ -249,7 +239,7 @@ export function AddPanel({
             />
           </div>
           <div {...stylex.props(styles.submit)}>
-            <Button type="submit" variant="primary" label="Add" isLoading={isBusy} width="100%" />
+            <Button type="submit" variant="primary" label={check.status === 'ok' && isTorrentLink(check.link) ? 'Review torrent' : 'Add'} isLoading={isBusy} width="100%" />
           </div>
         </div>
         {/* Only problems are announced; the description changes on every keystroke. */}
@@ -264,8 +254,7 @@ export function AddPanel({
         </p>
       </form>
 
-      <TorrentTypeChoices value={fileTypes} onChange={onFileTypes} disabled={isBusy || isAddingTorrents} />
-      <FileRulesEditor value={fileRules} onChange={onFileRules} disabled={isBusy || isAddingTorrents} error={parseFileRules(fileRules, fileTypes).error} />
+      <Text as="p" type="supporting" color="secondary">Torrents fetch their file list first. Review filters and individual files before starting.</Text>
       <DestinationSelect value={libraryId} onChange={onLibrary} disabled={isBusy || isAddingTorrents} />
       <div {...stylex.props(styles.others)}>
         <input

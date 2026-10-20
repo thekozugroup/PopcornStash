@@ -90,6 +90,10 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/api/downloads/{id}", axum::routing::delete(remove))
         .route("/api/downloads/{id}/files", get(files).put(select_files))
+        .route(
+            "/api/downloads/{id}/start",
+            axum::routing::post(start_torrent),
+        )
         .route("/api/downloads/{id}/rules", axum::routing::put(set_rules))
         .route("/api/downloads/{id}/pause", post(pause))
         .route("/api/downloads/{id}/resume", post(resume))
@@ -305,6 +309,24 @@ async fn select_files(
         .select_torrent_files(&id, selection.indices)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn start_torrent(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    ApiJson(selection): ApiJson<stash_core::internal_api::SelectTorrentFiles>,
+) -> ApiResult<Json<Download>> {
+    user.require(Scope::Full)?;
+    require_visible(&state, &user, &id).await?;
+    if selection.indices.is_empty() || selection.indices.len() > 100_000 {
+        return Err(ApiError::bad_request("Select at least one file."));
+    }
+    state
+        .downloads
+        .start_torrent(&id, selection.indices)
+        .await?;
+    Ok(Json(as_seen(&state, &user, &id).await?))
 }
 
 async fn set_rules(

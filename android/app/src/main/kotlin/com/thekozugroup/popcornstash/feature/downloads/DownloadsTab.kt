@@ -42,6 +42,7 @@ fun DownloadsTab(
     val held = remember(session) { DownloadsHolders.forSession(session, uploads.progress) { id -> session.scope.launch { uploads.stop(id, session.api) } } }
     val controller = held.controller
     val state by controller.state.collectAsStateWithLifecycle()
+    val files by controller.torrentFiles.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboard.current
@@ -58,6 +59,7 @@ fun DownloadsTab(
     val actions = remember(controller) {
         DownloadsActions(
             onManageInbox = onManageInbox,
+            onChooseFiles = controller.torrentFiles::open,
             onRefresh = controller::refreshNow,
             onOpenVpnSettings = { openUrl(web("/settings/vpn")) },
             onPauseOrResume = controller::pauseOrResume,
@@ -90,6 +92,10 @@ fun DownloadsTab(
         )
     }
     DownloadsPage(page = page, state = state, actions = actions, nowSeconds = now, snackbar = snackbar)
+    files?.let { manifest ->
+        TorrentFilesSheet(manifest, controller.torrentFiles::toggle, controller.torrentFiles::submit, controller.torrentFiles::close, controller.torrentFiles::refresh,
+            onDraft = controller.torrentFiles::draft, onType = controller.torrentFiles::type, onApply = controller.torrentFiles::applyFilters)
+    }
 }
 
 /**

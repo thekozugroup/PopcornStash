@@ -824,9 +824,13 @@ pub(super) async fn apply(
         DownloadState::Downloading
     };
     // Only a torrent still in line keeps its reason.
-    let error = (state == DownloadState::Queued)
-        .then(|| row.error.clone())
-        .flatten();
+    let error = if torrent.error.as_deref() == Some("Ready to choose files.") {
+        torrent.error.clone()
+    } else {
+        (state == DownloadState::Queued)
+            .then(|| row.error.clone())
+            .flatten()
+    };
 
     let progress = match total {
         Some(total) => (torrent.done_bytes as f64 / total as f64).clamp(0.0, 1.0),
@@ -1218,6 +1222,7 @@ mod tests {
         std::fs::write(content.join("film.mkv"), b"selected").unwrap();
         std::fs::write(content.join("extras/instructions.txt"), b"fragment").unwrap();
         let manifest = TorrentFiles {
+            review_required: false,
             rules: None,
             ready: true,
             files: vec![

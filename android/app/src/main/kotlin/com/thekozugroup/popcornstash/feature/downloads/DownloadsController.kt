@@ -168,6 +168,12 @@ class DownloadsController(
         combine(sources, connection, uploads, local) { s, status, running, l -> build(s, status, running, l) }
             .stateIn(scope, SharingStarted.Eagerly, DownloadsUiState())
 
+    val torrentFiles = TorrentFilesController(
+        load = api::torrentFiles, save = api::selectTorrentFiles, scope = scope,
+        onSaved = { refresh() },
+        start = { id, indices -> data.apply(StashEvent.DownloadChanged(api.startTorrent(id, indices))) },
+    )
+
     private var lastStatus: EventStream.Status = connection.value
     private var acceptAllJob: Job? = null
 
@@ -195,6 +201,7 @@ class DownloadsController(
     // ---------------------------------------------------------------- downloads ----
 
     fun pauseOrResume(download: Download) {
+        if (download.error == "Ready to choose files.") { torrentFiles.open(download); return }
         if (download.id in local.value.busyDownloads) return
         local.update { it.copy(busyDownloads = it.busyDownloads + download.id) }
         scope.launch {
@@ -308,6 +315,7 @@ class DownloadsController(
                 val download = api.addDownload(link.url, libraryId = add.libraryId, fileTypes = add.fileTypes.takeIf { link.kind != LinkKind.Http }, fileRules = rules)
                 data.apply(StashEvent.DownloadChanged(download))
                 local.update { it.copy(add = null) }
+                if (download.kind == com.thekozugroup.popcornstash.data.api.DownloadKind.Torrent) torrentFiles.open(download)
                 _messages.trySend("Added ${download.name}.")
             } catch (e: ApiException) {
                 val message = if (e.code == "vpn_unavailable") {

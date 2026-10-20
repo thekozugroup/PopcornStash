@@ -756,7 +756,8 @@ export interface TorrentFileRules {
   min_size?: number | null;
   max_size?: number | null;
 }
-export interface TorrentFiles { ready: boolean; files: TorrentFile[]; rules?: TorrentFileRules | null }
+export interface TorrentFiles {
+  review_required?: boolean; ready: boolean; files: TorrentFile[]; rules?: TorrentFileRules | null }
 
 export interface DownloadCreateRequest {
   file_rules?: TorrentFileRules;

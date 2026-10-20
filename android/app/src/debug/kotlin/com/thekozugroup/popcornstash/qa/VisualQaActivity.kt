@@ -65,6 +65,8 @@ class VisualQaActivity : ComponentActivity() {
                         onSeek = { target -> player.seekTo(target); android.util.Log.i("PopcornPlayerQa", "Seek target=$target position=${player.currentPosition} playing=${player.playWhenReady}") }),
                     chromeVisible = chrome, onChromeVisibleChange = { chrome = it }, flexHinge = layout?.flexHinge(),
                 ) { ContentFrame(player = player, modifier = it) }
+            } else if (intent.getBooleanExtra("torrent_files", false)) {
+                TorrentReviewPreview()
             } else if (intent.getBooleanExtra("torrent_rules", false)) PopcornTheme {
                 var add by remember { mutableStateOf(com.thekozugroup.popcornstash.feature.downloads.AddLinkState(
                     text = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567")) }
@@ -88,6 +90,37 @@ class VisualQaActivity : ComponentActivity() {
                         PrimaryButton("Open playback preview", onClick = { showPlayer = true })
                     }
                 }
+            }
+        }
+    }
+}
+
+/** Local manifest fixture exercises the real controller and sheet, without network access. */
+@Composable
+private fun TorrentReviewPreview() {
+    val scope = rememberCoroutineScope()
+    var started by remember { mutableStateOf(false) }
+    val controller = remember {
+        com.thekozugroup.popcornstash.feature.downloads.TorrentFilesController(
+            load = { com.thekozugroup.popcornstash.data.api.TorrentFiles(ready = true, reviewRequired = true, files = listOf(
+                com.thekozugroup.popcornstash.data.api.TorrentFile(2, "Jane.Doe/Feature.mkv", 900_000_000L, com.thekozugroup.popcornstash.data.api.TorrentFileKind.Video, true),
+                com.thekozugroup.popcornstash.data.api.TorrentFile(5, "Jane.Doe/English.srt", 54_000L, com.thekozugroup.popcornstash.data.api.TorrentFileKind.Subtitle, true),
+                com.thekozugroup.popcornstash.data.api.TorrentFile(8, "Jane.Doe/trailer.mkv", 100_000_000L, com.thekozugroup.popcornstash.data.api.TorrentFileKind.Video, true),
+                com.thekozugroup.popcornstash.data.api.TorrentFile(9, "Jane.Doe/poster.jpg", 430_000L, com.thekozugroup.popcornstash.data.api.TorrentFileKind.Image, false),
+            )) },
+            save = { _, _ -> }, scope = scope, onSaved = { started = true },
+            start = { _, indices -> android.util.Log.i("PopcornTorrentQa", "Started indices=$indices") },
+        )
+    }
+    LaunchedEffect(controller) { controller.open(com.thekozugroup.popcornstash.data.api.Download(id = "preview", kind = com.thekozugroup.popcornstash.data.api.DownloadKind.Torrent,
+        name = "Example collection", state = com.thekozugroup.popcornstash.data.api.DownloadState.Paused)) }
+    val state by controller.state.collectAsStateWithLifecycle()
+    PopcornTheme {
+        Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+            Text(if (started) "Download started" else "Torrent preview", color = Popcorn.colors.text)
+            state?.let {
+                com.thekozugroup.popcornstash.feature.downloads.TorrentFilesSheet(it, controller::toggle, controller::submit, controller::close, controller::refresh,
+                    onDraft = controller::draft, onType = controller::type, onApply = controller::applyFilters)
             }
         }
     }

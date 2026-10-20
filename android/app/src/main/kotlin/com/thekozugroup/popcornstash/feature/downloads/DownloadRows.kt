@@ -294,6 +294,7 @@ fun DownloadRow(
     onPauseOrResume: () -> Unit,
     onRemove: () -> Unit,
     modifier: Modifier = Modifier,
+    onChooseFiles: () -> Unit = {},
 ) {
     val resumable = download.canResume()
     Row(
@@ -313,13 +314,13 @@ fun DownloadRow(
                 if (resumable || download.canPause()) {
                     RowIconButton(
                         glyph = if (resumable) PopcornIcons.Play else PopcornIcons.Pause,
-                        label = if (resumable) "Resume" else "Pause",
+                        label = if (download.error == "Ready to choose files.") "Review files" else if (resumable) "Resume" else "Pause",
                         description = "${if (resumable) "Resume" else "Pause"} ${download.name}",
                         onClick = onPauseOrResume,
                         busy = busy,
                     )
                 }
-                RowMoreMenu(download.name, listOf(MenuChoice("Remove", destructive = true, onClick = onRemove)), enabled = !busy)
+                RowMoreMenu(download.name, (if (download.kind == DownloadKind.Torrent) listOf(MenuChoice("Choose files", onClick = onChooseFiles)) else emptyList()) + MenuChoice("Remove", destructive = true, onClick = onRemove), enabled = !busy)
             }
             Text(download.activeStatus(), style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
             NetworkChips(download)

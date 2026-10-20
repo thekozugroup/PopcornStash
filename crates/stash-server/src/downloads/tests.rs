@@ -642,6 +642,7 @@ async fn engine_files(
         return StatusCode::NOT_FOUND.into_response();
     };
     Json(stash_core::internal_api::TorrentFiles {
+        review_required: false,
         rules: None,
         ready: true,
         files: vec![stash_core::internal_api::TorrentFile {

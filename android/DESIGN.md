@@ -388,3 +388,7 @@ Library removal keeps files by default. The optional whole-folder choice uses a 
 ### Search and explicit organization
 
 Search is always one tap away. Use one labeled scope selector and the existing search/list patterns. Library folder browsing shows the current path, Up one folder and immediate child folders. Owners select files with named checkboxes and an explicit selected count. Destination browsing and confirmation state where the files will move; partial failures stay visible and selected. Inbox deletion uses the same selection pattern and a recoverable Trash confirmation. The Android toolbar has four evenly spaced targets: Downloads, Home, Search, Settings; compact windows keep the bottom row and large windows keep the centered left rail. Player double-tap feedback is brief, on the chosen side, with no decorative motion; physical left means back and right means forward in every language.
+
+### Torrent review
+
+The bounded torrent sheet shows the title, source name, a selection count/byte total, a lazy manifest and a fixed primary action. Filters expand in the same lazy region above the file rows. Filters apply to the local selection explicitly; every checkbox remains editable. Search only changes visible rows. Start download is the only action that releases a new torrent’s metadata hold; Save edits existing selections. The sheet clears navigation and keyboard insets, follows theme/text scale, and shows fetching/error/empty states.

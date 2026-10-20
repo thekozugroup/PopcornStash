@@ -221,6 +221,17 @@ impl TorrentdClient {
         .map(drop)
     }
 
+    pub async fn approve(&self, id: &str, indices: Vec<usize>) -> Result<(), TorrentdError> {
+        self.request(
+            Method::POST,
+            &["torrents", id, "approve"],
+            &[],
+            Some(&serde_json::json!({"indices":indices})),
+        )
+        .await
+        .map(drop)
+    }
+
     pub async fn set_rules(
         &self,
         id: &str,
@@ -1091,6 +1102,7 @@ mod tests {
         assert_eq!(list[0].name.as_deref(), Some("Big Buck Bunny"));
         let added = client
             .add(&AddTorrentRequest {
+                review_before_download: false,
                 file_rules: None,
                 file_types: None,
                 magnet: Some("magnet:?xt=urn:btih:abc".into()),
@@ -1129,6 +1141,7 @@ mod tests {
         // Other errors keep the status and message.
         match client
             .add(&AddTorrentRequest {
+                review_before_download: false,
                 file_rules: None,
                 file_types: None,
                 magnet: Some("magnet:?bad".into()),
@@ -1177,6 +1190,7 @@ mod tests {
         let (client, _) = client_for(dir.path(), Some(url)).await;
         let err = client
             .add(&AddTorrentRequest {
+                review_before_download: false,
                 file_rules: None,
                 file_types: None,
                 magnet: Some("magnet:?xt=urn:btih:abc".into()),
@@ -1552,6 +1566,7 @@ mod tests {
             other => panic!("an oversized answer must be refused: {other:?}"),
         }
         let request = AddTorrentRequest {
+            review_before_download: false,
             file_rules: None,
             file_types: None,
             magnet: Some("magnet:?xt=urn:btih:abc".into()),

@@ -46,6 +46,8 @@ use crate::vpn::killswitch::{ENGINE_DHT_PORT, ENGINE_LISTEN_PORT};
 
 #[path = "file_rules.rs"]
 mod file_rules;
+#[path = "review.rs"]
+mod review;
 
 /// Public IP check interval while running (section 5, "Proof of protection").
 pub const IP_CHECK_INTERVAL: Duration = Duration::from_secs(600);
@@ -291,6 +293,8 @@ struct Inner {
 pub struct Engine {
     rules: Mutex<file_rules::RuleBook>,
     rules_load_failed: bool,
+    reviews: Mutex<HashSet<String>>,
+    reviews_load_failed: bool,
     downloads_dir: PathBuf,
     state_dir: PathBuf,
     status_file: PathBuf,
@@ -478,14 +482,164 @@ fn if_index(name: &str) -> Option<u32> {
 }
 
 impl Engine {
+    async fn add_configured(
+        &self,
+        torrent: NewTorrent,
+        file_types: Option<Vec<TorrentFileKind>>,
+        mut rules: Option<stash_core::internal_api::TorrentFileRules>,
+        review: bool,
+    ) -> Result<AddTorrentResponse, BackendError> {
+        if let Some(rules) = rules.as_mut() {
+            rules.validate().map_err(BackendError::BadRequest)?;
+            if rules.file_types.is_none() {
+                rules.file_types = file_types.clone();
+            }
+        }
+        let _pending_op = self.pending_ops.lock().await;
+        let session = match self.live_session().await {
+            Some(session) => session,
+            None => {
+                let blocked = {
+                    let inner = lock(&self.inner);
+                    !inner.running || inner.unprotected
+                };
+                if blocked {
+                    return Err(BackendError::Blocked(MSG_VPN_WAIT.into()));
+                }
+                let status = status::read(&self.status_file);
+                let ifindex = self
+                    .decide(status.as_ref(), now_unix())
+                    .map_err(BackendError::Blocked)?;
+                self.start_session_locked(ifindex)
+                    .await
+                    .map_err(|e| BackendError::Internal(format!("{e:#}")))?;
+                self.live_session().await.ok_or_else(|| {
+                    BackendError::Internal("The torrent session did not start.".into())
+                })?
+            }
+        };
+        match torrent {
+            NewTorrent::File(bytes) => {
+                let (hash, name, single) = {
+                    let meta = librqbit::torrent_from_bytes(&bytes).map_err(|_| {
+                        BackendError::BadRequest("That is not a valid .torrent file.".into())
+                    })?;
+                    let name = meta
+                        .info
+                        .data
+                        .name
+                        .as_ref()
+                        .map(|n| String::from_utf8_lossy(n.as_ref()).into_owned());
+                    (meta.info_hash, name, meta.info.data.files.is_none())
+                };
+                let id = hash.as_string();
+                if let Some(existing) = session.get(TorrentIdOrHash::Hash(hash)) {
+                    return Ok(AddTorrentResponse {
+                        id: id.clone(),
+                        info_hash: id,
+                        name: existing.name(),
+                    });
+                }
+                if review {
+                    self.write_review(&id, true)?;
+                }
+                let folder = self.unique_folder(&folder_name(name.as_deref(), single, &id));
+                self.remember_rules(&id, rules.clone())?;
+                let only_files = self
+                    .rule_indices(&bytes, &id, file_types.as_deref())
+                    .map_err(|_| {
+                        BackendError::BadRequest("The torrent file list is not valid.".into())
+                    })?;
+                let options = AddTorrentOptions {
+                    paused: self.needs_review(&id)
+                        || only_files.as_ref().is_some_and(Vec::is_empty),
+                    only_files,
+                    sub_folder: Some(folder),
+                    ..Default::default()
+                };
+                let response = session
+                    .add_torrent(AddTorrent::from_bytes(bytes), Some(options))
+                    .await
+                    .map_err(|e| BackendError::Internal(format!("{e:#}")))?;
+                let name = response
+                    .into_handle()
+                    .and_then(|h| {
+                        let name = h.name();
+                        self.watch_completion(&session, h);
+                        name
+                    })
+                    .or(name);
+                tracing::info!(id = %id, "torrent added");
+                Ok(AddTorrentResponse {
+                    id: id.clone(),
+                    info_hash: id,
+                    name,
+                })
+            }
+            NewTorrent::Magnet(link) => {
+                let magnet = Magnet::parse(&link).map_err(|_| {
+                    BackendError::BadRequest("That is not a valid magnet link.".into())
+                })?;
+                let hash = magnet.as_id20().ok_or_else(|| {
+                    BackendError::BadRequest(
+                        "Only BitTorrent v1 magnet links are supported.".into(),
+                    )
+                })?;
+                let id = hash.as_string();
+                if let Some(existing) = session.get(TorrentIdOrHash::Hash(hash)) {
+                    return Ok(AddTorrentResponse {
+                        id: id.clone(),
+                        info_hash: id,
+                        name: existing.name(),
+                    });
+                }
+                let name = magnet.name.clone();
+                if !lock(&self.inner).pending.contains_key(&id) {
+                    if review {
+                        self.write_review(&id, true)?;
+                    }
+                    self.remember_rules(&id, rules)?;
+                }
+                let pending = {
+                    let mut inner = lock(&self.inner);
+                    let entry = inner
+                        .pending
+                        .entry(id.clone())
+                        .or_insert_with(|| PendingAdd {
+                            file_types: file_types.clone(),
+                            magnet: link.clone(),
+                            name: name.clone(),
+                            paused: false,
+                            error: None,
+                            resolving: None,
+                        });
+                    // Retrying a failed magnet starts over.
+                    entry.error = None;
+                    inner.pending.clone()
+                };
+                self.save_pending(&pending);
+                tracing::info!(id = %id, "magnet link added; fetching its details");
+                Ok(AddTorrentResponse {
+                    id: id.clone(),
+                    info_hash: id,
+                    name,
+                })
+            }
+        }
+    }
+
     pub fn new(options: &EngineOptions) -> Self {
         let (running_tx, _) = watch::channel(false);
         let (tunnel_tx, _) = watch::channel(false);
+        let saved_reviews = review::load(&options.state_dir);
+        let reviews_load_failed = saved_reviews.is_err();
         let saved_rules = file_rules::load(&options.state_dir);
         let rules_load_failed = saved_rules.is_err();
         let engine = Self {
             rules: Mutex::new(saved_rules.unwrap_or_default()),
             rules_load_failed,
+            reviews: Mutex::new(saved_reviews.unwrap_or_default()),
+            reviews_load_failed,
             downloads_dir: options.downloads_dir.clone(),
             state_dir: options.state_dir.clone(),
             status_file: options.status_file.clone(),
@@ -850,7 +1004,12 @@ impl Engine {
             !self.rules_load_failed,
             "Saved file rules could not be read. Repair file-rules.json before restarting downloads."
         );
+        anyhow::ensure!(
+            !self.reviews_load_failed,
+            "Saved torrent reviews could not be read. Repair reviews.json before restarting downloads."
+        );
         self.reconcile_rules()?;
+        self.reconcile_reviews()?;
         let mut last_error = None;
         // Fixed ports first (the kill switch opens them on the tunnel); a port
         // still held by the previous session is retried, then any port is used.
@@ -1088,7 +1247,7 @@ impl Engine {
             .and_then(|p| p.file_types.clone());
         let only_files = self.rule_indices(&list.torrent_bytes, id, file_types.as_deref())?;
         let options = AddTorrentOptions {
-            paused: only_files.as_ref().is_some_and(Vec::is_empty),
+            paused: self.needs_review(id) || only_files.as_ref().is_some_and(Vec::is_empty),
             only_files,
             sub_folder: Some(folder),
             initial_peers: Some(list.seen_peers.clone()),
@@ -1405,6 +1564,13 @@ impl TorrentBackend for Engine {
             None => self.persisted_torrents(),
         };
         for torrent in &mut torrents {
+            if self.needs_review(&torrent.id) {
+                torrent.state = EngineTorrentState::Paused;
+                torrent.done_bytes = 0;
+                torrent.progress = 0.0;
+                torrent.error = Some("Ready to choose files.".into());
+                continue;
+            }
             if lock(&self.rules).contains_key(&torrent.id)
                 && torrent.total_bytes.is_none()
                 && torrent.state == EngineTorrentState::Paused
@@ -1428,6 +1594,7 @@ impl TorrentBackend for Engine {
             let rule = lock(&self.rules).get(&id).cloned();
             return handle
                 .with_metadata(|meta| TorrentFiles {
+                    review_required: self.needs_review(&id),
                     ready: true,
                     rules: rule.clone(),
                     files: meta
@@ -1454,7 +1621,10 @@ impl TorrentBackend for Engine {
                 });
         }
         if lock(&self.inner).pending.contains_key(&id) {
-            return Ok(TorrentFiles::default());
+            return Ok(TorrentFiles {
+                review_required: self.needs_review(&id),
+                ..Default::default()
+            });
         }
         if self
             .persisted_torrents()
@@ -1495,6 +1665,12 @@ impl TorrentBackend for Engine {
                         .into(),
                 )
             })?;
+        session
+            .persist_torrent_metadata(&handle)
+            .await
+            .map_err(|_| {
+                BackendError::Internal("File choices could not be saved. Try again.".into())
+            })?;
         self.forget_rules(&id)
     }
 
@@ -1521,139 +1697,39 @@ impl TorrentBackend for Engine {
     async fn add_with_rules(
         &self,
         torrent: NewTorrent,
-        file_types: Option<Vec<TorrentFileKind>>,
-        mut rules: Option<stash_core::internal_api::TorrentFileRules>,
+        types: Option<Vec<TorrentFileKind>>,
+        rules: Option<stash_core::internal_api::TorrentFileRules>,
     ) -> Result<AddTorrentResponse, BackendError> {
-        if let Some(rules) = rules.as_mut() {
-            rules.validate().map_err(BackendError::BadRequest)?;
-            if rules.file_types.is_none() {
-                rules.file_types = file_types.clone();
-            }
-        }
-        let _pending_op = self.pending_ops.lock().await;
-        let session = match self.live_session().await {
-            Some(session) => session,
-            None => {
-                let blocked = {
-                    let inner = lock(&self.inner);
-                    !inner.running || inner.unprotected
-                };
-                if blocked {
-                    return Err(BackendError::Blocked(MSG_VPN_WAIT.into()));
-                }
-                let status = status::read(&self.status_file);
-                let ifindex = self
-                    .decide(status.as_ref(), now_unix())
-                    .map_err(BackendError::Blocked)?;
-                self.start_session_locked(ifindex)
-                    .await
-                    .map_err(|e| BackendError::Internal(format!("{e:#}")))?;
-                self.live_session().await.ok_or_else(|| {
-                    BackendError::Internal("The torrent session did not start.".into())
-                })?
-            }
-        };
-        match torrent {
-            NewTorrent::File(bytes) => {
-                let (hash, name, single) = {
-                    let meta = librqbit::torrent_from_bytes(&bytes).map_err(|_| {
-                        BackendError::BadRequest("That is not a valid .torrent file.".into())
-                    })?;
-                    let name = meta
-                        .info
-                        .data
-                        .name
-                        .as_ref()
-                        .map(|n| String::from_utf8_lossy(n.as_ref()).into_owned());
-                    (meta.info_hash, name, meta.info.data.files.is_none())
-                };
-                let id = hash.as_string();
-                if let Some(existing) = session.get(TorrentIdOrHash::Hash(hash)) {
-                    return Ok(AddTorrentResponse {
-                        id: id.clone(),
-                        info_hash: id,
-                        name: existing.name(),
-                    });
-                }
-                let folder = self.unique_folder(&folder_name(name.as_deref(), single, &id));
-                self.remember_rules(&id, rules.clone())?;
-                let only_files = self
-                    .rule_indices(&bytes, &id, file_types.as_deref())
-                    .map_err(|_| {
-                        BackendError::BadRequest("The torrent file list is not valid.".into())
-                    })?;
-                let options = AddTorrentOptions {
-                    paused: only_files.as_ref().is_some_and(Vec::is_empty),
-                    only_files,
-                    sub_folder: Some(folder),
-                    ..Default::default()
-                };
-                let response = session
-                    .add_torrent(AddTorrent::from_bytes(bytes), Some(options))
-                    .await
-                    .map_err(|e| BackendError::Internal(format!("{e:#}")))?;
-                let name = response
-                    .into_handle()
-                    .and_then(|h| {
-                        let name = h.name();
-                        self.watch_completion(&session, h);
-                        name
-                    })
-                    .or(name);
-                tracing::info!(id = %id, "torrent added");
-                Ok(AddTorrentResponse {
-                    id: id.clone(),
-                    info_hash: id,
-                    name,
-                })
-            }
-            NewTorrent::Magnet(link) => {
-                let magnet = Magnet::parse(&link).map_err(|_| {
-                    BackendError::BadRequest("That is not a valid magnet link.".into())
-                })?;
-                let hash = magnet.as_id20().ok_or_else(|| {
-                    BackendError::BadRequest(
-                        "Only BitTorrent v1 magnet links are supported.".into(),
-                    )
-                })?;
-                let id = hash.as_string();
-                if let Some(existing) = session.get(TorrentIdOrHash::Hash(hash)) {
-                    return Ok(AddTorrentResponse {
-                        id: id.clone(),
-                        info_hash: id,
-                        name: existing.name(),
-                    });
-                }
-                let name = magnet.name.clone();
-                if !lock(&self.inner).pending.contains_key(&id) {
-                    self.remember_rules(&id, rules)?;
-                }
-                let pending = {
-                    let mut inner = lock(&self.inner);
-                    let entry = inner
-                        .pending
-                        .entry(id.clone())
-                        .or_insert_with(|| PendingAdd {
-                            file_types: file_types.clone(),
-                            magnet: link.clone(),
-                            name: name.clone(),
-                            paused: false,
-                            error: None,
-                            resolving: None,
-                        });
-                    // Retrying a failed magnet starts over.
-                    entry.error = None;
-                    inner.pending.clone()
-                };
-                self.save_pending(&pending);
-                tracing::info!(id = %id, "magnet link added; fetching its details");
-                Ok(AddTorrentResponse {
-                    id: id.clone(),
-                    info_hash: id,
-                    name,
-                })
-            }
-        }
+        self.add_configured(torrent, types, rules, false).await
+    }
+
+    async fn prepare(
+        &self,
+        torrent: NewTorrent,
+        types: Option<Vec<TorrentFileKind>>,
+        rules: Option<stash_core::internal_api::TorrentFileRules>,
+    ) -> Result<AddTorrentResponse, BackendError> {
+        self.add_configured(torrent, types, rules, true).await
+    }
+
+    async fn approve(&self, id: String, indices: Vec<usize>) -> Result<(), BackendError> {
+        self.select_files(id.clone(), indices).await?;
+        let _operation = self.pending_ops.lock().await;
+        // Approval leaves the torrent paused. The server resumes it under its slot limit.
+        let session = self
+            .live_session()
+            .await
+            .ok_or_else(|| BackendError::Blocked(MSG_VPN_WAIT.into()))?;
+        let handle = session
+            .get(TorrentIdOrHash::Hash(parse_id(&id)?))
+            .ok_or(BackendError::NotFound)?;
+        session
+            .persist_torrent_metadata(&handle)
+            .await
+            .map_err(|_| {
+                BackendError::Internal("File choices could not be saved. Try again.".into())
+            })?;
+        self.write_review(&id, false)
     }
 
     async fn pause(&self, id: String) -> Result<(), BackendError> {
@@ -1687,6 +1763,11 @@ impl TorrentBackend for Engine {
     async fn resume(&self, id: String) -> Result<(), BackendError> {
         let hash = parse_id(&id)?;
         let _pending_op = self.pending_ops.lock().await;
+        if self.needs_review(&id) && !lock(&self.inner).pending.contains_key(&id) {
+            return Err(BackendError::BadRequest(
+                "Choose files and start the download first.".into(),
+            ));
+        }
         if self.set_pending_paused(&id, false) {
             return Ok(());
         }
@@ -1717,6 +1798,7 @@ impl TorrentBackend for Engine {
         let hash = parse_id(&id)?;
         let _pending_op = self.pending_ops.lock().await;
         self.forget_rules(&id)?;
+        self.write_review(&id, false)?;
         let was_pending = {
             let mut inner = lock(&self.inner);
             let removed = inner
@@ -1805,6 +1887,78 @@ impl TorrentBackend for Engine {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicU32;
+
+    #[tokio::test]
+    async fn unapproved_metadata_and_review_survive_restart_and_duplicate_adds() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("film.mp4");
+        std::fs::write(&source, vec![7u8; 50000]).unwrap();
+        let bytes = librqbit::create_torrent(
+            &source,
+            Default::default(),
+            &librqbit::spawn_utils::BlockingSpawner::new(1),
+        )
+        .await
+        .unwrap()
+        .as_bytes()
+        .unwrap()
+        .to_vec();
+        let opts = options(dir.path());
+        let engine = Engine::new(&opts);
+        let session = selection_session(&opts).await;
+        *engine.session.write().await = Some(Live {
+            session: session.clone(),
+            ifindex: None,
+        });
+        let added = engine
+            .prepare(
+                NewTorrent::File(bytes.clone()),
+                Some(TorrentFileKind::media_default()),
+                None,
+            )
+            .await
+            .unwrap();
+        let handle = session
+            .get(TorrentIdOrHash::Hash(added.id.parse().unwrap()))
+            .unwrap();
+        wait_until("review files checked", async || {
+            !matches!(handle.stats().state, TorrentStatsState::Initializing { .. })
+        })
+        .await;
+        assert!(handle.is_paused());
+        engine
+            .prepare(NewTorrent::File(bytes), None, None)
+            .await
+            .unwrap();
+        assert!(handle.is_paused());
+        let mut db = engine.read_session_db();
+        for entry in db["torrents"].as_object_mut().unwrap().values_mut() {
+            entry["is_paused"] = false.into();
+        }
+        engine.write_session_db(&db).unwrap();
+        engine.stop_session().await;
+        let restored = Engine::new(&opts);
+        restored.reconcile_reviews().unwrap();
+        assert!(
+            restored.read_session_db()["torrents"]
+                .as_object()
+                .unwrap()
+                .values()
+                .all(|t| t["is_paused"] == true)
+        );
+        assert!(restored.needs_review(&added.id));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(opts.state_dir.join("reviews.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        std::fs::write(opts.state_dir.join("reviews.json"), b"corrupt").unwrap();
+        assert!(Engine::new(&opts).start_session(None).await.is_err());
+    }
 
     #[tokio::test]
     async fn file_rules_select_before_transfer_persist_and_allow_manual_override() {
@@ -2230,14 +2384,54 @@ mod tests {
             ifindex: None,
         });
         let added = engine
-            .add_with_selection(
+            .prepare(
                 NewTorrent::File(bytes.to_vec()),
                 Some(TorrentFileKind::media_default()),
+                None,
             )
             .await
             .unwrap();
         let hash = TorrentIdOrHash::Hash(added.id.parse().unwrap());
         let handle = session.get(hash).unwrap();
+        wait_until("metadata-only torrent initialized", async || {
+            !matches!(handle.stats().state, TorrentStatsState::Initializing { .. })
+        })
+        .await;
+        assert!(handle.is_paused());
+        assert_eq!(handle.stats().progress_bytes, 0);
+        assert!(
+            engine
+                .files(added.id.clone())
+                .await
+                .unwrap()
+                .review_required
+        );
+        assert!(
+            engine.resume(added.id.clone()).await.is_err(),
+            "Resume cannot bypass review"
+        );
+        assert!(engine.approve(added.id.clone(), vec![]).await.is_err());
+        let manifest = engine.files(added.id.clone()).await.unwrap();
+        let initial_video = manifest
+            .files
+            .iter()
+            .find(|f| f.kind == TorrentFileKind::Video)
+            .unwrap()
+            .index;
+        engine
+            .approve(added.id.clone(), vec![initial_video])
+            .await
+            .unwrap();
+        assert!(handle.is_paused(), "Approval never takes a slot itself");
+        assert!(
+            !engine
+                .files(added.id.clone())
+                .await
+                .unwrap()
+                .review_required
+        );
+        assert!(review::load(&opts.state_dir).unwrap().is_empty());
+        engine.resume(added.id.clone()).await.unwrap();
         wait_until("a verified selected piece", async || {
             handle.stats().progress_bytes > 0
                 && !matches!(handle.stats().state, TorrentStatsState::Initializing { .. })
@@ -2422,7 +2616,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn magnet_rules_survive_metadata_wait_and_filter_before_payload() {
+    async fn magnet_review_survives_metadata_wait_and_holds_matching_payload() {
         use stash_core::internal_api::TorrentFileRules;
         let dir = tempfile::tempdir().unwrap();
         let opts = options(dir.path());
@@ -2439,11 +2633,11 @@ mod tests {
             .as_string();
         let magnet = format!("magnet:?xt=urn:btih:{hash}");
         let rules = TorrentFileRules {
-            min_size: Some(5),
+            max_size: Some(5),
             ..Default::default()
         };
         engine
-            .add_with_rules(
+            .prepare(
                 NewTorrent::Magnet(magnet.clone()),
                 None,
                 Some(rules.clone()),
@@ -2476,7 +2670,11 @@ mod tests {
         let handle = session
             .get(TorrentIdOrHash::Hash(parse_id(&hash).unwrap()))
             .unwrap();
-        assert_eq!(handle.only_files(), Some(vec![]));
+        assert_eq!(handle.only_files(), Some(vec![0]));
+        assert!(engine.needs_review(&hash));
+        assert!(engine.files(hash.clone()).await.unwrap().review_required);
+        assert!(engine.resume(hash.clone()).await.is_err());
+        assert!(Engine::new(&opts).needs_review(&hash));
         assert!(handle.is_paused());
         assert_eq!(engine.files(hash).await.unwrap().rules, Some(rules));
         engine.stop_session().await;

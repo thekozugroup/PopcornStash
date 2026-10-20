@@ -161,40 +161,19 @@ fun AddLinkContent(state: AddLinkState, viaVpn: Boolean, onText: (String) -> Uni
         modifier = Modifier.fillMaxWidth().testTag("link field"),
     )
     if (check is LinkCheck.Ok && check.link.kind != LinkKind.Http) {
-        Spacer(Modifier.height(Popcorn.spacing.m))
-        Text("Download contents", style = Popcorn.type.section, color = Popcorn.colors.text)
-        com.thekozugroup.popcornstash.data.api.TorrentFileKind.entries.forEach { kind ->
-            com.thekozugroup.popcornstash.feature.settings.CheckRow(kind.label, kind in state.fileTypes,
-                onToggle = { onFileType(kind) }, enabled = !state.busy)
-        }
-        com.thekozugroup.popcornstash.feature.settings.CheckRow("Apply file rules", state.rules.enabled,
-            onToggle = { onRules(state.rules.copy(enabled = !state.rules.enabled)) }, enabled = !state.busy)
-        if (state.rules.enabled) {
-            Text("Every filled condition must match. Names match filenames or folders, ignoring case and punctuation. Separate alternative names with commas.", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
-            Spacer(Modifier.height(Popcorn.spacing.s))
-            RuleField("Name contains any of", state.rules.include, { onRules(state.rules.copy(include = it)) }, !state.busy)
-            RuleField("Name excludes", state.rules.exclude, { onRules(state.rules.copy(exclude = it)) }, !state.busy)
-            val unit = if (state.rules.gigabytes) "GB" else "MB"
-            RuleField("Minimum file size ($unit)", state.rules.minimum, { onRules(state.rules.copy(minimum = it)) }, !state.busy, decimal = true)
-            RuleField("Maximum file size ($unit)", state.rules.maximum, { onRules(state.rules.copy(maximum = it)) }, !state.busy, decimal = true)
-            com.thekozugroup.popcornstash.feature.settings.CheckRow("Use GB instead of MB", state.rules.gigabytes,
-                onToggle = { onRules(state.rules.copy(gigabytes = !state.rules.gigabytes)) }, enabled = !state.busy)
-            Text("Blank sizes have no limit. MB = 1,000,000 bytes. No matches pauses the torrent. Edit rules or choose files in web Downloads. Shared pieces may contain small fragments of skipped files.", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
-        }
-        Text(if (state.fileTypes.isEmpty()) "Fetches details, then waits for a file choice in web Downloads."
-            else "Applies to this torrent. Choose individual files in web Downloads.",
-            style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
+        Spacer(Modifier.height(Popcorn.spacing.s))
+        Text("Fetch the file list, then choose filters and individual files before starting.", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
     }
     Spacer(Modifier.height(Popcorn.spacing.l))
     com.thekozugroup.popcornstash.ui.components.DownloadDestinationPicker(libraries, state.libraryId, onLibrary, enabled = !state.busy)
     Spacer(Modifier.height(Popcorn.spacing.s))
-    PrimaryButton("Add", onClick = onAdd, busy = state.busy, modifier = Modifier.fillMaxWidth())
+    PrimaryButton(if (check is LinkCheck.Ok && check.link.kind != LinkKind.Http) "Review torrent" else "Add", onClick = onAdd, busy = state.busy, modifier = Modifier.fillMaxWidth())
     Spacer(Modifier.height(Popcorn.spacing.xxs))
     QuietButton("Cancel", onClick = onCancel, enabled = !state.busy, modifier = Modifier.fillMaxWidth())
 }
 
 @Composable
-private fun RuleField(label: String, value: String, onValue: (String) -> Unit, enabled: Boolean, decimal: Boolean = false) {
+internal fun RuleField(label: String, value: String, onValue: (String) -> Unit, enabled: Boolean, decimal: Boolean = false) {
     OutlinedTextField(value = value, onValueChange = onValue, label = { Text(label) },
         singleLine = true, enabled = enabled, shape = Popcorn.shapes.control, colors = popcornFieldColors(),
         keyboardOptions = KeyboardOptions(keyboardType = if (decimal) KeyboardType.Decimal else KeyboardType.Text),

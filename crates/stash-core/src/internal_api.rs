@@ -177,6 +177,9 @@ pub struct EngineTorrent {
 /// `POST /torrents`. Exactly one field is set.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AddTorrentRequest {
+    /// Fetch metadata and wait for an explicit file review before payload transfer.
+    #[serde(default)]
+    pub review_before_download: bool,
     pub magnet: Option<String>,
     pub torrent_base64: Option<String>,
     #[serde(default)]
@@ -236,6 +239,8 @@ pub struct TorrentFile {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TorrentFiles {
+    #[serde(default)]
+    pub review_required: bool,
     pub ready: bool,
     pub files: Vec<TorrentFile>,
     #[serde(default)]

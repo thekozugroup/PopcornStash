@@ -365,6 +365,7 @@ impl DownloadManager {
             let magnet = Magnet::parse(raw)
                 .ok_or_else(|| ApiError::bad_request("That magnet link is not valid."))?;
             let add = stash_core::internal_api::AddTorrentRequest {
+                review_before_download: true,
                 file_rules: request.file_rules,
                 file_types: Some(
                     request
@@ -559,6 +560,7 @@ impl DownloadManager {
         let source = filename.unwrap_or_else(|| "upload.torrent".to_string());
         use base64::Engine as _;
         let add = stash_core::internal_api::AddTorrentRequest {
+            review_before_download: true,
             file_rules,
             file_types: Some(
                 file_types.unwrap_or_else(stash_core::internal_api::TorrentFileKind::media_default),
@@ -708,6 +710,47 @@ impl DownloadManager {
             .files(&engine_id)
             .await
             .map_err(|e| engine_error(&e))
+    }
+
+    pub async fn start_torrent(&self, id: &str, indices: Vec<usize>) -> ApiResult<Download> {
+        {
+            let _slots = self.torrent_slots.lock().await;
+            let row = self.load_row(id).await?;
+            if row.kind != DownloadKind::Torrent
+                || !matches!(
+                    row.state,
+                    DownloadState::Downloading | DownloadState::Paused | DownloadState::Queued
+                )
+            {
+                return Err(ApiError::conflict("Only active torrents can be started."));
+            }
+            let engine_id = row
+                .engine_id
+                .ok_or_else(|| ApiError::conflict("Wait for the torrent's file list."))?;
+            if !self
+                .torrentd
+                .files(&engine_id)
+                .await
+                .map_err(|e| engine_error(&e))?
+                .review_required
+            {
+                return Err(ApiError::conflict(
+                    "This torrent has already been reviewed. Use Resume to continue it.",
+                ));
+            }
+            self.torrentd
+                .approve(&engine_id, indices)
+                .await
+                .map_err(|e| engine_error(&e))?;
+            // Normalize metadata's initializing row before using the existing slot-aware resume.
+            self.set_state_if(
+                id,
+                DownloadState::Paused,
+                &["queued", "downloading", "paused"],
+            )
+            .await?;
+        }
+        self.resume(id).await
     }
 
     pub async fn select_torrent_files(&self, id: &str, indices: Vec<usize>) -> ApiResult<()> {

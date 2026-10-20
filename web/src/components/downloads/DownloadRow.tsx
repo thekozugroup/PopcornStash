@@ -29,6 +29,7 @@ export interface DownloadRowProps {
 
 export function DownloadRow({download, onFiles, onChanged, onRemove, onError}: DownloadRowProps) {
   const [isBusy, setIsBusy] = useState(false);
+  const review = download.error === 'Ready to choose files.';
   const pausable = canPause(download);
   const resumable = canResume(download);
 
@@ -78,12 +79,12 @@ export function DownloadRow({download, onFiles, onChanged, onRemove, onError}: D
         <>
           {pausable || resumable ? (
             <IconButton
-              label={resumable ? `Resume ${download.name}` : `Pause ${download.name}`}
-              tooltip={resumable ? 'Resume' : 'Pause'}
+              label={review ? `Review files for ${download.name}` : resumable ? `Resume ${download.name}` : `Pause ${download.name}`}
+              tooltip={review ? 'Review files' : resumable ? 'Resume' : 'Pause'}
               icon={resumable ? <Play size={18} strokeWidth={1.75} /> : <Pause size={18} strokeWidth={1.75} />}
               variant="ghost"
               isLoading={isBusy}
-              onClick={() => void toggle()}
+              onClick={() => review ? onFiles(download) : void toggle()}
             />
           ) : null}
           <MoreMenu

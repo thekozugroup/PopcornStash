@@ -21,7 +21,7 @@ export function FileRulesEditor({value, onChange, disabled = false, error}: {val
         <TextInput label="Maximum size" value={value.maximum} onChange={v => field('maximum', v)} isDisabled={disabled} width="100%" />
         <Selector label="Size unit" value={value.unit} onChange={v => field('unit', v)} options={[{value: 'MB', label: 'MB'}, {value: 'GB', label: 'GB'}]} isDisabled={disabled} width="100%" />
       </div>
-      <Text as="p" type="supporting" color="secondary">Blank sizes have no limit. MB = 1,000,000 bytes. Files outside the rules are skipped; a torrent with no matches waits paused. Shared torrent pieces may contain small fragments of skipped files.</Text>
+      <Text as="p" type="supporting" color="secondary">Blank sizes have no limit. MB = 1,000,000 bytes. Shared torrent pieces may contain small fragments of skipped files.</Text>
       {error ? <Text as="p" type="supporting" role="alert">{error}</Text> : null}
     </> : null}
   </VStack>;

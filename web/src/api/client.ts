@@ -479,6 +479,7 @@ export const downloads = {
     return request<Download>('/api/downloads/torrent', {method: 'POST', body: form});
   },
   files: (id: string, signal?: AbortSignal) => get<TorrentFiles>(`/api/downloads/${enc(id)}/files`, {}, signal),
+  startTorrent: (id: string, indices: number[]) => post<Download>(`/api/downloads/${enc(id)}/start`, {indices}),
   selectFiles: (id: string, indices: number[]) => put<void>(`/api/downloads/${enc(id)}/files`, {indices}),
   setRules: (id: string, rules: TorrentFileRules) => put<void>(`/api/downloads/${enc(id)}/rules`, rules),
   pause: (id: string) => post<Download>(`/api/downloads/${enc(id)}/pause`, {}),

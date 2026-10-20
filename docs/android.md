@@ -178,3 +178,7 @@ Double tap the left or right of the player picture to go back or forward 15 seco
 Videos follow the phone’s rotation setting, including wide videos held upright. In portrait, wide video sits above controls with a full-width seek bar. Portrait video keeps its immersive layout. Tap the seek bar to jump to that point, or drag the thumb; playback stays playing or paused as it was. Double-tap the left/right of the picture to skip back/forward 15 seconds.
 
 On a supported foldable, partly fold the screen with the hinge horizontal: video stays above the hinge and controls stay below it. Flattening or turning the phone keeps the current video and position. Controls remain visible in portrait and flex mode; the lower panel scrolls when space or larger text requires it. Flex detection requires the device to report a half-open horizontal hinge through Android WindowManager.
+
+### Review torrent files
+
+Adding a magnet or torrent link fetches its file list and opens Review torrent. Contents stay stopped until Start download. Expand Filters to select types, names or a file-size range, tap Apply filters to selection, then adjust individual checkboxes. Subtitles are optional. Find files searches the manifest without changing choices. The footer shows selected count and bytes, and stays visible while the list scrolls. Closing leaves the torrent waiting; reopen Choose files from its menu. Existing torrents use Save and preserve their pause state. Old server versions can still edit selections; metadata-first review requires the updated server.

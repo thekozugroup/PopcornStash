@@ -64,6 +64,25 @@ pub trait TorrentBackend: Send + Sync + 'static {
     ) -> impl Future<Output = Result<AddTorrentResponse, BackendError>> + Send {
         self.add(torrent)
     }
+    fn prepare(
+        &self,
+        _torrent: NewTorrent,
+        _types: Option<Vec<TorrentFileKind>>,
+        _rules: Option<TorrentFileRules>,
+    ) -> impl Future<Output = Result<AddTorrentResponse, BackendError>> + Send {
+        async {
+            Err(BackendError::BadRequest(
+                "Torrent review is unavailable.".into(),
+            ))
+        }
+    }
+    fn approve(
+        &self,
+        _id: String,
+        _indices: Vec<usize>,
+    ) -> impl Future<Output = Result<(), BackendError>> + Send {
+        async { Err(BackendError::NotFound) }
+    }
     fn files(
         &self,
         _id: String,
@@ -167,6 +186,7 @@ pub fn router<B: TorrentBackend>(backend: Arc<B>, token: &str) -> Router {
         )
         .route("/torrents/{id}/pause", post(pause::<B>))
         .route("/torrents/{id}/resume", post(resume::<B>))
+        .route("/torrents/{id}/approve", axum::routing::post(approve::<B>))
         .route("/torrents/{id}/rules", axum::routing::put(set_rules::<B>))
         .route("/torrents/{id}", delete(remove::<B>))
         .route("/limits", put(limits::<B>))
@@ -268,6 +288,7 @@ async fn add<B: TorrentBackend>(
             "The request body is not valid JSON.",
         );
     };
+    let review = request.review_before_download;
     let types = request.file_types.clone();
     let rules = request.file_rules.clone();
     if let Some(rules) = &rules
@@ -279,7 +300,12 @@ async fn add<B: TorrentBackend>(
         Ok(torrent) => torrent,
         Err(e) => return e.into_response(),
     };
-    match state.backend.add_with_rules(torrent, types, rules).await {
+    let result = if review {
+        state.backend.prepare(torrent, types, rules).await
+    } else {
+        state.backend.add_with_rules(torrent, types, rules).await
+    };
+    match result {
         Ok(added) => (StatusCode::OK, Json(added)).into_response(),
         Err(e) => e.into_response(),
     }
@@ -313,6 +339,21 @@ async fn select_files<B: TorrentBackend>(
         return Err(BackendError::BadRequest("Select at least one file.".into()));
     }
     state.backend.select_files(id, selection.indices).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn approve<B: TorrentBackend>(
+    State(state): State<ApiState<B>>,
+    Path(id): Path<String>,
+    body: Result<Json<SelectTorrentFiles>, axum::extract::rejection::JsonRejection>,
+) -> Result<StatusCode, BackendError> {
+    valid_id(&id)?;
+    let Json(selection) =
+        body.map_err(|_| BackendError::BadRequest("Choose valid files.".into()))?;
+    if selection.indices.is_empty() || selection.indices.len() > 100_000 {
+        return Err(BackendError::BadRequest("Select at least one file.".into()));
+    }
+    state.backend.approve(id, selection.indices).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -734,6 +775,7 @@ pub(crate) mod tests {
         let huge = "A".repeat(MAX_TORRENT_BYTES / 3 * 4 + 100);
         assert!(
             decode_add(AddTorrentRequest {
+                review_before_download: false,
                 file_rules: None,
                 file_types: None,
                 magnet: None,
@@ -743,6 +785,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             decode_add(AddTorrentRequest {
+                review_before_download: false,
                 file_rules: None,
                 file_types: None,
                 magnet: Some(" magnet:?xt=urn:btih:abc ".into()),

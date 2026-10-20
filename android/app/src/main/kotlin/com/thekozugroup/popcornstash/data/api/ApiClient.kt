@@ -234,6 +234,16 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
     suspend fun addDownload(url: String, filename: String? = null, libraryId: String? = null, fileTypes: List<TorrentFileKind>? = null, fileRules: TorrentFileRules? = null): Download =
         post("/api/downloads", AddDownload(url, filename, libraryId, fileTypes, fileRules), AddDownload.serializer(), Download.serializer())
 
+    suspend fun torrentFiles(id: String): TorrentFiles = get("/api/downloads/${seg(id)}/files", TorrentFiles.serializer())
+
+    suspend fun selectTorrentFiles(id: String, indices: List<Int>) = sendEmpty(
+        request("/api/downloads/${seg(id)}/files")
+            .put(json.encodeToString(TorrentFileSelection.serializer(), TorrentFileSelection(indices)).toRequestBody(JSON)).build(),
+    )
+
+    suspend fun startTorrent(id: String, indices: List<Int>): Download =
+        post("/api/downloads/${seg(id)}/start", TorrentFileSelection(indices), TorrentFileSelection.serializer(), Download.serializer())
+
     suspend fun pauseDownload(id: String): Download =
         send(request("/api/downloads/${seg(id)}/pause").post(EMPTY_JSON).build(), Download.serializer())
 

@@ -49,7 +49,7 @@ fun Download.fetchingTorrentDetails(): Boolean = kind == DownloadKind.Torrent &&
 /** One changing status; the icon already communicates the kind of transfer. */
 fun Download.activeStatus(): String = when (state) {
     DownloadState.Queued -> error?.takeIf { it.isNotBlank() } ?: "Waiting to start"
-    DownloadState.Paused -> "Paused"
+    DownloadState.Paused -> if (error == "Ready to choose files.") "Ready to choose files" else "Paused"
     DownloadState.Seeding -> "Sharing with peers"
     else -> when {
         fetchingTorrentDetails() -> "Fetching torrent details"

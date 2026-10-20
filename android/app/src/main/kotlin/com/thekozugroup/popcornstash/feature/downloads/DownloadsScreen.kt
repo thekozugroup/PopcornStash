@@ -48,6 +48,7 @@ import kotlinx.coroutines.launch
 class DownloadsActions(
     val onRefresh: suspend () -> Unit = {},
     val onOpenVpnSettings: (() -> Unit)? = null,
+    val onChooseFiles: (Download) -> Unit = {},
     val onPauseOrResume: (Download) -> Unit = {},
     val onAskRemove: (Download) -> Unit = {},
     val onConfirmRemove: () -> Unit = {},
@@ -271,6 +272,7 @@ private fun EntryView(
                 entry.download,
                 busy = entry.download.id in state.busyDownloads,
                 onPauseOrResume = { actions.onPauseOrResume(entry.download) },
+                onChooseFiles = { actions.onChooseFiles(entry.download) },
                 onRemove = { actions.onAskRemove(entry.download) },
             )
         }

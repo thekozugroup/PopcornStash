@@ -1595,6 +1595,14 @@ impl Session {
         )
     }
 
+    /// Persist a selection before the caller releases a metadata-only review gate.
+    pub async fn persist_torrent_metadata(&self, handle: &ManagedTorrentHandle) -> anyhow::Result<()> {
+        if let Some(p) = self.persistence.as_ref() {
+            p.update_metadata(handle.id(), handle).await?;
+        }
+        Ok(())
+    }
+
     async fn try_update_persistence_metadata(&self, handle: &ManagedTorrentHandle) {
         if let Some(p) = self.persistence.as_ref()
             && let Err(e) = p.update_metadata(handle.id(), handle).await

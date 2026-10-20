@@ -35,3 +35,17 @@ data class TorrentRuleDraft(
         return TorrentFileRules(types, names(include), names(exclude), min, max)
     }
 }
+
+internal fun TorrentFileRules.toDraft() = TorrentRuleDraft(
+    enabled = true,
+    include = nameContains.joinToString(", "), exclude = nameExcludes.joinToString(", "),
+    minimum = minSize?.let { BigDecimal(it).divide(BigDecimal(1_000_000)).stripTrailingZeros().toPlainString() } ?: "",
+    maximum = maxSize?.let { BigDecimal(it).divide(BigDecimal(1_000_000)).stripTrailingZeros().toPlainString() } ?: "",
+)
+
+internal fun TorrentFileRules.matches(file: com.thekozugroup.popcornstash.data.api.TorrentFile): Boolean {
+    fun normalized(s: String) = s.lowercase(java.util.Locale.ROOT).map { if (it.isLetterOrDigit()) it else ' ' }.joinToString("").split(Regex("\\s+")).filter(String::isNotEmpty).joinToString(" ")
+    val name = normalized(file.path)
+    return (fileTypes == null || file.kind in fileTypes) && (minSize == null || file.size >= minSize) && (maxSize == null || file.size <= maxSize) &&
+        (nameContains.isEmpty() || nameContains.any { normalized(it) in name }) && nameExcludes.none { normalized(it) in name }
+}
