@@ -24,5 +24,5 @@ class AppLockScreenshotTest {
     @Test fun lockedLight() = shoot("app-lock-light", false, true)
     @Test fun lockedDark() = shoot("app-lock-dark", true, true)
     @Test fun noCredential() = shoot("app-lock-setup-light", false, false)
-    @Test fun verificationError() = shoot("app-lock-error-dark", true, true, "Device verification is unavailable. Check your screen lock in Settings.")
+    @Test fun verificationError() = shoot("app-lock-error-dark", true, true, "Biometric verification is unavailable. Check your biometrics in Settings.")
 }

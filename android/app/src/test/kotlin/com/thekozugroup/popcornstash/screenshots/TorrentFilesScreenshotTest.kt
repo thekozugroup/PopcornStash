@@ -6,8 +6,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
 import com.github.takahirom.roborazzi.captureScreenRoboImage
@@ -45,7 +43,7 @@ class TorrentFilesScreenshotTest {
         selected = setOf(2),
     )
 
-    private fun capture(name: String, state: TorrentFilesState = ready, dark: Boolean = false, filters: Boolean = false) {
+    private fun capture(name: String, state: TorrentFilesState = ready, dark: Boolean = false) {
         compose.setContent {
             PopcornTheme(darkTheme = dark, reduceMotion = true) {
                 Box(Modifier.fillMaxSize().background(Popcorn.colors.page)) {
@@ -54,18 +52,11 @@ class TorrentFilesScreenshotTest {
             }
         }
         compose.waitForIdle()
-        if (filters) {
-            compose.onNodeWithText("Filters").performClick()
-            compose.waitForIdle()
-            compose.mainClock.advanceTimeBy(1000)
-            compose.waitForIdle()
-            compose.onNodeWithText("Hide filters").assertExists()
-        }
         captureScreenRoboImage(screenshot(name))
     }
 
-    @Test fun filtersLight() = capture("torrent-files-filters-light", ready.copy(draft = TorrentRuleDraft(enabled = true, include = "Harbor", minimum = "500")), filters = true)
-    @Test fun filtersDark() = capture("torrent-files-filters-dark", ready.copy(draft = TorrentRuleDraft(enabled = true)), dark = true, filters = true)
+    @Test fun filtersLight() = capture("torrent-files-filters-light", ready.copy(draft = TorrentRuleDraft(enabled = true, include = "Harbor", minimum = "500")))
+    @Test fun filtersDark() = capture("torrent-files-filters-dark", ready.copy(draft = TorrentRuleDraft(enabled = true)), dark = true)
     @Test fun filesLight() = capture("torrent-files-light")
     @Test fun filesDark() = capture("torrent-files-dark", dark = true)
     @Test fun noFilesSelectedLight() = capture("torrent-files-empty-light", ready.copy(selected = emptySet()))

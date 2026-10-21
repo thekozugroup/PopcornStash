@@ -1,9 +1,11 @@
 package com.thekozugroup.popcornstash.feature.downloads
 
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -17,6 +19,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import com.thekozugroup.popcornstash.ui.components.choiceSegmentColors
+import com.thekozugroup.popcornstash.ui.components.ChoiceSegmentMark
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -50,7 +57,6 @@ fun TorrentFilesSheet(
     onRetry: () -> Unit,
     onDraft: (TorrentRuleDraft) -> Unit = {},
     onType: (TorrentFileKind) -> Unit = {},
-    onApply: () -> Unit = {},
 ) {
     ModalBottomSheet(
         onDismissRequest = onCancel,
@@ -60,7 +66,7 @@ fun TorrentFilesSheet(
         shape = Popcorn.shapes.sheet,
         scrimColor = Popcorn.colors.stage.copy(alpha = 0.4f),
     ) {
-        TorrentFilesContent(state, onToggle, onSave, onCancel, onRetry, onDraft = onDraft, onType = onType, onApply = onApply)
+        TorrentFilesContent(state, onToggle, onSave, onCancel, onRetry, onDraft = onDraft, onType = onType)
     }
 }
 
@@ -74,11 +80,10 @@ fun TorrentFilesContent(
     modifier: Modifier = Modifier,
     onDraft: (TorrentRuleDraft) -> Unit = {},
     onType: (TorrentFileKind) -> Unit = {},
-    onApply: () -> Unit = {},
 ) {
+    val largeText = LocalDensity.current.fontScale > 1.3f
     val containerHeight = LocalWindowInfo.current.containerSize.height
     val maxHeight = with(LocalDensity.current) { (containerHeight * 0.85f).toDp() }
-    var filtersOpen by remember(state.download.id) { mutableStateOf(false) }
     var search by remember(state.download.id) { mutableStateOf("") }
     Column(
         modifier.fillMaxWidth()
@@ -112,22 +117,35 @@ fun TorrentFilesContent(
                 Spacer(Modifier.height(Popcorn.spacing.s))
                 LazyColumn(Modifier.weight(1f, fill = false).testTag("torrent file list")) {
                     item(key = "filters") {
-                        QuietButton(if (filtersOpen) "Hide filters" else "Filters", onClick = { filtersOpen = !filtersOpen }, enabled = !state.busy)
-                        if (filtersOpen) {
-                            TorrentFileKind.entries.forEach { kind -> CheckRow(kind.label, kind in state.types, onToggle = { onType(kind) }, enabled = !state.busy) }
-                            CheckRow("Name and size rules", state.draft.enabled, onToggle = { onDraft(state.draft.copy(enabled = !state.draft.enabled)) }, enabled = !state.busy)
-                            if (state.draft.enabled) {
-                                RuleField("Name contains any of", state.draft.include, { onDraft(state.draft.copy(include = it)) }, !state.busy)
-                                RuleField("Name excludes", state.draft.exclude, { onDraft(state.draft.copy(exclude = it)) }, !state.busy)
-                                val unit = if (state.draft.gigabytes) "GB" else "MB"
-                                RuleField("Minimum file size ($unit)", state.draft.minimum, { onDraft(state.draft.copy(minimum = it)) }, !state.busy, decimal = true)
-                                RuleField("Maximum file size ($unit)", state.draft.maximum, { onDraft(state.draft.copy(maximum = it)) }, !state.busy, decimal = true)
-                                CheckRow("Use GB instead of MB", state.draft.gigabytes, onToggle = { onDraft(state.draft.copy(gigabytes = !state.draft.gigabytes)) }, enabled = !state.busy)
+                        Column(verticalArrangement = Arrangement.spacedBy(Popcorn.spacing.s)) {
+                            Text("File types", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
+                            TorrentFileKind.entries.chunked(if (largeText) 1 else 2).forEach { pair ->
+                                Row(horizontalArrangement = Arrangement.spacedBy(Popcorn.spacing.s)) {
+                                    pair.forEach { kind -> CheckRow(kind.label, kind in state.types, onToggle = { onType(kind) }, enabled = !state.busy, modifier = Modifier.weight(1f)) }
+                                }
                             }
-                            QuietButton("Apply filters to selection", onClick = onApply, enabled = !state.busy)
-                            Text("Filters replace the selection. Then adjust any checkbox below. Names match filenames or folders; separate alternatives with commas.", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
+                            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                                listOf("MB", "GB").forEachIndexed { index, label ->
+                                    val selected = state.draft.gigabytes == (index == 1)
+                                    SegmentedButton(selected = selected, onClick = { onDraft(state.draft.copy(gigabytes = index == 1)) }, enabled = !state.busy,
+                                        shape = SegmentedButtonDefaults.itemShape(index, 2, RoundedCornerShape(8.dp)),
+                                        colors = choiceSegmentColors(Popcorn.colors.surface), icon = { ChoiceSegmentMark(selected) }, label = { Text(label) })
+                                }
+                            }
+                            val unit = if (state.draft.gigabytes) "GB" else "MB"
+                            if (largeText) {
+                                RuleField("Minimum ($unit)", state.draft.minimum, { onDraft(state.draft.copy(minimum = it)) }, !state.busy, decimal = true)
+                                RuleField("Maximum ($unit)", state.draft.maximum, { onDraft(state.draft.copy(maximum = it)) }, !state.busy, decimal = true)
+                            } else Row(horizontalArrangement = Arrangement.spacedBy(Popcorn.spacing.s)) {
+                                Box(Modifier.weight(1f)) { RuleField("Minimum ($unit)", state.draft.minimum, { onDraft(state.draft.copy(minimum = it)) }, !state.busy, decimal = true) }
+                                Box(Modifier.weight(1f)) { RuleField("Maximum ($unit)", state.draft.maximum, { onDraft(state.draft.copy(maximum = it)) }, !state.busy, decimal = true) }
+                            }
+                            RuleField("Name contains", state.draft.include, { onDraft(state.draft.copy(include = it)) }, !state.busy)
+                            RuleField("Name excludes", state.draft.exclude, { onDraft(state.draft.copy(exclude = it)) }, !state.busy)
+                            Text("Filters update your selection immediately. Fine-tune files below. Separate alternative names with commas; blank sizes have no limit.", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
+                            FieldError(state.filterError)
                         }
-                        RuleField("Find files", search, { search = it }, !state.busy)
+                        RuleField("Find files in this torrent", search, { search = it }, !state.busy)
                     }
                     items(state.files.filter { it.path.contains(search, ignoreCase = true) }, key = { it.index }) { file ->
                         CheckRow(

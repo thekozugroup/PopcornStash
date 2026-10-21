@@ -1,5 +1,12 @@
 # PopcornStash, iteration 1
 
+## Filter, shared-layout and biometric refinement, 2026-10-21
+
+- Scope: simplify torrent review on web and Android; visible types/sizes/names, immediate local selection, manual overrides and validation before Start/Save. Preserve selections on opening and all VPN/passkey rules.
+- Preserve the incumbent Astryx/zinc/Newsreader design (Taste + Impeccable; variance 3, motion 1, density 5). Measured desktop brand top 28px versus title 64px before changes; now shared 28px/44px header rows. Compact 20px web checkbox marks keep 44px label-row targets; native 20dp marks keep 48dp row targets.
+- Owner explicitly selected strong biometrics without PIN/pattern fallback, accepting Android-selected enrolled strong fingerprint/face. PrivateActivity now requires biometric-only auth-per-use Keystore verification; enrollment, cancellation, missing hardware and background/lifecycle failure remain closed. No server passkey protocol downgrade.
+- Validation/deployment in progress; no readiness claim for these UI/auth changes yet. Existing corrected GPU retries and downloads continue. Evidence: ignored evidence/download-filter-refinement/.
+
 ## AV1 compression correction and authorized rerun, 2026-10-21
 
 - Owner requested fixing the confirmed ignored-AV1-preset bug and rerunning larger attempts. Temporarily paused conversion scheduling without changing revision, codec, compute or the owner's newly selected Small policy (revision 2). Two interrupted encodes cancelled cleanly, retaining originals and removing their stage journals; no active download needed interruption. Three completed replacements and their savings ledger remain protected.

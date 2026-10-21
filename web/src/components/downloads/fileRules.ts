@@ -31,3 +31,12 @@ export function matchesFileRules(file: TorrentFile, rules: TorrentFileRules): bo
     && (!rules.name_contains?.length || rules.name_contains.some(s => path.includes(normalize(s))))
     && !rules.name_excludes?.some(s => path.includes(normalize(s)));
 }
+
+/** Opening preserves server choices. Only an explicit filter edit calls this. */
+export function selectionFromFilters(files: TorrentFile[], draft: FileRuleDraft, types: TorrentFileKind[]): {selected?: Set<number>; error?: string} {
+  if (types.length === 0) return {selected: new Set(), error: 'Choose at least one file type.'};
+  const parsed = parseFileRules({...draft, enabled: true}, types);
+  const rules = parsed.rules;
+  if (parsed.error || !rules) return {error: parsed.error};
+  return {selected: new Set(files.filter(file => matchesFileRules(file, rules)).map(file => file.index))};
+}

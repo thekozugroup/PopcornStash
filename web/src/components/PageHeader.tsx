@@ -19,10 +19,11 @@ const styles = stylex.create({
     rowGap: 16,
     marginBottom: 32,
   },
+  title: {minHeight: 44, display: 'flex', alignItems: 'center'},
   copy: {
     display: 'flex',
     flexDirection: 'column',
-    gap: 10,
+    gap: 8,
     minWidth: 0,
     flex: '1 1 320px',
   },
@@ -71,7 +72,7 @@ export function PageHeader({title, subtitle, actions, documentTitle, children, i
   return (
     <div {...stylex.props(styles.header)}>
       <div {...stylex.props(styles.copy)}>
-        <Heading level={1} textWrap="balance">
+        <Heading level={1} textWrap="balance" xstyle={styles.title}>
           {title}
         </Heading>
         {subtitle ? (

@@ -22,12 +22,14 @@ data class TorrentFilesState(
     val selected: Set<Int> = emptySet(),
     val busy: Boolean = false,
     val error: String? = null,
+    val filterError: String? = null,
+    val filtersEdited: Boolean = false,
     val reviewRequired: Boolean = false,
     val draft: TorrentRuleDraft = TorrentRuleDraft(),
     val types: List<com.thekozugroup.popcornstash.data.api.TorrentFileKind> = listOf(com.thekozugroup.popcornstash.data.api.TorrentFileKind.Video, com.thekozugroup.popcornstash.data.api.TorrentFileKind.Subtitle),
 ) {
     val changed: Boolean get() = selected != files.filter { it.selected }.map { it.index }.toSet()
-    val canSave: Boolean get() = ready && !loading && !busy && selected.isNotEmpty() && (changed || reviewRequired)
+    val canSave: Boolean get() = ready && !loading && !busy && filterError == null && selected.isNotEmpty() && (changed || reviewRequired)
 }
 
 fun Download.canChooseTorrentFiles(): Boolean = kind == DownloadKind.Torrent && isActive()
@@ -75,9 +77,9 @@ class TorrentFilesController(
                             ready = manifest.ready,
                             files = manifest.files,
                             reviewRequired = manifest.reviewRequired,
-                            draft = manifest.rules?.toDraft() ?: TorrentRuleDraft(),
-                            types = manifest.rules?.fileTypes ?: latest.types,
-                            selected = if (latest.changed) {
+                            draft = if (latest.filtersEdited) latest.draft else manifest.rules?.toDraft() ?: TorrentRuleDraft(),
+                            types = if (latest.filtersEdited) latest.types else manifest.rules?.fileTypes ?: latest.types,
+                            selected = if (latest.changed || latest.filtersEdited) {
                                 latest.selected.intersect(manifest.files.map { it.index }.toSet())
                             } else {
                                 manifest.files.filter { it.selected }.map { it.index }.toSet()
@@ -104,20 +106,22 @@ class TorrentFilesController(
         }
     }
 
-    fun draft(value: TorrentRuleDraft) { mutableState.update { it?.takeUnless { it.busy }?.copy(draft = value, error = null) ?: it } }
-
-    fun type(value: com.thekozugroup.popcornstash.data.api.TorrentFileKind) {
-        mutableState.update { it?.takeUnless { it.busy }?.let { s -> s.copy(types = if (value in s.types) s.types - value else s.types + value, error = null) } ?: it }
+    fun draft(value: TorrentRuleDraft) {
+        mutableState.update { current -> current?.editFilters(value, current.types) }
     }
 
-    fun applyFilters() {
-        val current = mutableState.value ?: return
-        if (!current.ready || current.busy) return
-        try {
-            require(current.types.isNotEmpty()) { "Choose at least one file type." }
-            val rules = current.draft.rules(current.types) ?: com.thekozugroup.popcornstash.data.api.TorrentFileRules(fileTypes = current.types)
-            mutableState.value = current.copy(selected = current.files.filter { rules.matches(it) }.map { it.index }.toSet(), error = null)
-        } catch (e: IllegalArgumentException) { mutableState.value = current.copy(error = e.message) }
+    fun type(value: com.thekozugroup.popcornstash.data.api.TorrentFileKind) {
+        mutableState.update { current -> current?.editFilters(current.draft, if (value in current.types) current.types - value else current.types + value) }
+    }
+
+    private fun TorrentFilesState.editFilters(value: TorrentRuleDraft, nextTypes: List<com.thekozugroup.popcornstash.data.api.TorrentFileKind>): TorrentFilesState {
+        if (!ready || loading || busy) return this
+        val next = copy(draft = value.copy(enabled = true), types = nextTypes, filtersEdited = true, error = null)
+        if (nextTypes.isEmpty()) return next.copy(selected = emptySet(), filterError = "Choose at least one file type.")
+        return try {
+            val rules = requireNotNull(next.draft.rules(nextTypes))
+            next.copy(selected = files.filter { rules.matches(it) }.map { it.index }.toSet(), filterError = null)
+        } catch (e: IllegalArgumentException) { next.copy(filterError = e.message) }
     }
 
     fun close() {

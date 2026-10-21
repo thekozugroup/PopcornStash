@@ -753,6 +753,9 @@
 
   .astryx-checkbox-indicator {
     --color-border-emphasized: var(--popcorn-switch-off);
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
   }
 
   .astryx-checkbox-indicator[data-checked="checked"] {

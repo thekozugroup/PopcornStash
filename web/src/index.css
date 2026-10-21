@@ -64,3 +64,8 @@ textarea {
     scroll-behavior: auto !important;
   }
 }
+
+/* Keep checkbox marks compact while the whole label row stays easy to press. */
+.astryx-checkbox-input > [data-astryx-pressable] {
+  min-height: 44px;
+}

@@ -374,7 +374,7 @@ export const popcornTheme = defineTheme({
     // fill with a white mark, tinted darker on hover like the switch; disabled ones keep
     // Astryx's own faint border.
     'checkbox-indicator': {
-      base: {'--color-border-emphasized': 'var(--popcorn-switch-off)'},
+      base: {'--color-border-emphasized': 'var(--popcorn-switch-off)', width: '20px', height: '20px', borderRadius: '5px'},
       checked: {'--color-tint-hover': 'var(--popcorn-accent-hover-tint)'},
     },
     'radio-indicator': {

@@ -1,10 +1,10 @@
 package com.thekozugroup.popcornstash.privacy
 
-import android.annotation.SuppressLint
 import android.app.KeyguardManager
 import android.content.ActivityNotFoundException
 import android.content.Intent
-import android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL
+import android.hardware.biometrics.BiometricManager
+import android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_STRONG
 import android.hardware.biometrics.BiometricPrompt
 import android.os.Build
 import android.os.Bundle
@@ -13,8 +13,6 @@ import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.ComponentActivity
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.annotation.RequiresApi
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,16 +29,10 @@ abstract class PrivateActivity : ComponentActivity() {
     private val keyguard get() = getSystemService(KeyguardManager::class.java)
     private var authenticating by mutableStateOf(false)
     private var askedThisVisit = false
-    private var legacyInFlight = false
     private var attempt = -1L
     private var cancellation: CancellationSignal? = null
     private var secure by mutableStateOf(false)
     private var problem by mutableStateOf<String?>(null)
-
-    @SuppressLint("InvalidFragmentVersionForActivityResult")
-    private val confirmLegacy = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        authenticationEnded(result.resultCode == RESULT_OK)
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,14 +67,18 @@ abstract class PrivateActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        secure = keyguard?.isDeviceSecure == true
+        secure = hasStrongBiometrics()
         if (!secure || keyguard?.isDeviceLocked == true) appLock.lock()
         if (!appLock.unlocked.value && secure && !askedThisVisit) requestUnlock()
     }
 
     override fun onStop() {
         super.onStop()
-        appLock.stopped(this, isChangingConfigurations, legacyInFlight)
+        cancellation?.cancel()
+        attempt = -1L
+        cancellation = null
+        authenticating = false
+        appLock.stopped(this, isChangingConfigurations)
         if (!authenticating) askedThisVisit = false
     }
 
@@ -95,9 +91,8 @@ abstract class PrivateActivity : ComponentActivity() {
         if (isDestroyed || completedAttempt != attempt) return
         attempt = -1L
         authenticating = false
-        legacyInFlight = false
         cancellation = null
-        secure = keyguard?.isDeviceSecure == true
+        secure = hasStrongBiometrics()
         // A cancelled/missing/removed credential always leaves the app closed.
         if (success && secure && keyguard?.isDeviceLocked == false && !isDestroyed) {
             problem = null
@@ -107,52 +102,63 @@ abstract class PrivateActivity : ComponentActivity() {
         }
     }
 
-    @Suppress("DEPRECATION")
+    protected open fun hasStrongBiometrics(): Boolean = keyguard?.isDeviceSecure == true &&
+        (Build.VERSION.SDK_INT < 30 || getSystemService(BiometricManager::class.java)?.canAuthenticate(BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS)
+
     private fun requestUnlock() {
         if (authenticating) return
-        secure = keyguard?.isDeviceSecure == true
+        secure = hasStrongBiometrics()
         if (!secure) { appLock.lock(); return }
         askedThisVisit = true
         authenticating = true
         attempt = appLock.beginAuthentication()
-        problem = null
-        try {
-            if (Build.VERSION.SDK_INT >= 30) confirmCredential() else {
-                // Credential-only BiometricPrompt is unavailable on Android 9 and 10.
-                val intent = keyguard?.createConfirmDeviceCredentialIntent("Unlock PopcornStash", "Use your device screen lock to open your private library.")
-                if (intent == null) authenticationEnded(false) else { legacyInFlight = true; confirmLegacy.launch(intent) }
-            }
-        } catch (_: ActivityNotFoundException) {
-            authenticationEnded(false)
-            problem = "Device verification is unavailable. Check your screen lock in Settings."
-        } catch (_: SecurityException) {
-            authenticationEnded(false)
-            problem = "Device verification was blocked. Check your screen lock in Settings."
-        }
-    }
-
-    @RequiresApi(30)
-    private fun confirmCredential() {
         val authenticationAttempt = attempt
         val signal = CancellationSignal()
         cancellation = signal
-        BiometricPrompt.Builder(this)
+        problem = null
+        try {
+            confirmBiometric(signal) { success -> authenticationEnded(success, authenticationAttempt) }
+        } catch (_: java.security.GeneralSecurityException) {
+            authenticationEnded(false, authenticationAttempt)
+            problem = "Biometric verification is unavailable. Check your biometrics in Settings and try again."
+        } catch (_: java.security.ProviderException) {
+            authenticationEnded(false, authenticationAttempt)
+            problem = "Biometric verification is unavailable. Try again."
+        } catch (_: IllegalStateException) {
+            authenticationEnded(false, authenticationAttempt)
+            problem = "Biometric verification is unavailable. Try again."
+        } catch (_: SecurityException) {
+            authenticationEnded(false, authenticationAttempt)
+            problem = "Biometric verification was blocked. Check your biometrics in Settings."
+        }
+    }
+
+    protected open fun confirmBiometric(signal: CancellationSignal, onResult: (Boolean) -> Unit) {
+        val cipher = BiometricUnlockKey.newCipher()
+        val builder = BiometricPrompt.Builder(this)
             .setTitle("Unlock PopcornStash")
-            .setDescription("Use your device screen lock to open your private library.")
-            .setAllowedAuthenticators(DEVICE_CREDENTIAL)
-            .build()
-            .authenticate(signal, mainExecutor, object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) =
-                    authenticationEnded(result.authenticationType == BiometricPrompt.AUTHENTICATION_RESULT_TYPE_DEVICE_CREDENTIAL, authenticationAttempt)
-                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) = authenticationEnded(false, authenticationAttempt)
-            })
+            .setDescription("Use strong biometrics to open your private library.")
+            .setNegativeButton("Cancel", mainExecutor) { _, _ -> signal.cancel(); onResult(false) }
+        if (Build.VERSION.SDK_INT >= 30) builder.setAllowedAuthenticators(BIOMETRIC_STRONG)
+        // CryptoObject restricts Android 9/10 to Keystore-backed Class 3 biometrics too.
+        builder.build().authenticate(BiometricPrompt.CryptoObject(cipher), signal, mainExecutor, object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                val biometric = Build.VERSION.SDK_INT < 30 || result.authenticationType == BiometricPrompt.AUTHENTICATION_RESULT_TYPE_BIOMETRIC
+                val verified = biometric && BiometricUnlockKey.verify(cipher, result.cryptoObject?.cipher)
+                onResult(verified)
+            }
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                onResult(false)
+                problem = "Biometric verification did not finish. Unlock your phone if needed, then try again."
+            }
+        })
     }
 
     private fun setScreenLock() {
         try {
             startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS))
         } catch (_: ActivityNotFoundException) {
-            problem = "Open your phone Settings and add a screen lock, then return here."
+            problem = "Open your phone Settings and enroll strong biometrics, then return here."
         }
     }
 }

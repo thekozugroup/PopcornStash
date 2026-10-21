@@ -41,8 +41,8 @@ fun AppLockScreen(secure: Boolean, busy: Boolean, problem: String?, onUnlock: ()
             Text(if (secure) "PopcornStash is locked" else "Protect your library", style = Popcorn.type.headline,
                 color = Popcorn.colors.text, modifier = Modifier.semantics { heading() })
             Spacer(Modifier.height(Popcorn.spacing.xs))
-            Text(if (secure) "Enter your device PIN, password or pattern to continue."
-                else "Set a PIN, password or pattern in your phone Settings before opening PopcornStash.",
+            Text(if (secure) "Use strong biometrics to continue. PIN, password and pattern cannot open this app."
+                else "Enroll a strong fingerprint or face in Android Settings before opening PopcornStash.",
                 style = Popcorn.type.body, color = Popcorn.colors.textMuted)
             if (problem != null) {
                 Spacer(Modifier.height(Popcorn.spacing.m))
@@ -50,7 +50,7 @@ fun AppLockScreen(secure: Boolean, busy: Boolean, problem: String?, onUnlock: ()
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
             }
             Spacer(Modifier.height(Popcorn.spacing.l))
-            PrimaryButton(if (secure) "Unlock" else "Set up screen lock", if (secure) onUnlock else onSetLock,
+            PrimaryButton(if (secure) "Unlock" else "Set up biometrics", if (secure) onUnlock else onSetLock,
                 modifier = Modifier.fillMaxWidth(), busy = busy)
         }
     }

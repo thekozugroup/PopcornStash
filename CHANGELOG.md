@@ -4,6 +4,11 @@ Changes to PopcornStash, newest first. Version numbers follow [Semantic Versioni
 
 ## [Unreleased]
 
+- Torrent review on web and Android exposes type, size and name filters immediately, updates selections while editing, and preserves manual choices until the next filter change. Invalid filters block Start/Save.
+- Shared web header rows align with the brand; compact checkbox marks retain comfortable press targets.
+- Android requires strong biometrics to open, with no PIN/pattern/password fallback and a fresh Keystore operation per visit.
+
+
 - Fix Intel Arc/VAAPI AV1 compression presets being ignored; each quality option now controls the AV1 encoder on its native scale. Smaller-size and full integrity checks still protect originals.
 
 - Two bounded conversion workers, GPU input decoding and full-video integrity checks, live verification progress, and Intel Arc AV1 decode support in amd64 images. Originals remain protected by complete-file checks; larger results are discarded before verification.

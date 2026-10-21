@@ -624,7 +624,10 @@ export const popcornTheme = {
     },
     "checkbox-indicator": {
       "base": {
-        "--color-border-emphasized": "var(--popcorn-switch-off)"
+        "--color-border-emphasized": "var(--popcorn-switch-off)",
+        "width": "20px",
+        "height": "20px",
+        "borderRadius": "5px"
       },
       "checked": {
         "--color-tint-hover": "var(--popcorn-accent-hover-tint)"

@@ -128,7 +128,7 @@ private fun TorrentReviewPreview() {
             Text(if (started) "Download started" else "Torrent preview", color = Popcorn.colors.text)
             state?.let {
                 com.thekozugroup.popcornstash.feature.downloads.TorrentFilesSheet(it, controller::toggle, controller::submit, controller::close, controller::refresh,
-                    onDraft = controller::draft, onType = controller::type, onApply = controller::applyFilters)
+                    onDraft = controller::draft, onType = controller::type)
             }
         }
     }

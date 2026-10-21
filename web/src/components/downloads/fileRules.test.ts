@@ -22,3 +22,19 @@ describe('torrent file rules', () => {
     expect(matchesFileRules(file('film.mp4', 10), rules!)).toBe(false);
   });
 });
+
+describe('live torrent selection', () => {
+  it('updates exact manifest indices without an enable or apply step', async () => {
+    const {selectionFromFilters} = await import('./fileRules');
+    const files = [
+      {...file('Film/feature.mkv', 8_000_000_000), index: 2},
+      {...file('Film/sample.mp4', 50_000_000), index: 4},
+      {...file('Film/English.srt', 54_000, 'subtitle'), index: 5},
+    ];
+    expect(selectionFromFilters(files, {...emptyFileRules, minimum: '1', unit: 'GB'}, ['video', 'subtitle']).selected).toEqual(new Set([2]));
+    expect(selectionFromFilters(files, {...emptyFileRules, minimum: '1', maximum: '.5', unit: 'GB'}, ['video']).selected).toBeUndefined();
+    expect(selectionFromFilters(files, emptyFileRules, [])).toEqual({selected: new Set(), error: 'Choose at least one file type.'});
+    expect(selectionFromFilters(files, {...emptyFileRules, include: 'missing'}, ['video']).selected).toEqual(new Set());
+    expect(selectionFromFilters(files, emptyFileRules, ['subtitle']).selected).toEqual(new Set([5]));
+  });
+});

@@ -67,7 +67,7 @@ const styles = stylex.create({
     width: '100%',
     maxWidth: 1320,
     marginInline: 'auto',
-    paddingBlockStart: {default: 'clamp(24px, 5vw, 64px)', '@media (max-width: 799px)': 20},
+    paddingBlockStart: {default: 28, '@media (max-width: 799px)': 20},
     paddingBlockEnd: {default: 'clamp(40px, 6vw, 80px)', '@media (max-width: 799px)': 48},
     paddingInline: {default: 'clamp(24px, 5vw, 64px)', '@media (max-width: 799px)': 20},
     minWidth: 0,

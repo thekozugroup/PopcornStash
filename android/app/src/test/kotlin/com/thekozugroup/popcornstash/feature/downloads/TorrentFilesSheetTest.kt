@@ -52,6 +52,7 @@ class TorrentFilesSheetTest {
     @Test
     fun savedChoicesAreVisibleAndSubtitlesAreFullyOptional() {
         show()
+        compose.onNodeWithTag("torrent file list").performScrollToIndex(1)
         compose.onNodeWithTag("torrent file 4").assertIsOn()
         compose.onNodeWithTag("torrent file 8").assertIsOff().performClick().assertIsOn()
         compose.onNodeWithText("Save").assertIsEnabled()
@@ -90,6 +91,7 @@ class TorrentFilesSheetTest {
     fun aSaveInProgressLocksChoicesAndCancel() {
         shown.value = shown.value.copy(busy = true)
         show()
+        compose.onNodeWithTag("torrent file list").performScrollToIndex(1)
         compose.onNodeWithTag("torrent file 4").assertIsNotEnabled()
         compose.onNodeWithText("Save").assertIsNotEnabled()
         compose.onNodeWithText("Cancel").assertIsNotEnabled()

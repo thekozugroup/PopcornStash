@@ -380,7 +380,7 @@ public-tracker switch with the same behavior as the browser.
 
 ## Private app lock
 
-A flat zinc page precedes every production entry point. The plain popcorn glyph, Newsreader heading, one short explanation and one full-width primary action use the existing tokens. No account, server or media details appear while locked. The centered reading column is at most 400dp wide, uses safe insets and scrolls on short windows or large text. Android draws the credential prompt and keypad. Missing screen lock offers Android Settings; verification failure keeps Unlock available. Screenshots and Recents previews are protected, and leaving the player pauses video rather than entering picture-in-picture.
+A flat zinc page precedes every production entry point. The plain popcorn glyph, Newsreader heading, one short explanation and one full-width primary action use the existing tokens. No account, server or media details appear while locked. The centered reading column is at most 400dp wide, uses safe insets and scrolls on short windows or large text. Android draws a strong-biometric prompt with Cancel and no device-credential fallback. Missing enrollment offers Android Settings; verification failure keeps Unlock available. Screenshots and Recents previews are protected, and leaving the player pauses video rather than entering picture-in-picture.
 
 Library removal keeps files by default. The optional whole-folder choice uses a 48dp checkbox row and an exact-name field. Confirm is disabled until the name matches; Cancel remains available. Folder removal is recoverable in owner web Trash. Clean files opens the owner web cleanup page.
 
@@ -392,3 +392,5 @@ Search is always one tap away. Use one labeled scope selector and the existing s
 ### Torrent review
 
 The bounded torrent sheet shows the title, source name, a selection count/byte total, a lazy manifest and a fixed primary action. Filters expand in the same lazy region above the file rows. Filters apply to the local selection explicitly; every checkbox remains editable. Search only changes visible rows. Start download is the only action that releases a new torrent’s metadata hold; Save edits existing selections. The sheet clears navigation and keyboard insets, follows theme/text scale, and shows fetching/error/empty states.
+
+Torrent review keeps type choices in two columns, followed by a neutral MB/GB choice, paired size fields and name fields. Filters update selection immediately. File checkboxes remain manually editable; the pinned confirmation stays outside the lazy list. Checkbox marks retain the native 20dp visual within full-row targets of at least 48dp. Large text scrolls without compressing controls.

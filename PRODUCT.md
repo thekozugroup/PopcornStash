@@ -33,7 +33,7 @@ Taste + Impeccable, built from Astryx components. Same world as Popcorn SR: rest
 - No online metadata scraping by default: nothing about the library leaves the server.
 - Owners may enable local AV1 or H.265 conversion per video library. Up to two conversions can run when hardware encoding is available; CPU encoding is limited to one job. GPU decoding accelerates conversion and complete video checks where supported. Only smaller files that pass the full integrity checks replace originals; failed checks keep originals. No media is uploaded to a remote worker.
 - The Android app asks GitHub once a day whether a newer build of the app is out, unless that is turned off in Settings, This app. It sends only the app's name and version, and downloads the update from GitHub when the person taps Update; apart from that the app talks only to your own server. The server does not update itself: the owner updates the container.
-- The Android app requires the phone's secure screen-lock credential to open and after backgrounding; private previews are hidden and videos pause when leaving the app. Server passkeys remain required.
+- The Android app requires strong biometrics with no PIN, password or pattern fallback to open and after backgrounding; private previews are hidden and videos pause when leaving the app. Server passkeys remain required.
 - The Android app has three tabs (Downloads, Home, Settings); library management is native, the other admin areas open the web settings for now.
 
 - Browser sessions lock after 15 minutes without keyboard, pointer, scrolling or touch input. A fresh passkey is required; background requests and media playback do not keep them open. Native bearer sessions keep their existing lifetime.
