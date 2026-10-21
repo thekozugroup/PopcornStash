@@ -1,5 +1,11 @@
 # PopcornStash, iteration 1
 
+## Pre-update conversion history cleared, 2026-10-21
+
+- Owner requested keeping only jobs from the new deployment. Archived four terminal entries created before the verified resume time (18:41:49 UTC); new jobs remain visible, including two active encodes and one new skipped result. No conversions, downloads or services were paused/restarted.
+- The nullable library association was cleared only on those four finished, journal-free rows. Rows remain internal deduplication/savings records, so cleanup does not requeue old videos or erase completed savings. One atomic database transaction verified new-job rows, candidate count (41), savings ledger, policy, media catalog, downloads, accounts and settings unchanged; foreign keys pass. Atlas remains healthy with zero restarts. Private evidence: `evidence/gpu-optimization/atlas-update/old-history-cleared.json`.
+- Investigation before the cleanup confirmed the non-smaller results used AV1 CQP 28 on 4K H.264 sources (about 14–17 Mbps); that quality mode does not target a smaller byte size. Stronger compression could reduce them with a quality tradeoff. The owner's newer cleanup instruction was applied; no lower-quality retry or policy change was made.
+
 ## Atlas GPU update deployed and resumed, 2026-10-21
 
 - The owner's explicit instruction to pause, update and resume supersedes the earlier requirement to wait for the complete queue. Paused conversion scheduling without changing policy revision/codec/quality/compute; cancelled only the in-progress encode, kept its original and cleaned its journal. No active download needed pausing. Requeued only that interrupted file after migration and validation; completed/skipped history was retained.
