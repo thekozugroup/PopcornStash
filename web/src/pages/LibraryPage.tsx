@@ -11,14 +11,16 @@
 import * as stylex from '@stylexjs/stylex';
 import {Button} from '@astryxdesign/core/Button';
 import {HStack} from '@astryxdesign/core/Layout';
+import {Selector} from '@astryxdesign/core/Selector';
 import {Skeleton} from '@astryxdesign/core/Skeleton';
 import {useEffect, useState} from 'react';
-import {useParams} from 'react-router';
+import {useParams, useSearchParams} from 'react-router';
 import {ApiError, libraries as librariesApi} from '../api/client';
 import type {Library} from '../api/types';
 import {useLibraries} from '../app/LibrariesProvider';
 import {useAuth} from '../auth/AuthProvider';
 import {EmptyPanel} from '../components/EmptyPanel';
+import {DownloadFoldersView} from '../components/library/DownloadFoldersView';
 import {ItemGridView, type ItemGridConfig} from '../components/library/ItemGridView';
 import {LoadError} from '../components/library/LoadError';
 import {SeriesView} from '../components/library/SeriesView';
@@ -59,6 +61,7 @@ interface PageState {
 
 export default function LibraryPage() {
   const {id = ''} = useParams();
+  const [params, setParams] = useSearchParams();
   const {isOwner} = useAuth();
   const {find, status} = useLibraries();
   const listed = find(id);
@@ -125,8 +128,11 @@ export default function LibraryPage() {
     />
   );
 
+  const byDownload = library.content_type === 'video' && params.get('view') !== 'all';
   let view;
-  if (library.layout === 'series') {
+  if (byDownload) {
+    view = <DownloadFoldersView key={library.id} id={library.id} isOwner={isOwner} />;
+  } else if (library.layout === 'series') {
     view = <SeriesView key={library.id} libraryId={library.id} libraryName={library.name} icon={Icon} empty={empty} />;
   } else if (library.layout === 'timeline') {
     view = <TimelineView key={library.id} libraryId={library.id} libraryName={library.name} icon={Icon} empty={empty} />;
@@ -162,6 +168,7 @@ export default function LibraryPage() {
   return (
     <>
       <PageHeader title={library.name} subtitle={libraryCountLine(library)} actions={<HStack gap={2} wrap="wrap">
+        {library.content_type === 'video' ? <Selector label="Library view" isLabelHidden value={byDownload ? 'downloads' : 'all'} options={[{value: 'downloads', label: 'By download'}, {value: 'all', label: 'All videos'}]} onChange={value => setParams(value === 'all' ? {view: 'all'} : {})} /> : null}
         <Button label="Search" variant="ghost" href={`/search?library=${encodeURIComponent(library.id)}`} />
         <Button label={isOwner ? 'Organize files' : 'Browse folders'} variant="secondary" href={`/libraries/${encodeURIComponent(library.id)}/folders`} />
       </HStack>} />

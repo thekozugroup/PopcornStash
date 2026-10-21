@@ -57,6 +57,7 @@ fun TorrentFilesSheet(
     onRetry: () -> Unit,
     onDraft: (TorrentRuleDraft) -> Unit = {},
     onType: (TorrentFileKind) -> Unit = {},
+    onFilter: () -> Unit = {},
 ) {
     ModalBottomSheet(
         onDismissRequest = onCancel,
@@ -66,7 +67,7 @@ fun TorrentFilesSheet(
         shape = Popcorn.shapes.sheet,
         scrimColor = Popcorn.colors.stage.copy(alpha = 0.4f),
     ) {
-        TorrentFilesContent(state, onToggle, onSave, onCancel, onRetry, onDraft = onDraft, onType = onType)
+        TorrentFilesContent(state, onToggle, onSave, onCancel, onRetry, onDraft = onDraft, onType = onType, onFilter = onFilter)
     }
 }
 
@@ -80,6 +81,7 @@ fun TorrentFilesContent(
     modifier: Modifier = Modifier,
     onDraft: (TorrentRuleDraft) -> Unit = {},
     onType: (TorrentFileKind) -> Unit = {},
+    onFilter: () -> Unit = {},
 ) {
     val largeText = LocalDensity.current.fontScale > 1.3f
     val containerHeight = LocalWindowInfo.current.containerSize.height
@@ -142,7 +144,9 @@ fun TorrentFilesContent(
                             }
                             RuleField("Name contains", state.draft.include, { onDraft(state.draft.copy(include = it)) }, !state.busy)
                             RuleField("Name excludes", state.draft.exclude, { onDraft(state.draft.copy(exclude = it)) }, !state.busy)
-                            Text("Filters update your selection immediately. Fine-tune files below. Separate alternative names with commas; blank sizes have no limit.", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
+                            Text("Choose filters, then press Filter. Adjust individual files below. Separate alternative names with commas; blank sizes have no limit.", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
+                            QuietButton("Filter", onClick = onFilter, enabled = !state.busy)
+                            if (state.filtersPending) Text("Filters changed · selection unchanged", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
                             FieldError(state.filterError)
                         }
                         RuleField("Find files in this torrent", search, { search = it }, !state.busy)

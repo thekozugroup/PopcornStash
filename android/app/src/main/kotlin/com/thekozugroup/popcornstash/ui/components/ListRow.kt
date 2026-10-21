@@ -19,6 +19,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import com.thekozugroup.popcornstash.ui.theme.Popcorn
 
 /**
@@ -36,6 +37,7 @@ fun ListRow(
     onClickLabel: String? = null,
     leading: (@Composable () -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
+    horizontalPadding: Dp = Popcorn.spacing.gutter,
 ) {
     val clickable = if (onClick != null) {
         Modifier.clickable(onClickLabel = onClickLabel, role = Role.Button, onClick = onClick)
@@ -47,7 +49,7 @@ fun ListRow(
             .fillMaxWidth()
             .heightIn(min = 56.dp)
             .then(clickable)
-            .padding(horizontal = Popcorn.spacing.gutter, vertical = Popcorn.spacing.s),
+            .padding(horizontal = horizontalPadding, vertical = Popcorn.spacing.s),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (leading != null) {

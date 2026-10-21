@@ -24,12 +24,13 @@ data class TorrentFilesState(
     val error: String? = null,
     val filterError: String? = null,
     val filtersEdited: Boolean = false,
+    val filtersPending: Boolean = false,
     val reviewRequired: Boolean = false,
     val draft: TorrentRuleDraft = TorrentRuleDraft(),
     val types: List<com.thekozugroup.popcornstash.data.api.TorrentFileKind> = listOf(com.thekozugroup.popcornstash.data.api.TorrentFileKind.Video, com.thekozugroup.popcornstash.data.api.TorrentFileKind.Subtitle),
 ) {
     val changed: Boolean get() = selected != files.filter { it.selected }.map { it.index }.toSet()
-    val canSave: Boolean get() = ready && !loading && !busy && filterError == null && selected.isNotEmpty() && (changed || reviewRequired)
+    val canSave: Boolean get() = ready && !loading && !busy && !filtersPending && filterError == null && selected.isNotEmpty() && (changed || reviewRequired)
 }
 
 fun Download.canChooseTorrentFiles(): Boolean = kind == DownloadKind.Torrent && isActive()
@@ -116,12 +117,18 @@ class TorrentFilesController(
 
     private fun TorrentFilesState.editFilters(value: TorrentRuleDraft, nextTypes: List<com.thekozugroup.popcornstash.data.api.TorrentFileKind>): TorrentFilesState {
         if (!ready || loading || busy) return this
-        val next = copy(draft = value.copy(enabled = true), types = nextTypes, filtersEdited = true, error = null)
-        if (nextTypes.isEmpty()) return next.copy(selected = emptySet(), filterError = "Choose at least one file type.")
-        return try {
-            val rules = requireNotNull(next.draft.rules(nextTypes))
-            next.copy(selected = files.filter { rules.matches(it) }.map { it.index }.toSet(), filterError = null)
-        } catch (e: IllegalArgumentException) { next.copy(filterError = e.message) }
+        return copy(draft = value.copy(enabled = true), types = nextTypes, filtersEdited = true, filtersPending = true, filterError = null, error = null)
+    }
+
+    fun filter() {
+        mutableState.update { current ->
+            if (current == null || !current.ready || current.loading || current.busy) return@update current
+            if (current.types.isEmpty()) return@update current.copy(selected = emptySet(), filtersPending = false, filterError = "Choose at least one file type.")
+            try {
+                val rules = requireNotNull(current.draft.copy(enabled = true).rules(current.types))
+                current.copy(selected = current.files.filter { rules.matches(it) }.map { it.index }.toSet(), filtersPending = false, filterError = null)
+            } catch (e: IllegalArgumentException) { current.copy(filterError = e.message) }
+        }
     }
 
     fun close() {

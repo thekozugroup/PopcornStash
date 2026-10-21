@@ -37,6 +37,9 @@ class TorrentFilesControllerTest {
         runCurrent()
         assertTrue(controller.state.value!!.canSave)
         controller.draft(TorrentRuleDraft(enabled = true, include = "episode", minimum = "1000"))
+        assertEquals(setOf(4, 12, 15), controller.state.value!!.selected)
+        assertFalse(controller.state.value!!.canSave)
+        controller.filter()
         assertEquals(setOf(4), controller.state.value!!.selected)
         controller.toggle(8)
         controller.submit()
@@ -47,12 +50,13 @@ class TorrentFilesControllerTest {
     }
 
     @Test
-    fun invalidLiveFiltersBlockSubmitEvenAfterManualOverrideAndRecoverOnEdit() = runTest {
+    fun invalidFiltersBlockSubmitAndOnlyApplyAfterFilter() = runTest {
         var starts = 0
         val controller = TorrentFilesController({ TorrentFiles(true, files, reviewRequired = true) }, { _, _ -> }, this, start = { _, _ -> starts++ })
         controller.open(download)
         runCurrent()
         controller.draft(TorrentRuleDraft(minimum = "100", maximum = "1"))
+        controller.filter()
         assertTrue(controller.state.value!!.filterError != null)
         controller.toggle(8)
         controller.submit()
@@ -60,13 +64,16 @@ class TorrentFilesControllerTest {
         assertEquals(0, starts)
         assertFalse(controller.state.value!!.canSave)
         controller.draft(TorrentRuleDraft(minimum = "100"))
+        controller.filter()
         assertEquals(setOf(4), controller.state.value!!.selected)
         assertNull(controller.state.value!!.filterError)
         controller.type(TorrentFileKind.Video)
         controller.type(TorrentFileKind.Subtitle)
+        controller.filter()
         assertTrue(controller.state.value!!.selected.isEmpty())
         assertFalse(controller.state.value!!.canSave)
         controller.type(TorrentFileKind.Video)
+        controller.filter()
         assertEquals(setOf(4), controller.state.value!!.selected)
         assertTrue(controller.state.value!!.canSave)
     }

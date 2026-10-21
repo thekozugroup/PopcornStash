@@ -32,7 +32,7 @@ export function matchesFileRules(file: TorrentFile, rules: TorrentFileRules): bo
     && !rules.name_excludes?.some(s => path.includes(normalize(s)));
 }
 
-/** Opening preserves server choices. Only an explicit filter edit calls this. */
+/** Opening preserves server choices. Only the explicit Filter action calls this. */
 export function selectionFromFilters(files: TorrentFile[], draft: FileRuleDraft, types: TorrentFileKind[]): {selected?: Set<number>; error?: string} {
   if (types.length === 0) return {selected: new Set(), error: 'Choose at least one file type.'};
   const parsed = parseFileRules({...draft, enabled: true}, types);

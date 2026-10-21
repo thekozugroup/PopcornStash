@@ -49,6 +49,13 @@ internal fun LibraryPage(route: HomeRoute.Library, bottomClearance: Dp, services
     )
     val ui by model.ui.collectAsStateWithLifecycle()
     LaunchedEffect(ui.gone) { if (ui.gone) nav.closeGone(route, "${route.name} is not available any more.") }
+    var allVideos by rememberSaveable(route.id) { mutableStateOf(false) }
+    if (ui.library?.contentType == com.thekozugroup.popcornstash.data.api.ContentType.Video && !allVideos) {
+        com.thekozugroup.popcornstash.feature.library.DownloadFoldersScreen(route.id, ui.library?.name ?: route.name, services, isOwner, bottomClearance,
+            onBack = nav::back, onAllVideos = { allVideos = true }, onFiles = { nav.open(HomeRoute.Files(route.id, route.name, true)) },
+            onOpen = { nav.open(HomeRoute.Item(it.id, services.format.displayTitle(it))) })
+        return
+    }
     var viewer by rememberSaveable { mutableStateOf<String?>(null) }
     val format = services.format
     LibraryScreen(
@@ -62,6 +69,7 @@ internal fun LibraryPage(route: HomeRoute.Library, bottomClearance: Dp, services
             back = nav::back,
             search = { nav.open(HomeRoute.Files(route.id, route.name, false)) },
             folders = { nav.open(HomeRoute.Files(route.id, route.name, true)) },
+            downloads = if (ui.library?.contentType == com.thekozugroup.popcornstash.data.api.ContentType.Video) ({ allVideos = false }) else null,
             retry = model::retry,
             loadMore = model::loadMore,
             sort = model::setSort,

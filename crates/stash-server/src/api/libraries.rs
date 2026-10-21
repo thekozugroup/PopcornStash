@@ -46,6 +46,14 @@ pub fn routes() -> Router<AppState> {
             get(subfolders).post(create_subfolder),
         )
         .route("/api/libraries/{id}/move", post(move_items))
+        .route(
+            "/api/libraries/{id}/download-folders",
+            get(download_folders).post(name_download_folder),
+        )
+        .route(
+            "/api/libraries/{id}/download-folders/move",
+            post(move_download_folder),
+        )
         .route("/api/libraries/{id}/shows", get(shows))
         .route("/api/libraries/{id}/shows/{name}", get(show))
         .route("/api/libraries/{id}/timeline", get(timeline))
@@ -387,6 +395,43 @@ async fn move_items(
     visible_library(&state, &access, &id).await?;
     user.require_owner()?;
     Ok(Json(state.library.move_library_items(&id, &body).await?))
+}
+
+async fn download_folders(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Vec<stash_core::library::download_folders::DownloadFolder>>> {
+    user.require(Scope::LibraryRead)?;
+    let access = user.access(&state.db).await?;
+    visible_library(&state, &access, &id).await?;
+    Ok(Json(state.library.download_folders(&id).await?))
+}
+async fn name_download_folder(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<stash_core::library::download_folders::NameFolder>,
+) -> ApiResult<Json<serde_json::Value>> {
+    user.require(Scope::LibraryRead)?;
+    let access = user.access(&state.db).await?;
+    visible_library(&state, &access, &id).await?;
+    user.require_owner()?;
+    let key = state.library.name_download_folder(&id, &body).await?;
+    Ok(Json(serde_json::json!({"key":key})))
+}
+async fn move_download_folder(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<stash_core::library::download_folders::MoveToFolder>,
+) -> ApiResult<StatusCode> {
+    user.require(Scope::LibraryRead)?;
+    let access = user.access(&state.db).await?;
+    visible_library(&state, &access, &id).await?;
+    user.require_owner()?;
+    state.library.move_to_download_folder(&id, &body).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Serialize)]
@@ -1306,6 +1351,104 @@ mod tests {
             .await
             .0,
             StatusCode::FORBIDDEN
+        );
+    }
+    #[tokio::test]
+    async fn download_folder_routes_preserve_library_and_owner_boundaries() {
+        let app = TestApp::new().await;
+        let (owner_id, owner) = app.user("owner").await;
+        let (_, member) = app.user("member").await;
+        let reader = app.device_token(&owner_id, &["library:read"]).await;
+        let base = format!("/api/libraries/{STARTING_MOVIES}");
+        let folders = format!("{base}/download-folders");
+        assert_eq!(app.get(&folders, None).await.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(app.json(&folders, &member).await.0, StatusCode::OK);
+        for token in [&member, &reader] {
+            assert_eq!(
+                app.send_json(
+                    "POST",
+                    &folders,
+                    token,
+                    serde_json::json!({"name":"Collection"})
+                )
+                .await
+                .0,
+                StatusCode::FORBIDDEN
+            );
+        }
+        let (status, created) = app
+            .send_json(
+                "POST",
+                &folders,
+                &owner,
+                serde_json::json!({"name":"Collection"}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{created}");
+        assert!(created["key"].as_str().unwrap().starts_with("custom:"));
+        let (_, list) = app.json(&folders, &member).await;
+        assert_eq!(list[0]["name"], "Collection");
+        assert_eq!(list[0]["item_count"], 0);
+        assert_eq!(
+            app.send_json(
+                "POST",
+                &format!("{folders}/move"),
+                &owner,
+                serde_json::json!({"key":created["key"],"item_ids":[]})
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            app.send_json(
+                "POST",
+                &folders,
+                &owner,
+                serde_json::json!({"name":"../outside"})
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        app.send_json(
+            "PATCH",
+            &base,
+            &owner,
+            serde_json::json!({"visibility":"selected","member_ids":[]}),
+        )
+        .await;
+        assert_eq!(app.json(&folders, &member).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(
+            app.send_json(
+                "POST",
+                &folders,
+                &member,
+                serde_json::json!({"name":"../outside"})
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            app.send_json(
+                "POST",
+                &format!("{folders}/move"),
+                &member,
+                serde_json::json!({"key":"missing","item_ids":["unknown"]})
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            app.json(
+                &format!("/api/items?library_id={STARTING_MOVIES}&download_group=loose"),
+                &member
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
         );
     }
 }

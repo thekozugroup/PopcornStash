@@ -168,6 +168,7 @@ class HomeTabTest {
 
     private fun openMovies() {
         waitFor(hasText("Movies")).performClick()
+        waitFor(hasText("All videos")).performClick()
         waitFor(hasText("A Quiet Orchard"))
         compose.onNodeWithTag("library grid").assertExists()
     }
@@ -189,6 +190,7 @@ class HomeTabTest {
         waitFor(hasText("Continue watching"))
         val movies = SampleMedia.movies
         compose.runOnUiThread { requests.openHome(HomeRoute.Library(movies.id, movies.name, movies.icon)) }
+        waitFor(hasText("All videos")).performClick()
         waitFor(hasTestTag("library grid"))
         waitFor(hasText("A Quiet Orchard"))
         compose.runOnIdle { assertEquals(null, requests.home) }

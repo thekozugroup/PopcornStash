@@ -74,6 +74,7 @@ class LibraryActions(
     val edit: () -> Unit = {},
     val search: () -> Unit = {},
     val folders: () -> Unit = {},
+    val downloads: (() -> Unit)? = null,
 )
 
 /**
@@ -106,6 +107,7 @@ fun LibraryScreen(
                 if (content is LibraryViewModel.Content.Items && library != null) {
                     SortAction(content.sort, ItemSort.optionsFor(library.layout), actions.sort)
                 }
+                actions.downloads?.let { TopBarAction(PopcornIcons.Downloads, "By download", it) }
                 TopBarAction(PopcornIcons.Search, "Search library", actions.search)
                 TopBarAction(PopcornIcons.Folder, if (isOwner) "Organize files" else "Browse folders", actions.folders)
                 if (isOwner) TopBarAction(PopcornIcons.EditLibrary, "Edit library", actions.edit)

@@ -31,6 +31,7 @@ export function TorrentFilesDialog({download, onClose, onSaved}: {
   const [search, setSearch] = useState('');
   const [shown, setShown] = useState(100);
   const [filterError, setFilterError] = useState<string>();
+  const [filtersPending, setFiltersPending] = useState(false);
   const [draft, setDraft] = useState({...emptyFileRules});
   const [ruleTypes, setRuleTypes] = useState<TorrentFileKind[]>(['video', 'subtitle']);
   useEffect(() => {
@@ -42,7 +43,7 @@ export function TorrentFilesDialog({download, onClose, onSaved}: {
         const next = await api.files(download.id, controller.signal);
         if (cancelled) return;
         setData(next);
-        if (next.ready) { setDraft({...draftFromRules(next.rules), enabled: true}); setFilterError(undefined); setRuleTypes(next.rules?.file_types ?? ['video', 'subtitle']); }
+        if (next.ready) { setDraft({...draftFromRules(next.rules), enabled: true}); setFilterError(undefined); setFiltersPending(false); setRuleTypes(next.rules?.file_types ?? ['video', 'subtitle']); }
         setError(null);
         if (next.ready) setSelected(new Set(next.files.filter(file => file.selected).map(file => file.index)));
         else timer = setTimeout(() => void load(), 3000);
@@ -54,14 +55,16 @@ export function TorrentFilesDialog({download, onClose, onSaved}: {
   const files = data?.files ?? [];
   const preview = selected;
   const updateFilters = (nextDraft: FileRuleDraft, nextTypes: TorrentFileKind[]) => {
-    setDraft(nextDraft); setRuleTypes(nextTypes);
-    const result = selectionFromFilters(files, nextDraft, nextTypes);
+    setDraft(nextDraft); setRuleTypes(nextTypes); setFilterError(undefined); setFiltersPending(true);
+  };
+  const applyFilters = () => {
+    const result = selectionFromFilters(files, draft, ruleTypes);
     setFilterError(result.error);
-    if (result.selected) setSelected(result.selected);
+    if (result.selected) { setSelected(result.selected); setFiltersPending(false); }
   };
   const visible = files.filter(file => file.path.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   const save = async () => {
-    if (filterError || selected.size === 0) return;
+    if (filtersPending || filterError || selected.size === 0) return;
     setBusy(true); setError(null);
     try {
       if (data?.review_required) await api.startTorrent(download.id, [...selected]);
@@ -83,7 +86,9 @@ export function TorrentFilesDialog({download, onClose, onSaved}: {
           <VStack gap={3}>
             <TorrentTypeChoices showHelp={false} label="File types" value={ruleTypes} onChange={types => updateFilters(draft, types)} disabled={busy} />
             <FileRulesEditor value={draft} onChange={value => updateFilters(value, ruleTypes)} disabled={busy} error={filterError} />
-            <Text as="p" type="supporting" color="secondary">Selection updates as you edit. Fine-tune individual files below.</Text>
+            <Text as="p" type="supporting" color="secondary">Choose filters, then press Filter to select matching files. You can adjust individual files afterward.</Text>
+          <HStack gap={2} wrap="wrap"><Button label="Filter" variant="secondary" isDisabled={busy} onClick={applyFilters} />
+              {filtersPending ? <Text type="supporting" color="secondary" role="status">Filters changed · selection unchanged</Text> : null}</HStack>
           </VStack>
           <Divider />
           <TextInput label="Find files in this torrent" value={search} onChange={value => { setSearch(value); setShown(100); }} hasClear />
@@ -109,7 +114,7 @@ export function TorrentFilesDialog({download, onClose, onSaved}: {
         {data?.ready ? <Text as="p" type="supporting" aria-live="polite">{formatCount(preview.size, 'file')} selected · {formatBytes(files.reduce((sum, f) => sum + (preview.has(f.index) ? f.size : 0), 0))}</Text> : null}
         <HStack gap={2} hAlign="end" wrap="wrap">
         <Button label="Close" variant="secondary" isDisabled={busy} onClick={onClose} />
-        <Button label={data?.review_required ? 'Start download' : 'Save selection'} variant="primary" isDisabled={!data?.ready || selected.size === 0 || !!filterError} isLoading={busy} onClick={() => void save()} />
+        <Button label={data?.review_required ? 'Start download' : 'Save selection'} variant="primary" isDisabled={!data?.ready || selected.size === 0 || filtersPending || !!filterError} isLoading={busy} onClick={() => void save()} />
       </HStack></VStack></LayoutFooter>} />
   </Dialog>;
 }

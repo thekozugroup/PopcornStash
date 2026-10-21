@@ -618,10 +618,13 @@ export interface OkResponse {
 export type ItemSort = 'added' | 'title' | 'taken' | 'size';
 export type SortOrder = 'asc' | 'desc';
 
+export interface DownloadFolder {key: string; name: string; item_count: number; size: number; added_at: number; custom: boolean}
+
 export interface FolderList { folder: string; folders: string[] }
 export interface BatchResult { completed: string[]; failed: {id: string; message: string}[] }
 
 export interface ItemQuery extends PageParams {
+  download_group?: string;
   folder?: string;
   include_inbox?: boolean;
   /** Items of one library (404 when the caller cannot see it). */

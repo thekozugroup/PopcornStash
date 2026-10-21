@@ -420,6 +420,7 @@ data class ItemPage(val items: List<Item>, val nextCursor: String? = null)
 
 /** `GET /api/items` filters; null ones are left out. */
 data class ItemQuery(
+    val downloadGroup: String? = null,
     val folder: String? = null,
     val includeInbox: Boolean? = null,
     val libraryId: String? = null,
@@ -715,3 +716,6 @@ data class FileBatchFailure(val id: String, val message: String)
 data class MoveFiles(val itemIds: List<String>, val folder: String)
 @Serializable
 data class SelectedFiles(val itemIds: List<String>)
+
+@Serializable
+data class DownloadFolder(val key: String, val name: String, @SerialName("item_count") val itemCount: Int, val size: Long, @SerialName("added_at") val addedAt: Long, val custom: Boolean = false)

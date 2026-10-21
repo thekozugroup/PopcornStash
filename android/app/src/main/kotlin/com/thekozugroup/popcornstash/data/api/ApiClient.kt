@@ -104,6 +104,16 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
 
     suspend fun library(id: String): Library = get("/api/libraries/${seg(id)}", Library.serializer())
 
+    suspend fun downloadFolders(id: String): List<DownloadFolder> = get("/api/libraries/${seg(id)}/download-folders", ListSerializer(DownloadFolder.serializer()))
+
+    suspend fun nameDownloadFolder(id: String, name: String, key: String? = null): String = send(
+        request("/api/libraries/${seg(id)}/download-folders").post(buildJsonObject { put("name", name); key?.let { put("key", it) } }.toString().toRequestBody(JSON)).build(), JsonObject.serializer(),
+    ).getValue("key").jsonPrimitive.content
+
+    suspend fun moveToDownloadFolder(id: String, key: String, itemIds: List<String>) = sendEmpty(
+        request("/api/libraries/${seg(id)}/download-folders/move").post(buildJsonObject { put("key", key); put("item_ids", JsonArray(itemIds.map { JsonPrimitive(it) })) }.toString().toRequestBody(JSON)).build(),
+    )
+
     suspend fun libraryFolders(id: String, folder: String): LibraryFolders =
         get("/api/libraries/${seg(id)}/folders", LibraryFolders.serializer(), "folder" to folder)
 
@@ -180,6 +190,7 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
             ItemPage.serializer(),
             "library_id" to query.libraryId,
             "folder" to query.folder,
+            "download_group" to query.downloadGroup,
             "include_inbox" to query.includeInbox?.toString(),
             "place" to query.place?.let { wire(Place.serializer(), it) },
             "category" to query.category?.wire,

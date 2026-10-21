@@ -43,6 +43,8 @@ pub struct ItemQuery {
     pub library_id: Option<String>,
     /// Library-relative folder, including descendants. Requires library_id.
     pub folder: Option<String>,
+    /// Flat presentation folder, including all nested source paths. Requires library_id.
+    pub download_group: Option<String>,
     /// Search includes waiting Inbox files, never missing or trashed ones.
     pub include_inbox: bool,
     pub place: Option<Place>,
@@ -224,7 +226,7 @@ async fn suggestion_for(
 
 /// Columns for an item joined with one user's progress. Bind the user id right after this.
 const SELECT_ITEMS: &str = "SELECT i.*, p.position_s AS p_position_s, p.duration_s AS p_duration_s, p.finished AS p_finished \
-     FROM items i LEFT JOIN item_progress p ON p.item_id = i.id AND p.user_id = ";
+     FROM items i LEFT JOIN libraries l ON l.id=i.library_id LEFT JOIN item_progress p ON p.item_id = i.id AND p.user_id = ";
 
 #[derive(sqlx::FromRow)]
 struct ItemWithProgress {
@@ -492,6 +494,18 @@ pub async fn list(db: &Db, query: &ItemQuery, viewer: &Viewer) -> Result<Page<It
             .push_bind(prefix.chars().count() as i64)
             .push(") = ")
             .push_bind(prefix);
+    }
+    if let Some(group) = &query.download_group {
+        super::download_folders::validate_key(group)?;
+        if query.library_id.is_none() {
+            return Err(CoreError::invalid(
+                "Choose a library before a download folder.",
+            ));
+        }
+        qb.push(" AND i.kind='video' AND ")
+            .push(super::download_folders::GROUP_KEY)
+            .push(" = ")
+            .push_bind(group.clone());
     }
     if let Some(place) = query.place {
         qb.push(" AND i.place = ").push_bind(place.as_str());

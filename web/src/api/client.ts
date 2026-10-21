@@ -10,7 +10,7 @@ import type {ConversionPolicy, ConversionView, TranscodingOverview} from './type
  * refresh `/api/auth/state` and route to sign-in.
  */
 import type {
-  CleanupFile, FileTrashEntry, FolderList, BatchResult,
+  CleanupFile, FileTrashEntry, FolderList, BatchResult, DownloadFolder,
   AuditEntry,
   AuthState,
   AuthenticationCredentialJSON,
@@ -382,6 +382,9 @@ export const libraries = {
   conversion: (id: string, signal?: AbortSignal) => get<ConversionView>(`/api/libraries/${enc(id)}/conversion`, undefined, signal),
   saveConversion: (id: string, policy: ConversionPolicy) => put<ConversionView>(`/api/libraries/${enc(id)}/conversion`, policy),
   retryConversion: (id: string) => post<ConversionView>(`/api/libraries/${enc(id)}/conversion/retry`),
+  downloadFolders: (id: string, signal?: AbortSignal) => get<DownloadFolder[]>(`/api/libraries/${enc(id)}/download-folders`, {}, signal),
+  nameDownloadFolder: (id: string, name: string, key?: string) => post<{key: string}>(`/api/libraries/${enc(id)}/download-folders`, {name, key}),
+  moveToDownloadFolder: (id: string, key: string, item_ids: string[]) => post<void>(`/api/libraries/${enc(id)}/download-folders/move`, {key, item_ids}),
   subfolders: (id: string, folder: string, signal?: AbortSignal) => get<FolderList>(`/api/libraries/${enc(id)}/folders`, {folder}, signal),
   createFolder: (id: string, parent: string, name: string) => post<void>(`/api/libraries/${enc(id)}/folders`, {parent, name}),
   moveItems: (id: string, item_ids: string[], folder: string) => post<BatchResult>(`/api/libraries/${enc(id)}/move`, {item_ids, folder}),
@@ -419,6 +422,9 @@ export const items = {
       '/api/items',
       {
         library_id: query.library_id,
+        folder: query.folder,
+        download_group: query.download_group,
+        include_inbox: query.include_inbox,
         place: query.place,
         category: query.category,
         q: query.q,

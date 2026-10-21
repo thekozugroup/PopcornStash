@@ -94,7 +94,7 @@ fun DownloadsTab(
     DownloadsPage(page = page, state = state, actions = actions, nowSeconds = now, snackbar = snackbar)
     files?.let { manifest ->
         TorrentFilesSheet(manifest, controller.torrentFiles::toggle, controller.torrentFiles::submit, controller.torrentFiles::close, controller.torrentFiles::refresh,
-            onDraft = controller.torrentFiles::draft, onType = controller.torrentFiles::type)
+            onDraft = controller.torrentFiles::draft, onType = controller.torrentFiles::type, onFilter = controller.torrentFiles::filter)
     }
 }
 

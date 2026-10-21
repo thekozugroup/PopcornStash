@@ -8,6 +8,7 @@ pub mod cleanup;
 pub mod conversion;
 pub mod defs;
 pub mod destinations;
+pub mod download_folders;
 pub mod folders;
 pub mod organizer;
 pub mod parse;

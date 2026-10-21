@@ -3774,3 +3774,211 @@ async fn shfs_cleanup_trash_restore() {
         h.root.display()
     );
 }
+
+#[tokio::test]
+async fn download_folders_flatten_nested_sources_keep_names_after_history_removal_and_page_videos()
+{
+    use super::defs::STARTING_MOVIES;
+    let h = harness().await;
+    sqlx::query("INSERT INTO users VALUES('u','Owner','owner','origin-test',0)")
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO downloads(id,kind,name,source,state,created_by,created_at,updated_at) VALUES('source-a','torrent','Original collection','magnet:redacted','sorted','u',0,0)").execute(&h.lib.db).await.unwrap();
+    let mut ids = Vec::new();
+    for (path, data) in [
+        ("Movies/One/deep/a.mkv", b"a".as_slice()),
+        ("Movies/Two/b.mp4", b"bb".as_slice()),
+        ("Movies/Separate/c.mkv", b"ccc".as_slice()),
+        ("Movies/loose.mkv", b"loose".as_slice()),
+    ] {
+        h.write(path, data);
+        let item = h.lib.index_path(path).await.unwrap().unwrap();
+        if ids.len() < 2 {
+            sqlx::query("UPDATE items SET source_download_id='source-a' WHERE id=?")
+                .bind(&item.id)
+                .execute(&h.lib.db)
+                .await
+                .unwrap();
+        }
+        ids.push(item.id);
+    }
+    let groups = h.lib.download_folders(STARTING_MOVIES).await.unwrap();
+    assert_eq!(groups.len(), 3);
+    let origin = groups
+        .iter()
+        .find(|g| g.key == "download:source-a")
+        .unwrap();
+    assert_eq!(
+        (origin.name.as_str(), origin.item_count, origin.size),
+        ("Original collection", 2, 3)
+    );
+    assert!(groups.iter().any(|g| g.key == "folder:Separate"));
+    assert!(groups.iter().any(|g| g.key == "loose"));
+    sqlx::query("UPDATE downloads SET name='Resolved collection' WHERE id='source-a'")
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM downloads WHERE id='source-a'")
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        h.lib
+            .download_folders(STARTING_MOVIES)
+            .await
+            .unwrap()
+            .iter()
+            .find(|g| g.key == "download:source-a")
+            .unwrap()
+            .name,
+        "Resolved collection"
+    );
+    let mut query = ItemQuery {
+        library_id: Some(STARTING_MOVIES.into()),
+        download_group: Some("download:source-a".into()),
+        limit: Some(1),
+        ..Default::default()
+    };
+    let first = repo::list(&h.lib.db, &query, &h.owner()).await.unwrap();
+    assert_eq!(first.items.len(), 1);
+    query.cursor = first.next_cursor;
+    let second = repo::list(&h.lib.db, &query, &h.owner()).await.unwrap();
+    assert_eq!(second.items.len(), 1);
+    assert_ne!(first.items[0].id, second.items[0].id);
+    assert!(second.next_cursor.is_none());
+    assert!(ids[..2].contains(&first.items[0].id) && ids[..2].contains(&second.items[0].id));
+    assert!(h.exists("Movies/One/deep/a.mkv") && h.exists("Movies/Two/b.mp4"));
+    query.library_id = None;
+    assert!(repo::list(&h.lib.db, &query, &h.owner()).await.is_err());
+}
+
+#[tokio::test]
+async fn download_folder_edits_are_atomic_preserve_files_history_and_current_library_scope() {
+    use super::defs::{STARTING_HOME_VIDEOS, STARTING_MOVIES};
+    use super::download_folders::{MoveToFolder, NameFolder};
+    let h = harness().await;
+    h.write("Movies/Source/deep/keep.mkv", b"untouched video");
+    let item = h
+        .lib
+        .index_path("Movies/Source/deep/keep.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query("INSERT INTO users VALUES('u','Owner','owner','folder-origin-key',0)")
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO item_progress(user_id,item_id,position_s,duration_s,updated_at) VALUES('u',?,42,100,0)").bind(&item.id).execute(&h.lib.db).await.unwrap();
+    sqlx::query("UPDATE items SET favorite=1 WHERE id=?")
+        .bind(&item.id)
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    let target = h
+        .lib
+        .name_download_folder(
+            STARTING_MOVIES,
+            &NameFolder {
+                key: None,
+                name: "Favourites".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        h.lib
+            .move_to_download_folder(
+                STARTING_MOVIES,
+                &MoveToFolder {
+                    key: target.clone(),
+                    item_ids: vec![item.id.clone(), "stale-id".into()]
+                }
+            )
+            .await
+            .is_err()
+    );
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_download_members")
+        .fetch_one(&h.lib.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "one stale item must roll back the complete batch");
+    h.lib
+        .move_to_download_folder(
+            STARTING_MOVIES,
+            &MoveToFolder {
+                key: target.clone(),
+                item_ids: vec![item.id.clone()],
+            },
+        )
+        .await
+        .unwrap();
+    h.lib
+        .name_download_folder(
+            STARTING_MOVIES,
+            &NameFolder {
+                key: Some(target.clone()),
+                name: "Renamed collection".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let rows = repo::list(
+        &h.lib.db,
+        &ItemQuery {
+            library_id: Some(STARTING_MOVIES.into()),
+            download_group: Some(target.clone()),
+            ..Default::default()
+        },
+        &h.owner(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows.items.len(), 1);
+    assert!(rows.items[0].favorite);
+    assert_eq!(rows.items[0].progress.as_ref().unwrap().position_s, 42.0);
+    assert_eq!(rows.items[0].rel_path, item.rel_path);
+    assert_eq!(
+        std::fs::read(h.root.join(&item.rel_path)).unwrap(),
+        b"untouched video"
+    );
+    for name in ["../escape", ".hidden", "a/b", " a", "a\\b", ""] {
+        assert!(
+            h.lib
+                .name_download_folder(
+                    STARTING_MOVIES,
+                    &NameFolder {
+                        key: None,
+                        name: name.into()
+                    }
+                )
+                .await
+                .is_err()
+        );
+    }
+    // An external move cannot attach another library's private presentation label.
+    h.write("Home Videos/Moved/keep.mkv", b"untouched video");
+    sqlx::query("UPDATE items SET rel_path='Home Videos/Moved/keep.mkv' WHERE id=?")
+        .bind(&item.id)
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    let groups = h.lib.download_folders(STARTING_HOME_VIDEOS).await.unwrap();
+    assert!(
+        groups
+            .iter()
+            .all(|g| g.key != target && g.name != "Renamed collection")
+    );
+    assert!(
+        h.lib
+            .move_to_download_folder(
+                STARTING_HOME_VIDEOS,
+                &MoveToFolder {
+                    key: target,
+                    item_ids: vec![item.id]
+                }
+            )
+            .await
+            .is_err()
+    );
+}

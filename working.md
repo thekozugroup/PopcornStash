@@ -1,3 +1,12 @@
+## Current continuation: Download folders and explicit filters, 2026-10-21
+
+- Scope: browse libraries by source download, show all videos one level below each source, owner folder organization, and explicit Filter selection on web/Android. Preserve media, active transfers/conversions, passkeys and strong biometric entry. Existing files stay in place unless the owner explicitly moves or renames them.
+- Design: Taste/Impeccable Operate refinement; preserve Astryx, Newsreader and existing spacing/targets. Download grouping and physical-folder actions must be clearly distinguished.
+- Implemented in the prepared clean main checkout: default By download view on web and Android; original source names survive download-history clearing; owner create/rename and atomic bulk moves between presentation folders; source-scoped search/sort/pagination and live refresh. All videos and explicit physical Organize files remain available. No automatic filesystem changes.
+- Explicit Filter now applies type/name/size drafts only when pressed; pending drafts leave selection untouched and block Start/Save until applied. Manual per-file choices remain exact afterward.
+- Verified so far: web check/build (74 tests), extension check/ZIP (78 tests), Android test/lint/assembleDebug/verifyRoborazziDebug/checkLucideGlyphs (882 tests, four intentional real-server skips), nine changed/new goldens recorded and inspected; Taste/Impeccable and React review. Desktop/390px browser fixture proves scoped nested videos, create/rename and exact bulk move IDs, explicit filtering/manual override with Start [2,5]; no console errors or overflow at 320px. Headed Android 17 emulator independently starts exactly [2,5] after pressing Filter and adding one subtitle. Native exact-source rebuild, Docker smoke and Atlas deployment pending.
+- Physical Pixel is disconnected at this observation; no phone data or biometric settings changed. Preserve primary unrelated untracked duplicates.
+
 # PopcornStash, iteration 1
 
 ## Filter, shared-layout and biometric refinement, 2026-10-21
