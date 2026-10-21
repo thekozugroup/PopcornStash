@@ -5,6 +5,7 @@
 pub mod access;
 pub mod classify;
 pub mod cleanup;
+pub mod conversion;
 pub mod defs;
 pub mod destinations;
 pub mod folders;

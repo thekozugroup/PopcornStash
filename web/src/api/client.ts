@@ -1,3 +1,4 @@
+import type {ConversionPolicy, ConversionView} from './types';
 /**
  * Typed client for the PopcornStash HTTP API (docs/architecture.md section 8).
  *
@@ -377,6 +378,9 @@ export const home = {
 };
 
 export const libraries = {
+  conversion: (id: string, signal?: AbortSignal) => get<ConversionView>(`/api/libraries/${enc(id)}/conversion`, undefined, signal),
+  saveConversion: (id: string, policy: ConversionPolicy) => put<ConversionView>(`/api/libraries/${enc(id)}/conversion`, policy),
+  retryConversion: (id: string) => post<ConversionView>(`/api/libraries/${enc(id)}/conversion/retry`),
   subfolders: (id: string, folder: string, signal?: AbortSignal) => get<FolderList>(`/api/libraries/${enc(id)}/folders`, {folder}, signal),
   createFolder: (id: string, parent: string, name: string) => post<void>(`/api/libraries/${enc(id)}/folders`, {parent, name}),
   moveItems: (id: string, item_ids: string[], folder: string) => post<BatchResult>(`/api/libraries/${enc(id)}/move`, {item_ids, folder}),

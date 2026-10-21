@@ -259,4 +259,15 @@ class PlayerScreenTest {
 
     private fun androidx.compose.ui.test.junit4.ComposeTestRule.onAllNodesWithText(text: String) =
         onAllNodes(androidx.compose.ui.test.hasText(text)).fetchSemanticsNodes()
+    @Test fun browseDrawerOpensWithSwipeAndSelectsVideo() {
+        var selected: String? = null
+        compose.setContent { PlayerTheme {
+            PlayerScreen(PlayerSamples.episode.copy(recommendations = listOf(PlayerItems.film.item)), { PlayerSamples.clock },
+                PlayerActions(onPlayVideo = { selected = it }), true, {}) { SampleFrame(it) }
+        } }
+        compose.onNodeWithTag("more videos").performTouchInput { swipe(Offset(centerX, bottom - 2), Offset(centerX, top + 2), 300) }
+        compose.onNodeWithText("Paper Boats").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(PlayerItems.film.id, selected) }
+    }
+
 }

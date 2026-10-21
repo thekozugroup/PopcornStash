@@ -165,6 +165,10 @@ pub async fn test_state(dir: &std::path::Path) -> anyhow::Result<AppState> {
 
 /// Register job handlers and spawn every background task.
 pub async fn start_background(state: &AppState, cancel: CancellationToken) -> anyhow::Result<()> {
+    if let Err(error) = stash_core::library::conversion::recover(&state.library).await {
+        tracing::error!(%error, "automatic conversion needs recovery; other services remain available");
+    }
+    stash_core::library::conversion::start(state.library.clone(), cancel.clone());
     state.jobs.recover().await?;
     let lib = state.library.clone();
     let scan = handler(move |_job: Job| {

@@ -102,7 +102,7 @@ pub fn file_kind(path: &Path) -> &'static str {
     }
 }
 
-fn fingerprint(meta: &Metadata) -> String {
+pub(super) fn fingerprint(meta: &Metadata) -> String {
     let mut hash = Sha256::new();
     for n in [
         meta.dev(),
@@ -194,6 +194,58 @@ impl Root {
         .map_err(std::io::Error::from)?;
         let file = File::from(fd);
         Ok(file.metadata()?)
+    }
+
+    pub(super) fn file(&self, rel: &str) -> Result<File> {
+        let (parent, name) = self.parent(rel, false)?;
+        let fd = nix::fcntl::openat(
+            &parent,
+            name.as_c_str(),
+            nix::fcntl::OFlag::O_RDONLY
+                | nix::fcntl::OFlag::O_NOFOLLOW
+                | nix::fcntl::OFlag::O_NONBLOCK
+                | nix::fcntl::OFlag::O_CLOEXEC,
+            nix::sys::stat::Mode::empty(),
+        )
+        .map_err(std::io::Error::from)?;
+        let file = File::from(fd);
+        if !file.metadata()?.is_file() {
+            return Err(CoreError::invalid("Choose a regular video file."));
+        }
+        Ok(file)
+    }
+
+    /// Only worker-owned private leaves may be unlinked by conversion cleanup.
+    pub(super) fn remove_conversion_leaf(&self, rel: &str) -> Result<()> {
+        if !rel.starts_with(".popcornstash/Trash/conversion-") || !private_trash_leaf(rel) {
+            return Err(CoreError::invalid("Invalid conversion staging path."));
+        }
+        let (parent, name) = self.parent(rel, false)?;
+        validate_private(&parent)?;
+        match nix::unistd::unlinkat(
+            &parent,
+            name.as_c_str(),
+            nix::unistd::UnlinkatFlags::NoRemoveDir,
+        ) {
+            Ok(()) | Err(nix::errno::Errno::ENOENT) => Ok(()),
+            Err(e) => Err(std::io::Error::from(e).into()),
+        }
+    }
+
+    pub(super) fn remove_conversion_dir(&self, rel: &str) -> Result<()> {
+        if !rel.starts_with(".popcornstash/Trash/conversion-") || rel.split('/').count() != 3 {
+            return Err(CoreError::invalid("Invalid conversion staging folder."));
+        }
+        validate_private(&self.directory(rel)?)?;
+        let (parent, name) = self.parent(rel, false)?;
+        nix::unistd::unlinkat(
+            &parent,
+            name.as_c_str(),
+            nix::unistd::UnlinkatFlags::RemoveDir,
+        )
+        .map_err(std::io::Error::from)?;
+        parent.sync_all()?;
+        Ok(())
     }
 
     /// Public moves always require an atomic, exclusive native rename.

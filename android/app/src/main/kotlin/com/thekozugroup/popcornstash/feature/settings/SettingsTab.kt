@@ -7,6 +7,8 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -223,5 +225,11 @@ private fun LibraryEditorRoute(
     val controller = model.controller
     val state by controller.state.collectAsStateWithLifecycle()
     LaunchedEffect(state.finished) { state.finished?.let { onFinished(it.message) } }
-    LibraryEditorPage(state = state, actions = controller, onBack = onBack, bottomClearance = page.bottomClearance)
+    var conversion by rememberSaveable(id) { mutableStateOf(false) }
+    if (conversion && id != null) {
+        BackHandler { conversion = false }
+        LibraryConversionRoute(services.api, id, { conversion = false }, page.bottomClearance)
+    } else {
+        LibraryEditorPage(state = state, actions = controller, onBack = onBack, bottomClearance = page.bottomClearance, onConversion = { conversion = true })
+    }
 }

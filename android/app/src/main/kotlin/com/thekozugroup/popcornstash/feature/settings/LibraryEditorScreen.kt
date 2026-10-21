@@ -99,6 +99,7 @@ fun LibraryEditorPage(
     actions: LibraryEditorActions,
     onBack: () -> Unit,
     bottomClearance: Dp,
+    onConversion: () -> Unit = {},
 ) {
     val scroll = rememberScrollState()
     // Read the scroll position only when it crosses the top, not on every scrolled pixel.
@@ -130,6 +131,11 @@ fun LibraryEditorPage(
                     NewFiles(state, draft, actions, Modifier.bringIntoViewRequester(requesters.getValue(EditorField.Claims)))
                     Folder(state, draft, actions, Modifier.bringIntoViewRequester(requesters.getValue(EditorField.Folder)))
                     WhoSeesIt(state, draft, actions, Modifier.bringIntoViewRequester(requesters.getValue(EditorField.Visibility)))
+                    if (!state.isNew && draft.contentType == ContentType.Video) {
+                        FormSection("Video conversion", "Save space with verified AV1 or H.265 replacements.") {
+                            SecondaryButton("Manage video conversion", onClick = onConversion, enabled = !state.busy)
+                        }
+                    }
                     SaveFooter(state, actions)
                     DeleteLibrary(state, actions)
                 }

@@ -7,6 +7,12 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.onClick
@@ -111,6 +117,9 @@ data class PlayerActions(
     val onPlayNext: () -> Unit = {},
     val onPlayAgain: () -> Unit = {},
     val onRetry: () -> Unit = {},
+    val onPlayVideo: (String) -> Unit = {},
+    val onReloadVideos: () -> Unit = {},
+    val onBrowse: () -> Unit = {},
 )
 
 /**
@@ -127,7 +136,7 @@ data class PlayerActions(
  * [surface] draws the video ([androidx.media3.ui.compose.ContentFrame] on a phone).
  */
 @Composable
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 fun PlayerScreen(
     state: PlayerUiState,
     clock: () -> PlayerClock,
@@ -145,6 +154,8 @@ fun PlayerScreen(
     val phase = state.phase
     val ready = phase == PlayerPhase.Ready
     val playing = ready && state.playWhenReady
+    var drawerOpen by remember { mutableStateOf(false) }
+    val playerActions = actions.copy(onBrowse = { onChromeVisibleChange(true); drawerOpen = true })
     var menuOpen by remember { mutableStateOf(menuInitiallyOpen) }
     var seeking by remember { mutableStateOf(false) }
     var seekNotice by remember { mutableStateOf<String?>(null) }
@@ -175,10 +186,9 @@ fun PlayerScreen(
         val top = with(density) { ((flexHinge?.top ?: 0) - windowTop).toDp() }
         val bottom = with(density) { ((flexHinge?.bottom ?: 0) - windowTop).toDp() }
         val flex = !inPictureInPicture && flexHinge != null && top > 0.dp && bottom >= top && bottom < maxHeight
-        val portrait = !inPictureInPicture && !flex && maxHeight > maxWidth && !state.portrait
-        val split = flex || portrait
+        val split = flex
         val chromeShown = chromeVisible || !ready || split
-        val mayHide = playing && !menuOpen && !seeking && !inPictureInPicture && !split
+        val mayHide = playing && !menuOpen && !drawerOpen && !seeking && !inPictureInPicture && !split
         LaunchedEffect(chromeVisible, mayHide, touches) {
             if (chromeVisible && mayHide) {
                 delay(hideAfter)
@@ -187,12 +197,9 @@ fun PlayerScreen(
         }
         LaunchedEffect(split) { if (split) onChromeVisibleChange(true) }
         val safe = WindowInsets.systemBarsIgnoringVisibility.union(WindowInsets.displayCutout)
-        val pictureHeight = if (flex) top else {
-            val ratio = if (state.videoWidth > 0 && state.videoHeight > 0) state.videoWidth.toFloat() / state.videoHeight else 16f / 9f
-            (maxWidth / ratio + with(density) { safe.getTop(this).toDp() }).coerceAtMost(maxHeight / 2)
-        }
-        val controlsTop = if (flex) bottom else pictureHeight
-        Box(if (split) Modifier.fillMaxWidth().height(pictureHeight).testTag(if (flex) "flex video" else "portrait video") else Modifier.fillMaxSize()) {
+        val pictureHeight = top
+        val controlsTop = bottom
+        Box(if (split) Modifier.fillMaxWidth().height(pictureHeight).testTag("flex video") else Modifier.fillMaxSize()) {
             surface(if (split) Modifier.fillMaxSize().windowInsetsPadding(safe.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)) else Modifier.fillMaxSize())
         }
         if (inPictureInPicture) {
@@ -235,11 +242,11 @@ fun PlayerScreen(
             }
         }
         if (split) {
-            Box(Modifier.offset(y = controlsTop).fillMaxWidth().height(maxHeight - controlsTop).background(colors.page).testTag(if (flex) "flex controls" else "portrait controls")) {
+            Box(Modifier.offset(y = controlsTop).fillMaxWidth().height(maxHeight - controlsTop).background(colors.page).testTag("flex controls")) {
                 ControlPanel(
                     state = state,
                     clock = clock,
-                    actions = actions,
+                    actions = playerActions,
                     waiting = phase == PlayerPhase.Loading || (ready && (state.buffering || state.switching)),
                     menuOpen = menuOpen,
                     onMenuOpen = { menuOpen = it },
@@ -248,6 +255,12 @@ fun PlayerScreen(
                 )
             }
             return@BoxWithConstraints
+        }
+        if (!chromeShown) {
+            var upward by remember { mutableFloatStateOf(0f) }
+            Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(48.dp).testTag("browse swipe area").pointerInput(Unit) {
+                detectVerticalDragGestures(onDragStart = { upward = 0f }, onVerticalDrag = { change, delta -> change.consume(); upward += delta }, onDragEnd = { if (upward < -24.dp.toPx()) drawerOpen = true })
+            })
         }
         if (phase is PlayerPhase.Ended || phase is PlayerPhase.Failed) {
             Box(Modifier.fillMaxSize().background(colors.mediaControl))
@@ -266,7 +279,7 @@ fun PlayerScreen(
             Chrome(
                 state = state,
                 clock = clock,
-                actions = actions,
+                actions = playerActions,
                 waiting = waiting,
                 menuOpen = menuOpen,
                 onMenuOpen = { open ->
@@ -279,6 +292,31 @@ fun PlayerScreen(
                 },
                 touched = touched,
             )
+        }
+    }
+    if (drawerOpen && !inPictureInPicture) {
+        ModalBottomSheet(onDismissRequest = { drawerOpen = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = colors.page) {
+            Column(Modifier.fillMaxWidth().heightIn(max = with(density) { androidx.compose.ui.platform.LocalWindowInfo.current.containerSize.height.toDp() * .8f }).padding(horizontal = 24.dp)) {
+                Text("More videos", style = Popcorn.type.section, modifier = Modifier.semantics { heading() })
+                when {
+                    state.recommendationsLoading -> CircularProgressIndicator(Modifier.padding(24.dp))
+                    state.recommendationsError -> {
+                        Text("Videos could not be loaded.", modifier = Modifier.padding(vertical = 16.dp))
+                        SecondaryButton("Try again", onClick = actions.onReloadVideos)
+                    }
+                    state.recommendations.isEmpty() -> Text("No other videos in this library.", modifier = Modifier.padding(vertical = 24.dp))
+                    else -> LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false)) {
+                        items(state.recommendations, key = { it.id }) { video ->
+                            Column(Modifier.fillMaxWidth().clickable(role = Role.Button) { drawerOpen = false; actions.onPlayVideo(video.id) }.padding(vertical = 16.dp)) {
+                                Text(video.title, style = Popcorn.type.body, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                video.durationS?.let { Text(PlayerFormat.clock(it), style = Popcorn.type.metadata, color = colors.textMuted) }
+                            }
+                            HorizontalDivider()
+                        }
+                    }
+                }
+                Spacer(Modifier.height(24.dp))
+            }
         }
     }
 }
@@ -350,7 +388,7 @@ private fun Chrome(
             is PlayerPhase.Failed -> FailedMessage(phase, actions, Modifier.align(Alignment.Center))
         }
         if (state.phase == PlayerPhase.Ready) {
-            BottomRow(state, clock, actions, onSeeking, Modifier.align(Alignment.BottomCenter))
+            BottomRow(state, clock, actions, onSeeking, Modifier.align(Alignment.BottomCenter), stacked = androidx.compose.ui.platform.LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT)
         }
     }
 }
@@ -453,17 +491,17 @@ private fun BottomRow(
             delay(tokens.tickMs)
         }
     }
+    Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
     if (stacked) {
-        Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(tokens.gap), horizontalAlignment = Alignment.End) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(tokens.gap), horizontalAlignment = Alignment.End) {
             MediaPlate(Modifier.fillMaxWidth()) {
                 SeekBar(now.positionMs, now.bufferedMs, state.durationMs, actions.onSeek, onSeeking)
             }
             NextEpisodeButton(state, actions)
         }
-        return
-    }
+    } else {
     Row(
-        modifier.fillMaxWidth(),
+        Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(tokens.gap),
     ) {
@@ -478,6 +516,14 @@ private fun BottomRow(
         }
         NextEpisodeButton(state, actions)
     }
+    }
+    var upward by remember { mutableFloatStateOf(0f) }
+    TextButton(onClick = actions.onBrowse, modifier = Modifier.heightIn(min = 48.dp).testTag("more videos")
+        .pointerInput(actions.onBrowse) {
+            detectVerticalDragGestures(onDragStart = { upward = 0f }, onVerticalDrag = { change, delta -> change.consume(); upward += delta }, onDragEnd = { if (upward < -24.dp.toPx()) actions.onBrowse() })
+        }) { Text("More videos", color = colors.onMedia) }
+    }
+
 }
 
 @Composable

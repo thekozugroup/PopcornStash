@@ -84,6 +84,8 @@ object PlayerItems {
 /** The server as the player sees it: items, playback answers, and what was asked of it. */
 class FakePlayerApi(vararg items: ItemDetail) : PlayerApi {
     val items = items.associateBy { it.id }.toMutableMap()
+    var recommended: List<com.thekozugroup.popcornstash.data.api.Item> = emptyList()
+    override suspend fun recommendations(libraryId: String?) = recommended
     val itemReads = mutableListOf<String>()
     val playbackRequests = mutableListOf<Pair<String, PlaybackRequest>>()
     val stopped = mutableListOf<String>()

@@ -224,6 +224,8 @@ private fun PlayerActivity.PlayerRoute(model: PlayerViewModel, request: PlayerRe
             onPlayNext = controller::playNext,
             onPlayAgain = controller::playAgain,
             onRetry = controller::retry,
+            onPlayVideo = controller::playVideo,
+            onReloadVideos = controller::refreshRecommendations,
         ),
         chromeVisible = chromeVisible,
         onChromeVisibleChange = { chromeVisible = it },

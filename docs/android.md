@@ -175,10 +175,20 @@ Double tap the left or right of the player picture to go back or forward 15 seco
 
 ### Portrait playback and foldable controls
 
-Videos follow the phone’s rotation setting, including wide videos held upright. In portrait, wide video sits above controls with a full-width seek bar. Portrait video keeps its immersive layout. Tap the seek bar to jump to that point, or drag the thumb; playback stays playing or paused as it was. Double-tap the left/right of the picture to skip back/forward 15 seconds.
+Videos follow the phone’s rotation setting, including wide videos held upright. In ordinary portrait and landscape, every video stays on a full-screen fitted stage, with the title and menus at the top, play/pause over the picture and seeking at the bottom. Portrait never creates a separate control pane. Tap the seek bar to jump to that point, or drag the thumb; playback stays playing or paused as it was. Double-tap the left/right of the picture to skip back/forward 15 seconds.
 
-On a supported foldable, partly fold the screen with the hinge horizontal: video stays above the hinge and controls stay below it. Flattening or turning the phone keeps the current video and position. Controls remain visible in portrait and flex mode; the lower panel scrolls when space or larger text requires it. Flex detection requires the device to report a half-open horizontal hinge through Android WindowManager.
+On a supported foldable, partly fold the screen with the hinge horizontal: video stays above the hinge and controls stay below it. Flattening or turning the phone keeps the current video and position. Only flex mode has persistent controls in a separate lower pane; that pane scrolls when space or larger text requires it. Ordinary controls hide after inactivity while playing. Flex detection requires the device to report a half-open horizontal hinge through Android WindowManager.
 
 ### Review torrent files
 
 Adding a magnet or torrent link fetches its file list and opens Review torrent. Contents stay stopped until Start download. Expand Filters to select types, names or a file-size range, tap Apply filters to selection, then adjust individual checkboxes. Subtitles are optional. Find files searches the manifest without changing choices. The footer shows selected count and bytes, and stays visible while the list scrolls. Closing leaves the torrent waiting; reopen Choose files from its menu. Existing torrents use Save and preserve their pause state. Old server versions can still edit selections; metadata-first review requires the updated server.
+
+### More videos
+
+Tap **More videos** below the seek bar, or swipe up from the bottom of the player, in portrait or landscape. The drawer lists other videos in the same accessible library, excluding the current one; choosing one saves the current position and opens that video. Nothing starts automatically. Close the drawer or use system Back to return. Loading, empty and retry states stay inside the drawer.
+
+### Automatic library conversion
+
+Owners open **Settings → library → Manage video conversion**. Conversion is off by default. Enable it to allow verified, smaller replacements of existing and newly imported videos in that library. Choose AV1 or H.265, quality, and Automatic/GPU only/CPU only. Automatic uses an encoder that passed a real test on this server, preferring GPU; CPU encoding uses two threads. Activity shows conversion/checking/completion and reasons an original was kept. Retry stopped conversions after resolving an error. Turning it off cancels work before replacement; finished replacements remain.
+
+The server copies audio, subtitles, attachments, chapters and metadata, then fully decodes both versions, compares frame counts, timing and stream structure, and checks copied audio/subtitle payloads. Only a smaller verified file replaces its original, using Matroska (`.mkv`). Item identity, watch progress, favourites and titles remain. HDR, Dolby Vision, rotation, unusual colour formats and hard-linked media are kept unchanged. Conversion is lossy; these checks establish structural integrity, not identical picture quality. A durable journal restores an original if publication is interrupted. Downloads and unfinished/paused/seeding torrent files are excluded. This is processing on the server; remote worker pooling is not implemented.

@@ -31,6 +31,14 @@ pub fn routes() -> Router<AppState> {
         .route("/api/libraries/folders", get(folders))
         .route("/api/libraries/order", put(order))
         .route("/api/libraries/{id}", get(one).patch(edit).delete(remove))
+        .route(
+            "/api/libraries/{id}/conversion",
+            get(conversion).put(save_conversion),
+        )
+        .route(
+            "/api/libraries/{id}/conversion/retry",
+            post(retry_conversion),
+        )
         .route("/api/libraries/{id}/trash", post(remove_folder))
         .route(
             "/api/libraries/{id}/folders",
@@ -380,6 +388,55 @@ async fn move_items(
     Ok(Json(state.library.move_library_items(&id, &body).await?))
 }
 
+async fn conversion_access(state: &AppState, user: &AuthUser, id: &str) -> ApiResult<()> {
+    user.require(Scope::LibraryRead)?;
+    let access = user.access(&state.db).await?;
+    visible_library(state, &access, id).await?;
+    user.require_owner()?;
+    Ok(())
+}
+
+async fn conversion(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> ApiResult<Json<stash_core::library::conversion::View>> {
+    conversion_access(&state, &user, &id).await?;
+    Ok(Json(
+        stash_core::library::conversion::view(&state.library, &id).await?,
+    ))
+}
+async fn save_conversion(
+    State(state): State<AppState>,
+    user: AuthUser,
+    ip: ClientIp,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<stash_core::library::conversion::Policy>,
+) -> ApiResult<Json<stash_core::library::conversion::View>> {
+    conversion_access(&state, &user, &id).await?;
+    let view = stash_core::library::conversion::save(&state.library, &id, body).await?;
+    state
+        .auth
+        .audit(
+            Some(&user.user_id),
+            "library_conversion_changed",
+            serde_json::json!({"library_id":id,"policy":view.policy}),
+            ip.as_string().as_deref(),
+        )
+        .await;
+    Ok(Json(view))
+}
+async fn retry_conversion(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> ApiResult<Json<stash_core::library::conversion::View>> {
+    conversion_access(&state, &user, &id).await?;
+    Ok(Json(
+        stash_core::library::conversion::retry(&state.library, &id).await?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
@@ -389,6 +446,47 @@ mod tests {
     use stash_core::models::{Category, ItemStatus, MediaKind};
 
     use crate::api::library::testing::{TestApp, request};
+
+    #[tokio::test]
+    async fn conversion_is_owner_only_hidden_first_and_validated() {
+        let app = TestApp::new().await;
+        let (_, owner) = app.user("owner").await;
+        let (_, member) = app.user("member").await;
+        let path = format!("/api/libraries/{STARTING_MOVIES}/conversion");
+        assert_eq!(app.get(&path, None).await.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(app.get(&path, Some(&member)).await.0, StatusCode::FORBIDDEN);
+        let (status, _, bytes) = app.get(&path, Some(&owner)).await;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["policy"]["enabled"], false);
+        let p = serde_json::json!({"enabled":true,"codec":"av1","quality":"balanced","compute":"hardware"});
+        assert_eq!(
+            app.send_json("PUT", &path, &owner, p.clone()).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            app.send_json("PUT", &path, &member, p.clone()).await.0,
+            StatusCode::FORBIDDEN
+        );
+        let invalid = serde_json::json!({"enabled":true,"codec":"h264","quality":"balanced","compute":"auto"});
+        assert_eq!(
+            app.send_json("PUT", &path, &owner, invalid).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        let photos = format!("/api/libraries/{STARTING_PHOTOS}/conversion");
+        assert_eq!(
+            app.send_json("PUT", &photos, &owner, p).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        app.send_json(
+            "PATCH",
+            &format!("/api/libraries/{STARTING_MOVIES}"),
+            &owner,
+            serde_json::json!({"visibility":"selected","member_ids":[]}),
+        )
+        .await;
+        assert_eq!(app.get(&path, Some(&member)).await.0, StatusCode::NOT_FOUND);
+    }
 
     fn kids(folder: serde_json::Value) -> serde_json::Value {
         serde_json::json!({"name": "Kids", "icon": "baby", "content_type": "video",

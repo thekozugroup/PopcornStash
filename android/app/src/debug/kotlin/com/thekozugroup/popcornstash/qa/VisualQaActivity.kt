@@ -58,13 +58,21 @@ class VisualQaActivity : ComponentActivity() {
             if (showPlayer) PlayerTheme {
                 PlayerScreen(
                     PlayerUiState(title = "Playback preview", phase = PlayerPhase.Ready,
-                        playWhenReady = playing, durationMs = 12000, videoWidth = 640, videoHeight = 360),
+                        playWhenReady = playing, durationMs = 12000, videoWidth = 640, videoHeight = 360,
+                        recommendations = listOf(com.thekozugroup.popcornstash.data.api.Item(id = "qa-next", title = "Paper Boats", kind = com.thekozugroup.popcornstash.data.api.MediaKind.Video, durationS = 6.0))),
                     { PlayerClock(position, 12000) },
                     PlayerActions(onClose = { player.pause(); playing = false; showPlayer = false },
+                        onPlayVideo = { android.util.Log.i("PopcornPlayerQa", "Selected $it"); player.seekTo(0) },
                         onTogglePlay = { playing = !playing; player.playWhenReady = playing },
                         onSeek = { target -> player.seekTo(target); android.util.Log.i("PopcornPlayerQa", "Seek target=$target position=${player.currentPosition} playing=${player.playWhenReady}") }),
                     chromeVisible = chrome, onChromeVisibleChange = { chrome = it }, flexHinge = layout?.flexHinge(),
                 ) { ContentFrame(player = player, modifier = it) }
+            } else if (intent.getBooleanExtra("conversion", false)) PopcornTheme {
+                val policy = com.thekozugroup.popcornstash.data.api.ConversionPolicy()
+                var draft by remember { mutableStateOf(policy) }
+                com.thekozugroup.popcornstash.feature.settings.LibraryConversionPage(
+                    com.thekozugroup.popcornstash.feature.settings.ConversionUi(com.thekozugroup.popcornstash.data.api.LibraryConversion(policy), draft),
+                    { draft = it }, {}, {}, { finish() })
             } else if (intent.getBooleanExtra("torrent_files", false)) {
                 TorrentReviewPreview()
             } else if (intent.getBooleanExtra("torrent_rules", false)) PopcornTheme {

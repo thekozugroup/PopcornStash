@@ -73,6 +73,7 @@ export const routes: RouteObject[] = [
                   {path: 'security', ...page(() => import('../pages/settings/SecuritySettingsPage'))},
                   {path: 'libraries', ...page(() => import('../pages/settings/LibrariesSettingsPage'))},
                   {path: 'libraries/new', ...page(() => import('../pages/settings/LibraryEditorPage'))},
+                  {path: 'libraries/:id/conversion', ...page(() => import('../pages/settings/LibraryConversionPage'))},
                   {path: 'libraries/:id', ...page(() => import('../pages/settings/LibraryEditorPage'))},
                   {path: 'library', element: <Navigate to="/settings/libraries" replace />},
                   {path: 'system', ...page(() => import('../pages/settings/SystemSettingsPage'))},

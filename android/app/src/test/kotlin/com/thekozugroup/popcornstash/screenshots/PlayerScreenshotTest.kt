@@ -3,6 +3,9 @@ package com.thekozugroup.popcornstash.screenshots
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
+import com.thekozugroup.popcornstash.feature.player.PlayerItems
 import androidx.compose.ui.test.onRoot
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.github.takahirom.roborazzi.captureRoboImage
@@ -27,6 +30,7 @@ import org.robolectric.annotation.Config
  * Player), so the system's light and dark give the same picture; `player-paused-system-dark`
  * is there to show it.
  */
+@OptIn(com.github.takahirom.roborazzi.ExperimentalRoborazziApi::class)
 @RunWith(AndroidJUnit4::class)
 @Config(qualifiers = PHONE_LANDSCAPE)
 class PlayerScreenshotTest {
@@ -61,6 +65,25 @@ class PlayerScreenshotTest {
         }
         compose.mainClock.advanceTimeBy(SETTLE_MS)
         compose.waitForIdle()
+    }
+
+    @Test @Config(qualifiers = PHONE)
+    fun moreVideosPortrait() {
+        player(PlayerSamples.episode.copy(recommendations = listOf(PlayerItems.film.item)))
+        compose.mainClock.autoAdvance = true
+        compose.onNodeWithTag("more videos").performClick()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(1000)
+        captureScreenRoboImage(screenshot("player-more-videos-portrait"))
+    }
+
+    @Test fun moreVideosLandscape() {
+        player(PlayerSamples.episode.copy(recommendations = listOf(PlayerItems.film.item)))
+        compose.mainClock.autoAdvance = true
+        compose.onNodeWithTag("more videos").performClick()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(1000)
+        captureScreenRoboImage(screenshot("player-more-videos-landscape"))
     }
 
     private fun shoot(name: String) = compose.onRoot().captureRoboImage(screenshot(name))

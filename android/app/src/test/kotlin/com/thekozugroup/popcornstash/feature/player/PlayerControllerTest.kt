@@ -536,4 +536,21 @@ class PlayerControllerTest {
         assertEquals("Paper Boats", player.state.value.title)
         assertNull(player.state.value.subtitle)
     }
+    @Test fun drawerSelectionSavesProgressAndOnlyOpensAnOfferedVideo() = runTest {
+        val api = FakePlayerApi(PlayerItems.episodeOne, PlayerItems.film)
+        api.recommended = listOf(PlayerItems.episodeOne.item, PlayerItems.film.item)
+        val player = player(api)
+        player.open(PlayerRequest(PlayerItems.episodeOne.id))
+        runCurrent()
+        assertEquals(listOf(PlayerItems.film.id), player.state.value.recommendations.map { it.id })
+        engine.ready()
+        player.playVideo("unknown")
+        assertEquals(1, api.playbackRequests.size)
+        player.playVideo(PlayerItems.film.id)
+        runCurrent()
+        assertEquals(PlayerItems.film.id, api.playbackRequests.last().first)
+        assertTrue(api.progress.any { it.first == PlayerItems.episodeOne.id })
+        assertFalse(player.state.value.recommendations.any { it.id == PlayerItems.film.id })
+    }
+
 }

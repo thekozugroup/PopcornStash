@@ -967,3 +967,17 @@ export interface FileTrashEntry {
   trashed_at: UnixSeconds;
   trashed_by: string | null;
 }
+
+/** Owner-controlled, verified library replacement; disabled by default. */
+export interface ConversionPolicy {
+  enabled: boolean;
+  codec: 'av1' | 'hevc';
+  quality: 'high' | 'balanced' | 'small';
+  compute: 'auto' | 'hardware' | 'cpu';
+}
+export interface ConversionView {
+  policy: ConversionPolicy;
+  encoders: {codec: string; name: string; label: string; device: string | null; hardware: boolean}[];
+  pending: number;
+  jobs: {id: string; item_id: string | null; title: string; state: string; progress: number; encoder: string | null; message: string | null; saved_bytes: number}[];
+}

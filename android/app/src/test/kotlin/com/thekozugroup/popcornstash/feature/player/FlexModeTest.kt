@@ -92,7 +92,7 @@ class FlexModeTest {
     }
 
     @Test @Config(qualifiers = "w393dp-h851dp-mdpi")
-    fun wideVideoPlaysInPortraitWithFullWidthTapSeekingBelowThePicture() {
+    fun wideVideoUsesOverlayControlsInOrdinaryPortrait() {
         var target = -1L
         var visible by mutableStateOf(false)
         compose.setContent {
@@ -101,15 +101,14 @@ class FlexModeTest {
                     PlayerActions(onSeek = { target = it }), visible, { visible = it }) { SampleFrame(it) }
             }
         }
-        val picture = compose.onNodeWithTag("portrait video").getUnclippedBoundsInRoot()
-        val controls = compose.onNodeWithTag("portrait controls").getUnclippedBoundsInRoot()
-        val bar = compose.onNodeWithTag("seek bar").getUnclippedBoundsInRoot()
-        assertTrue(picture.bottom <= controls.top)
-        assertTrue(bar.top >= controls.top)
-        assertTrue("Next episode has its own row, leaving room to seek", bar.right - bar.left > 200.dp)
+        compose.runOnIdle { visible = true }
+        compose.onNodeWithTag("portrait video").assertDoesNotExist()
+        compose.onNodeWithTag("portrait controls").assertDoesNotExist()
+        compose.onNodeWithTag("flex controls").assertDoesNotExist()
         compose.onNodeWithTag("seek bar").performTouchInput { click(Offset(width * .75f, centerY)) }
         compose.runOnIdle { assertTrue("target=$target", target in 2_300_000..2_550_000) }
         compose.mainClock.advanceTimeBy(10_000)
+        compose.runOnIdle { visible = true }
         compose.onNodeWithContentDescription("Pause").assertIsDisplayed()
         compose.onNodeWithText("Next episode").assertIsDisplayed()
     }
@@ -127,7 +126,7 @@ class FlexModeTest {
         compose.runOnIdle { hinge = FlexHinge(410, 430) }
         compose.onNodeWithTag("flex controls").assertExists()
         compose.runOnIdle { hinge = null }
-        compose.onNodeWithTag("portrait controls").assertExists()
+        compose.onNodeWithTag("portrait controls").assertDoesNotExist()
         compose.runOnIdle { assertEquals(1, surfaces); assertEquals(0, releases) }
     }
 }

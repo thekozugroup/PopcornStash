@@ -92,6 +92,16 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
 
     suspend fun libraries(): List<Library> = get("/api/libraries", LibraryList.serializer()).libraries
 
+    suspend fun libraryConversion(id: String): LibraryConversion = get("/api/libraries/${seg(id)}/conversion", LibraryConversion.serializer())
+
+    suspend fun saveLibraryConversion(id: String, policy: ConversionPolicy): LibraryConversion = send(
+        request("/api/libraries/${seg(id)}/conversion").put(json.encodeToString(ConversionPolicy.serializer(), policy).toRequestBody(JSON)).build(), LibraryConversion.serializer(),
+    )
+
+    suspend fun retryLibraryConversion(id: String): LibraryConversion = send(
+        request("/api/libraries/${seg(id)}/conversion/retry").post(EMPTY_JSON).build(), LibraryConversion.serializer(),
+    )
+
     suspend fun library(id: String): Library = get("/api/libraries/${seg(id)}", Library.serializer())
 
     suspend fun libraryFolders(id: String, folder: String): LibraryFolders =

@@ -2,6 +2,8 @@ package com.thekozugroup.popcornstash.feature.player
 
 import com.thekozugroup.popcornstash.data.api.ApiClient
 import com.thekozugroup.popcornstash.data.api.ApiException
+import com.thekozugroup.popcornstash.data.api.Item
+import com.thekozugroup.popcornstash.data.api.ItemQuery
 import com.thekozugroup.popcornstash.data.api.ItemDetail
 import com.thekozugroup.popcornstash.data.api.MediaKind
 import com.thekozugroup.popcornstash.data.api.PlaybackDecision
@@ -21,6 +23,8 @@ import okhttp3.HttpUrl
 
 /** The calls the player makes (docs/architecture.md section 8), so tests can stand in for the server. */
 interface PlayerApi {
+    suspend fun recommendations(libraryId: String?): List<Item> = emptyList()
+
     suspend fun item(id: String): ItemDetail
 
     suspend fun playback(id: String, request: PlaybackRequest): PlaybackDecision
@@ -35,6 +39,8 @@ interface PlayerApi {
 
 /** The signed-in person's [ApiClient] as the player uses it. */
 class ApiPlayerApi(private val api: ApiClient) : PlayerApi {
+    override suspend fun recommendations(libraryId: String?) = api.items(ItemQuery(libraryId = libraryId, limit = 40)).items.filter { it.kind == MediaKind.Video }
+
     override suspend fun item(id: String) = api.item(id)
 
     override suspend fun playback(id: String, request: PlaybackRequest) = api.playback(id, request)
@@ -85,6 +91,9 @@ data class PlayerUiState(
     /** The server converts this video while it plays (HLS). */
     val converted: Boolean = false,
     val next: NextEpisode? = null,
+    val recommendations: List<Item> = emptyList(),
+    val recommendationsLoading: Boolean = false,
+    val recommendationsError: Boolean = false,
     /** The picture's shape, for picture-in-picture; 0 while unknown. */
     val videoWidth: Int = 0,
     val videoHeight: Int = 0,
@@ -136,8 +145,10 @@ class PlayerController(
     private var recovering = false
     private var hls = false
     private var startS = 0.0
+    private var itemGeneration = 0
     private var generation = 0
     private var job: Job? = null
+    private var recommendationsJob: Job? = null
     private var nextJob: Job? = null
     private var ticker: Job? = null
     private var closed = false
@@ -240,9 +251,11 @@ class PlayerController(
         if (closed) return
         saveNow(SaveReason.Leave, on = outlive)
         closed = true
+        itemGeneration++
         generation++
         stopTicker()
         job?.cancel()
+        recommendationsJob?.cancel()
         nextJob?.cancel()
         sessions.close()
         engine.setListener(null)
@@ -320,8 +333,10 @@ class PlayerController(
 
     private fun startItem(itemId: String, fromStart: Boolean, keepQuality: Boolean) {
         job?.cancel()
+        recommendationsJob?.cancel()
         nextJob?.cancel()
         stopTicker()
+        itemGeneration++
         generation++
         sessions.adopt(null)
         engine.pause()
@@ -369,8 +384,30 @@ class PlayerController(
                     portrait = height > width,
                 )
             }
+            refreshRecommendations()
             detail.nextEpisodeId?.let(::readNext)
             stream(startS, playWhenReady = true, device = null)
+        }
+    }
+
+    fun playVideo(id: String) {
+        if (closed || _state.value.recommendations.none { it.id == id }) return
+        saveNow(SaveReason.Leave)
+        startItem(id, fromStart = false, keepQuality = true)
+    }
+
+    fun refreshRecommendations() {
+        val current = item ?: return
+        val version = itemGeneration
+        recommendationsJob?.cancel()
+        _state.update { it.copy(recommendationsLoading = true, recommendationsError = false) }
+        recommendationsJob = scope.launch {
+            try {
+                val videos = api.recommendations(current.libraryId).filter { it.id != current.id }.take(24)
+                if (itemGeneration == version) _state.update { it.copy(recommendations = videos, recommendationsLoading = false) }
+            } catch (_: ApiException) {
+                if (itemGeneration == version) _state.update { it.copy(recommendationsLoading = false, recommendationsError = true) }
+            }
         }
     }
 
@@ -485,6 +522,7 @@ class PlayerController(
         if (closed) return
         val wasLoaded = _state.value.phase == PlayerPhase.Ready || _state.value.phase == PlayerPhase.Ended
         if (!gone && wasLoaded) saveNow(SaveReason.Leave)
+        itemGeneration++
         generation++
         stopTicker()
         // Failed before pausing, so the pause saves nothing more (a gone video would answer 404).
