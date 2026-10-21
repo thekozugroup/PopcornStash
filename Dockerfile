@@ -193,7 +193,10 @@ LABEL org.opencontainers.image.title="PopcornStash" \
 RUN set -eu; \
     hwaccel="mesa-va-drivers"; \
     if [ "$(dpkg --print-architecture)" = amd64 ]; then \
-        hwaccel="$hwaccel intel-media-va-driver libmfx-gen1.2"; \
+        # DG2's free-kernel driver can encode AV1 but cannot decode it. The \
+        # full-feature package is needed for AV1 integrity checks on Intel Arc. \
+        sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources; \
+        hwaccel="$hwaccel intel-media-va-driver-non-free libmfx-gen1.2"; \
     fi; \
     apt-get update; \
     apt-get install -y --no-install-recommends \

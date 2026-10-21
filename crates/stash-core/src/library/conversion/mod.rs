@@ -1,7 +1,8 @@
-//! Opt-in library conversion. One local encoder at a time; payload downloads are
+//! Opt-in library conversion. Bounded local workers; payload downloads are
 //! never candidates. Verified replacements retain item identity and user metadata.
 mod process;
 mod publication;
+mod scheduler;
 mod stats;
 pub use stats::{Savings, savings};
 #[cfg(test)]
@@ -20,7 +21,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq, Eq)]
@@ -177,17 +178,7 @@ pub async fn recover(lib: &Library) -> Result<()> {
 }
 
 pub fn start(lib: Arc<Library>, cancel: CancellationToken) {
-    tokio::spawn(async move {
-        loop {
-            if cancel.is_cancelled() {
-                break;
-            }
-            if let Err(e) = run_one(&lib, &cancel).await {
-                tracing::warn!(error=%e, "library conversion stopped safely");
-            }
-            tokio::select! { _ = cancel.cancelled() => break, _ = tokio::time::sleep(Duration::from_secs(10)) => {} }
-        }
-    });
+    scheduler::start(lib, cancel);
 }
 
 fn version(item: &ItemRow) -> String {
@@ -234,10 +225,11 @@ pub(super) async fn state(
     state: &str,
     message: Option<&str>,
 ) -> Result<()> {
-    sqlx::query("UPDATE conversion_jobs SET state=?,message=?,updated_at=? WHERE id=?")
+    sqlx::query("UPDATE conversion_jobs SET state=?,message=?,updated_at=?,progress=CASE WHEN ?='verifying' THEN 0 ELSE progress END WHERE id=?")
         .bind(state)
         .bind(message)
         .bind(now())
+        .bind(state)
         .bind(id)
         .execute(&lib.db)
         .await?;
@@ -248,37 +240,74 @@ pub(super) async fn state(
 pub async fn run_one(lib: &Library, cancel: &CancellationToken) -> Result<bool> {
     // A failed recovery is a hard stop; never work around an unresolved journal.
     recover(lib).await?;
-    let item = sqlx::query_as::<_, ItemRow>("SELECT i.* FROM items i JOIN library_conversion p ON p.library_id=i.library_id WHERE p.enabled=1 AND i.kind='video' AND i.status='ready' AND i.place='library' AND NOT EXISTS (SELECT 1 FROM downloads d WHERE d.state IN ('queued','downloading','paused','seeding','sorting') AND (d.id=i.source_download_id OR EXISTS (SELECT 1 FROM download_items di WHERE di.download_id=d.id AND di.item_id=i.id))) AND NOT EXISTS (SELECT 1 FROM conversion_jobs j WHERE j.item_id=i.id AND j.revision=p.revision AND j.source_version=CAST(i.size AS TEXT)||':'||CAST(i.mtime AS TEXT)||':'||COALESCE(i.quick_hash,'')) ORDER BY i.added_at,i.id LIMIT 1")
-        .fetch_optional(&lib.db).await?;
-    let Some(item) = item else {
+    let Some((item, p, job)) = reserve(lib, false).await? else {
         return Ok(false);
     };
+    execute(lib, item, p, job, cancel).await?;
+    Ok(true)
+}
+
+/// The scheduler serializes claims, and the unique item/revision/version key is
+/// a final defence against duplicate work. A second worker may only claim GPU work.
+async fn reserve(lib: &Library, gpu_only: bool) -> Result<Option<(ItemRow, Policy, Journal)>> {
+    let (av1, hevc) = if gpu_only {
+        let encoders = process::encoders().await;
+        (
+            encoders.iter().any(|e| e.hardware && e.codec == "av1"),
+            encoders.iter().any(|e| e.hardware && e.codec == "hevc"),
+        )
+    } else {
+        (false, false)
+    };
+    let item = sqlx::query_as::<_, ItemRow>("SELECT i.* FROM items i JOIN library_conversion p ON p.library_id=i.library_id WHERE p.enabled=1 AND (?=0 OR (p.compute<>'cpu' AND ((p.codec='av1' AND ?=1) OR (p.codec='hevc' AND ?=1)))) AND i.kind='video' AND i.status='ready' AND i.place='library' AND NOT EXISTS (SELECT 1 FROM downloads d WHERE d.state IN ('queued','downloading','paused','seeding','sorting') AND (d.id=i.source_download_id OR EXISTS (SELECT 1 FROM download_items di WHERE di.download_id=d.id AND di.item_id=i.id))) AND NOT EXISTS (SELECT 1 FROM conversion_jobs j WHERE j.item_id=i.id AND j.revision=p.revision AND j.source_version=CAST(i.size AS TEXT)||':'||CAST(i.mtime AS TEXT)||':'||COALESCE(i.quick_hash,'')) ORDER BY i.added_at,i.id LIMIT 1")
+        .bind(gpu_only).bind(av1).bind(hevc).fetch_optional(&lib.db).await?;
+    let Some(item) = item else {
+        return Ok(None);
+    };
     if item.kind != MediaKind::Video {
-        return Ok(false);
+        return Ok(None);
     }
     let library_id = item.library_id.clone().ok_or(CoreError::NotFound)?;
     let (p, revision) = policy(&lib.db, &library_id).await?;
+    if !p.enabled
+        || (gpu_only && (p.compute == "cpu" || !process::choose_encoder(&p).await?.hardware))
+    {
+        return Ok(None);
+    }
     let id = new_id();
     let target = std::path::Path::new(&item.rel_path)
         .with_extension("mkv")
         .to_string_lossy()
         .into_owned();
-    sqlx::query("INSERT OR IGNORE INTO conversion_jobs(id,item_id,library_id,revision,source_version,source_path,target_path,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'encoding',?,?)")
+    let inserted = sqlx::query("INSERT OR IGNORE INTO conversion_jobs(id,item_id,library_id,revision,source_version,source_path,target_path,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'encoding',?,?)")
         .bind(&id).bind(&item.id).bind(&library_id).bind(revision).bind(version(&item)).bind(&item.rel_path).bind(&target).bind(now()).bind(now()).execute(&lib.db).await?;
-    let mut job = sqlx::query_as::<_, Journal>(&format!(
+    if inserted.rows_affected() == 0 {
+        return Ok(None);
+    }
+    let job = sqlx::query_as::<_, Journal>(&format!(
         "SELECT {JOURNAL_COLUMNS} FROM conversion_jobs WHERE id=?"
     ))
     .bind(&id)
     .fetch_one(&lib.db)
     .await?;
     changed(lib, "encoding");
+    Ok(Some((item, p, job)))
+}
+
+async fn execute(
+    lib: &Library,
+    item: ItemRow,
+    p: Policy,
+    mut job: Journal,
+    cancel: &CancellationToken,
+) -> Result<()> {
     let result = convert(lib, &item, &p, &mut job, cancel).await;
     if let Err(e) = result
         && job.state != "complete"
     {
         state(
             lib,
-            &id,
+            &job.id,
             if cancel.is_cancelled() || !current(lib, &job).await.unwrap_or(false) {
                 "cancelled"
             } else {
@@ -289,8 +318,8 @@ pub async fn run_one(lib: &Library, cancel: &CancellationToken) -> Result<bool> 
         .await?;
     }
     // Publication owns recovery until it is completely reconciled.
-    recover(lib).await?;
-    Ok(true)
+    // Never reconcile another worker's live staging journal.
+    publication::recover_job(lib, &job.id).await
 }
 
 async fn convert(
@@ -333,8 +362,8 @@ async fn convert(
     }
     let folder = root.directory(&stage)?;
     let free = nix::sys::statvfs::fstatvfs(&folder).map_err(std::io::Error::from)?;
-    if free.blocks_available().saturating_mul(free.fragment_size())
-        < source.metadata()?.len().saturating_add(256 * 1024 * 1024)
+    if u128::from(free.blocks_available()) * u128::from(free.fragment_size())
+        < u128::from(source.metadata()?.len().saturating_add(256 * 1024 * 1024))
     {
         return Err(CoreError::external(
             "Not enough free space to keep both versions during verification. The original was kept.",
@@ -342,10 +371,9 @@ async fn convert(
     }
     let output = process::descriptor_path(&folder, &lib.layout.abs(&stage)?).join("output.mkv");
     process::encode(lib, job, p, &encoder, &source_path, &output, &facts, cancel).await?;
-    state(lib, &job.id, "verifying", None).await?;
-    process::verify(lib, job, &source_path, &output, &facts, &p.codec, cancel).await?;
     let output_file = root.file(&format!("{stage}/output.mkv"))?;
-    output_file.sync_all()?;
+    // No replacement is possible without a saving. Avoid decoding both complete
+    // videos only to discard a larger output afterwards.
     if output_file.metadata()?.len() >= source.metadata()?.len() {
         state(
             lib,
@@ -356,6 +384,9 @@ async fn convert(
         .await?;
         return Ok(());
     }
+    state(lib, &job.id, "verifying", None).await?;
+    process::verify(lib, job, &source_path, &output, &facts, &encoder, cancel).await?;
+    output_file.sync_all()?;
     job.output_hash = Some(process::hash(&output).await?);
     if process::hash(&source_path).await?.as_str() != job.source_hash.as_deref().unwrap_or("")
         || fingerprint(&root.metadata(&item.rel_path)?) != before

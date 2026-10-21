@@ -37,6 +37,10 @@ async fn harness() -> (tempfile::TempDir, Arc<Library>) {
     )
 }
 async fn clip(path: &Path) {
+    clip_with_crf(path, "0").await;
+}
+
+async fn clip_with_crf(path: &Path, crf: &str) {
     let metadata = tempfile::tempdir().unwrap();
     let subtitle = metadata.path().join("captions.srt");
     let chapters = metadata.path().join("chapters.txt");
@@ -82,7 +86,7 @@ async fn clip(path: &Path) {
         "-c:v",
         "libx264",
         "-crf",
-        "0",
+        crf,
         "-threads",
         "2",
         "-c:a",
@@ -136,7 +140,8 @@ async fn roundtrip(compute: &str) {
     for codec in ["av1", "hevc"] {
         let (_dir, lib) = harness().await;
         let path = lib.layout.root().join("Movies/Fixture.mkv");
-        clip(&path).await;
+        // H.264 lossless uses a profile the Arc cannot decode in hardware.
+        clip_with_crf(&path, if compute == "hardware" { "1" } else { "0" }).await;
         let item = lib.index_path("Movies/Fixture.mkv").await.unwrap().unwrap();
         sqlx::query("UPDATE items SET favorite=1,title='Kept title' WHERE id=?")
             .bind(&item.id)
@@ -431,6 +436,7 @@ async fn full_video_validation_rejects_a_truncated_playable_prefix() {
         .await
         .unwrap()
         .unwrap();
+    let item = repo::get(&lib.db, &item.id).await.unwrap().unwrap();
     save(
         &lib,
         defs::STARTING_MOVIES,
@@ -466,7 +472,13 @@ async fn full_video_validation_rejects_a_truncated_playable_prefix() {
             &source,
             &output,
             &facts,
-            "h264",
+            &Encoder {
+                codec: "h264".into(),
+                name: "libx264".into(),
+                label: "CPU".into(),
+                device: None,
+                hardware: false
+            },
             &CancellationToken::new()
         )
         .await
@@ -555,4 +567,174 @@ async fn seeding_and_paused_downloads_are_not_conversion_candidates() {
         .unwrap();
     assert!(!run_one(&lib, &CancellationToken::new()).await.unwrap());
     assert_eq!(std::fs::read(source).unwrap(), b"active torrent bytes");
+}
+
+#[tokio::test]
+async fn completing_one_worker_keeps_another_workers_live_journal_and_output() {
+    let (_dir, lib) = harness().await;
+    let root = Root::open(lib.layout.root()).unwrap();
+    let stage = root.new_trash_dir("conversion").unwrap();
+    std::fs::write(
+        lib.layout.root().join(&stage).join("output.mkv"),
+        b"live output",
+    )
+    .unwrap();
+    sqlx::query("INSERT INTO conversion_jobs(id,revision,source_version,source_path,target_path,state,stage,created_at,updated_at) VALUES('live',1,'v','Movies/Live.mkv','Movies/Live.mkv','encoding',?,0,0)")
+        .bind(&stage).execute(&lib.db).await.unwrap();
+    sqlx::query("INSERT INTO conversion_jobs(id,revision,source_version,source_path,target_path,state,created_at,updated_at) VALUES('reserved',1,'v','Movies/Reserved.mkv','Movies/Reserved.mkv','encoding',0,0),('finished',1,'v','Movies/Finished.mkv','Movies/Finished.mkv','skipped',0,0)")
+        .execute(&lib.db).await.unwrap();
+    publication::recover_job(&lib, "finished").await.unwrap();
+    assert_eq!(
+        std::fs::read(lib.layout.root().join(stage).join("output.mkv")).unwrap(),
+        b"live output"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM conversion_jobs WHERE state='encoding'")
+            .fetch_one(&lib.db)
+            .await
+            .unwrap(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn parallel_claims_and_execution_never_share_an_item_or_recover_a_live_worker() {
+    parallel_roundtrip("cpu").await;
+}
+
+#[tokio::test]
+#[ignore = "Requires a working Intel Arc VAAPI device and full-feature driver; isolated synthetic stash only."]
+async fn arc_parallel_replacements_and_gpu_verification() {
+    parallel_roundtrip("hardware").await;
+}
+
+async fn parallel_roundtrip(compute: &str) {
+    let (_dir, lib) = harness().await;
+    clip_with_crf(
+        &lib.layout.root().join("Movies/ParallelOne.mkv"),
+        if compute == "hardware" { "1" } else { "0" },
+    )
+    .await;
+    std::fs::copy(
+        lib.layout.root().join("Movies/ParallelOne.mkv"),
+        lib.layout.root().join("Movies/ParallelTwo.mkv"),
+    )
+    .unwrap();
+    lib.index_path("Movies/ParallelOne.mkv").await.unwrap();
+    lib.index_path("Movies/ParallelTwo.mkv").await.unwrap();
+    save(
+        &lib,
+        defs::STARTING_MOVIES,
+        Policy {
+            enabled: true,
+            compute: compute.into(),
+            ..Policy::default()
+        },
+    )
+    .await
+    .unwrap();
+    // The extra production slot must not claim a CPU policy, even on a GPU host.
+    if compute == "cpu" {
+        assert!(reserve(&lib, true).await.unwrap().is_none());
+    }
+    let a = reserve(&lib, compute == "hardware").await.unwrap().unwrap();
+    let b = reserve(&lib, false).await.unwrap().unwrap();
+    assert_ne!(a.0.id, b.0.id);
+    assert!(reserve(&lib, false).await.unwrap().is_none());
+    let cancel = CancellationToken::new();
+    let (first, second) = tokio::join!(
+        execute(&lib, a.0, a.1, a.2, &cancel),
+        execute(&lib, b.0, b.1, b.2, &cancel)
+    );
+    first.unwrap();
+    second.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM conversion_jobs WHERE state='complete' AND stage IS NULL"
+        )
+        .fetch_one(&lib.db)
+        .await
+        .unwrap(),
+        2
+    );
+    assert!(
+        std::fs::read_dir(lib.layout.root().join(".popcornstash/Trash"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn unavailable_gpu_verification_falls_back_to_a_full_software_check() {
+    let (_dir, lib) = harness().await;
+    let source = lib.layout.root().join("Movies/Fallback.mkv");
+    clip(&source).await;
+    let item = lib
+        .index_path("Movies/Fallback.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    let item = repo::get(&lib.db, &item.id).await.unwrap().unwrap();
+    save(
+        &lib,
+        defs::STARTING_MOVIES,
+        Policy {
+            enabled: true,
+            ..Policy::default()
+        },
+    )
+    .await
+    .unwrap();
+    let (_, revision) = policy(&lib.db, defs::STARTING_MOVIES).await.unwrap();
+    let job = Journal {
+        id: "fallback".into(),
+        item_id: Some(item.id.clone()),
+        library_id: item.library_id.clone(),
+        revision,
+        source_version: version(&item),
+        source_path: item.rel_path.clone(),
+        target_path: item.rel_path,
+        state: "verifying".into(),
+        stage: None,
+        source_hash: None,
+        output_hash: None,
+    };
+    let encoder = Encoder {
+        codec: "h264".into(),
+        name: "h264_vaapi".into(),
+        label: "Unavailable GPU".into(),
+        device: Some("/dev/dri/does-not-exist".into()),
+        hardware: true,
+    };
+    assert!(current(&lib, &job).await.unwrap());
+    let facts = process::probe(&source).await.unwrap();
+    process::verify(
+        &lib,
+        &job,
+        &source,
+        &source,
+        &facts,
+        &encoder,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let bytes = std::fs::read(&source).unwrap();
+    let truncated = _dir.path().join("truncated.mkv");
+    std::fs::write(&truncated, &bytes[..bytes.len() * 2 / 3]).unwrap();
+    assert!(
+        process::verify(
+            &lib,
+            &job,
+            &source,
+            &truncated,
+            &facts,
+            &encoder,
+            &CancellationToken::new()
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(std::fs::read(source).unwrap(), bytes);
 }

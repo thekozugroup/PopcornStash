@@ -4,6 +4,8 @@ Changes to PopcornStash, newest first. Version numbers follow [Semantic Versioni
 
 ## [Unreleased]
 
+- Two bounded conversion workers, GPU input decoding and full-video integrity checks, live verification progress, and Intel Arc AV1 decode support in amd64 images. Originals remain protected by complete-file checks; larger results are discarded before verification.
+
 - Double tap the left/right player picture to seek back/forward 15 seconds on web and Android.
 - Search navigation across all accessible files or one library; library subfolder browsing, creation and searched bulk moves that preserve watch history.
 - Direct Inbox bulk deletion to recoverable Trash, including ignored images; stale background reads cannot restore deleted rows.

@@ -150,8 +150,16 @@ async fn matches(root: &Root, rel: &str, expected: Option<&str>, lib: &Library) 
 }
 
 pub(super) async fn recover(lib: &Library) -> Result<()> {
+    reconcile(lib, None).await
+}
+
+pub(super) async fn recover_job(lib: &Library, id: &str) -> Result<()> {
+    reconcile(lib, Some(id)).await
+}
+
+async fn reconcile(lib: &Library, id: Option<&str>) -> Result<()> {
     let _guard = lib.lock_moves().await;
-    let jobs = sqlx::query_as::<_, Journal>(&format!("SELECT {JOURNAL_COLUMNS} FROM conversion_jobs WHERE stage IS NOT NULL ORDER BY created_at,id")).fetch_all(&lib.db).await?;
+    let jobs = sqlx::query_as::<_, Journal>(&format!("SELECT {JOURNAL_COLUMNS} FROM conversion_jobs WHERE stage IS NOT NULL AND (? IS NULL OR id=?) ORDER BY created_at,id")).bind(id).bind(id).fetch_all(&lib.db).await?;
     let root = Root::open(lib.layout.root())?;
     for job in jobs {
         let stage = job
@@ -229,6 +237,6 @@ pub(super) async fn recover(lib: &Library) -> Result<()> {
         tx.commit().await?;
     }
     // Jobs interrupted before a staging directory was allocated are safe to retry.
-    sqlx::query("UPDATE conversion_jobs SET state='cancelled',message='Interrupted before conversion. The original was kept.' WHERE stage IS NULL AND state IN ('encoding','verifying')").execute(&lib.db).await?;
+    sqlx::query("UPDATE conversion_jobs SET state='cancelled',message='Interrupted before conversion. The original was kept.' WHERE stage IS NULL AND state IN ('encoding','verifying') AND (? IS NULL OR id=?)").bind(id).bind(id).execute(&lib.db).await?;
     Ok(())
 }

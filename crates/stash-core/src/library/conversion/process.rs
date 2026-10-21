@@ -270,6 +270,61 @@ pub(super) async fn encode(
     facts: &Facts,
     cancel: &CancellationToken,
 ) -> Result<()> {
+    if encoder.device.is_some() && hardware_decodable(facts) {
+        match encode_with_decode(lib, job, p, encoder, input, output, facts, cancel, true).await {
+            Ok(()) => return Ok(()),
+            Err(_) if !cancel.is_cancelled() && current(lib, job).await? => {
+                // This is the job's private output, never the source. Some valid
+                // profiles cannot be decoded by a particular GPU/driver.
+                match tokio::fs::remove_file(output).await {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    encode_with_decode(lib, job, p, encoder, input, output, facts, cancel, false).await
+}
+
+fn hardware_decodable(facts: &Facts) -> bool {
+    facts.video().is_some_and(|video| {
+        ["h264", "hevc", "av1", "vp9", "mpeg2video"]
+            .contains(&video["codec_name"].as_str().unwrap_or(""))
+    })
+}
+
+/// Share CPU headroom with the other conversion and the rest of the NAS.
+fn decode_threads() -> String {
+    (std::thread::available_parallelism().map_or(2, usize::from) / 2)
+        .clamp(2, 4)
+        .to_string()
+}
+
+fn gpu_decode(cmd: &mut tokio::process::Command, device: &str) {
+    cmd.args([
+        "-hwaccel",
+        "vaapi",
+        "-hwaccel_device",
+        device,
+        "-hwaccel_output_format",
+        "vaapi",
+    ]);
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn encode_with_decode(
+    lib: &Library,
+    job: &Journal,
+    p: &Policy,
+    encoder: &Encoder,
+    input: &Path,
+    output: &Path,
+    facts: &Facts,
+    cancel: &CancellationToken,
+    hardware_decode: bool,
+) -> Result<()> {
     let mut cmd = tools::command(tools::FFMPEG);
     cmd.args([
         "-v",
@@ -277,11 +332,14 @@ pub(super) async fn encode(
         "-nostdin",
         "-n",
         "-threads",
-        "2",
+        &decode_threads(),
         "-noautorotate",
     ]);
     if let Some(device) = &encoder.device {
         cmd.args(["-vaapi_device", device]);
+        if hardware_decode {
+            gpu_decode(&mut cmd, device);
+        }
     }
     cmd.arg("-i").arg(tools::ffmpeg_input(input));
     // Copy every other stream, attachment, metadata and chapter. If Matroska cannot
@@ -307,18 +365,17 @@ pub(super) async fn encode(
         let ten = facts
             .video()
             .is_some_and(|s| s["pix_fmt"] == "yuv420p10le" || s["pix_fmt"] == "p010le");
-        cmd.args([
-            "-vf",
-            if ten {
-                "format=p010le,hwupload"
-            } else {
-                "format=nv12,hwupload"
-            },
-            "-rc_mode",
-            "CQP",
-            "-qp",
-            quality,
-        ]);
+        if !hardware_decode {
+            cmd.args([
+                "-vf",
+                if ten {
+                    "format=p010le,hwupload"
+                } else {
+                    "format=nv12,hwupload"
+                },
+            ]);
+        }
+        cmd.args(["-rc_mode", "CQP", "-qp", quality]);
     } else if encoder.hardware {
         cmd.args(["-rc", "vbr", "-cq", quality, "-b:v", "0"]);
     } else {
@@ -350,7 +407,7 @@ pub(super) async fn encode(
         "matroska",
     ])
     .arg(output);
-    run(lib, job, cmd, facts.duration(), true, cancel).await?;
+    run(lib, job, cmd, facts.duration(), Progress::Encoding, cancel).await?;
     Ok(())
 }
 
@@ -360,44 +417,43 @@ pub(super) async fn verify(
     input: &Path,
     output: &Path,
     before: &Facts,
-    codec: &str,
+    encoder: &Encoder,
     cancel: &CancellationToken,
 ) -> Result<()> {
     let after = probe(output).await?;
-    validate(before, &after, codec)?;
+    validate(before, &after, &encoder.codec)?;
     // Decode BOTH complete files with errors fatal, including every audio stream.
     // Frame totals must match; a playable prefix is not a successful conversion.
     let mut counts = Vec::new();
-    for path in [input, output] {
-        let mut cmd = tools::command(tools::FFMPEG);
-        cmd.args([
-            "-v",
-            "error",
-            "-nostdin",
-            "-xerror",
-            "-err_detect",
-            "explode",
-            "-threads",
-            "2",
-            "-noautorotate",
-            "-i",
-        ])
-        .arg(tools::ffmpeg_input(path))
-        .args([
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a?",
-            "-fps_mode",
-            "passthrough",
-            "-progress",
-            "pipe:1",
-            "-nostats",
-            "-f",
-            "null",
-            "-",
-        ]);
-        counts.push(run(lib, job, cmd, before.duration(), false, cancel).await?);
+    for (index, (path, facts)) in [(input, before), (output, &after)].into_iter().enumerate() {
+        let device = encoder
+            .device
+            .as_deref()
+            .filter(|_| hardware_decodable(facts));
+        let count = if let Some(device) = device {
+            match decode(
+                lib,
+                job,
+                path,
+                before.duration(),
+                Some(device),
+                index,
+                cancel,
+            )
+            .await
+            {
+                Ok(count) => count,
+                Err(_) if !cancel.is_cancelled() && current(lib, job).await? => {
+                    // Recheck the complete file in software. A hardware failure
+                    // never becomes a successful check or a partial-file check.
+                    decode(lib, job, path, before.duration(), None, index, cancel).await?
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            decode(lib, job, path, before.duration(), None, index, cancel).await?
+        };
+        counts.push(count);
     }
     if counts[0] == 0 || counts[0] != counts[1] {
         return Err(CoreError::external(
@@ -419,6 +475,47 @@ pub(super) async fn verify(
     }
 
     Ok(())
+}
+
+async fn decode(
+    lib: &Library,
+    job: &Journal,
+    path: &Path,
+    duration: f64,
+    device: Option<&str>,
+    index: usize,
+    cancel: &CancellationToken,
+) -> Result<u64> {
+    let mut cmd = tools::command(tools::FFMPEG);
+    cmd.args([
+        "-v",
+        "error",
+        "-nostdin",
+        "-xerror",
+        "-err_detect",
+        "explode",
+        "-threads",
+        &decode_threads(),
+        "-noautorotate",
+    ]);
+    if let Some(device) = device {
+        gpu_decode(&mut cmd, device);
+    }
+    cmd.arg("-i").arg(tools::ffmpeg_input(path)).args([
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+        "-fps_mode",
+        "passthrough",
+        "-progress",
+        "pipe:1",
+        "-nostats",
+        "-f",
+        "null",
+        "-",
+    ]);
+    run(lib, job, cmd, duration, Progress::Verifying(index), cancel).await
 }
 async fn copied_stream_hash(
     lib: &Library,
@@ -593,12 +690,31 @@ fn validate(before: &Facts, after: &Facts, codec: &str) -> Result<()> {
     Ok(())
 }
 
+enum Progress {
+    Encoding,
+    Verifying(usize),
+}
+impl Progress {
+    fn state(&self) -> &'static str {
+        match self {
+            Self::Encoding => "encoding",
+            Self::Verifying(_) => "verifying",
+        }
+    }
+    fn fraction(&self, value: f64) -> f64 {
+        match self {
+            Self::Encoding => value,
+            Self::Verifying(index) => (*index as f64 + value) / 2.0,
+        }
+    }
+}
+
 async fn run(
     lib: &Library,
     job: &Journal,
     mut command: tokio::process::Command,
     duration: f64,
-    progress: bool,
+    progress: Progress,
     cancel: &CancellationToken,
 ) -> Result<u64> {
     command.stderr(Stdio::null());
@@ -623,7 +739,8 @@ async fn run(
             _ = &mut deadline => { child.kill().await?; return Err(CoreError::external("Conversion timed out. The original was kept.")); }
             _ = tick.tick() => {
                 if !current(lib, job).await? { child.kill().await?; return Err(CoreError::conflict("Library settings or the file changed. The original was kept.")); }
-                if progress { sqlx::query("UPDATE conversion_jobs SET progress=?,updated_at=? WHERE id=?").bind(fraction).bind(crate::now()).bind(&job.id).execute(&lib.db).await?; super::changed(lib, "encoding"); }
+                sqlx::query("UPDATE conversion_jobs SET progress=?,updated_at=? WHERE id=?").bind(progress.fraction(fraction)).bind(crate::now()).bind(&job.id).execute(&lib.db).await?;
+                super::changed(lib, progress.state());
             }
             line = lines.next_line() => {
                 let Some(line) = line? else { break; };
@@ -637,5 +754,12 @@ async fn run(
             "The encoder or full-video check failed. The original was kept.",
         ));
     }
+    sqlx::query("UPDATE conversion_jobs SET progress=?,updated_at=? WHERE id=?")
+        .bind(progress.fraction(1.0))
+        .bind(crate::now())
+        .bind(&job.id)
+        .execute(&lib.db)
+        .await?;
+    super::changed(lib, progress.state());
     Ok(frames)
 }

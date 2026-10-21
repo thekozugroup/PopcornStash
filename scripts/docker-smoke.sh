@@ -448,6 +448,12 @@ debian_packages_listed() {
     /usr/share/doc/popcornstash/debian-packages.txt
 }
 check "debian-packages.txt lists ffmpeg with its version and source package" debian_packages_listed
+intel_full_feature_driver() {
+  docker exec "$MAIN" sh -ec '
+    [ "$(dpkg --print-architecture)" != amd64 ] ||
+      dpkg -s intel-media-va-driver-non-free | grep -q "^Status: install ok installed$"'
+}
+check "amd64 ships Intel full-feature VAAPI for AV1 decoding" intel_full_feature_driver
 web_notices_served() {
   curl -fsS -m 10 "$URL/third-party-licenses.txt" | cmp -s - THIRD_PARTY_LICENSES-web
 }
