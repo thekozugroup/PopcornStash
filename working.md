@@ -1,10 +1,16 @@
 # PopcornStash, iteration 1
 
+## Live savings and AV1 quality diagnosis, 2026-10-21
+
+- Read-only owner-requested check includes archived ledger rows: one verified smaller replacement, 838,651,799 → 711,906,997 bytes (126,744,802 saved, 15.11%); four larger outputs discarded, one file already AV1 skipped, one encode and one verification active at the observation. The completed output still matches the catalog version.
+- Found an AV1 preset bug: shared VAAPI command construction passes `-qp 23/28/33`, but Atlas FFmpeg 7.1.5 `av1_vaapi` does not accept that private option. A one-frame synthetic output-to-null check confirms “Codec AVOption qp … has not been used for any stream” and “No quality level set; using default (25).” Thus AV1 quality presets currently have no effect; earlier references to effective CQP 28 were incorrect. H.265 does accept `-qp`.
+- A second synthetic frame confirms AV1 accepts `-global_quality`; its 0–255 quality scale requires codec-specific calibration, not blindly copying H.265 values. No original/policy/job changes, production interruption or NAS temporary files. Evidence: ignored `evidence/gpu-optimization/atlas-update/av1-quality-option-diagnosis.json`; upstream FFmpeg n7.1.5 VAAPI rate control and AV1 encoder source corroborate the fallback. Next implementation step: correct and test codec-specific presets, evaluate representative samples, then decide on skipped-file retries. This diagnostic iteration does not deploy a quality change.
+
 ## Pre-update conversion history cleared, 2026-10-21
 
 - Owner requested keeping only jobs from the new deployment. Archived four terminal entries created before the verified resume time (18:41:49 UTC); new jobs remain visible, including two active encodes and one new skipped result. No conversions, downloads or services were paused/restarted.
 - The nullable library association was cleared only on those four finished, journal-free rows. Rows remain internal deduplication/savings records, so cleanup does not requeue old videos or erase completed savings. One atomic database transaction verified new-job rows, candidate count (41), savings ledger, policy, media catalog, downloads, accounts and settings unchanged; foreign keys pass. Atlas remains healthy with zero restarts. Private evidence: `evidence/gpu-optimization/atlas-update/old-history-cleared.json`.
-- Investigation before the cleanup confirmed the non-smaller results used AV1 CQP 28 on 4K H.264 sources (about 14–17 Mbps); that quality mode does not target a smaller byte size. Stronger compression could reduce them with a quality tradeoff. The owner's newer cleanup instruction was applied; no lower-quality retry or policy change was made.
+- Investigation before the cleanup confirmed the non-smaller results requested AV1 CQP 28 on 4K H.264 sources (about 14–17 Mbps); the later diagnosis above found that option ignored, with actual quality falling back to 25. Quality mode does not target a smaller byte size. Stronger compression could reduce them with a quality tradeoff. The owner's newer cleanup instruction was applied; no lower-quality retry or policy change was made.
 
 ## Atlas GPU update deployed and resumed, 2026-10-21
 

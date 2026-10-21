@@ -1,5 +1,11 @@
 # Atlas conversion performance, 2026-10-21
 
+These measurements describe the original deployment; GPU improvements have since
+been deployed. A subsequent live check found a separate AV1 quality-control bug:
+the shared `-qp` option is ignored by `av1_vaapi`, which falls back to quality 25.
+AV1 needs `-global_quality` and codec-specific preset calibration. No compression
+quality change has been deployed yet; see `working.md` for current status.
+
 The A380 has spare capacity. The deployed queue uses GPU encoding, but CPU
 decoding and a single worker limit throughput. Full verification leaves the GPU
 idle. The prepared update addresses all three limits without changing quality
@@ -10,7 +16,8 @@ presets or removing integrity checks.
 - Intel Arc A380, PCI ID 8086:56a5, renderD128; AMD integrated GPU is renderD129.
 - Ryzen 5 PRO 4650GE: six cores, twelve logical CPUs. No container CPU quota,
   affinity restriction or memory limit was configured.
-- The current command selects `av1_vaapi`, CQP 28 and CPU input decoding with
+- The original command selects `av1_vaapi`, requests CQP 28 (later confirmed
+  ignored, falling back to 25), and uses CPU input decoding with
   `-threads 2`. This CPU option does not restrict the fixed-function encoder to
   one GPU thread. One serial worker waits for encoding, both verification passes,
   hashes and publication before starting another file.
