@@ -11,6 +11,7 @@ import {useParams} from 'react-router';
 import {libraries} from '../../api/client';
 import type {ConversionPolicy, ConversionView} from '../../api/types';
 import {OwnerOnly} from '../../components/settings/OwnerOnly';
+import {StorageSavings} from './ConversionSavings';
 import {SettingsGroup} from '../../components/settings/SettingsGroup';
 import {useDocumentTitle} from '../../components/PageHeader';
 import {errorMessage} from '../../lib/errors';
@@ -72,7 +73,7 @@ function ConversionSettings() {
   }
   const matching = view?.encoders.filter(e => e.codec === draft?.codec && (draft.compute === 'auto' || e.hardware === (draft.compute === 'hardware'))) ?? [];
   return <div {...stylex.props(styles.page)}>
-    <Button label={name} variant="ghost" icon={<ChevronLeft size={18} aria-hidden="true" />} href={`/settings/libraries/${id}`} xstyle={styles.back} />
+    <Button label="Transcoding" variant="ghost" icon={<ChevronLeft size={18} aria-hidden="true" />} href="/settings/transcoding" xstyle={styles.back} />
     <Heading level={1}>Video conversion</Heading>
     {error ? <Banner status="error" title="Could not update conversion" description={error} endContent={<Button label="Try again" onClick={() => setAttempt(x => x + 1)} />} /> : null}
     {!view || !draft ? <Text role="status">Loading conversion settings…</Text> : <>
@@ -96,6 +97,7 @@ function ConversionSettings() {
         </SettingsGroup>
         <div {...stylex.props(styles.row)}><Button type="submit" variant="primary" label="Save changes" isLoading={busy} />{notice ? <Text role="status">{notice}</Text> : null}</div>
       </form>
+      <SettingsGroup title="Storage savings" description="Verified replacements for videos still in this library."><StorageSavings savings={view.savings} /></SettingsGroup>
       <SettingsGroup title="Activity" description={view.policy.enabled ? `${view.pending} videos waiting to be checked.` : 'Automatic conversion is off.'}>
         <div {...stylex.props(styles.jobs)} aria-live="polite">
           {view.jobs.length === 0 ? <Text color="secondary">No conversions yet.</Text> : view.jobs.map(job => <div key={job.id} {...stylex.props(styles.job)}>

@@ -778,7 +778,7 @@ function LibraryEditor() {
 
           {!isNew && library?.content_type === 'video' ? (
             <SettingsGroup title="Video conversion" description="Choose a space-saving format for this library. Originals are replaced only after verification.">
-              <Button label="Manage video conversion" href={`/settings/libraries/${library.id}/conversion`} />
+              <Button label="Manage video conversion" href={`/settings/transcoding/${library.id}`} />
             </SettingsGroup>
           ) : null}
 

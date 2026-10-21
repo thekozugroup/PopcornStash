@@ -28,6 +28,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/home", get(home))
         .route("/api/libraries", get(list).post(create))
         .route("/api/libraries/icons", get(icons))
+        .route("/api/transcoding", get(transcoding))
         .route("/api/libraries/folders", get(folders))
         .route("/api/libraries/order", put(order))
         .route("/api/libraries/{id}", get(one).patch(edit).delete(remove))
@@ -388,6 +389,75 @@ async fn move_items(
     Ok(Json(state.library.move_library_items(&id, &body).await?))
 }
 
+#[derive(Serialize)]
+struct TranscodingLibrary {
+    id: String,
+    name: String,
+    policy: stash_core::library::conversion::Policy,
+    pending: i64,
+    savings: stash_core::library::conversion::Savings,
+}
+#[derive(Serialize)]
+struct TranscodingJob {
+    library_id: String,
+    library_name: String,
+    #[serde(flatten)]
+    job: stash_core::library::conversion::JobView,
+}
+#[derive(Serialize)]
+struct Transcoding {
+    libraries: Vec<TranscodingLibrary>,
+    jobs: Vec<TranscodingJob>,
+    savings: stash_core::library::conversion::Savings,
+    generated_at: i64,
+}
+async fn transcoding(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> ApiResult<Json<Transcoding>> {
+    user.require(Scope::LibraryRead)?;
+    user.require_owner()?;
+    let access = user.access(&state.db).await?;
+    let mut result = Transcoding {
+        libraries: vec![],
+        jobs: vec![],
+        savings: Default::default(),
+        generated_at: stash_core::now(),
+    };
+    for library in defs::views(&state.db, &state.layout, &access).await? {
+        if library.content_type.as_str() != "video" {
+            continue;
+        }
+        let view = stash_core::library::conversion::view(&state.library, &library.id).await?;
+        result.savings.add(&view.savings);
+        result
+            .jobs
+            .extend(view.jobs.into_iter().map(|job| TranscodingJob {
+                library_id: library.id.clone(),
+                library_name: library.name.clone(),
+                job,
+            }));
+        result.libraries.push(TranscodingLibrary {
+            id: library.id,
+            name: library.name,
+            policy: view.policy,
+            pending: view.pending,
+            savings: view.savings,
+        });
+    }
+    result.jobs.sort_by_key(|j| {
+        (
+            !matches!(
+                j.job.state.as_str(),
+                "encoding" | "verifying" | "publishing"
+            ),
+            std::cmp::Reverse(j.job.updated_at),
+        )
+    });
+    result.jobs.truncate(30);
+    Ok(Json(result))
+}
+
 async fn conversion_access(state: &AppState, user: &AuthUser, id: &str) -> ApiResult<()> {
     user.require(Scope::LibraryRead)?;
     let access = user.access(&state.db).await?;
@@ -450,8 +520,33 @@ mod tests {
     #[tokio::test]
     async fn conversion_is_owner_only_hidden_first_and_validated() {
         let app = TestApp::new().await;
-        let (_, owner) = app.user("owner").await;
+        let (owner_id, owner) = app.user("owner").await;
         let (_, member) = app.user("member").await;
+        let limited_owner = app.device_token(&owner_id, &["library:read"]).await;
+        assert_eq!(
+            app.get("/api/transcoding", Some(&limited_owner)).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            app.get("/api/transcoding", None).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            app.get("/api/transcoding", Some(&member)).await.0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, _, body) = app.get("/api/transcoding", Some(&owner)).await;
+        assert_eq!(status, StatusCode::OK);
+        let overview: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(overview["libraries"].as_array().unwrap().len(), 3);
+        assert_eq!(overview["savings"]["percent"], 0.0);
+        assert!(
+            overview["libraries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|l| l["policy"]["enabled"] == false)
+        );
         let path = format!("/api/libraries/{STARTING_MOVIES}/conversion");
         assert_eq!(app.get(&path, None).await.0, StatusCode::UNAUTHORIZED);
         assert_eq!(app.get(&path, Some(&member)).await.0, StatusCode::FORBIDDEN);

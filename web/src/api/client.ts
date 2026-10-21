@@ -1,4 +1,4 @@
-import type {ConversionPolicy, ConversionView} from './types';
+import type {ConversionPolicy, ConversionView, TranscodingOverview} from './types';
 /**
  * Typed client for the PopcornStash HTTP API (docs/architecture.md section 8).
  *
@@ -378,6 +378,7 @@ export const home = {
 };
 
 export const libraries = {
+  transcoding: (signal?: AbortSignal) => get<TranscodingOverview>('/api/transcoding', undefined, signal),
   conversion: (id: string, signal?: AbortSignal) => get<ConversionView>(`/api/libraries/${enc(id)}/conversion`, undefined, signal),
   saveConversion: (id: string, policy: ConversionPolicy) => put<ConversionView>(`/api/libraries/${enc(id)}/conversion`, policy),
   retryConversion: (id: string) => post<ConversionView>(`/api/libraries/${enc(id)}/conversion/retry`),

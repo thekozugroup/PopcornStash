@@ -109,17 +109,18 @@ pub(super) async fn publish(
         .await?;
     let mut tx = conn.begin_with("BEGIN IMMEDIATE").await?;
     let updated = sqlx::query("UPDATE items SET rel_path=?,size=?,mtime=?,quick_hash=?,mime='video/x-matroska',media_json=NULL,duration_s=NULL,width=NULL,height=NULL,thumb_state='pending',updated_at=? WHERE id=? AND rel_path=? AND status='ready' AND library_id=?")
-        .bind(&job.target_path).bind(i64::try_from(meta.len()).unwrap_or(i64::MAX)).bind(meta.mtime()).bind(quick_hash).bind(now()).bind(id).bind(&job.source_path).bind(&job.library_id).execute(&mut *tx).await?;
+        .bind(&job.target_path).bind(i64::try_from(meta.len()).unwrap_or(i64::MAX)).bind(meta.mtime()).bind(&quick_hash).bind(now()).bind(id).bind(&job.source_path).bind(&job.library_id).execute(&mut *tx).await?;
     if updated.rows_affected() != 1 {
         return Err(CoreError::conflict(
             "The library entry changed. The original will be restored.",
         ));
     }
-    sqlx::query("UPDATE conversion_jobs SET state='complete',progress=1,saved_bytes=?,updated_at=? WHERE id=?")
-        .bind(i64::try_from(metadata.len().saturating_sub(meta.len())).unwrap_or(i64::MAX)).bind(now()).bind(&job.id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE conversion_jobs SET state='complete',progress=1,saved_bytes=?,output_version=?,updated_at=? WHERE id=?")
+        .bind(i64::try_from(metadata.len().saturating_sub(meta.len())).unwrap_or(i64::MAX)).bind(format!("{}:{}:{}",meta.len(),meta.mtime(),quick_hash.as_deref().unwrap_or(""))).bind(now()).bind(&job.id).execute(&mut *tx).await?;
     tx.commit().await?;
     drop(conn);
     job.state = "complete".into();
+    super::changed(lib, "complete");
     // Cache failures must never change the committed publication into a rollback.
     organizer::remove_cached_media(lib, id).await;
     scanner::enqueue_media_jobs(lib, id).await?;

@@ -73,6 +73,7 @@ data class WebSettingsPage(val label: String, val path: String)
  */
 fun webSettingsPages(role: PersonRole): List<WebSettingsPage> = if (role == PersonRole.Owner) {
     listOf(
+        WebSettingsPage("Transcoding", "settings/transcoding"),
         WebSettingsPage("Sorting and trash", "settings/libraries"),
         WebSettingsPage("Clean files", "clean"),
         WebSettingsPage("VPN", "settings/vpn"),

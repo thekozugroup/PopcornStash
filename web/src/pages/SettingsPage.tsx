@@ -28,6 +28,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   {path: 'people', label: 'People', ownerOnly: true},
   {path: 'security', label: 'Security', ownerOnly: false},
   {path: 'libraries', label: 'Libraries', ownerOnly: true},
+  {path: 'transcoding', label: 'Transcoding', ownerOnly: true},
   {path: 'system', label: 'System', ownerOnly: true},
 ];
 

@@ -154,6 +154,12 @@ async fn roundtrip(compute: &str) {
         let view = view(&lib, defs::STARTING_MOVIES).await.unwrap();
         assert_eq!(view.jobs[0].state, "complete", "{view:?}");
         assert!(view.jobs[0].saved_bytes > 0);
+        assert_eq!(view.savings.saved_bytes, view.jobs[0].saved_bytes);
+        assert_eq!(view.savings.original_bytes, view.jobs[0].original_bytes);
+        assert_eq!(
+            view.savings.current_bytes,
+            view.jobs[0].result_bytes.unwrap()
+        );
         let row = repo::get(&lib.db, &item.id).await.unwrap().unwrap();
         assert!(row.favorite);
         assert_eq!(row.title, "Kept title");
@@ -178,6 +184,128 @@ async fn real_av1_and_hevc_conversion_verify_and_preserve_item_identity() {
 #[ignore = "Requires a working Intel Arc VAAPI device; run explicitly in the production runtime with an isolated synthetic stash."]
 async fn arc_av1_and_hevc_replacement_on_real_filesystem() {
     roundtrip("hardware").await;
+}
+
+#[tokio::test]
+async fn savings_follow_verified_chains_and_current_library_membership() {
+    let (_dir, lib) = harness().await;
+    let rel = "Movies/Savings.mkv";
+    std::fs::write(lib.layout.root().join(rel), b"fixture").unwrap();
+    let item = lib.index_path(rel).await.unwrap().unwrap();
+    sqlx::query("UPDATE items SET size=50,mtime=30,quick_hash='final' WHERE id=?")
+        .bind(&item.id)
+        .execute(&lib.db)
+        .await
+        .unwrap();
+    for (source, output, saved, time) in [
+        ("100:10:first", "70:20:middle", 30, 20),
+        ("70:20:middle", "50:30:final", 20, 30),
+    ] {
+        sqlx::query("INSERT INTO conversion_jobs(id,item_id,library_id,revision,source_version,output_version,source_path,target_path,state,saved_bytes,created_at,updated_at) VALUES(?,?,?,1,?,?,?,?,'complete',?,?,?)")
+            .bind(new_id()).bind(&item.id).bind(defs::STARTING_MOVIES)
+            .bind(source).bind(output).bind(rel).bind(rel).bind(saved).bind(time).bind(time)
+            .execute(&lib.db).await.unwrap();
+    }
+    let total = savings(&lib.db, defs::STARTING_MOVIES).await.unwrap();
+    assert_eq!(
+        (total.original_bytes, total.current_bytes, total.saved_bytes),
+        (100, 50, 50)
+    );
+    assert_eq!(total.percent, 50.0);
+    // Attribution follows current membership rather than the historical job library.
+    sqlx::query("UPDATE items SET library_id=? WHERE id=?")
+        .bind(defs::STARTING_SHOWS)
+        .bind(&item.id)
+        .execute(&lib.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        savings(&lib.db, defs::STARTING_MOVIES).await.unwrap(),
+        Savings::default()
+    );
+    assert_eq!(savings(&lib.db, defs::STARTING_SHOWS).await.unwrap(), total);
+    // An external edit invalidates old savings even if the byte size is unchanged.
+    sqlx::query("UPDATE items SET quick_hash='edited' WHERE id=?")
+        .bind(&item.id)
+        .execute(&lib.db)
+        .await
+        .unwrap();
+    let edited = savings(&lib.db, defs::STARTING_SHOWS).await.unwrap();
+    assert_eq!(
+        (
+            edited.original_bytes,
+            edited.current_bytes,
+            edited.saved_bytes
+        ),
+        (50, 50, 0)
+    );
+    sqlx::query("DELETE FROM items WHERE id=?")
+        .bind(&item.id)
+        .execute(&lib.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        savings(&lib.db, defs::STARTING_SHOWS).await.unwrap(),
+        Savings::default()
+    );
+}
+
+#[tokio::test]
+async fn migration_recovers_matching_legacy_results_without_counting_edited_files() {
+    let (_dir, lib) = harness().await;
+    for (name, mtime, expected) in [("Matching", 15, Some("50:15:legacy")), ("Edited", 25, None)] {
+        let rel = format!("Movies/{name}.mkv");
+        std::fs::write(lib.layout.root().join(&rel), b"fixture").unwrap();
+        let item = lib.index_path(&rel).await.unwrap().unwrap();
+        sqlx::query("UPDATE items SET size=50,mtime=?,quick_hash='legacy' WHERE id=?")
+            .bind(mtime)
+            .bind(&item.id)
+            .execute(&lib.db)
+            .await
+            .unwrap();
+        let job = new_id();
+        sqlx::query("INSERT INTO conversion_jobs(id,item_id,library_id,revision,source_version,source_path,target_path,state,saved_bytes,created_at,updated_at) VALUES(?,?,?,1,'100:5:source',?,?,'complete',50,10,20)")
+            .bind(&job).bind(&item.id).bind(defs::STARTING_MOVIES).bind(&rel).bind(&rel)
+            .execute(&lib.db).await.unwrap();
+        let migration = include_str!("../../../migrations/0009_conversion_savings.sql");
+        let update = &migration[migration.find("UPDATE conversion_jobs").unwrap()..];
+        sqlx::raw_sql(update).execute(&lib.db).await.unwrap();
+        let version: Option<String> =
+            sqlx::query_scalar("SELECT output_version FROM conversion_jobs WHERE id=?")
+                .bind(&job)
+                .fetch_one(&lib.db)
+                .await
+                .unwrap();
+        assert_eq!(version.as_deref(), expected);
+    }
+    let total = savings(&lib.db, defs::STARTING_MOVIES).await.unwrap();
+    assert_eq!(
+        (total.original_bytes, total.current_bytes, total.saved_bytes),
+        (150, 100, 50)
+    );
+}
+
+#[tokio::test]
+async fn policy_changes_and_progress_publish_conversion_events() {
+    let (_dir, lib) = harness().await;
+    let mut events = lib.events.subscribe();
+    save(
+        &lib,
+        defs::STARTING_MOVIES,
+        Policy {
+            enabled: true,
+            ..Policy::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(events.try_recv().unwrap(), crate::events::Event::Job {kind, state, item_id: None} if kind == "library_conversion" && state == "settings")
+    );
+    changed(&lib, "encoding");
+    assert!(
+        matches!(events.try_recv().unwrap(), crate::events::Event::Job {kind, state, item_id: None} if kind == "library_conversion" && state == "encoding")
+    );
 }
 
 #[tokio::test]

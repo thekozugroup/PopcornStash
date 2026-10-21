@@ -76,6 +76,8 @@ export const routes: RouteObject[] = [
                   {path: 'libraries/:id/conversion', ...page(() => import('../pages/settings/LibraryConversionPage'))},
                   {path: 'libraries/:id', ...page(() => import('../pages/settings/LibraryEditorPage'))},
                   {path: 'library', element: <Navigate to="/settings/libraries" replace />},
+                  {path: 'transcoding', ...page(() => import('../pages/settings/TranscodingSettingsPage'))},
+                  {path: 'transcoding/:id', ...page(() => import('../pages/settings/LibraryConversionPage'))},
                   {path: 'system', ...page(() => import('../pages/settings/SystemSettingsPage'))},
                 ],
               },

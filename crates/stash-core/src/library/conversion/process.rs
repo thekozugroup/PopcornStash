@@ -623,7 +623,7 @@ async fn run(
             _ = &mut deadline => { child.kill().await?; return Err(CoreError::external("Conversion timed out. The original was kept.")); }
             _ = tick.tick() => {
                 if !current(lib, job).await? { child.kill().await?; return Err(CoreError::conflict("Library settings or the file changed. The original was kept.")); }
-                if progress { sqlx::query("UPDATE conversion_jobs SET progress=?,updated_at=? WHERE id=?").bind(fraction).bind(crate::now()).bind(&job.id).execute(&lib.db).await?; }
+                if progress { sqlx::query("UPDATE conversion_jobs SET progress=?,updated_at=? WHERE id=?").bind(fraction).bind(crate::now()).bind(&job.id).execute(&lib.db).await?; super::changed(lib, "encoding"); }
             }
             line = lines.next_line() => {
                 let Some(line) = line? else { break; };

@@ -979,5 +979,14 @@ export interface ConversionView {
   policy: ConversionPolicy;
   encoders: {codec: string; name: string; label: string; device: string | null; hardware: boolean}[];
   pending: number;
-  jobs: {id: string; item_id: string | null; title: string; state: string; progress: number; encoder: string | null; message: string | null; saved_bytes: number}[];
+  savings: ConversionSavings;
+  jobs: {original_bytes: number; result_bytes: number | null; updated_at: number; id: string; item_id: string | null; title: string; state: string; progress: number; encoder: string | null; message: string | null; saved_bytes: number}[];
+}
+
+export interface ConversionSavings {videos: number; original_bytes: number; current_bytes: number; saved_bytes: number; percent: number}
+export interface TranscodingOverview {
+  libraries: {id: string; name: string; policy: ConversionPolicy; pending: number; savings: ConversionSavings}[];
+  jobs: (ConversionView['jobs'][number] & {library_id: string; library_name: string})[];
+  savings: ConversionSavings;
+  generated_at: number;
 }

@@ -2,6 +2,8 @@
 //! never candidates. Verified replacements retain item identity and user metadata.
 mod process;
 mod publication;
+mod stats;
+pub use stats::{Savings, savings};
 #[cfg(test)]
 mod tests;
 
@@ -71,12 +73,16 @@ pub struct JobView {
     pub encoder: Option<String>,
     pub message: Option<String>,
     pub saved_bytes: i64,
+    pub original_bytes: i64,
+    pub result_bytes: Option<i64>,
+    pub updated_at: i64,
 }
 #[derive(Debug, Serialize)]
 pub struct View {
     pub policy: Policy,
     pub encoders: Vec<Encoder>,
     pub pending: i64,
+    pub savings: Savings,
     pub jobs: Vec<JobView>,
 }
 
@@ -99,14 +105,15 @@ async fn policy(db: &Db, id: &str) -> Result<(Policy, i64)> {
 pub async fn view(lib: &Library, id: &str) -> Result<View> {
     require_video(lib, id).await?;
     let (policy, revision) = policy(&lib.db, id).await?;
-    let jobs = sqlx::query_as("SELECT j.id,j.item_id,COALESCE(i.title,'Unavailable video') AS title,j.state,j.progress,j.encoder,j.message,j.saved_bytes FROM conversion_jobs j LEFT JOIN items i ON i.id=j.item_id WHERE j.library_id=? ORDER BY j.created_at DESC,j.id DESC LIMIT 30")
+    let jobs = sqlx::query_as("SELECT j.id,j.item_id,COALESCE(i.title,'Unavailable video') AS title,j.state,j.progress,j.encoder,j.message,j.saved_bytes,CAST(substr(j.source_version,1,instr(j.source_version,':')-1) AS INTEGER) AS original_bytes,CASE WHEN j.state='complete' THEN CAST(substr(j.source_version,1,instr(j.source_version,':')-1) AS INTEGER)-j.saved_bytes ELSE NULL END AS result_bytes,j.updated_at FROM conversion_jobs j LEFT JOIN items i ON i.id=j.item_id WHERE j.library_id=? ORDER BY CASE WHEN j.state IN ('encoding','verifying','publishing') THEN 0 ELSE 1 END,j.updated_at DESC,j.rowid DESC LIMIT 30")
         .bind(id).fetch_all(&lib.db).await?;
-    let pending = sqlx::query_scalar("SELECT COUNT(*) FROM items i WHERE i.library_id=? AND i.kind='video' AND i.status='ready' AND NOT EXISTS (SELECT 1 FROM conversion_jobs j WHERE j.item_id=i.id AND j.revision=? AND j.source_version=CAST(i.size AS TEXT)||':'||CAST(i.mtime AS TEXT)||':'||COALESCE(i.quick_hash,''))")
+    let pending = sqlx::query_scalar("SELECT COUNT(*) FROM items i WHERE i.library_id=? AND i.kind='video' AND i.status='ready' AND i.place='library' AND NOT EXISTS (SELECT 1 FROM downloads d WHERE d.state IN ('queued','downloading','paused','seeding','sorting') AND (d.id=i.source_download_id OR EXISTS (SELECT 1 FROM download_items di WHERE di.download_id=d.id AND di.item_id=i.id))) AND NOT EXISTS (SELECT 1 FROM conversion_jobs j WHERE j.item_id=i.id AND j.revision=? AND j.source_version=CAST(i.size AS TEXT)||':'||CAST(i.mtime AS TEXT)||':'||COALESCE(i.quick_hash,''))")
         .bind(id).bind(revision).fetch_one(&lib.db).await?;
     Ok(View {
         policy,
         encoders: process::encoders().await.clone(),
         pending,
+        savings: savings(&lib.db, id).await?,
         jobs,
     })
 }
@@ -134,6 +141,9 @@ pub async fn save(lib: &Library, id: &str, p: Policy) -> Result<View> {
             .bind(id).bind(p.enabled).bind(&p.codec).bind(&p.quality).bind(&p.compute).execute(&lib.db).await?;
     }
     drop(_guard);
+    if previous != p {
+        changed(lib, "settings");
+    }
     view(lib, id).await
 }
 
@@ -141,7 +151,16 @@ pub async fn retry(lib: &Library, id: &str) -> Result<View> {
     require_video(lib, id).await?;
     sqlx::query("DELETE FROM conversion_jobs WHERE library_id=? AND state IN ('failed','cancelled') AND stage IS NULL")
         .bind(id).execute(&lib.db).await?;
+    changed(lib, "retry");
     view(lib, id).await
+}
+
+pub(super) fn changed(lib: &Library, state: &str) {
+    lib.events.publish(crate::events::Event::Job {
+        kind: "library_conversion".into(),
+        state: state.into(),
+        item_id: None,
+    });
 }
 
 /// Run before scanning: finish cleanup or restore the original from each durable journal.
@@ -222,6 +241,7 @@ pub(super) async fn state(
         .bind(id)
         .execute(&lib.db)
         .await?;
+    changed(lib, state);
     Ok(())
 }
 
@@ -251,6 +271,7 @@ pub async fn run_one(lib: &Library, cancel: &CancellationToken) -> Result<bool> 
     .bind(&id)
     .fetch_one(&lib.db)
     .await?;
+    changed(lib, "encoding");
     let result = convert(lib, &item, &p, &mut job, cancel).await;
     if let Err(e) = result
         && job.state != "complete"

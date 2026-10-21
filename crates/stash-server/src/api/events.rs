@@ -920,6 +920,11 @@ mod tests {
             .await;
         assert_eq!(json["items"].as_array().unwrap().len(), 1, "{json}");
 
+        app.state.events.publish(Event::Job {
+            kind: "library_conversion".into(),
+            state: "encoding".into(),
+            item_id: None,
+        });
         let mut texts = Vec::new();
         for body in &mut streams {
             texts.push(up_to_marker(&app, body, "after-sort").await);
@@ -947,6 +952,10 @@ mod tests {
             "{owner_text}"
         );
         assert!(owner_text.contains(r#"data: {"count":1}"#), "{owner_text}");
+        assert!(
+            owner_text.contains(r#""kind":"library_conversion","state":"encoding""#),
+            "{owner_text}"
+        );
 
         // A file the member can see waiting changes their own count, which they are told.
         let clip = app
