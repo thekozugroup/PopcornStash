@@ -27,6 +27,7 @@ import com.thekozugroup.popcornstash.ui.components.PageTopBar
 import com.thekozugroup.popcornstash.ui.components.PrimaryButton
 import com.thekozugroup.popcornstash.ui.components.SecondaryButton
 import com.thekozugroup.popcornstash.ui.theme.Popcorn
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
@@ -83,11 +84,11 @@ internal fun LibraryConversionPage(state: ConversionUi, onChange: (ConversionPol
                 ConversionChoices("Video format", listOf("av1" to "AV1", "hevc" to "H.265 (HEVC)"), p.codec, !state.busy) { onChange(p.copy(codec = it)) }
                 ConversionChoices("Quality", listOf("high" to "Higher quality", "balanced" to "Balanced", "small" to "Smaller files"), p.quality, !state.busy) { onChange(p.copy(quality = it)) }
             }
-            FormSection("Processing", "One video at a time on this server. Automatic prefers a tested GPU, with CPU fallback when no compatible GPU is available.") {
+            FormSection("Processing", "Runs on this server. Automatic prefers a tested GPU, with CPU fallback when no compatible GPU is available.") {
                 ConversionChoices("Use", listOf("auto" to "Automatic", "hardware" to "GPU only", "cpu" to "CPU only"), p.compute, !state.busy) { onChange(p.copy(compute = it)) }
                 val encoder = view.encoders.firstOrNull { it.codec == p.codec && (p.compute == "auto" || it.hardware == (p.compute == "hardware")) }
                 Text(encoder?.let { "Available: ${it.label}" } ?: "No working encoder for this choice. Originals will be kept.", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
-                Text("Turning conversion off stops the current conversion safely. Completed replacements remain.", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
+                Text("Turning conversion off stops active conversions safely. Completed replacements remain.", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
             }
             Spacer(Modifier.height(16.dp))
             PrimaryButton(if (state.busy) "Saving…" else "Save changes", onClick = onSave, enabled = !state.busy)
@@ -97,7 +98,7 @@ internal fun LibraryConversionPage(state: ConversionUi, onChange: (ConversionPol
                 view.jobs.forEach { job ->
                     Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(job.title, style = Popcorn.type.body)
-                        val label = when (job.state) { "encoding" -> "Converting · ${(job.progress * 100).toInt()}%"; "verifying" -> "Checking video"; "publishing" -> "Replacing original"; "complete" -> "Complete"; "skipped" -> "Original kept"; "failed" -> "Needs attention"; else -> "Stopped" }
+                        val label = when (job.state) { "encoding" -> "Converting · ${(job.progress * 100).roundToInt()}%"; "verifying" -> "Checking video · ${(job.progress * 100).roundToInt()}%"; "publishing" -> "Replacing original"; "complete" -> "Complete"; "skipped" -> "Original kept"; "failed" -> "Needs attention"; else -> "Stopped" }
                         Text(label + if (job.savedBytes > 0) " · ${com.thekozugroup.popcornstash.feature.downloads.formatBytes(job.savedBytes)} saved" else "", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
                         job.encoder?.let { Text(it, style = Popcorn.type.metadata, color = Popcorn.colors.textMuted) }
                         job.message?.let { Text(it, style = Popcorn.type.metadata, color = Popcorn.colors.textMuted) }

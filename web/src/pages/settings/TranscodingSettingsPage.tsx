@@ -56,7 +56,7 @@ function TranscodingSettings() {
       <SettingsGroup title="Storage savings" description="Verified replacements for videos still in your libraries. Original size includes unchanged videos; edited or deleted files no longer contribute past savings.">
         <StorageSavings savings={data.savings} />
       </SettingsGroup>
-      <SettingsGroup title="Libraries" description="Each switch saves immediately. Enabling allows verified, smaller replacements of existing videos and new imports. Turning it off safely stops that library's current conversion.">
+      <SettingsGroup title="Libraries" description="Each switch saves immediately. Enabling allows verified, smaller replacements of existing videos and new imports. Turning it off safely stops that library's active conversions.">
         <div {...stylex.props(styles.list)}>
           {data.libraries.length === 0 ? <Text>No video libraries yet. Create one in Libraries to begin.</Text> : data.libraries.map(library => {
             return <div key={library.id} {...stylex.props(styles.row)}>
@@ -73,8 +73,8 @@ function TranscodingSettings() {
           {data.jobs.length === 0 ? <Text>No transcodes yet. Enable a video library above to begin.</Text> : data.jobs.map(job => <div key={job.id} {...stylex.props(styles.row)}>
             <div {...stylex.props(styles.top)}><Heading level={4} xstyle={styles.title}>{job.title}</Heading><Text type="supporting">{states[job.state] ?? job.state}</Text></div>
             <Text type="supporting" color="secondary">{job.library_name}{job.encoder ? ` · ${job.encoder}` : ''}</Text>
-            {job.state === 'encoding' ? <ProgressBar label="Encoding progress" value={job.progress * 100} hasValueLabel /> : null}
-            {job.state === 'verifying' || job.state === 'publishing' ? <ProgressBar label={`${states[job.state]}: ${job.title}`} isIndeterminate /> : null}
+            {job.state === 'encoding' || job.state === 'verifying' ? <ProgressBar label={job.state === 'encoding' ? 'Encoding progress' : 'Video check progress'} value={Math.round(job.progress * 100)} hasValueLabel /> : null}
+            {job.state === 'publishing' ? <ProgressBar label={`${states[job.state]}: ${job.title}`} isIndeterminate /> : null}
             {job.result_bytes !== null ? <Text type="supporting">{formatBytes(job.original_bytes)} → {formatBytes(job.result_bytes)} · {formatBytes(job.saved_bytes)} saved ({percent(job.original_bytes > 0 ? job.saved_bytes * 100 / job.original_bytes : 0)})</Text> : <Text type="supporting" color="secondary">Original: {formatBytes(job.original_bytes)}</Text>}
             {job.message ? <Text type="supporting" color="secondary">{job.message}</Text> : null}
             {job.state === 'failed' || job.state === 'cancelled' ? <Button label={`Review ${job.library_name} options`} variant="ghost" href={`/settings/transcoding/${job.library_id}`} /> : null}

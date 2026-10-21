@@ -88,11 +88,11 @@ function ConversionSettings() {
             <Selector label="Quality" value={draft.quality} onChange={quality => change({quality: quality as ConversionPolicy['quality']})} options={[{value: 'high', label: 'Higher quality'}, {value: 'balanced', label: 'Balanced'}, {value: 'small', label: 'Smaller files'}]} description="Conversion is lossy. Higher quality keeps more detail; a file is replaced only if it also saves space." presentation="adaptive" width="100%" isDisabled={busy} />
           </div>
         </SettingsGroup>
-        <SettingsGroup title="Processing" description="One video at a time on this server. Automatic prefers a tested GPU and uses the CPU when no compatible GPU is available.">
+        <SettingsGroup title="Processing" description="Runs on this server. Automatic prefers a tested GPU and uses the CPU when no compatible GPU is available.">
           <div {...stylex.props(styles.field)}>
             <Selector label="Use" value={draft.compute} onChange={compute => change({compute: compute as ConversionPolicy['compute']})} options={[{value: 'auto', label: 'Automatic'}, {value: 'hardware', label: 'GPU only'}, {value: 'cpu', label: 'CPU only'}]} presentation="adaptive" width="100%" isDisabled={busy} />
             <Text type="supporting" color="secondary">{matching[0] ? `Available: ${matching[0].label}` : 'No working encoder for this choice. Originals will be kept.'}</Text>
-            <Text type="supporting" color="secondary">Turning conversion off stops the current conversion safely. Completed replacements remain.</Text>
+            <Text type="supporting" color="secondary">Turning conversion off stops active conversions safely. Completed replacements remain.</Text>
           </div>
         </SettingsGroup>
         <div {...stylex.props(styles.row)}><Button type="submit" variant="primary" label="Save changes" isLoading={busy} />{notice ? <Text role="status">{notice}</Text> : null}</div>
@@ -102,7 +102,7 @@ function ConversionSettings() {
         <div {...stylex.props(styles.jobs)} aria-live="polite">
           {view.jobs.length === 0 ? <Text color="secondary">No conversions yet.</Text> : view.jobs.map(job => <div key={job.id} {...stylex.props(styles.job)}>
             <Text weight="medium">{job.title}</Text>
-            <Text type="supporting" color="secondary">{stateLabel[job.state] ?? job.state}{job.state === 'encoding' ? ` · ${Math.round(job.progress * 100)}%` : ''}{job.saved_bytes > 0 ? ` · ${formatBytes(job.saved_bytes)} saved` : ''}</Text>
+            <Text type="supporting" color="secondary">{stateLabel[job.state] ?? job.state}{job.state === 'encoding' || job.state === 'verifying' ? ` · ${Math.round(job.progress * 100)}%` : ''}{job.saved_bytes > 0 ? ` · ${formatBytes(job.saved_bytes)} saved` : ''}</Text>
             {job.encoder ? <Text type="supporting" color="secondary">{job.encoder}</Text> : null}
             {job.message ? <Text type="supporting" color="secondary">{job.message}</Text> : null}
           </div>)}
