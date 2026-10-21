@@ -4,6 +4,8 @@ Changes to PopcornStash, newest first. Version numbers follow [Semantic Versioni
 
 ## [Unreleased]
 
+- Fix Intel Arc/VAAPI AV1 compression presets being ignored; each quality option now controls the AV1 encoder on its native scale. Smaller-size and full integrity checks still protect originals.
+
 - Two bounded conversion workers, GPU input decoding and full-video integrity checks, live verification progress, and Intel Arc AV1 decode support in amd64 images. Originals remain protected by complete-file checks; larger results are discarded before verification.
 
 - Double tap the left/right player picture to seek back/forward 15 seconds on web and Android.

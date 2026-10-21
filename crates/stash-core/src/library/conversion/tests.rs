@@ -192,6 +192,37 @@ async fn arc_av1_and_hevc_replacement_on_real_filesystem() {
 }
 
 #[tokio::test]
+#[ignore = "Requires a working Intel Arc VAAPI device; run explicitly in the production runtime with an isolated synthetic stash."]
+async fn arc_av1_quality_presets_affect_verified_output_size() {
+    let mut sizes = Vec::new();
+    for quality in ["high", "balanced", "small"] {
+        let (_dir, lib) = harness().await;
+        let path = lib.layout.root().join("Movies/Quality.mkv");
+        clip_with_crf(&path, "1").await;
+        lib.index_path("Movies/Quality.mkv").await.unwrap().unwrap();
+        save(
+            &lib,
+            defs::STARTING_MOVIES,
+            Policy {
+                enabled: true,
+                codec: "av1".into(),
+                quality: quality.into(),
+                compute: "hardware".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(run_one(&lib, &CancellationToken::new()).await.unwrap());
+        let view = view(&lib, defs::STARTING_MOVIES).await.unwrap();
+        assert_eq!(view.jobs[0].state, "complete", "{quality}: {view:?}");
+        assert!(view.jobs[0].saved_bytes > 0);
+        sizes.push(view.jobs[0].result_bytes.unwrap());
+    }
+    // The old -qp bug ignored every AV1 preset and produced identical sizes.
+    assert!(sizes[0] > sizes[1] && sizes[1] > sizes[2], "{sizes:?}");
+}
+
+#[tokio::test]
 async fn savings_follow_verified_chains_and_current_library_membership() {
     let (_dir, lib) = harness().await;
     let rel = "Movies/Savings.mkv";

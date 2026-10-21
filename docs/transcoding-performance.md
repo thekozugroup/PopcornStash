@@ -3,8 +3,23 @@
 These measurements describe the original deployment; GPU improvements have since
 been deployed. A subsequent live check found a separate AV1 quality-control bug:
 the shared `-qp` option is ignored by `av1_vaapi`, which falls back to quality 25.
-AV1 needs `-global_quality` and codec-specific preset calibration. No compression
-quality change has been deployed yet; see `working.md` for current status.
+The correction uses `-global_quality` on AV1's native 0–255 scale: 92 for High
+quality, 112 for Balanced and 132 for Smaller files. H.265 and CPU/NVIDIA presets
+are unchanged. See `working.md` for deployment status and validation.
+
+A three-second 1080p H.264 synthetic calibration on Atlas's A380 produced
+3,080,697 / 2,206,174 / 1,310,238 bytes from a 3,671,192-byte source at those
+three AV1 settings. All 90 frames were retained; mean SSIM was 0.99675 /
+0.99395 / 0.98881 respectively. These short synthetic measurements demonstrate
+that the presets work and their size/quality tradeoff; they do not predict a
+whole library's savings or establish perceptual transparency.
+
+Two read-only excerpts from previously rejected originals also responded to
+all three presets. At Smaller files they produced 2,264,211 bytes from
+19,128,192 and 2,155,105 from 23,398,775 (video streams only), with mean SSIM
+0.98485 and 0.97162. These were keyframe-aligned excerpts around 30 seconds,
+not whole-file predictions. All outputs existed only in a disposable container's
+RAM; no production media was edited for calibration.
 
 The A380 has spare capacity. The deployed queue uses GPU encoding, but CPU
 decoding and a single worker limit throughput. Full verification leaves the GPU

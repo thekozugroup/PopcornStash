@@ -62,14 +62,9 @@ async fn discover() -> Vec<Encoder> {
                 "format=nv12,hwupload",
                 "-c:v",
                 name,
-                "-rc_mode",
-                "CQP",
-                "-qp",
-                "28",
-                "-f",
-                "null",
-                "-",
             ]);
+            vaapi_quality(&mut command, codec, "balanced");
+            command.args(["-f", "null", "-"]);
             if tools::run(command, tools::FFMPEG, Duration::from_secs(15))
                 .await
                 .is_ok_and(|o| o.status.success())
@@ -145,6 +140,31 @@ async fn discover() -> Vec<Encoder> {
 pub(super) async fn choose_encoder(p: &Policy) -> Result<Encoder> {
     encoders().await.iter().find(|e| e.codec == p.codec && match p.compute.as_str() { "hardware" => e.hardware, "cpu" => !e.hardware, _ => true }).cloned()
         .ok_or_else(|| CoreError::external("No working encoder matches these settings. Choose Automatic or another format; the original was kept."))
+}
+
+fn vaapi_quality(cmd: &mut tokio::process::Command, codec: &str, quality: &str) {
+    // AV1 VAAPI uses its native 0–255 qindex through global_quality. Unlike
+    // HEVC, it does not consume -qp: FFmpeg silently falls back to qindex 25.
+    let (option, value) = if codec == "av1" {
+        (
+            "-global_quality",
+            match quality {
+                "high" => "92",
+                "small" => "132",
+                _ => "112",
+            },
+        )
+    } else {
+        (
+            "-qp",
+            match quality {
+                "high" => "23",
+                "small" => "33",
+                _ => "28",
+            },
+        )
+    };
+    cmd.args(["-rc_mode", "CQP", option, value]);
 }
 
 /// Keep this descriptor alive through every child process. On Linux the child
@@ -375,7 +395,7 @@ async fn encode_with_decode(
                 },
             ]);
         }
-        cmd.args(["-rc_mode", "CQP", "-qp", quality]);
+        vaapi_quality(&mut cmd, &encoder.codec, &p.quality);
     } else if encoder.hardware {
         cmd.args(["-rc", "vbr", "-cq", quality, "-b:v", "0"]);
     } else {
