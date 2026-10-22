@@ -1,3 +1,9 @@
+## Current continuation: Transcode integrity false rejections, 2026-10-21
+
+- Owner requested diagnosis and repair of health-check failures before the pending Atlas update. Production remains unchanged; existing downloads and originals are preserved.
+- Read-only inspection: 37 failed jobs all report the old generic integrity message. All 37 sources have an undetermined video language. Reproduced on four read-only source samples (H.264/HEVC, square/non-square pixels, 1080p/4K): FFmpeg omits `und` when reading the converted Matroska file, which the checker incorrectly treats as a language change.
+- Fix in progress: normalize only absent/`und` language tags, continue rejecting lost/changed named languages and titles, and report which integrity comparison failed. Full-frame, duration, copied audio/subtitle hashes and every existing preservation check remain required. Add synthetic MP4/AAC CPU and actual-Arc replacement regressions; verify before deployment and retry only matching failed source versions.
+
 ## Current continuation: Explicit physical download-folder flattening, 2026-10-21
 
 - Owner chose an explicit action to flatten actual files into each download folder. Add preview/confirmation to web and Android; no automatic filesystem changes or production flattening.

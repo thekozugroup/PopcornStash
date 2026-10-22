@@ -571,13 +571,17 @@ async fn copied_stream_hash(
     }
 }
 
-fn validate(before: &Facts, after: &Facts, codec: &str) -> Result<()> {
-    let fail = || CoreError::external("Integrity checks failed. The original was kept.");
+pub(super) fn validate(before: &Facts, after: &Facts, codec: &str) -> Result<()> {
+    let fail = |reason: &str| {
+        CoreError::external(format!(
+            "Integrity check failed: {reason}. The original was kept."
+        ))
+    };
     if before.streams.len() != after.streams.len()
         || before.chapters.len() != after.chapters.len()
         || (before.duration() - after.duration()).abs() > 0.25
     {
-        return Err(fail());
+        return Err(fail("stream count, chapters or duration changed"));
     }
     let number = |value: &Value| {
         value
@@ -611,12 +615,12 @@ fn validate(before: &Facts, after: &Facts, codec: &str) -> Result<()> {
     ] {
         if tag(&before.format, key).is_some() && tag(&before.format, key) != tag(&after.format, key)
         {
-            return Err(fail());
+            return Err(fail("container metadata changed"));
         }
     }
     for (a, b) in before.streams.iter().zip(&after.streams) {
         if a["codec_type"] != b["codec_type"] {
-            return Err(fail());
+            return Err(fail("stream order or type changed"));
         }
         if a["codec_type"] == "video" {
             if b["codec_name"] != codec
@@ -624,14 +628,14 @@ fn validate(before: &Facts, after: &Facts, codec: &str) -> Result<()> {
                 || a["height"] != b["height"]
                 || a["sample_aspect_ratio"] != b["sample_aspect_ratio"]
             {
-                return Err(fail());
+                return Err(fail("video format, dimensions or aspect ratio changed"));
             }
             let ten_before =
                 a["pix_fmt"].as_str().unwrap_or("").contains("10") || a["pix_fmt"] == "p010le";
             let ten_after =
                 b["pix_fmt"].as_str().unwrap_or("").contains("10") || b["pix_fmt"] == "p010le";
             if ten_before != ten_after {
-                return Err(fail());
+                return Err(fail("video bit depth changed"));
             }
             for key in [
                 "color_range",
@@ -640,11 +644,11 @@ fn validate(before: &Facts, after: &Facts, codec: &str) -> Result<()> {
                 "color_primaries",
             ] {
                 if a.get(key).is_some_and(|v| !v.is_null() && v != "unknown") && a[key] != b[key] {
-                    return Err(fail());
+                    return Err(fail("video colour metadata changed"));
                 }
             }
         } else if a["codec_name"] != b["codec_name"] {
-            return Err(fail());
+            return Err(fail("a copied stream codec changed"));
         }
         if a["codec_type"] == "audio"
             && ((number(&a["start_time"]) - before_start)
@@ -652,23 +656,33 @@ fn validate(before: &Facts, after: &Facts, codec: &str) -> Result<()> {
                 .abs()
                 > 0.05
         {
-            return Err(fail());
+            return Err(fail("audio and video timing changed"));
         }
         if a["codec_type"] == "audio"
             && (a["channels"] != b["channels"] || a["sample_rate"] != b["sample_rate"])
         {
-            return Err(fail());
+            return Err(fail("audio channels or sample rate changed"));
         }
-        for key in ["language", "title"] {
-            if a["tags"].get(key).is_some() && a["tags"][key] != b["tags"][key] {
-                return Err(fail());
-            }
+        // FFmpeg's Matroska demuxer omits the literal language "und".
+        // Missing and "und" both mean undetermined; a named language must
+        // still match exactly, in both directions, on every stream.
+        let language = |stream: &Value| {
+            stream["tags"]["language"]
+                .as_str()
+                .filter(|value| *value != "und")
+                .map(str::to_owned)
+        };
+        if language(a) != language(b) {
+            return Err(fail("a stream language changed"));
+        }
+        if a["tags"].get("title").is_some() && a["tags"]["title"] != b["tags"]["title"] {
+            return Err(fail("a stream title changed"));
         }
         if a["codec_type"] != "video"
             && a.get("extradata_hash").is_some()
             && a["extradata_hash"] != b["extradata_hash"]
         {
-            return Err(fail());
+            return Err(fail("copied stream headers changed"));
         }
         for key in [
             "forced",
@@ -682,13 +696,13 @@ fn validate(before: &Facts, after: &Facts, codec: &str) -> Result<()> {
         ] {
             if a["disposition"].get(key).is_some() && a["disposition"][key] != b["disposition"][key]
             {
-                return Err(fail());
+                return Err(fail("a stream disposition changed"));
             }
         }
         if a["disposition"].get("default").is_some()
             && a["disposition"]["default"] != b["disposition"]["default"]
         {
-            return Err(fail());
+            return Err(fail("a default stream changed"));
         }
     }
     for (a, b) in before.chapters.iter().zip(&after.chapters) {
@@ -700,11 +714,11 @@ fn validate(before: &Facts, after: &Facts, codec: &str) -> Result<()> {
                     .unwrap_or(f64::NAN)
             };
             if !(parse(a) - parse(b)).abs().is_finite() || (parse(a) - parse(b)).abs() > 0.02 {
-                return Err(fail());
+                return Err(fail("chapter timing changed"));
             }
         }
         if a["tags"] != b["tags"] {
-            return Err(fail());
+            return Err(fail("chapter metadata changed"));
         }
     }
     Ok(())

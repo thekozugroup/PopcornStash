@@ -185,6 +185,139 @@ async fn real_av1_and_hevc_conversion_verify_and_preserve_item_identity() {
     roundtrip("cpu").await;
 }
 
+#[test]
+fn undetermined_language_is_equivalent_but_named_languages_and_titles_are_preserved() {
+    use serde_json::json;
+    for kind in ["video", "audio", "subtitle"] {
+        let mut before = process::Facts {
+            streams: vec![
+                json!({"codec_type":kind,"codec_name":"av1","tags":{"language":"und","title":"Kept"}}),
+            ],
+            chapters: vec![],
+            format: json!({"duration":"1"}),
+        };
+        let mut after = process::Facts {
+            streams: before.streams.clone(),
+            chapters: vec![],
+            format: before.format.clone(),
+        };
+        after.streams[0]["tags"]
+            .as_object_mut()
+            .unwrap()
+            .remove("language");
+        assert!(process::validate(&before, &after, "av1").is_ok());
+        assert!(process::validate(&after, &before, "av1").is_ok());
+        for language in ["eng", "fra", "zxx"] {
+            before.streams[0]["tags"]["language"] = json!(language);
+            assert!(
+                process::validate(&before, &after, "av1")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("language changed")
+            );
+            assert!(process::validate(&after, &before, "av1").is_err());
+            after.streams[0]["tags"]["language"] = json!(language);
+            assert!(process::validate(&before, &after, "av1").is_ok());
+            after.streams[0]["tags"]["language"] = json!("und");
+        }
+        before.streams[0]["tags"]["language"] = json!("und");
+        after.streams[0]["tags"]["title"] = json!("Changed");
+        assert!(
+            process::validate(&before, &after, "av1")
+                .unwrap_err()
+                .to_string()
+                .contains("title changed")
+        );
+    }
+}
+
+async fn mp4_roundtrip(compute: &str) {
+    for codec in ["av1", "hevc"] {
+        let (_dir, lib) = harness().await;
+        let path = lib.layout.root().join("Movies/Undetermined.mp4");
+        let mut cmd = tools::command(tools::FFMPEG);
+        cmd.args([
+            "-v",
+            "error",
+            "-nostdin",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=640x360:rate=24",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000",
+            "-t",
+            "2",
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-map",
+            "1:a",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "1",
+            "-threads",
+            "2",
+            "-c:a",
+            "aac",
+            "-metadata:s:a:1",
+            "language=eng",
+        ])
+        .arg(&path);
+        tools::run_ok(cmd, tools::FFMPEG, Duration::from_secs(20))
+            .await
+            .unwrap();
+        let facts = process::probe(&path).await.unwrap();
+        assert_eq!(facts.streams[0]["tags"]["language"], "und");
+        assert_eq!(facts.streams[1]["tags"]["language"], "und");
+        let item = lib
+            .index_path("Movies/Undetermined.mp4")
+            .await
+            .unwrap()
+            .unwrap();
+        save(
+            &lib,
+            defs::STARTING_MOVIES,
+            Policy {
+                enabled: true,
+                codec: codec.into(),
+                compute: compute.into(),
+                ..Policy::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(run_one(&lib, &CancellationToken::new()).await.unwrap());
+        let view = view(&lib, defs::STARTING_MOVIES).await.unwrap();
+        assert_eq!(view.jobs[0].state, "complete", "{view:?}");
+        assert!(view.jobs[0].saved_bytes > 0);
+        let row = repo::get(&lib.db, &item.id).await.unwrap().unwrap();
+        assert_eq!(row.rel_path, "Movies/Undetermined.mkv");
+        let facts = process::probe(&lib.layout.root().join(&row.rel_path))
+            .await
+            .unwrap();
+        assert_eq!(facts.streams[0]["codec_name"], codec);
+        assert_eq!(facts.streams[1]["codec_name"], "aac");
+        assert_eq!(facts.streams[2]["tags"]["language"], "eng");
+        assert!(!path.exists());
+    }
+}
+
+#[tokio::test]
+async fn mp4_undetermined_language_passes_complete_conversion_checks() {
+    mp4_roundtrip("cpu").await;
+}
+
+#[tokio::test]
+#[ignore = "Requires a working Intel Arc VAAPI device; run explicitly with an isolated synthetic stash."]
+async fn arc_mp4_undetermined_language_replacement() {
+    mp4_roundtrip("hardware").await;
+}
+
 #[tokio::test]
 #[ignore = "Requires a working Intel Arc VAAPI device; run explicitly in the production runtime with an isolated synthetic stash."]
 async fn arc_av1_and_hevc_replacement_on_real_filesystem() {
