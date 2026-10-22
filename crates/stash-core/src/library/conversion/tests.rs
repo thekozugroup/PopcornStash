@@ -1112,3 +1112,184 @@ async fn migration_hides_only_redundant_finished_checks_and_keeps_savings() {
         before
     );
 }
+
+#[tokio::test]
+async fn incompatible_legacy_audio_converts_without_exempting_copied_tracks() {
+    for (legacy, rate) in [("cook", "44100"), ("sipr", "16000")] {
+        let (_dir, lib) = harness().await;
+        let source = lib.layout.root().join("Movies/Audio.mkv");
+        let mut cmd = tools::command(tools::FFMPEG);
+        cmd.args([
+            "-v",
+            "error",
+            "-nostdin",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x240:rate=25",
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("sine=frequency=440:sample_rate={rate}"),
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("sine=frequency=880:sample_rate={rate}"),
+            "-t",
+            "2",
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-map",
+            "2:a",
+            "-c:v",
+            "mpeg4",
+            "-c:a",
+            "pcm_f32le",
+            "-metadata:s:a:0",
+            "language=eng",
+            "-metadata:s:a:1",
+            "language=fra",
+            "-disposition:a:0",
+            "0",
+            "-disposition:a:1",
+            "0",
+        ])
+        .arg(&source);
+        tools::run_ok(cmd, tools::FFMPEG, Duration::from_secs(30))
+            .await
+            .unwrap();
+        lib.index_path("Movies/Audio.mkv").await.unwrap().unwrap();
+        save(
+            &lib,
+            defs::STARTING_MOVIES,
+            Policy {
+                enabled: true,
+                compute: "cpu".into(),
+                ..Policy::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (_, p, job) = reserve(&lib, false).await.unwrap().unwrap();
+        let encoder = process::choose_encoder(&p).await.unwrap();
+        let mut facts = process::probe(&source).await.unwrap();
+        // PCM stands in for the legacy decoder output; Cook/SIPR have no encoder.
+        // Separate ignored real-source tests exercise their actual demuxers/decoders.
+        facts.streams[1]["codec_name"] = serde_json::json!(legacy);
+        let output = _dir.path().join("converted.mkv");
+        let cancel = CancellationToken::new();
+        process::encode(&lib, &job, &p, &encoder, &source, &output, &facts, &cancel)
+            .await
+            .unwrap();
+        let after = process::probe(&output).await.unwrap();
+        assert_eq!(after.streams[1]["codec_name"], "aac");
+        assert_eq!(after.streams[2]["codec_name"], "pcm_f32le");
+        process::verify(&lib, &job, &source, &output, &facts, &encoder, &cancel)
+            .await
+            .unwrap();
+        let tampered = _dir.path().join("tampered.mkv");
+        let mut cmd = tools::command(tools::FFMPEG);
+        cmd.args(["-v", "error", "-nostdin", "-i"])
+            .arg(&output)
+            .args([
+                "-map",
+                "0",
+                "-c",
+                "copy",
+                "-c:a:1",
+                "pcm_f32le",
+                "-filter:a:1",
+                "volume=0.5",
+                "-disposition:a:0",
+                "0",
+                "-disposition:a:1",
+                "0",
+            ])
+            .arg(&tampered);
+        tools::run_ok(cmd, tools::FFMPEG, Duration::from_secs(30))
+            .await
+            .unwrap();
+        let error = process::verify(&lib, &job, &source, &tampered, &facts, &encoder, &cancel)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Audio or subtitle data changed"), "{error}");
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires real legacy fixtures mounted read-only and Intel Arc; all writes remain in an isolated RAM filesystem"]
+async fn arc_incompatible_realaudio_becomes_verified_modern_mkv() {
+    let root = std::env::var_os("POPCORNSTASH_LEGACY_FIXTURES")
+        .expect("Provide read-only legacy fixtures");
+    let root = Path::new(&root);
+    let mut completed = 0;
+    for name in ["cook.rm", "sipr.rm", "rv40.rm"] {
+        let original = root.join(name);
+        let hash = process::hash(&original).await.unwrap();
+        for codec in ["av1", "hevc"] {
+            let (_dir, lib) = harness().await;
+            let source = lib.layout.root().join("Movies/Legacy.rm");
+            std::fs::copy(&original, &source).unwrap();
+            let item = lib.index_path("Movies/Legacy.rm").await.unwrap().unwrap();
+            save(
+                &lib,
+                defs::STARTING_MOVIES,
+                Policy {
+                    enabled: true,
+                    codec: codec.into(),
+                    compute: "hardware".into(),
+                    ..Policy::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert!(run_one(&lib, &CancellationToken::new()).await.unwrap());
+            let result = view(&lib, defs::STARTING_MOVIES).await.unwrap();
+            let job = &result.jobs[0];
+            match job.state.as_str() {
+                "complete" => {
+                    completed += 1;
+                    assert!(job.saved_bytes > 0);
+                    assert!(!source.exists());
+                    let current = repo::get(&lib.db, &item.id).await.unwrap().unwrap();
+                    let after = process::probe(&lib.layout.root().join(current.rel_path))
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        after
+                            .streams
+                            .iter()
+                            .find(|s| s["codec_type"] == "video")
+                            .unwrap()["codec_name"],
+                        codec
+                    );
+                    assert_eq!(
+                        after
+                            .streams
+                            .iter()
+                            .find(|s| s["codec_type"] == "audio")
+                            .unwrap()["codec_name"],
+                        "aac"
+                    );
+                }
+                "skipped" => {
+                    assert!(
+                        job.message.as_deref().unwrap_or("").contains("smaller"),
+                        "{result:?}"
+                    );
+                    assert_eq!(process::hash(&source).await.unwrap(), hash);
+                }
+                _ => panic!("{name}/{codec}: {result:?}"),
+            }
+            assert_eq!(result.pending, 0);
+        }
+        assert_eq!(process::hash(&original).await.unwrap(), hash);
+    }
+    assert!(
+        completed >= 3,
+        "Expected verified smaller legacy replacements: {completed}"
+    );
+}

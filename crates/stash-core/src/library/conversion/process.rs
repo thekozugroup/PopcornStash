@@ -333,6 +333,11 @@ fn gpu_decode(cmd: &mut tokio::process::Command, device: &str) {
     ]);
 }
 
+fn convert_audio(stream: &Value) -> bool {
+    stream["codec_type"] == "audio"
+        && ["cook", "sipr", "ra_288"].contains(&stream["codec_name"].as_str().unwrap_or(""))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn encode_with_decode(
     lib: &Library,
@@ -362,8 +367,8 @@ async fn encode_with_decode(
         }
     }
     cmd.arg("-i").arg(tools::ffmpeg_input(input));
-    // Copy every other stream, attachment, metadata and chapter. If Matroska cannot
-    // represent one of them FFmpeg fails and the original is retained.
+    // Copy other streams except RealAudio formats that FFmpeg cannot mux into
+    // Matroska. Their AAC replacement is checked separately from copied bytes.
     cmd.args([
         "-map",
         "0",
@@ -378,6 +383,10 @@ async fn encode_with_decode(
     ]);
     // Explicit zero flags prevent Matroska from inventing default tracks.
     for (index, stream) in facts.streams.iter().enumerate() {
+        if convert_audio(stream) {
+            cmd.args([format!("-c:{index}"), "aac".into()]);
+            cmd.args([format!("-b:{index}"), "128k".into()]);
+        }
         let flags = stream["disposition"]
             .as_object()
             .map(|flags| {
@@ -498,17 +507,29 @@ pub(super) async fn verify(
             "The frame count changed. The original was kept.",
         ));
     }
-    if before
+    let copied: Vec<_> = before
         .streams
         .iter()
-        .any(|s| s["codec_type"] == "audio" || s["codec_type"] == "subtitle")
-    {
-        let original = copied_stream_hash(lib, job, input, cancel).await?;
-        let converted = copied_stream_hash(lib, job, output, cancel).await?;
+        .enumerate()
+        .filter(|(_, s)| {
+            (s["codec_type"] == "audio" && !convert_audio(s)) || s["codec_type"] == "subtitle"
+        })
+        .map(|(index, _)| index)
+        .collect();
+    if !copied.is_empty() {
+        let original = copied_stream_hash(lib, job, input, &copied, cancel).await?;
+        let converted = copied_stream_hash(lib, job, output, &copied, cancel).await?;
         if original != converted {
             return Err(CoreError::external(
                 "Audio or subtitle data changed. The original was kept.",
             ));
+        }
+    }
+    for (index, stream) in before.streams.iter().enumerate() {
+        if convert_audio(stream) {
+            let original = audio_extent(lib, job, input, index, cancel).await?;
+            let converted = audio_extent(lib, job, output, index, cancel).await?;
+            validate_audio_extent(&original, &converted)?;
         }
     }
 
@@ -559,24 +580,16 @@ async fn copied_stream_hash(
     lib: &Library,
     job: &Journal,
     path: &Path,
+    streams: &[usize],
     cancel: &CancellationToken,
 ) -> Result<String> {
     let mut cmd = tools::command(tools::FFMPEG);
     cmd.args(["-v", "error", "-nostdin", "-i"])
-        .arg(tools::ffmpeg_input(path))
-        .args([
-            "-map",
-            "0:a?",
-            "-map",
-            "0:s?",
-            "-c",
-            "copy",
-            "-f",
-            "streamhash",
-            "-hash",
-            "sha256",
-            "-",
-        ]);
+        .arg(tools::ffmpeg_input(path));
+    for index in streams {
+        cmd.args(["-map", &format!("0:{index}")]);
+    }
+    cmd.args(["-c", "copy", "-f", "streamhash", "-hash", "sha256", "-"]);
     let output = tools::run_ok(cmd, tools::FFMPEG, Duration::from_secs(36 * 60 * 60));
     tokio::pin!(output);
     let mut tick = tokio::time::interval(Duration::from_secs(2));
@@ -587,6 +600,154 @@ async fn copied_stream_hash(
             result = &mut output => return Ok(String::from_utf8_lossy(&result?.stdout).lines().filter(|line| !line.starts_with('#')).collect::<Vec<_>>().join("\n")),
         }
     }
+}
+
+#[derive(Default, Debug)]
+struct AudioExtent {
+    rate: u64,
+    samples: u64,
+    start: Option<i64>,
+    end: Option<i64>,
+}
+
+impl AudioExtent {
+    fn read(&mut self, line: &str) -> Result<()> {
+        if let Some(timebase) = line.strip_prefix("#tb 0:") {
+            let Some((numerator, denominator)) = timebase.trim().split_once('/') else {
+                return Err(audio_integrity_error());
+            };
+            if numerator.trim() != "1" {
+                return Err(audio_integrity_error());
+            }
+            self.rate = denominator
+                .trim()
+                .parse()
+                .map_err(|_| audio_integrity_error())?;
+        } else if !line.starts_with('#') && !line.trim().is_empty() {
+            let fields: Vec<_> = line.split(',').map(str::trim).collect();
+            if fields.len() != 6 || fields[0] != "0" {
+                return Err(audio_integrity_error());
+            }
+            let pts: i64 = fields[2].parse().map_err(|_| audio_integrity_error())?;
+            let samples: u64 = fields[3].parse().map_err(|_| audio_integrity_error())?;
+            if self.rate == 0 || samples == 0 || self.start.is_some_and(|start| pts < start) {
+                return Err(audio_integrity_error());
+            }
+            let end = pts
+                .checked_add(i64::try_from(samples).map_err(|_| audio_integrity_error())?)
+                .ok_or_else(audio_integrity_error)?;
+            self.start.get_or_insert(pts);
+            self.end = Some(end);
+            self.samples = self
+                .samples
+                .checked_add(samples)
+                .ok_or_else(audio_integrity_error)?;
+        }
+        Ok(())
+    }
+}
+
+fn audio_integrity_error() -> CoreError {
+    CoreError::external(
+        "Converted audio is incomplete or its timing changed. The original was kept.",
+    )
+}
+
+fn validate_audio_extent(before: &AudioExtent, after: &AudioExtent) -> Result<()> {
+    let (Some(start), Some(end), Some(result_start), Some(result_end)) =
+        (before.start, before.end, after.start, after.end)
+    else {
+        return Err(audio_integrity_error());
+    };
+    if before.rate == 0
+        || before.rate != after.rate
+        || before.samples == 0
+        || after.samples < before.samples
+        || after.samples - before.samples > 2048
+    {
+        return Err(audio_integrity_error());
+    }
+    // AAC has one 1024-sample priming frame and at most one final padding frame.
+    // Account for that known delay, rather than accepting arbitrary A/V shifts.
+    // Matroska timestamps are rounded to milliseconds.
+    let rounding = before.rate.div_ceil(500);
+    let difference = result_start
+        .checked_sub(start)
+        .ok_or_else(audio_integrity_error)?;
+    let primed = difference
+        .checked_add(1024)
+        .ok_or_else(audio_integrity_error)?;
+    let end_difference = result_end
+        .checked_sub(end)
+        .ok_or_else(audio_integrity_error)?;
+    if (difference.unsigned_abs() > rounding && primed.unsigned_abs() > rounding)
+        || end_difference.unsigned_abs() > 1024_u64.saturating_add(rounding)
+    {
+        return Err(audio_integrity_error());
+    }
+    Ok(())
+}
+
+async fn audio_extent(
+    lib: &Library,
+    job: &Journal,
+    path: &Path,
+    index: usize,
+    cancel: &CancellationToken,
+) -> Result<AudioExtent> {
+    let mut cmd = tools::command(tools::FFMPEG);
+    cmd.args([
+        "-v",
+        "error",
+        "-nostdin",
+        "-copyts",
+        "-xerror",
+        "-err_detect",
+        "explode",
+        "-threads",
+        &decode_threads(),
+        "-i",
+    ])
+    .arg(tools::ffmpeg_input(path))
+    .args([
+        "-map",
+        &format!("0:{index}"),
+        "-c:a",
+        "pcm_f32le",
+        "-f",
+        "framehash",
+        "-hash",
+        "sha256",
+        "-",
+    ]);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| tools::spawn_error(tools::FFMPEG, e))?;
+    let stderr = tokio::spawn(diagnostic_tail(
+        child.stderr.take().ok_or_else(audio_integrity_error)?,
+    ));
+    let mut lines = BufReader::new(child.stdout.take().ok_or_else(audio_integrity_error)?).lines();
+    let mut tick = tokio::time::interval(Duration::from_secs(2));
+    let deadline = tokio::time::sleep(Duration::from_secs(36 * 60 * 60));
+    tokio::pin!(deadline);
+    let mut extent = AudioExtent::default();
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => { child.kill().await?; return Err(CoreError::conflict("Conversion stopped. The original was kept.")); }
+            _ = &mut deadline => { child.kill().await?; return Err(audio_integrity_error()); }
+            _ = tick.tick() => if !current(lib, job).await? { child.kill().await?; return Err(CoreError::conflict("Library settings or the file changed. The original was kept.")); },
+            line = lines.next_line() => {
+                let Some(line) = line? else { break; };
+                extent.read(&line)?;
+            }
+        }
+    }
+    let status = child.wait().await?;
+    let _ = stderr.await;
+    if !status.success() {
+        return Err(audio_integrity_error());
+    }
+    Ok(extent)
 }
 
 // Unspecified legacy SAR displays as square pixels. Named non-square ratios
@@ -685,7 +846,11 @@ pub(super) fn validate(before: &Facts, after: &Facts, codec: &str) -> Result<()>
                     return Err(fail("video colour metadata changed"));
                 }
             }
-        } else if a["codec_name"] != b["codec_name"] {
+        } else if if convert_audio(a) {
+            b["codec_name"] != "aac"
+        } else {
+            a["codec_name"] != b["codec_name"]
+        } {
             return Err(fail("a copied stream codec changed"));
         }
         if a["codec_type"] == "audio"
@@ -693,6 +858,11 @@ pub(super) fn validate(before: &Facts, after: &Facts, codec: &str) -> Result<()>
                 - (number(&b["start_time"]) - after_start))
                 .abs()
                 > 0.05
+                    + if convert_audio(a) {
+                        1024.0 / number(&a["sample_rate"]).max(1.0)
+                    } else {
+                        0.0
+                    }
         {
             return Err(fail("audio and video timing changed"));
         }
@@ -717,6 +887,7 @@ pub(super) fn validate(before: &Facts, after: &Facts, codec: &str) -> Result<()>
             return Err(fail("a stream title changed"));
         }
         if a["codec_type"] != "video"
+            && !convert_audio(a)
             && a.get("extradata_hash").is_some()
             && a["extradata_hash"] != b["extradata_hash"]
         {
@@ -766,6 +937,40 @@ enum Progress {
     Encoding,
     Verifying(usize),
 }
+
+// Drain the pipe even after the bounded diagnostic buffer is full. Raw tool
+// output can contain private paths and metadata; only fixed messages leave here.
+async fn diagnostic_tail(mut stderr: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
+    let mut tail = Vec::new();
+    let mut buffer = [0_u8; 2048];
+    while let Ok(count) = stderr.read(&mut buffer).await {
+        if count == 0 {
+            break;
+        }
+        tail.extend_from_slice(&buffer[..count]);
+        if tail.len() > 8192 {
+            tail.drain(..tail.len() - 8192);
+        }
+    }
+    tail
+}
+
+fn failure_message(progress: Progress, stderr: &[u8]) -> &'static str {
+    let message = String::from_utf8_lossy(stderr);
+    if message.contains("No space left on device") {
+        return "Conversion ran out of free space. The original was kept.";
+    }
+    match progress {
+        Progress::Encoding if message.contains("does not yet support muxing") => {
+            "A legacy stream cannot be stored in MKV. The original was kept."
+        }
+        Progress::Encoding => "Video encoding failed. The original was kept.",
+        Progress::Verifying(0) => "The original could not be fully decoded. It was kept.",
+        Progress::Verifying(_) => {
+            "The converted video could not be fully decoded. The original was kept."
+        }
+    }
+}
 impl Progress {
     fn state(&self) -> &'static str {
         match self {
@@ -789,10 +994,14 @@ async fn run(
     progress: Progress,
     cancel: &CancellationToken,
 ) -> Result<u64> {
-    command.stderr(Stdio::null());
+    command.stderr(Stdio::piped());
     let mut child = command
         .spawn()
         .map_err(|e| tools::spawn_error(tools::FFMPEG, e))?;
+    let stderr =
+        tokio::spawn(diagnostic_tail(child.stderr.take().ok_or_else(|| {
+            CoreError::external("Missing encoder diagnostics.")
+        })?));
     let mut lines = BufReader::new(
         child
             .stdout
@@ -821,14 +1030,10 @@ async fn run(
             }
         }
     }
-    if !child.wait().await?.success() {
-        return Err(CoreError::external(match progress {
-            Progress::Encoding => "Video encoding failed. The original was kept.",
-            Progress::Verifying(0) => "The original could not be fully decoded. It was kept.",
-            Progress::Verifying(_) => {
-                "The converted video could not be fully decoded. The original was kept."
-            }
-        }));
+    let status = child.wait().await?;
+    let diagnostics = stderr.await.unwrap_or_default();
+    if !status.success() {
+        return Err(CoreError::external(failure_message(progress, &diagnostics)));
     }
     sqlx::query("UPDATE conversion_jobs SET progress=?,updated_at=? WHERE id=?")
         .bind(progress.fraction(1.0))
@@ -838,4 +1043,140 @@ async fn run(
         .await?;
     super::changed(lib, progress.state());
     Ok(frames)
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn diagnostics_larger_than_a_pipe_are_drained_with_bounded_memory() {
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        let task = tokio::spawn(diagnostic_tail(reader));
+        writer.write_all(&vec![b'x'; 128 * 1024]).await.unwrap();
+        writer.write_all(b"No space left on device").await.unwrap();
+        drop(writer);
+        let tail = task.await.unwrap();
+        assert_eq!(tail.len(), 8192);
+        assert!(tail.ends_with(b"No space left on device"));
+        assert!(failure_message(Progress::Encoding, &tail).contains("free space"));
+    }
+
+    #[test]
+    fn diagnostics_explain_known_causes_without_exposing_private_tool_output() {
+        let stderr =
+            b"/private/personal-title.rm: The Matroska muxer does not yet support muxing cook";
+        assert_eq!(
+            failure_message(Progress::Encoding, stderr),
+            "A legacy stream cannot be stored in MKV. The original was kept."
+        );
+        assert_eq!(
+            failure_message(Progress::Verifying(0), b"private source"),
+            "The original could not be fully decoded. It was kept."
+        );
+        assert_eq!(
+            failure_message(Progress::Verifying(1), b"private converted file"),
+            "The converted video could not be fully decoded. The original was kept."
+        );
+    }
+    #[test]
+    fn decoded_audio_counts_allow_only_aac_priming_and_final_padding() {
+        for rate in [16000, 44100, 48000] {
+            let before = AudioExtent {
+                rate,
+                samples: 100000,
+                start: Some(2048),
+                end: Some(102048),
+            };
+            for start in [2048, 1024] {
+                let mut after = AudioExtent {
+                    rate,
+                    samples: 100000 + if start == 2048 { 1024 } else { 1376 },
+                    start: Some(start),
+                    end: Some(start + 100000 + if start == 2048 { 1024 } else { 1376 }),
+                };
+                assert!(validate_audio_extent(&before, &after).is_ok());
+                after.samples = 99999;
+                assert!(validate_audio_extent(&before, &after).is_err());
+                after.samples = 102049;
+                assert!(validate_audio_extent(&before, &after).is_err());
+                after.samples = 101376;
+                after.start = Some(1548);
+                assert!(validate_audio_extent(&before, &after).is_err());
+                after.start = Some(start);
+                after.end = Some(99999);
+                assert!(validate_audio_extent(&before, &after).is_err());
+                after.end = Some(i64::MIN);
+                assert!(validate_audio_extent(&before, &after).is_err());
+                after.rate += 1;
+                assert!(validate_audio_extent(&before, &after).is_err());
+            }
+        }
+        assert!(validate_audio_extent(&AudioExtent::default(), &AudioExtent::default()).is_err());
+    }
+
+    #[test]
+    fn decoded_audio_framehash_parser_is_checked_and_bounded() {
+        let mut extent = AudioExtent::default();
+        for line in [
+            "#format: frame checksums",
+            "#tb 0: 1/44100",
+            "0, -1024, -1024, 1024, 8192, abc",
+            "0, 0, 0, 1024, 8192, def",
+        ] {
+            extent.read(line).unwrap();
+        }
+        assert_eq!(extent.rate, 44100);
+        assert_eq!(extent.samples, 2048);
+        assert_eq!(extent.start, Some(-1024));
+        assert_eq!(extent.end, Some(1024));
+        for line in [
+            "#tb 0: 2/44100",
+            "0, 0, 0, 0, 0, x",
+            "0, 0, 9223372036854775807, 1024, 0, x",
+            "0, 0, -2048, 1024, 0, x",
+            "1, 0, 0, 1024, 0, x",
+            "invalid",
+        ] {
+            assert!(extent.read(line).is_err(), "{line}");
+        }
+    }
+
+    #[test]
+    fn legacy_audio_exception_is_narrow_and_preserves_other_audio_contracts() {
+        use serde_json::json;
+        for name in ["cook", "sipr", "ra_288", "aac", "ac3", "wmav2", "pcm_f32le"] {
+            let legacy = ["cook", "sipr", "ra_288"].contains(&name);
+            let before = Facts {
+                streams: vec![
+                    json!({"codec_type":"audio", "codec_name":name, "sample_rate":"44100", "channels":2, "start_time":"0", "extradata_hash":"original", "tags":{"language":"eng", "title":"Main"}}),
+                ],
+                chapters: vec![],
+                format: json!({"duration":"3"}),
+            };
+            assert_eq!(convert_audio(&before.streams[0]), legacy);
+            let mut after = Facts {
+                streams: before.streams.clone(),
+                chapters: vec![],
+                format: before.format.clone(),
+            };
+            after.streams[0]["codec_name"] = json!("aac");
+            after.streams[0]["extradata_hash"] = json!("new AAC headers");
+            assert_eq!(validate(&before, &after, "av1").is_ok(), legacy);
+            if legacy {
+                for (key, value) in [
+                    ("channels", json!(1)),
+                    ("sample_rate", json!("48000")),
+                    ("codec_name", json!(name)),
+                    ("tags", json!({"language":"fra", "title":"Main"})),
+                ] {
+                    let saved = after.streams[0][key].clone();
+                    after.streams[0][key] = value;
+                    assert!(validate(&before, &after, "av1").is_err(), "{name}: {key}");
+                    after.streams[0][key] = saved;
+                }
+            }
+        }
+    }
 }

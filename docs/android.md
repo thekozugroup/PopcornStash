@@ -31,6 +31,10 @@ PopcornStash requires strong biometrics on opening and after it goes into the ba
 
 Screenshots, screen recording, casting to insecure displays and Recents previews are blocked by Android's secure-window protection. Videos pause on leaving the app; picture-in-picture is disabled to keep them behind the lock. Background uploads continue. The browser opened from Settings has its own sign-in and Android/browser privacy settings.
 
+## Download the current test APK
+
+The [current signed debug APK](https://github.com/thekozugroup/PopcornStash/releases/download/test-build-2026-10-22/popcornstash-debug.apk) and its SHA-256 checksum are attached to the [GitHub test release](https://github.com/thekozugroup/PopcornStash/releases/tag/test-build-2026-10-22). It includes legacy-video support, clearable conversion activity and storage savings. This is a manual test build, separate from `android-N` automatic releases. It can update an existing installation only when its signing certificate matches; keep app data and use `adb install -r`. Production release publishing still requires the original release signing identity.
+
 ## Build the app
 
 You need JDK 17 or later and the Android SDK with SDK Platform 37.2 (Android 17 QPR2). The app compiles against it for the toolbar's frosted glass on Android 17 QPR2 phones. Install it with:
