@@ -226,7 +226,7 @@ interface FileKind {
 }
 
 const PHOTO_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif', 'avif', 'dng', 'tif', 'tiff']);
-const VIDEO_EXTENSIONS = new Set(['mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', '3gp', 'mts', 'm2ts', 'wmv']);
+const VIDEO_EXTENSIONS = new Set(['mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', '3gp', 'mts', 'm2ts', 'wmv', 'rm', 'rmvb', 'asf']);
 const AUDIO_EXTENSIONS = new Set(['mp3', 'm4a', 'aac', 'flac', 'wav', 'ogg', 'opus']);
 const ARCHIVE_EXTENSIONS = new Set(['zip', 'rar', '7z', 'tar', 'gz']);
 /** Shared files listed by name; the rest are counted. */

@@ -198,3 +198,5 @@ Torrent review shows file types, size bounds and name filters together. Press Fi
 Video libraries open **By download**. Open a source folder to see all its videos together, including those from nested torrent directories. Use All videos for the existing poster/show view. Owners can create/rename presentation folders and select videos to move between them; original files, source identity and watch history stay unchanged. Organize files retains the separate physical move controls.
 
 Inside a download folder, owners can choose **Flatten files**, inspect the destination and file moves, then choose **Move files**. Previewing alone moves nothing. Busy files and name conflicts must be resolved before retrying; unrelated files and folders stay in place.
+
+Library conversion includes original/current/saved storage totals and a horizontal storage bar. Clear finished activity hides results while preserving active work and verified savings. Legacy RM/RMVB/WMV/ASF downloads count as videos in server-provided file filters. Conversion outputs AV1 or H.265 MKV only when smaller and fully verified.

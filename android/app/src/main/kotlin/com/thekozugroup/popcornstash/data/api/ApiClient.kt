@@ -98,6 +98,10 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
         request("/api/libraries/${seg(id)}/conversion").put(json.encodeToString(ConversionPolicy.serializer(), policy).toRequestBody(JSON)).build(), LibraryConversion.serializer(),
     )
 
+    suspend fun clearLibraryConversionActivity(id: String): LibraryConversion = send(
+        request("/api/libraries/${seg(id)}/conversion/clear").post(EMPTY_JSON).build(), LibraryConversion.serializer(),
+    )
+
     suspend fun retryLibraryConversion(id: String): LibraryConversion = send(
         request("/api/libraries/${seg(id)}/conversion/retry").post(EMPTY_JSON).build(), LibraryConversion.serializer(),
     )

@@ -215,7 +215,7 @@ impl TorrentFileKind {
             .to_ascii_lowercase();
         match ext.as_str() {
             "mkv" | "mp4" | "m4v" | "mov" | "avi" | "webm" | "ts" | "m2ts" | "mpg" | "mpeg"
-            | "wmv" | "flv" | "ogv" | "vob" | "mts" | "3gp" => Self::Video,
+            | "wmv" | "flv" | "ogv" | "vob" | "mts" | "3gp" | "rm" | "rmvb" | "asf" => Self::Video,
             "jpg" | "jpeg" | "png" | "gif" | "webp" | "heic" | "heif" | "avif" | "bmp" | "tif"
             | "tiff" | "dng" | "cr2" | "cr3" | "nef" | "arw" | "orf" | "rw2" | "raf" => Self::Image,
             "srt" | "ass" | "ssa" | "vtt" | "sub" | "idx" | "sup" => Self::Subtitle,

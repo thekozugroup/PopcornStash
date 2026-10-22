@@ -159,6 +159,13 @@ async fn roundtrip(compute: &str) {
         let view = view(&lib, defs::STARTING_MOVIES).await.unwrap();
         assert_eq!(view.jobs[0].state, "complete", "{view:?}");
         assert!(view.jobs[0].saved_bytes > 0);
+        assert_eq!(view.pending, 0);
+        assert!(!run_one(&lib, &CancellationToken::new()).await.unwrap());
+        let cleared = clear_activity(&lib, defs::STARTING_MOVIES).await.unwrap();
+        assert!(cleared.jobs.is_empty());
+        assert_eq!(cleared.savings, view.savings);
+        assert_eq!(cleared.pending, 0);
+        assert!(!run_one(&lib, &CancellationToken::new()).await.unwrap());
         assert_eq!(view.savings.saved_bytes, view.jobs[0].saved_bytes);
         assert_eq!(view.savings.original_bytes, view.jobs[0].original_bytes);
         assert_eq!(
@@ -901,4 +908,207 @@ async fn unavailable_gpu_verification_falls_back_to_a_full_software_check() {
         .is_err()
     );
     assert_eq!(std::fs::read(source).unwrap(), bytes);
+}
+
+async fn legacy_roundtrip(compute: &str) {
+    for (extension, video, audio) in [("rm", "rv20", "ac3"), ("wmv", "wmv2", "wmav2")] {
+        for codec in ["av1", "hevc"] {
+            let (_dir, lib) = harness().await;
+            let relative = format!("Movies/Legacy.{extension}");
+            let path = lib.layout.root().join(&relative);
+            let mut cmd = tools::command(tools::FFMPEG);
+            cmd.args([
+                "-v",
+                "error",
+                "-nostdin",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x240:rate=25",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=sample_rate=44100",
+                "-t",
+                "3",
+                "-c:v",
+                video,
+                "-b:v",
+                "1800k",
+                "-c:a",
+                audio,
+                "-b:a",
+                "128k",
+                "-threads",
+                "2",
+            ])
+            .arg(&path);
+            tools::run_ok(cmd, tools::FFMPEG, Duration::from_secs(30))
+                .await
+                .unwrap();
+            let item = lib.index_path(&relative).await.unwrap().unwrap();
+            assert_eq!(item.kind, MediaKind::Video);
+            save(
+                &lib,
+                defs::STARTING_MOVIES,
+                Policy {
+                    enabled: true,
+                    codec: codec.into(),
+                    compute: compute.into(),
+                    ..Policy::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert!(run_one(&lib, &CancellationToken::new()).await.unwrap());
+            let view = view(&lib, defs::STARTING_MOVIES).await.unwrap();
+            assert_eq!(
+                view.jobs[0].state, "complete",
+                "{extension}/{codec}: {view:?}"
+            );
+            assert!(view.jobs[0].saved_bytes > 0);
+            assert!(!path.exists());
+            let after = repo::get(&lib.db, &item.id).await.unwrap().unwrap();
+            assert_eq!(after.rel_path, "Movies/Legacy.mkv");
+            let facts = process::probe(&lib.layout.root().join(after.rel_path))
+                .await
+                .unwrap();
+            assert_eq!(facts.streams[0]["codec_name"], codec);
+            assert_eq!(facts.streams[1]["codec_name"], audio);
+            assert_eq!(facts.streams[0]["width"], 320);
+            assert_eq!(facts.streams[0]["height"], 240);
+            assert_eq!(view.pending, 0);
+        }
+    }
+}
+
+#[tokio::test]
+async fn legacy_realmedia_and_windows_media_become_smaller_verified_mkv() {
+    legacy_roundtrip("cpu").await;
+}
+
+#[tokio::test]
+#[ignore = "Requires a real Intel Arc GPU and isolated writable test filesystem"]
+async fn arc_legacy_realmedia_and_windows_media_replacement() {
+    legacy_roundtrip("hardware").await;
+}
+
+#[tokio::test]
+async fn clearing_activity_preserves_active_jobs_and_recovery_journals() {
+    let (_dir, lib) = harness().await;
+    for (id, state, stage) in [
+        ("active", "encoding", None),
+        ("journal", "complete", Some("private")),
+        ("failed", "failed", None),
+        ("skipped", "skipped", None),
+    ] {
+        sqlx::query("INSERT INTO conversion_jobs(id,library_id,revision,source_version,source_path,target_path,state,stage,created_at,updated_at) VALUES(?,?,1,'10:1:hash','Movies/a.rm','Movies/a.mkv',?,?,1,1)")
+            .bind(id).bind(defs::STARTING_MOVIES).bind(state).bind(stage).execute(&lib.db).await.unwrap();
+    }
+    let cleared = clear_activity(&lib, defs::STARTING_MOVIES).await.unwrap();
+    assert_eq!(cleared.jobs.len(), 2);
+    assert_eq!(cleared.retryable, 1);
+    assert!(cleared.jobs.iter().any(|job| job.id == "active"));
+    assert!(cleared.jobs.iter().any(|job| job.id == "journal"));
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM conversion_jobs")
+        .fetch_one(&lib.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 4);
+}
+
+#[test]
+fn legacy_video_extensions_are_video_in_scanning_and_torrent_rules() {
+    for file in ["movie.rm", "movie.RMVB", "movie.wmv", "movie.ASF"] {
+        assert_eq!(
+            super::super::classify::media_kind(Path::new(file)),
+            MediaKind::Video
+        );
+        assert_eq!(
+            crate::internal_api::TorrentFileKind::of(file),
+            crate::internal_api::TorrentFileKind::Video
+        );
+    }
+}
+
+#[test]
+fn unspecified_legacy_aspect_matches_square_pixels_but_not_non_square_pixels() {
+    use serde_json::json;
+    let before = process::Facts {
+        streams: vec![json!({"codec_type":"video","codec_name":"rv20","width":320,"height":240})],
+        chapters: vec![],
+        format: json!({"duration":"3"}),
+    };
+    let mut after = process::Facts {
+        streams: before.streams.clone(),
+        chapters: vec![],
+        format: before.format.clone(),
+    };
+    after.streams[0]["codec_name"] = json!("av1");
+    after.streams[0]["sample_aspect_ratio"] = json!("1:1");
+    assert!(process::validate(&before, &after, "av1").is_ok());
+    after.streams[0]["sample_aspect_ratio"] = json!("6:5");
+    assert!(process::validate(&before, &after, "av1").is_err());
+}
+
+#[tokio::test]
+async fn completed_output_does_not_block_a_different_library_policy() {
+    let (_dir, lib) = harness().await;
+    let path = lib.layout.root().join("Movies/Move.mkv");
+    std::fs::write(&path, b"synthetic video input").unwrap();
+    let item = lib.index_path("Movies/Move.mkv").await.unwrap().unwrap();
+    sqlx::query("INSERT INTO conversion_jobs(id,item_id,library_id,revision,source_version,output_version,source_path,target_path,state,created_at,updated_at) VALUES('prior',?,?,1,'old',?,'Movies/Move.rm','Movies/Move.mkv','complete',1,1)")
+        .bind(&item.id).bind(defs::STARTING_SHOWS).bind(version(&item)).execute(&lib.db).await.unwrap();
+    save(
+        &lib,
+        defs::STARTING_MOVIES,
+        Policy {
+            enabled: true,
+            ..Policy::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(view(&lib, defs::STARTING_MOVIES).await.unwrap().pending, 1);
+    assert!(reserve(&lib, false).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn migration_hides_only_redundant_finished_checks_and_keeps_savings() {
+    let (_dir, lib) = harness().await;
+    std::fs::write(lib.layout.root().join("Movies/Finished.mkv"), b"fixture").unwrap();
+    let item = lib
+        .index_path("Movies/Finished.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query("INSERT INTO conversion_jobs(id,item_id,library_id,revision,source_version,output_version,source_path,target_path,state,saved_bytes,created_at,updated_at) VALUES('completed',?,?,1,'100:5:source',?,'Movies/Finished.rm','Movies/Finished.mkv','complete',93,1,1)")
+        .bind(&item.id).bind(defs::STARTING_MOVIES).bind(version(&item)).execute(&lib.db).await.unwrap();
+    for (id, revision, source, state, stage) in [
+        ("redundant", 1, version(&item), "skipped", None),
+        ("other_revision", 2, version(&item), "skipped", None),
+        ("other_version", 1, "new".into(), "skipped", None),
+        ("active", 3, version(&item), "encoding", None),
+        ("journal", 4, version(&item), "skipped", Some("private")),
+    ] {
+        sqlx::query("INSERT INTO conversion_jobs(id,item_id,library_id,revision,source_version,source_path,target_path,state,stage,message,created_at,updated_at) VALUES(?,?,?,?,?,'Movies/Finished.mkv','Movies/Finished.mkv',?,?,'Already in the selected format.',2,2)")
+            .bind(id).bind(&item.id).bind(defs::STARTING_MOVIES).bind(revision).bind(source).bind(state).bind(stage).execute(&lib.db).await.unwrap();
+    }
+    let before = savings(&lib.db, defs::STARTING_MOVIES).await.unwrap();
+    assert_eq!(before.saved_bytes, 93);
+    let migration = include_str!("../../../migrations/0011_conversion_activity.sql");
+    sqlx::raw_sql(&migration[migration.find("UPDATE conversion_jobs").unwrap()..])
+        .execute(&lib.db)
+        .await
+        .unwrap();
+    let hidden: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM conversion_jobs WHERE activity_hidden=1")
+            .fetch_all(&lib.db)
+            .await
+            .unwrap();
+    assert_eq!(hidden, vec!["redundant"]);
+    assert_eq!(
+        savings(&lib.db, defs::STARTING_MOVIES).await.unwrap(),
+        before
+    );
 }

@@ -29,12 +29,17 @@ pub fn routes() -> Router<AppState> {
         .route("/api/libraries", get(list).post(create))
         .route("/api/libraries/icons", get(icons))
         .route("/api/transcoding", get(transcoding))
+        .route("/api/transcoding/clear", post(clear_transcoding))
         .route("/api/libraries/folders", get(folders))
         .route("/api/libraries/order", put(order))
         .route("/api/libraries/{id}", get(one).patch(edit).delete(remove))
         .route(
             "/api/libraries/{id}/conversion",
             get(conversion).put(save_conversion),
+        )
+        .route(
+            "/api/libraries/{id}/conversion/clear",
+            post(clear_conversion),
         )
         .route(
             "/api/libraries/{id}/conversion/retry",
@@ -546,6 +551,32 @@ async fn transcoding(
     Ok(Json(result))
 }
 
+async fn clear_transcoding(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> ApiResult<Json<Transcoding>> {
+    user.require(Scope::LibraryRead)?;
+    user.require_owner()?;
+    let access = user.access(&state.db).await?;
+    for library in defs::views(&state.db, &state.layout, &access).await? {
+        if library.content_type.as_str() == "video" {
+            stash_core::library::conversion::clear_activity(&state.library, &library.id).await?;
+        }
+    }
+    transcoding(State(state), user).await
+}
+
+async fn clear_conversion(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> ApiResult<Json<stash_core::library::conversion::View>> {
+    conversion_access(&state, &user, &id).await?;
+    Ok(Json(
+        stash_core::library::conversion::clear_activity(&state.library, &id).await?,
+    ))
+}
+
 async fn conversion_access(state: &AppState, user: &AuthUser, id: &str) -> ApiResult<()> {
     user.require(Scope::LibraryRead)?;
     let access = user.access(&state.db).await?;
@@ -635,6 +666,29 @@ mod tests {
                 .iter()
                 .all(|l| l["policy"]["enabled"] == false)
         );
+        for clear in [
+            "/api/transcoding/clear".to_owned(),
+            format!("/api/libraries/{STARTING_MOVIES}/conversion/clear"),
+        ] {
+            assert_eq!(
+                app.send_json("POST", &clear, &member, serde_json::json!({}))
+                    .await
+                    .0,
+                StatusCode::FORBIDDEN
+            );
+            assert_eq!(
+                app.send_json("POST", &clear, &limited_owner, serde_json::json!({}))
+                    .await
+                    .0,
+                StatusCode::FORBIDDEN
+            );
+            assert_eq!(
+                app.send_json("POST", &clear, &owner, serde_json::json!({}))
+                    .await
+                    .0,
+                StatusCode::OK
+            );
+        }
         let path = format!("/api/libraries/{STARTING_MOVIES}/conversion");
         assert_eq!(app.get(&path, None).await.0, StatusCode::UNAUTHORIZED);
         assert_eq!(app.get(&path, Some(&member)).await.0, StatusCode::FORBIDDEN);
@@ -669,6 +723,17 @@ mod tests {
         )
         .await;
         assert_eq!(app.get(&path, Some(&member)).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(
+            app.send_json(
+                "POST",
+                &format!("{path}/clear"),
+                &member,
+                serde_json::json!({})
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
     }
 
     fn kids(folder: serde_json::Value) -> serde_json::Value {

@@ -83,6 +83,7 @@ pub struct View {
     pub policy: Policy,
     pub encoders: Vec<Encoder>,
     pub pending: i64,
+    pub retryable: i64,
     pub savings: Savings,
     pub jobs: Vec<JobView>,
 }
@@ -106,11 +107,14 @@ async fn policy(db: &Db, id: &str) -> Result<(Policy, i64)> {
 pub async fn view(lib: &Library, id: &str) -> Result<View> {
     require_video(lib, id).await?;
     let (policy, revision) = policy(&lib.db, id).await?;
-    let jobs = sqlx::query_as("SELECT j.id,j.item_id,COALESCE(i.title,'Unavailable video') AS title,j.state,j.progress,j.encoder,j.message,j.saved_bytes,CAST(substr(j.source_version,1,instr(j.source_version,':')-1) AS INTEGER) AS original_bytes,CASE WHEN j.state='complete' THEN CAST(substr(j.source_version,1,instr(j.source_version,':')-1) AS INTEGER)-j.saved_bytes ELSE NULL END AS result_bytes,j.updated_at FROM conversion_jobs j LEFT JOIN items i ON i.id=j.item_id WHERE j.library_id=? ORDER BY CASE WHEN j.state IN ('encoding','verifying','publishing') THEN 0 ELSE 1 END,j.updated_at DESC,j.rowid DESC LIMIT 30")
+    let jobs = sqlx::query_as("SELECT j.id,j.item_id,COALESCE(i.title,'Unavailable video') AS title,j.state,j.progress,j.encoder,j.message,j.saved_bytes,CAST(substr(j.source_version,1,instr(j.source_version,':')-1) AS INTEGER) AS original_bytes,CASE WHEN j.state='complete' THEN CAST(substr(j.source_version,1,instr(j.source_version,':')-1) AS INTEGER)-j.saved_bytes ELSE NULL END AS result_bytes,j.updated_at FROM conversion_jobs j LEFT JOIN items i ON i.id=j.item_id WHERE j.library_id=? AND j.activity_hidden=0 ORDER BY CASE WHEN j.state IN ('encoding','verifying','publishing') THEN 0 ELSE 1 END,j.updated_at DESC,j.rowid DESC LIMIT 30")
         .bind(id).fetch_all(&lib.db).await?;
-    let pending = sqlx::query_scalar("SELECT COUNT(*) FROM items i WHERE i.library_id=? AND i.kind='video' AND i.status='ready' AND i.place='library' AND NOT EXISTS (SELECT 1 FROM downloads d WHERE d.state IN ('queued','downloading','paused','seeding','sorting') AND (d.id=i.source_download_id OR EXISTS (SELECT 1 FROM download_items di WHERE di.download_id=d.id AND di.item_id=i.id))) AND NOT EXISTS (SELECT 1 FROM conversion_jobs j WHERE j.item_id=i.id AND j.revision=? AND j.source_version=CAST(i.size AS TEXT)||':'||CAST(i.mtime AS TEXT)||':'||COALESCE(i.quick_hash,''))")
+    let pending = sqlx::query_scalar("SELECT COUNT(*) FROM items i WHERE i.library_id=? AND i.kind='video' AND i.status='ready' AND i.place='library' AND NOT EXISTS (SELECT 1 FROM downloads d WHERE d.state IN ('queued','downloading','paused','seeding','sorting') AND (d.id=i.source_download_id OR EXISTS (SELECT 1 FROM download_items di WHERE di.download_id=d.id AND di.item_id=i.id))) AND NOT EXISTS (SELECT 1 FROM conversion_jobs j WHERE j.item_id=i.id AND j.revision=? AND (j.source_version=CAST(i.size AS TEXT)||':'||CAST(i.mtime AS TEXT)||':'||COALESCE(i.quick_hash,'') OR (j.state='complete' AND j.library_id=i.library_id AND j.output_version=CAST(i.size AS TEXT)||':'||CAST(i.mtime AS TEXT)||':'||COALESCE(i.quick_hash,''))))")
         .bind(id).bind(revision).fetch_one(&lib.db).await?;
+    let retryable = sqlx::query_scalar("SELECT COUNT(*) FROM conversion_jobs WHERE library_id=? AND state IN ('failed','cancelled') AND stage IS NULL")
+        .bind(id).fetch_one(&lib.db).await?;
     Ok(View {
+        retryable,
         policy,
         encoders: process::encoders().await.clone(),
         pending,
@@ -153,6 +157,15 @@ pub async fn retry(lib: &Library, id: &str) -> Result<View> {
     sqlx::query("DELETE FROM conversion_jobs WHERE library_id=? AND state IN ('failed','cancelled') AND stage IS NULL")
         .bind(id).execute(&lib.db).await?;
     changed(lib, "retry");
+    view(lib, id).await
+}
+
+/// Hide finished activity without erasing deduplication, savings or recovery journals.
+pub async fn clear_activity(lib: &Library, id: &str) -> Result<View> {
+    require_video(lib, id).await?;
+    sqlx::query("UPDATE conversion_jobs SET activity_hidden=1 WHERE library_id=? AND stage IS NULL AND state IN ('complete','skipped','failed','cancelled') AND activity_hidden=0")
+        .bind(id).execute(&lib.db).await?;
+    changed(lib, "activity_cleared");
     view(lib, id).await
 }
 
@@ -261,7 +274,7 @@ async fn reserve(lib: &Library, gpu_only: bool) -> Result<Option<(ItemRow, Polic
     };
     // Explicit filesystem organization and claims must agree on the source path.
     let _moves = lib.lock_moves().await?;
-    let item = sqlx::query_as::<_, ItemRow>("SELECT i.* FROM items i JOIN library_conversion p ON p.library_id=i.library_id WHERE p.enabled=1 AND (?=0 OR (p.compute<>'cpu' AND ((p.codec='av1' AND ?=1) OR (p.codec='hevc' AND ?=1)))) AND i.kind='video' AND i.status='ready' AND i.place='library' AND NOT EXISTS (SELECT 1 FROM downloads d WHERE d.state IN ('queued','downloading','paused','seeding','sorting') AND (d.id=i.source_download_id OR EXISTS (SELECT 1 FROM download_items di WHERE di.download_id=d.id AND di.item_id=i.id))) AND NOT EXISTS (SELECT 1 FROM conversion_jobs j WHERE j.item_id=i.id AND j.revision=p.revision AND j.source_version=CAST(i.size AS TEXT)||':'||CAST(i.mtime AS TEXT)||':'||COALESCE(i.quick_hash,'')) ORDER BY i.added_at,i.id LIMIT 1")
+    let item = sqlx::query_as::<_, ItemRow>("SELECT i.* FROM items i JOIN library_conversion p ON p.library_id=i.library_id WHERE p.enabled=1 AND (?=0 OR (p.compute<>'cpu' AND ((p.codec='av1' AND ?=1) OR (p.codec='hevc' AND ?=1)))) AND i.kind='video' AND i.status='ready' AND i.place='library' AND NOT EXISTS (SELECT 1 FROM downloads d WHERE d.state IN ('queued','downloading','paused','seeding','sorting') AND (d.id=i.source_download_id OR EXISTS (SELECT 1 FROM download_items di WHERE di.download_id=d.id AND di.item_id=i.id))) AND NOT EXISTS (SELECT 1 FROM conversion_jobs j WHERE j.item_id=i.id AND j.revision=p.revision AND (j.source_version=CAST(i.size AS TEXT)||':'||CAST(i.mtime AS TEXT)||':'||COALESCE(i.quick_hash,'') OR (j.state='complete' AND j.library_id=i.library_id AND j.output_version=CAST(i.size AS TEXT)||':'||CAST(i.mtime AS TEXT)||':'||COALESCE(i.quick_hash,'')))) ORDER BY i.added_at,i.id LIMIT 1")
         .bind(gpu_only).bind(av1).bind(hevc).fetch_optional(&lib.db).await?;
     let Some(item) = item else {
         return Ok(None);

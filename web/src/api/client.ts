@@ -378,6 +378,8 @@ export const home = {
 };
 
 export const libraries = {
+  clearTranscodingActivity: () => post<TranscodingOverview>('/api/transcoding/clear'),
+  clearConversionActivity: (id: string) => post<ConversionView>(`/api/libraries/${enc(id)}/conversion/clear`),
   transcoding: (signal?: AbortSignal) => get<TranscodingOverview>('/api/transcoding', undefined, signal),
   conversion: (id: string, signal?: AbortSignal) => get<ConversionView>(`/api/libraries/${enc(id)}/conversion`, undefined, signal),
   saveConversion: (id: string, policy: ConversionPolicy) => put<ConversionView>(`/api/libraries/${enc(id)}/conversion`, policy),

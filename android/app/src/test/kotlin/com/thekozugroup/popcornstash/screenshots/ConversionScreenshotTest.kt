@@ -21,7 +21,7 @@ class ConversionScreenshotTest {
     private fun shoot(dark: Boolean) {
         val policy = ConversionPolicy(enabled = true)
         val view = LibraryConversion(policy, listOf(ConversionEncoder("av1", "av1_vaapi", "Intel GPU · av1 · renderD128", true)), pending = 3,
-            jobs = listOf(ConversionJob("1", title = "Paper Boats", state = "encoding", progress = .42, encoder = "Intel GPU · av1 · renderD128"), ConversionJob("3", title = "Paper Planes", state = "verifying", progress = .58), ConversionJob("2", title = "Evening Walk", state = "complete", savedBytes = 120_000_000)))
+            jobs = listOf(ConversionJob("1", title = "Paper Boats", state = "encoding", progress = .42, encoder = "Intel GPU · av1 · renderD128"), ConversionJob("3", title = "Paper Planes", state = "verifying", progress = .58), ConversionJob("2", title = "Evening Walk", state = "complete", savedBytes = 120_000_000)), savings = ConversionSavings(videos = 3, originalBytes = 1_000_000_000, currentBytes = 600_000_000, savedBytes = 400_000_000, percent = 40.0))
         compose.setContent { PopcornTheme(darkTheme = dark, reduceMotion = true) {
             LibraryConversionPage(ConversionUi(view, policy), {}, {}, {}, {})
         } }

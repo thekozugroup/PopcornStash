@@ -981,7 +981,7 @@ export interface ConversionPolicy {
 export interface ConversionView {
   policy: ConversionPolicy;
   encoders: {codec: string; name: string; label: string; device: string | null; hardware: boolean}[];
-  pending: number;
+  pending: number; retryable?: number;
   savings: ConversionSavings;
   jobs: {original_bytes: number; result_bytes: number | null; updated_at: number; id: string; item_id: string | null; title: string; state: string; progress: number; encoder: string | null; message: string | null; saved_bytes: number}[];
 }

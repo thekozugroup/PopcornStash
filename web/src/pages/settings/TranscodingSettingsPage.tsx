@@ -32,6 +32,14 @@ function TranscodingSettings() {
   const [saving, setSaving] = useState<Record<string, boolean>>({});
   const [saveError, setSaveError] = useState('');
   const [notice, setNotice] = useState('');
+  const [clearing, setClearing] = useState(false);
+  async function clearActivity() {
+    if (clearing) return;
+    setClearing(true); setSaveError('');
+    try { live.acceptOverview(await libraries.clearTranscodingActivity()); setNotice('Finished activity cleared. Storage savings are preserved.'); }
+    catch { setSaveError('Could not clear activity. Try again.'); }
+    finally { setClearing(false); }
+  }
   async function toggle(library: TranscodingOverview['libraries'][number], enabled: boolean) {
     if (saving[library.id]) return;
     setSaving(current => ({...current, [library.id]: true})); setSaveError(''); setNotice('');
@@ -69,8 +77,10 @@ function TranscodingSettings() {
         </div>
       </SettingsGroup>
       <SettingsGroup title="Activity" description="Current tasks first, followed by recent results. Checking the video can take time after encoding reaches 100%.">
+        <Button xstyle={styles.link} label="Clear finished activity" variant="ghost" onClick={() => void clearActivity()} isLoading={clearing} isDisabled={clearing || !data.jobs.some(job => ['complete', 'skipped', 'failed', 'cancelled'].includes(job.state))} />
+        <Text type="supporting" color="secondary">Clears finished entries. Active tasks and storage savings stay.</Text>
         <div {...stylex.props(styles.list)}>
-          {data.jobs.length === 0 ? <Text>No transcodes yet. Enable a video library above to begin.</Text> : data.jobs.map(job => <div key={job.id} {...stylex.props(styles.row)}>
+          {data.jobs.length === 0 ? <Text>No recent activity. Enabled libraries continue to be checked automatically.</Text> : data.jobs.map(job => <div key={job.id} {...stylex.props(styles.row)}>
             <div {...stylex.props(styles.top)}><Heading level={4} xstyle={styles.title}>{job.title}</Heading><Text type="supporting">{states[job.state] ?? job.state}</Text></div>
             <Text type="supporting" color="secondary">{job.library_name}{job.encoder ? ` · ${job.encoder}` : ''}</Text>
             {job.state === 'encoding' || job.state === 'verifying' ? <ProgressBar label={job.state === 'encoding' ? 'Encoding progress' : 'Video check progress'} value={Math.round(job.progress * 100)} hasValueLabel /> : null}

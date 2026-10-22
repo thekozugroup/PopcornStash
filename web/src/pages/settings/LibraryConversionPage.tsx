@@ -6,7 +6,7 @@ import {Heading} from '@astryxdesign/core/Heading';
 import {Selector} from '@astryxdesign/core/Selector';
 import {Text} from '@astryxdesign/core/Text';
 import {ChevronLeft} from 'lucide-react';
-import {useEffect, useState, type FormEvent} from 'react';
+import {useEffect, useRef, useState, type FormEvent} from 'react';
 import {useParams} from 'react-router';
 import {libraries} from '../../api/client';
 import type {ConversionPolicy, ConversionView} from '../../api/types';
@@ -19,6 +19,7 @@ import {formatBytes} from '../../lib/format';
 
 const styles = stylex.create({
   page: {minWidth: 0},
+  action: {alignSelf: 'flex-start'},
   back: {marginInlineStart: -12, marginBottom: 8},
   field: {display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 440, minWidth: 0},
   row: {display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12},
@@ -39,6 +40,7 @@ function ConversionSettings() {
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const generation = useRef(0);
   useDocumentTitle(`${name} video conversion`);
   useEffect(() => {
     const controller = new AbortController();
@@ -46,10 +48,11 @@ function ConversionSettings() {
     const refresh = async () => {
       if (running) return;
       running = true;
+      const epoch = generation.current;
       try {
         const [next, library] = await Promise.all([libraries.conversion(id, controller.signal), libraries.get(id, controller.signal)]);
-        if (!controller.signal.aborted) { setView(next); setDraft(current => current ?? next.policy); setName(library.name); setError(''); }
-      } catch (e) { if (!controller.signal.aborted) setError(errorMessage(e)); }
+        if (!controller.signal.aborted && epoch === generation.current) { setView(next); setDraft(current => current ?? next.policy); setName(library.name); setError(''); }
+      } catch (e) { if (!controller.signal.aborted && epoch === generation.current) setError(errorMessage(e)); }
       finally { running = false; }
     };
     void refresh();
@@ -60,14 +63,24 @@ function ConversionSettings() {
   async function save(event: FormEvent) {
     event.preventDefault();
     if (!draft || busy) return;
+    generation.current += 1;
     setBusy(true); setError(''); setNotice('');
     try { const next = await libraries.saveConversion(id, draft); setView(next); setDraft(next.policy); setNotice(next.policy.enabled ? 'Saved. This library will be checked automatically.' : 'Saved. Automatic conversion is off.'); }
     catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
   }
   async function retry() {
+    generation.current += 1;
     setBusy(true);
     try { setView(await libraries.retryConversion(id)); setNotice('Failed and stopped videos will be checked again.'); }
+    catch (e) { setError(errorMessage(e)); }
+    finally { setBusy(false); }
+  }
+  async function clearActivity() {
+    if (busy) return;
+    generation.current += 1;
+    setBusy(true); setError('');
+    try { const next = await libraries.clearConversionActivity(id); generation.current += 1; setView(next); setNotice('Finished activity cleared. Storage savings are preserved.'); setAttempt(x => x + 1); }
     catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
   }
@@ -99,14 +112,16 @@ function ConversionSettings() {
       </form>
       <SettingsGroup title="Storage savings" description="Verified replacements for videos still in this library."><StorageSavings savings={view.savings} /></SettingsGroup>
       <SettingsGroup title="Activity" description={view.policy.enabled ? `${view.pending} videos waiting to be checked.` : 'Automatic conversion is off.'}>
+        <Button xstyle={styles.action} label="Clear finished activity" variant="ghost" onClick={() => void clearActivity()} isLoading={busy} isDisabled={busy || !view.jobs.some(job => ['complete', 'skipped', 'failed', 'cancelled'].includes(job.state))} />
+        <Text type="supporting" color="secondary">Clears finished entries. Active tasks and storage savings stay.</Text>
         <div {...stylex.props(styles.jobs)} aria-live="polite">
-          {view.jobs.length === 0 ? <Text color="secondary">No conversions yet.</Text> : view.jobs.map(job => <div key={job.id} {...stylex.props(styles.job)}>
+          {view.jobs.length === 0 ? <Text color="secondary">No recent activity.</Text> : view.jobs.map(job => <div key={job.id} {...stylex.props(styles.job)}>
             <Text weight="medium">{job.title}</Text>
             <Text type="supporting" color="secondary">{stateLabel[job.state] ?? job.state}{job.state === 'encoding' || job.state === 'verifying' ? ` · ${Math.round(job.progress * 100)}%` : ''}{job.saved_bytes > 0 ? ` · ${formatBytes(job.saved_bytes)} saved` : ''}</Text>
             {job.encoder ? <Text type="supporting" color="secondary">{job.encoder}</Text> : null}
             {job.message ? <Text type="supporting" color="secondary">{job.message}</Text> : null}
           </div>)}
-          {view.jobs.some(j => j.state === 'failed' || j.state === 'cancelled') ? <Button label="Retry stopped conversions" onClick={() => void retry()} isDisabled={busy || !view.policy.enabled} /> : null}
+          {(view.retryable ?? view.jobs.filter(j => j.state === 'failed' || j.state === 'cancelled').length) > 0 ? <Button label="Retry stopped conversions" onClick={() => void retry()} isDisabled={busy || !view.policy.enabled} /> : null}
         </div>
       </SettingsGroup>
     </>}

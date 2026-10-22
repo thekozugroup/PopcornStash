@@ -13,7 +13,7 @@ use super::parse::{ParsedName, parse_name, season_folder};
 
 const VIDEO_EXTS: &[&str] = &[
     "mkv", "mp4", "m4v", "mov", "avi", "webm", "ts", "m2ts", "mts", "wmv", "flv", "3gp", "mpg",
-    "mpeg", "vob", "ogv",
+    "mpeg", "vob", "ogv", "rm", "rmvb", "asf",
 ];
 const PHOTO_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "heic", "heif", "webp", "gif", "tif", "tiff", "avif", "dng", "cr2",

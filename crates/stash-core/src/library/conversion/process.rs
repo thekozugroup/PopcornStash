@@ -207,7 +207,7 @@ pub(super) async fn probe(path: &Path) -> Result<Facts> {
         "-protocol_whitelist",
         "file,pipe",
         "-format_whitelist",
-        "mov,matroska,avi,mpegts,mpeg,asf,ogg,flv,mpegvideo,hevc,h264,yuv4mpegpipe",
+        "mov,matroska,avi,mpegts,mpeg,asf,ogg,flv,mpegvideo,hevc,h264,yuv4mpegpipe,rm",
         "-show_streams",
         "-show_data_hash",
         "SHA256",
@@ -376,6 +376,24 @@ async fn encode_with_decode(
         "-c:v:0",
         &encoder.name,
     ]);
+    // Explicit zero flags prevent Matroska from inventing default tracks.
+    for (index, stream) in facts.streams.iter().enumerate() {
+        let flags = stream["disposition"]
+            .as_object()
+            .map(|flags| {
+                flags
+                    .iter()
+                    .filter(|(_, value)| value.as_i64() == Some(1))
+                    .map(|(key, _)| key.as_str())
+                    .collect::<Vec<_>>()
+                    .join("+")
+            })
+            .unwrap_or_default();
+        cmd.args([
+            format!("-disposition:{index}"),
+            if flags.is_empty() { "0".into() } else { flags },
+        ]);
+    }
     let quality = match p.quality.as_str() {
         "high" => "23",
         "small" => "33",
@@ -571,6 +589,26 @@ async fn copied_stream_hash(
     }
 }
 
+// Unspecified legacy SAR displays as square pixels. Named non-square ratios
+// must still match, including equivalent rational representations.
+fn aspect_ratio(stream: &Value) -> (u64, u64) {
+    let ratio = stream["sample_aspect_ratio"].as_str().unwrap_or("");
+    let Some((a, b)) = ratio.split_once(':') else {
+        return (1, 1);
+    };
+    let (Ok(a), Ok(b)) = (a.parse::<u64>(), b.parse::<u64>()) else {
+        return (1, 1);
+    };
+    if a == 0 || b == 0 {
+        return (1, 1);
+    }
+    let (mut n, mut d) = (a, b);
+    while d != 0 {
+        (n, d) = (d, n % d);
+    }
+    (a / n, b / n)
+}
+
 pub(super) fn validate(before: &Facts, after: &Facts, codec: &str) -> Result<()> {
     let fail = |reason: &str| {
         CoreError::external(format!(
@@ -626,7 +664,7 @@ pub(super) fn validate(before: &Facts, after: &Facts, codec: &str) -> Result<()>
             if b["codec_name"] != codec
                 || a["width"] != b["width"]
                 || a["height"] != b["height"]
-                || a["sample_aspect_ratio"] != b["sample_aspect_ratio"]
+                || aspect_ratio(a) != aspect_ratio(b)
             {
                 return Err(fail("video format, dimensions or aspect ratio changed"));
             }
@@ -784,9 +822,13 @@ async fn run(
         }
     }
     if !child.wait().await?.success() {
-        return Err(CoreError::external(
-            "The encoder or full-video check failed. The original was kept.",
-        ));
+        return Err(CoreError::external(match progress {
+            Progress::Encoding => "Video encoding failed. The original was kept.",
+            Progress::Verifying(0) => "The original could not be fully decoded. It was kept.",
+            Progress::Verifying(_) => {
+                "The converted video could not be fully decoded. The original was kept."
+            }
+        }));
     }
     sqlx::query("UPDATE conversion_jobs SET progress=?,updated_at=? WHERE id=?")
         .bind(progress.fraction(1.0))

@@ -36,14 +36,28 @@ import kotlinx.coroutines.launch
 internal data class ConversionUi(val view: LibraryConversion? = null, val draft: ConversionPolicy? = null, val busy: Boolean = false, val error: String? = null, val notice: String? = null)
 internal class ConversionModel(private val api: ApiClient, private val id: String) : ViewModel() {
     val state = MutableStateFlow(ConversionUi())
+    private var generation = 0
     suspend fun refresh() {
-        try { val view = api.libraryConversion(id); state.update { it.copy(view = view, draft = it.draft ?: view.policy, error = null) } }
-        catch (_: ApiException) { state.update { it.copy(error = "Could not load conversion settings. Check your connection and try again.") } }
+        if (state.value.busy) return
+        val epoch = generation
+        try { val view = api.libraryConversion(id); if (epoch == generation) state.update { it.copy(view = view, draft = it.draft ?: view.policy, error = null) } }
+        catch (_: ApiException) { if (epoch == generation) state.update { it.copy(error = "Could not load conversion settings. Check your connection and try again.") } }
     }
     fun change(policy: ConversionPolicy) { state.update { it.copy(draft = policy, notice = null) } }
+    fun clearActivity() {
+        if (state.value.busy) return
+        generation += 1
+        state.update { it.copy(busy = true, error = null, notice = null) }
+        viewModelScope.launch {
+            try { val next = api.clearLibraryConversionActivity(id); state.update { it.copy(view = next, notice = "Finished activity cleared. Storage savings are preserved.") } }
+            catch (_: ApiException) { state.update { it.copy(error = "Could not clear activity. Try again.") } }
+            finally { state.update { it.copy(busy = false) } }
+        }
+    }
     fun save(retry: Boolean = false) {
         val policy = state.value.draft ?: return
         if (state.value.busy) return
+        generation += 1
         state.update { it.copy(busy = true, error = null, notice = null) }
         viewModelScope.launch {
             try {
@@ -60,11 +74,11 @@ internal fun LibraryConversionRoute(api: ApiClient, id: String, onBack: () -> Un
     val model: ConversionModel = viewModel(key = "conversion $id", factory = viewModelFactory { initializer { ConversionModel(api, id) } })
     val state by model.state.collectAsStateWithLifecycle()
     LaunchedEffect(model) { while (true) { model.refresh(); delay(5000) } }
-    LibraryConversionPage(state, model::change, { model.save() }, { model.save(true) }, onBack, bottomClearance)
+    LibraryConversionPage(state, model::change, { model.save() }, { model.save(true) }, onBack, bottomClearance, model::clearActivity)
 }
 
 @Composable
-internal fun LibraryConversionPage(state: ConversionUi, onChange: (ConversionPolicy) -> Unit, onSave: () -> Unit, onRetry: () -> Unit, onBack: () -> Unit, bottomClearance: Dp = 24.dp) {
+internal fun LibraryConversionPage(state: ConversionUi, onChange: (ConversionPolicy) -> Unit, onSave: () -> Unit, onRetry: () -> Unit, onBack: () -> Unit, bottomClearance: Dp = 24.dp, onClearActivity: () -> Unit = {}) {
     Column(Modifier.fillMaxSize().background(Popcorn.colors.page)) {
         PageTopBar("Video conversion", onBack = onBack)
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = Popcorn.spacing.gutter).padding(bottom = bottomClearance)) {
@@ -93,8 +107,13 @@ internal fun LibraryConversionPage(state: ConversionUi, onChange: (ConversionPol
             Spacer(Modifier.height(16.dp))
             PrimaryButton(if (state.busy) "Saving…" else "Save changes", onClick = onSave, enabled = !state.busy)
             state.notice?.let { Text(it, modifier = Modifier.padding(vertical = 16.dp)) }
+            FormSection("Storage savings", "Verified replacements for videos still in this library.") {
+                ConversionStorageSavings(view.savings)
+            }
             FormSection("Activity", if (view.policy.enabled) "${view.pending} videos waiting to be checked." else "Automatic conversion is off.") {
-                if (view.jobs.isEmpty()) Text("No conversions yet.", color = Popcorn.colors.textMuted)
+                SecondaryButton("Clear finished activity", onClick = onClearActivity, enabled = !state.busy && view.jobs.any { it.state in listOf("complete", "skipped", "failed", "cancelled") })
+                Text("Clears finished entries. Active tasks and storage savings stay.", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
+                if (view.jobs.isEmpty()) Text("No recent activity.", color = Popcorn.colors.textMuted)
                 view.jobs.forEach { job ->
                     Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(job.title, style = Popcorn.type.body)
@@ -105,7 +124,7 @@ internal fun LibraryConversionPage(state: ConversionUi, onChange: (ConversionPol
                     }
                     HorizontalDivider(color = Popcorn.colors.divider)
                 }
-                if (view.jobs.any { it.state == "failed" || it.state == "cancelled" }) SecondaryButton("Retry stopped conversions", onClick = onRetry, enabled = !state.busy && view.policy.enabled)
+                if (view.retryable > 0 || view.jobs.any { it.state == "failed" || it.state == "cancelled" }) SecondaryButton("Retry stopped conversions", onClick = onRetry, enabled = !state.busy && view.policy.enabled)
             }
         }
     }
@@ -118,5 +137,20 @@ private fun ConversionChoices(label: String, options: List<Pair<String, String>>
         options.forEach { (key, title) ->
             RadioRow(title, selected = value == key, onClick = { onChange(key) }, enabled = enabled)
         }
+    }
+}
+
+@Composable
+private fun ConversionStorageSavings(savings: ConversionSavings) {
+    val original = com.thekozugroup.popcornstash.feature.downloads.formatBytes(savings.originalBytes)
+    val current = com.thekozugroup.popcornstash.feature.downloads.formatBytes(savings.currentBytes)
+    val saved = com.thekozugroup.popcornstash.feature.downloads.formatBytes(savings.savedBytes)
+    val percent = java.text.NumberFormat.getNumberInstance().apply { maximumFractionDigits = 1 }.format(savings.percent)
+    val fraction = if (savings.originalBytes > 0) (savings.currentBytes.toDouble() / savings.originalBytes).toFloat().coerceIn(0f, 1f) else 0f
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    LinearProgressIndicator(progress = { fraction }, gapSize = 0.dp, drawStopIndicator = {}, modifier = Modifier.fillMaxWidth().height(8.dp).semantics { contentDescription = "Current storage $current of $original original. $saved saved, $percent percent." }, color = Popcorn.colors.text, trackColor = Popcorn.colors.divider)
+    Text("Original size: $original", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
+    Text("Current size: $current", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
+    Text("Space saved: $saved · $percent%", style = Popcorn.type.body)
     }
 }

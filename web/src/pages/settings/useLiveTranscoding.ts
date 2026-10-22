@@ -54,5 +54,6 @@ export function useLiveTranscoding() {
     setData(current => current && ({...current, libraries: current.libraries.map(l => l.id === id ? {...l, policy: view.policy} : l)}));
     refresh.current();
   };
-  return {data, error, updated, accept, stale: updated > 0 && now - updated > 10000, stream, reload: () => refresh.current()};
+  const acceptOverview = (next: TranscodingOverview) => { epoch.current += 1; setData(next); setUpdated(Date.now()); setError(false); refresh.current(); };
+  return {data, error, updated, accept, acceptOverview, stale: updated > 0 && now - updated > 10000, stream, reload: () => refresh.current()};
 }
