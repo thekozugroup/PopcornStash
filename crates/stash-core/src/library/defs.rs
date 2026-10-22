@@ -975,7 +975,7 @@ impl Library {
             }
         };
 
-        let _moves = self.lock_moves().await;
+        let _moves = self.lock_moves().await?;
         let mut tx = crate::db::begin_write(&self.db).await?;
         check_name_free(&mut tx, &name, None).await?;
         let members =
@@ -1179,7 +1179,7 @@ impl Library {
         let moves_files =
             request.claims.is_some() || content_type.is_some() || request.structure.is_some();
         let _moves = if moves_files {
-            Some(self.lock_moves().await)
+            Some(self.lock_moves().await?)
         } else {
             None
         };
@@ -1344,7 +1344,7 @@ impl Library {
         confirmed_folder: Option<&str>,
         user: Option<&str>,
     ) -> Result<Written> {
-        let _moves = self.lock_moves().await;
+        let _moves = self.lock_moves().await?;
         let mut tx = crate::db::begin_write(&self.db).await?;
         let row: LibraryRow = sqlx::query_as("SELECT * FROM libraries WHERE id = ?")
             .bind(id)

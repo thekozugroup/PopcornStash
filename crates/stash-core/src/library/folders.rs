@@ -104,7 +104,7 @@ pub fn validate_ids(ids: &[String]) -> Result<()> {
 impl Library {
     pub async fn library_folders(&self, id: &str, folder: &str) -> Result<FolderList> {
         validate_folder(folder)?;
-        let _moves = self.lock_moves().await;
+        let _moves = self.lock_moves().await?;
         let def = defs::load_one(&self.db, id)
             .await?
             .ok_or(CoreError::NotFound)?;
@@ -143,7 +143,7 @@ impl Library {
         validate_name(&body.name)?;
         let child = join(&body.parent, &body.name);
         validate_folder(&child)?;
-        let _moves = self.lock_moves().await;
+        let _moves = self.lock_moves().await?;
         let def = defs::load_one(&self.db, id)
             .await?
             .ok_or(CoreError::NotFound)?;
@@ -157,7 +157,7 @@ impl Library {
     pub async fn move_library_items(&self, id: &str, body: &MoveItems) -> Result<BatchResult> {
         validate_ids(&body.item_ids)?;
         validate_folder(&body.folder)?;
-        let _moves = self.lock_moves().await;
+        let _moves = self.lock_moves().await?;
         let def = defs::load_one(&self.db, id)
             .await?
             .ok_or(CoreError::NotFound)?;

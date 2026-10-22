@@ -39,6 +39,7 @@ class DownloadFoldersTest {
     @Volatile private var groups = listOf(DownloadFolder("download:one", "Harbor collection", 2, 900_000_000, 1), DownloadFolder("custom:archive", "Archive", 0, 0, 0, true))
     private val videos = listOf(Item(id = "one", title = "Harbor One", relPath = "Movies/Original/deep/a.mkv", kind = MediaKind.Video), Item(id = "two", title = "Harbor Two", relPath = "Movies/Other/b.mkv", kind = MediaKind.Video))
     @Volatile private var failMove = false
+    @Volatile private var blockFlatten = false
     private lateinit var services: LibraryServices
     @Before fun setup() {
         server.dispatcher = object : Dispatcher() {
@@ -47,6 +48,8 @@ class DownloadFoldersTest {
                 val target = request.target.substringBefore('?')
                 if (request.method == "POST") writes += request.body!!.utf8()
                 val body = when {
+                    target.endsWith("/flatten-preview") -> """{"key":"download:one","folder":"Movies/Harbor collection","files":[{"item_id":"one","from":"Movies/Original/deep/a.mkv","to":"Movies/Harbor collection/a.mkv","kind":"video","fingerprint":"f"}],"blocked":${if (blockFlatten) "[\"A video is converting. Try again after it finishes.\"]" else "[]"},"token":"confirmed-preview"}"""
+                    target.endsWith("/flatten") -> """{"completed":["one"],"failed":[]}"""
                     target.endsWith("/download-folders/move") -> return MockResponse.Builder().code(if (failMove) 409 else 204).body(if (failMove) """{"error":{"code":"conflict","message":"A video moved. Refresh and select it again."}}""" else "").build()
                     target.endsWith("/download-folders") && request.method == "POST" -> { groups = groups + DownloadFolder("custom:new", "My collection", 0, 0, 0, true); """{"key":"custom:new"}""" }
                     target.endsWith("/download-folders") -> json(ListSerializer(DownloadFolder.serializer()), groups)
@@ -102,7 +105,27 @@ class DownloadFoldersTest {
         compose.onNodeWithText("New folder").assertDoesNotExist()
         compose.onNodeWithText("Rename folder").assertDoesNotExist()
         compose.onNodeWithText("Select videos").assertDoesNotExist()
+        compose.onNodeWithText("Flatten files").assertDoesNotExist()
     }
+    @Test fun flattenRequiresPreviewAndExplicitConfirmation() {
+        show(); open()
+        compose.onNodeWithText("Flatten files").performClick()
+        waitFor("Move files")
+        assertTrue(paths.none { it.endsWith("/flatten") })
+        compose.onNodeWithText("Destination: Movies/Harbor collection").assertExists()
+        compose.onNodeWithText("Move files").performClick()
+        waitFor("1 video organized.")
+        assertTrue(writes.last().contains("confirmed-preview"))
+        assertTrue(paths.any { it.endsWith("/flatten") })
+    }
+    @Test fun blockedFlattenDisablesConfirmation() {
+        blockFlatten = true; show(); open()
+        compose.onNodeWithText("Flatten files").performClick(); waitFor("Move files")
+        compose.onNodeWithText("Move files").assertIsNotEnabled()
+        assertTrue(paths.none { it.endsWith("/flatten") })
+    }
+    @Test fun flattenPreviewDark() { show(dark = true); open(); compose.onNodeWithText("Flatten files").performClick(); waitFor("Move files"); compose.onRoot().captureRoboImage("src/test/screenshots/download-folder-flatten-dark.png") }
+    @Test fun flattenPreviewLight() { show(); open(); compose.onNodeWithText("Flatten files").performClick(); waitFor("Move files"); compose.onRoot().captureRoboImage("src/test/screenshots/download-folder-flatten-light.png") }
     @Test fun foldersLight() { show(); compose.onRoot().captureRoboImage("src/test/screenshots/download-folders-light.png") }
     @Test fun foldersDark() { show(dark = true); compose.onRoot().captureRoboImage("src/test/screenshots/download-folders-dark.png") }
     @Test fun contentsLight() { show(); open(); compose.onRoot().captureRoboImage("src/test/screenshots/download-folder-videos-light.png") }

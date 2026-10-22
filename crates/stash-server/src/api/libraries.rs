@@ -54,6 +54,14 @@ pub fn routes() -> Router<AppState> {
             "/api/libraries/{id}/download-folders/move",
             post(move_download_folder),
         )
+        .route(
+            "/api/libraries/{id}/download-folders/flatten-preview",
+            post(flatten_preview),
+        )
+        .route(
+            "/api/libraries/{id}/download-folders/flatten",
+            post(flatten_download),
+        )
         .route("/api/libraries/{id}/shows", get(shows))
         .route("/api/libraries/{id}/shows/{name}", get(show))
         .route("/api/libraries/{id}/timeline", get(timeline))
@@ -432,6 +440,41 @@ async fn move_download_folder(
     user.require_owner()?;
     state.library.move_to_download_folder(&id, &body).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn flatten_preview(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<stash_core::library::flatten_downloads::FlattenRequest>,
+) -> ApiResult<Json<stash_core::library::flatten_downloads::FlattenPreview>> {
+    user.require(Scope::LibraryRead)?;
+    let access = user.access(&state.db).await?;
+    visible_library(&state, &access, &id).await?;
+    user.require_owner()?;
+    Ok(Json(
+        state
+            .library
+            .preview_download_flatten(&id, &body.key)
+            .await?,
+    ))
+}
+async fn flatten_download(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<stash_core::library::flatten_downloads::FlattenRequest>,
+) -> ApiResult<Json<stash_core::library::folders::BatchResult>> {
+    user.require(Scope::LibraryRead)?;
+    let access = user.access(&state.db).await?;
+    visible_library(&state, &access, &id).await?;
+    user.require_owner()?;
+    // The disk operation owns its lifetime even if the requesting client disconnects.
+    let library = state.library.clone();
+    let result = tokio::spawn(async move { library.flatten_download(&id, &body).await })
+        .await
+        .map_err(|e| stash_core::CoreError::external(e.to_string()))??;
+    Ok(Json(result))
 }
 
 #[derive(Serialize)]
@@ -1386,6 +1429,41 @@ mod tests {
             .await;
         assert_eq!(status, StatusCode::OK, "{created}");
         assert!(created["key"].as_str().unwrap().starts_with("custom:"));
+        for route in ["flatten-preview", "flatten"] {
+            for token in [&member, &reader] {
+                assert_eq!(
+                    app.send_json(
+                        "POST",
+                        &format!("{folders}/{route}"),
+                        token,
+                        serde_json::json!({"key":created["key"]})
+                    )
+                    .await
+                    .0,
+                    StatusCode::FORBIDDEN
+                );
+            }
+        }
+        let (status, preview) = app
+            .send_json(
+                "POST",
+                &format!("{folders}/flatten-preview"),
+                &owner,
+                serde_json::json!({"key":created["key"]}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{preview}");
+        assert_eq!(
+            app.send_json(
+                "POST",
+                &format!("{folders}/flatten"),
+                &owner,
+                serde_json::json!({"key":created["key"], "token":"stale"})
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
         let (_, list) = app.json(&folders, &member).await;
         assert_eq!(list[0]["name"], "Collection");
         assert_eq!(list[0]["item_count"], 0);
@@ -1418,6 +1496,19 @@ mod tests {
             serde_json::json!({"visibility":"selected","member_ids":[]}),
         )
         .await;
+        for route in ["flatten-preview", "flatten"] {
+            assert_eq!(
+                app.send_json(
+                    "POST",
+                    &format!("{folders}/{route}"),
+                    &member,
+                    serde_json::json!({"key":"invalid"})
+                )
+                .await
+                .0,
+                StatusCode::NOT_FOUND
+            );
+        }
         assert_eq!(app.json(&folders, &member).await.0, StatusCode::NOT_FOUND);
         assert_eq!(
             app.send_json(

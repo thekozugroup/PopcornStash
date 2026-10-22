@@ -248,6 +248,90 @@ impl Root {
         Ok(())
     }
 
+    /// Persist the destination's directory entry before any source file moves.
+    pub(super) fn prepare_flatten_destination(&self, rel: &str) -> Result<()> {
+        let (parent, name) = self.parent(rel, false)?;
+        if let Err(e) =
+            nix::sys::stat::mkdirat(&parent, name.as_c_str(), nix::sys::stat::Mode::S_IRWXU)
+            && e != nix::errno::Errno::EEXIST
+        {
+            return Err(std::io::Error::from(e).into());
+        }
+        open_dir(&parent, &name)?.sync_all()?;
+        parent.sync_all()?;
+        Ok(())
+    }
+
+    /// Durable journal in a newly allocated private flatten directory.
+    pub(super) fn write_flatten_journal(&self, stage: &str, bytes: &[u8]) -> Result<()> {
+        use std::io::Write;
+        if !stage.starts_with(".popcornstash/Trash/flatten-") || stage.split('/').count() != 3 {
+            return Err(CoreError::invalid("Invalid flatten journal directory."));
+        }
+        let dir = self.directory(stage)?;
+        validate_private(&dir)?;
+        let fd = nix::fcntl::openat(
+            &dir,
+            "preparing.json",
+            nix::fcntl::OFlag::O_WRONLY
+                | nix::fcntl::OFlag::O_CREAT
+                | nix::fcntl::OFlag::O_EXCL
+                | nix::fcntl::OFlag::O_NOFOLLOW,
+            nix::sys::stat::Mode::from_bits_truncate(0o600),
+        )
+        .map_err(std::io::Error::from)?;
+        let mut file = File::from(fd);
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        // Exclusive link publication works on NAS filesystems without renameat2.
+        nix::unistd::linkat(
+            &dir,
+            "preparing.json",
+            &dir,
+            "journal.json",
+            nix::unistd::LinkatFlags::empty(),
+        )
+        .map_err(std::io::Error::from)?;
+        dir.sync_all()?;
+        self.remove_flatten_leaf(&format!("{stage}/preparing.json"))?;
+        self.directory(".popcornstash/Trash")?.sync_all()?;
+        Ok(())
+    }
+
+    pub(super) fn remove_flatten_leaf(&self, rel: &str) -> Result<()> {
+        if !rel.starts_with(".popcornstash/Trash/flatten-") || !private_trash_leaf(rel) {
+            return Err(CoreError::invalid("Invalid flatten journal path."));
+        }
+        let (parent, name) = self.parent(rel, false)?;
+        validate_private(&parent)?;
+        match nix::unistd::unlinkat(
+            &parent,
+            name.as_c_str(),
+            nix::unistd::UnlinkatFlags::NoRemoveDir,
+        ) {
+            Ok(()) | Err(nix::errno::Errno::ENOENT) => {}
+            Err(e) => return Err(std::io::Error::from(e).into()),
+        }
+        parent.sync_all()?;
+        Ok(())
+    }
+
+    pub(super) fn remove_flatten_dir(&self, rel: &str) -> Result<()> {
+        if !rel.starts_with(".popcornstash/Trash/flatten-") || rel.split('/').count() != 3 {
+            return Err(CoreError::invalid("Invalid flatten journal directory."));
+        }
+        validate_private(&self.directory(rel)?)?;
+        let (parent, name) = self.parent(rel, false)?;
+        nix::unistd::unlinkat(
+            &parent,
+            name.as_c_str(),
+            nix::unistd::UnlinkatFlags::RemoveDir,
+        )
+        .map_err(std::io::Error::from)?;
+        parent.sync_all()?;
+        Ok(())
+    }
+
     /// Public moves always require an atomic, exclusive native rename.
     pub(super) fn rename(&self, from: &str, to: &str) -> Result<()> {
         let (src, from) = self.parent(from, false)?;
@@ -467,7 +551,7 @@ impl Library {
     /// All visible regular files, including sidecars the media index intentionally omits.
     /// Owner authorization is enforced by the API. Narrow `folder` after a truncated scan.
     pub async fn cleanup_inventory(&self, folder: Option<&str>) -> Result<Inventory> {
-        let _moves = self.lock_moves().await;
+        let _moves = self.lock_moves().await?;
         let root_path = self.layout.root().to_path_buf();
         let folder = folder.unwrap_or("").to_string();
         if !folder.is_empty() {
@@ -587,7 +671,7 @@ impl Library {
         for choice in choices {
             allowed(&choice.path)?;
         }
-        let _moves = self.lock_moves().await;
+        let _moves = self.lock_moves().await?;
         let root = Root::open(self.layout.root())?;
         let mut out = CleanupResult::default();
         for choice in choices {
@@ -645,7 +729,7 @@ impl Library {
     }
 
     pub async fn restore_file_trash(&self, id: &str) -> Result<()> {
-        let _moves = self.lock_moves().await;
+        let _moves = self.lock_moves().await?;
         let mut tx = crate::db::begin_write(&self.db).await?;
         let entry: FileTrash = sqlx::query_as("SELECT * FROM file_trash WHERE id = ?")
             .bind(id)
@@ -714,7 +798,7 @@ impl Library {
             if cutoff.is_some_and(|t| entry.trashed_at > t) {
                 continue;
             }
-            let _moves = self.lock_moves().await;
+            let _moves = self.lock_moves().await?;
             let mut tx = crate::db::begin_write(&self.db).await?;
             let exists: bool =
                 sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM file_trash WHERE id = ?)")

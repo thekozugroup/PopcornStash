@@ -9,6 +9,7 @@ pub mod conversion;
 pub mod defs;
 pub mod destinations;
 pub mod download_folders;
+pub mod flatten_downloads;
 pub mod folders;
 pub mod organizer;
 pub mod parse;
@@ -20,7 +21,7 @@ pub mod watcher;
 mod tests;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
@@ -88,6 +89,8 @@ pub struct Library {
     /// Goes up with every library write that can change where a file goes (create,
     /// delete, claims, type, structure). A sort job that sees it change stops moving files.
     generation: AtomicU64,
+    /// Pending physical organization must reconcile before any other mutation.
+    flatten_pending: AtomicBool,
 }
 
 impl Library {
@@ -108,6 +111,7 @@ impl Library {
             moves: media.publication.clone(),
             media,
             generation: AtomicU64::new(0),
+            flatten_pending: AtomicBool::new(true),
         }
     }
 
@@ -121,8 +125,12 @@ impl Library {
     }
 
     /// Take the library's move lock (see [`Library`]).
-    pub(crate) async fn lock_moves(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.moves.lock().await
+    pub(crate) async fn lock_moves(&self) -> Result<tokio::sync::MutexGuard<'_, ()>> {
+        let guard = self.moves.lock().await;
+        if self.flatten_pending.load(Ordering::SeqCst) {
+            self.recover_flattened_files_locked().await?;
+        }
+        Ok(guard)
     }
 
     /// Reconcile the database with the filesystem (Scan job handler).

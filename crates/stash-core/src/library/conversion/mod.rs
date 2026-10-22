@@ -133,7 +133,7 @@ async fn require_video(lib: &Library, id: &str) -> Result<()> {
 
 pub async fn save(lib: &Library, id: &str, p: Policy) -> Result<View> {
     p.validate()?;
-    let _guard = lib.lock_moves().await;
+    let _guard = lib.lock_moves().await?;
     require_video(lib, id).await?;
     // Only changed policies create a new pass. Polls/retries never reset history.
     let (previous, _) = policy(&lib.db, id).await?;
@@ -259,6 +259,8 @@ async fn reserve(lib: &Library, gpu_only: bool) -> Result<Option<(ItemRow, Polic
     } else {
         (false, false)
     };
+    // Explicit filesystem organization and claims must agree on the source path.
+    let _moves = lib.lock_moves().await?;
     let item = sqlx::query_as::<_, ItemRow>("SELECT i.* FROM items i JOIN library_conversion p ON p.library_id=i.library_id WHERE p.enabled=1 AND (?=0 OR (p.compute<>'cpu' AND ((p.codec='av1' AND ?=1) OR (p.codec='hevc' AND ?=1)))) AND i.kind='video' AND i.status='ready' AND i.place='library' AND NOT EXISTS (SELECT 1 FROM downloads d WHERE d.state IN ('queued','downloading','paused','seeding','sorting') AND (d.id=i.source_download_id OR EXISTS (SELECT 1 FROM download_items di WHERE di.download_id=d.id AND di.item_id=i.id))) AND NOT EXISTS (SELECT 1 FROM conversion_jobs j WHERE j.item_id=i.id AND j.revision=p.revision AND j.source_version=CAST(i.size AS TEXT)||':'||CAST(i.mtime AS TEXT)||':'||COALESCE(i.quick_hash,'')) ORDER BY i.added_at,i.id LIMIT 1")
         .bind(gpu_only).bind(av1).bind(hevc).fetch_optional(&lib.db).await?;
     let Some(item) = item else {

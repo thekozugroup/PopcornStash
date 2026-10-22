@@ -16,6 +16,7 @@ import {errorMessage} from '../../lib/errors';
 import {formatBytes, formatCount, watchedFraction} from '../../lib/format';
 import {MediaGrid, MediaGridSkeleton} from '../MediaGrid';
 import {MediaTile} from '../MediaTile';
+import {FlattenDownloadFiles} from './FlattenDownloadFiles';
 import {LibraryToolbar} from './LibraryToolbar';
 import {displayTitle, itemHref, itemMeta, thumbSources} from './libraryFormat';
 import {useLibraryEvents} from './useLibraryEvents';
@@ -67,7 +68,8 @@ export function DownloadFoldersView({id, isOwner}: {id: string; isOwner: boolean
         {group ? <Button label="Rename folder" variant="ghost" isDisabled={busy} onClick={() => { setEditing('rename'); setName(group.name); }} /> : null}
       </> : null}
     </HStack>
-    <Text type="supporting" color="secondary">Folders organize this library view. Videos appear together, including nested source folders. Original files stay in place.</Text>
+    <Text type="supporting" color="secondary">Folders group videos from each download, including nested source folders. Files stay in place.</Text>
+    {isOwner && group ? <FlattenDownloadFiles key={`${id}:${group.key}`} id={id} groupKey={group.key} onMoved={() => setRevision(v => v + 1)} /> : null}
     {editing ? <VStack gap={2}>
       <TextInput label={editing === 'create' ? 'New folder name' : 'Folder name'} value={name} onChange={setName} isDisabled={busy} onEnter={() => { if (name.trim()) void saveName(); }} />
       <HStack gap={2}><Button label="Save folder" variant="primary" isDisabled={!name.trim()} isLoading={busy} onClick={() => void saveName()} /><Button label="Cancel" variant="ghost" isDisabled={busy} onClick={() => setEditing(null)} /></HStack>

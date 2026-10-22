@@ -293,7 +293,7 @@ pub(crate) async fn sort_path_as_of(
         }
     }
     {
-        let _moves = lib.lock_moves().await;
+        let _moves = lib.lock_moves().await?;
         remove_empty_dirs(&lib.layout, &abs).await;
     }
     if let Some(id) = &download_id {
@@ -710,7 +710,7 @@ async fn sort_file(lib: &Library, abs: &Path, role: Role, job: &SortJob) -> Resu
 
     // Probing took a while without the lock. Only act if neither the file nor its row
     // changed meanwhile (an organize, review, trash or a new copy of the file).
-    let _moves = lib.lock_moves().await;
+    let _moves = lib.lock_moves().await?;
     let current = repo::get_by_path(&lib.db, &rel).await?;
     let same_row = match (&existing, &current) {
         (None, None) => true,
@@ -1050,7 +1050,7 @@ async fn move_into_library(
 
 /// How strongly the media file `media_name` claims the sidecar `file`: the length of the
 /// shared prefix, where `name.ext.` (e.g. `IMG_1.HEIC.xmp`) beats `stem.` (`IMG_1.xmp`).
-fn sidecar_claim(file: &str, media_name: &str) -> Option<usize> {
+pub(super) fn sidecar_claim(file: &str, media_name: &str) -> Option<usize> {
     if file.len() > media_name.len()
         && file.starts_with(media_name)
         && file[media_name.len()..].starts_with('.')
@@ -1305,7 +1305,7 @@ pub(crate) async fn publish_inbox_if_changed(lib: &Library, before: i64) -> Resu
 // Explicit actions
 
 pub async fn organize(lib: &Library, item_id: &str, request: OrganizeRequest) -> Result<ItemRow> {
-    let _moves = lib.lock_moves().await;
+    let _moves = lib.lock_moves().await?;
     let item = repo::get(&lib.db, item_id)
         .await?
         .ok_or(CoreError::NotFound)?;
@@ -1656,7 +1656,7 @@ async fn organize_item(
 pub const ALREADY_SORTED: &str = "That file was already sorted.";
 
 pub async fn review(lib: &Library, item_id: &str, action: ReviewAction) -> Result<ItemRow> {
-    let _moves = lib.lock_moves().await;
+    let _moves = lib.lock_moves().await?;
     let item = repo::get(&lib.db, item_id)
         .await?
         .ok_or(CoreError::NotFound)?;
@@ -1774,7 +1774,7 @@ async fn trash_selected_item(
     user_id: Option<&str>,
     inbox_only: bool,
 ) -> Result<()> {
-    let _moves = lib.lock_moves().await;
+    let _moves = lib.lock_moves().await?;
     let item = repo::get(&lib.db, item_id)
         .await?
         .ok_or(CoreError::NotFound)?;
@@ -1954,7 +1954,7 @@ pub async fn restore_refusal(lib: &Library, item_id: &str) -> Result<Option<Stri
 }
 
 pub async fn restore_item(lib: &Library, item_id: &str) -> Result<ItemRow> {
-    let _moves = lib.lock_moves().await;
+    let _moves = lib.lock_moves().await?;
     let row: Option<(String, String)> =
         sqlx::query_as("SELECT original_rel_path, trashed_rel_path FROM trash WHERE item_id = ?")
             .bind(item_id)
@@ -2067,7 +2067,7 @@ pub async fn empty_trash(lib: &Library, older_than_days: Option<u32>) -> Result<
     let trash_root = lib.layout.trash();
     let mut deleted = 0;
     for (item_id, trashed_rel) in rows {
-        let _moves = lib.lock_moves().await;
+        let _moves = lib.lock_moves().await?;
         // Restored (or deleted) since the list was read: nothing to do.
         let still_trashed: Option<String> =
             sqlx::query_scalar("SELECT trashed_rel_path FROM trash WHERE item_id = ?")

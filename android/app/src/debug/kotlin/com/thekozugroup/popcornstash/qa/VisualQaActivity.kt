@@ -86,7 +86,8 @@ class VisualQaActivity : ComponentActivity() {
                         onRules = { add = add.copy(rules = it) })
                 }
                 }
-            } else PopcornTheme {
+            } else if (intent.getBooleanExtra("folders", false)) FolderFixture()
+            else PopcornTheme {
                 AppShell { page ->
                     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(Popcorn.spacing.l)) {
                         Text(page.tab.label, style = Popcorn.type.headline, color = Popcorn.colors.text)
@@ -129,6 +130,30 @@ private fun TorrentReviewPreview() {
             state?.let {
                 com.thekozugroup.popcornstash.feature.downloads.TorrentFilesSheet(it, controller::toggle, controller::submit, controller::close, controller::refresh,
                     onDraft = controller::draft, onType = controller::type, onFilter = controller::filter)
+            }
+        }
+    }
+}
+
+
+/** Local synthetic API fixture only; no stored account, token or family data. */
+@Composable
+private fun FolderFixture() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val services = remember {
+        val http = com.thekozugroup.popcornstash.data.api.baseHttpClient("visual-qa")
+        val api = com.thekozugroup.popcornstash.data.api.ApiClient(okhttp3.HttpUrl.Builder().scheme("http").host("127.0.0.1").port(5182).build(), http)
+        com.thekozugroup.popcornstash.feature.library.LibraryServices(api,
+            com.thekozugroup.popcornstash.data.repo.StashData(api, kotlinx.coroutines.flow.emptyFlow(), scope),
+            kotlinx.coroutines.flow.emptyFlow(), kotlinx.coroutines.flow.emptyFlow(),
+            com.thekozugroup.popcornstash.feature.library.FileFetcher(http), context.cacheDir.resolve("qa-folders"),
+            com.thekozugroup.popcornstash.navigation.ViewModelStores())
+    }
+    PopcornTheme {
+        AppShell { page ->
+            Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+                com.thekozugroup.popcornstash.feature.library.DownloadFoldersScreen("films", "Films", services, true, page.bottomClearance, {}, {}, {}, {})
             }
         }
     }

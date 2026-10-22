@@ -1528,7 +1528,7 @@ async fn sorting_does_not_undo_a_concurrent_organize() {
     );
 
     // An organize (simulated by hand while holding the move lock) lands while the sorter works.
-    let guard = h.lib.lock_moves().await;
+    let guard = h.lib.lock_moves().await.unwrap();
     let lib = h.lib.clone();
     let sort = tokio::spawn(async move { lib.sort_path("Inbox/Our Wedding.mp4", None).await });
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -3980,5 +3980,380 @@ async fn download_folder_edits_are_atomic_preserve_files_history_and_current_lib
             )
             .await
             .is_err()
+    );
+}
+
+#[tokio::test]
+async fn physical_download_flatten_previews_moves_sidecars_and_preserves_identity() {
+    use super::{
+        defs::STARTING_MOVIES, download_folders::NameFolder, flatten_downloads::FlattenRequest,
+    };
+    let h = harness().await;
+    h.write("Movies/Source/deep/a.mkv", b"video");
+    h.write("Movies/Source/deep/a.en.srt", b"subtitle");
+    h.write("Movies/Source/deep/instructions.txt", b"keep untouched");
+    let item = h
+        .lib
+        .index_path("Movies/Source/deep/a.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    h.lib
+        .name_download_folder(
+            STARTING_MOVIES,
+            &NameFolder {
+                key: Some("folder:Source".into()),
+                name: "Collection".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let preview = h
+        .lib
+        .preview_download_flatten(STARTING_MOVIES, "folder:Source")
+        .await
+        .unwrap();
+    assert!(preview.blocked.is_empty(), "{:?}", preview.blocked);
+    assert_eq!(preview.files.len(), 2);
+    assert!(h.exists(&item.rel_path));
+    assert!(!h.exists("Movies/Collection/a.mkv"));
+    let result = h
+        .lib
+        .flatten_download(
+            STARTING_MOVIES,
+            &FlattenRequest {
+                key: preview.key,
+                token: Some(preview.token),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(result.failed.is_empty(), "{:?}", result.failed);
+    assert_eq!(result.completed, vec![item.id.clone()]);
+    assert_eq!(h.item(&item.id).await.rel_path, "Movies/Collection/a.mkv");
+    assert!(h.exists("Movies/Collection/a.en.srt"));
+    assert!(h.exists("Movies/Source/deep/instructions.txt"));
+    assert_eq!(
+        std::fs::read(h.root.join("Movies/Collection/a.mkv")).unwrap(),
+        b"video"
+    );
+    let groups = h.lib.download_folders(STARTING_MOVIES).await.unwrap();
+    assert!(
+        groups
+            .iter()
+            .any(|g| g.key == "folder:Source" && g.name == "Collection" && g.item_count == 1)
+    );
+    let next = h
+        .lib
+        .preview_download_flatten(STARTING_MOVIES, "folder:Source")
+        .await
+        .unwrap();
+    assert!(next.blocked.is_empty());
+    assert!(next.files.iter().all(|f| f.from == f.to));
+    h.lib.rescan().await.unwrap();
+    assert_eq!(h.item(&item.id).await.rel_path, "Movies/Collection/a.mkv");
+}
+
+#[tokio::test]
+async fn physical_download_flatten_rejects_stale_collision_and_database_failure() {
+    use super::{
+        defs::STARTING_MOVIES, download_folders::NameFolder, flatten_downloads::FlattenRequest,
+    };
+    let h = harness().await;
+    h.write("Movies/Source/deep/a.mkv", b"video");
+    h.write("Movies/Source/deep/a.srt", b"subtitle");
+    let item = h
+        .lib
+        .index_path("Movies/Source/deep/a.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    h.lib
+        .name_download_folder(
+            STARTING_MOVIES,
+            &NameFolder {
+                key: Some("folder:Source".into()),
+                name: "Flat".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let plan = h
+        .lib
+        .preview_download_flatten(STARTING_MOVIES, "folder:Source")
+        .await
+        .unwrap();
+    h.write("Movies/Source/deep/a.srt", b"changed subtitle");
+    assert!(
+        h.lib
+            .flatten_download(
+                STARTING_MOVIES,
+                &FlattenRequest {
+                    key: plan.key,
+                    token: Some(plan.token)
+                }
+            )
+            .await
+            .is_err()
+    );
+    assert!(h.exists(&item.rel_path));
+    h.write("Movies/Flat/a.mkv", b"never overwrite");
+    let plan = h
+        .lib
+        .preview_download_flatten(STARTING_MOVIES, "folder:Source")
+        .await
+        .unwrap();
+    assert!(!plan.blocked.is_empty());
+    assert!(
+        h.lib
+            .flatten_download(
+                STARTING_MOVIES,
+                &FlattenRequest {
+                    key: plan.key,
+                    token: Some(plan.token)
+                }
+            )
+            .await
+            .is_err()
+    );
+    std::fs::remove_file(h.root.join("Movies/Flat/a.mkv")).unwrap();
+    sqlx::query("CREATE TRIGGER refuse_flatten BEFORE UPDATE OF rel_path ON items BEGIN SELECT RAISE(ABORT,'synthetic failure'); END").execute(&h.lib.db).await.unwrap();
+    let plan = h
+        .lib
+        .preview_download_flatten(STARTING_MOVIES, "folder:Source")
+        .await
+        .unwrap();
+    let result = h
+        .lib
+        .flatten_download(
+            STARTING_MOVIES,
+            &FlattenRequest {
+                key: plan.key,
+                token: Some(plan.token),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.failed.len(), 1);
+    assert!(h.exists(&item.rel_path));
+    assert!(h.exists("Movies/Source/deep/a.srt"));
+    assert!(!h.exists("Movies/Flat/a.mkv"));
+    assert!(!h.exists("Movies/Flat/a.srt"));
+}
+
+#[tokio::test]
+async fn physical_download_flatten_protects_active_work_duplicates_and_symlinks() {
+    use super::{defs::STARTING_MOVIES, flatten_downloads::FlattenRequest};
+    let h = harness().await;
+    h.write("Movies/Source/one/a.mkv", b"first");
+    h.write("Movies/Source/two/a.mkv", b"second");
+    let first = h
+        .lib
+        .index_path("Movies/Source/one/a.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    h.lib.index_path("Movies/Source/two/a.mkv").await.unwrap();
+    let plan = h
+        .lib
+        .preview_download_flatten(STARTING_MOVIES, "folder:Source")
+        .await
+        .unwrap();
+    assert!(plan.blocked.iter().any(|s| s.contains("More than one")));
+    assert!(
+        h.lib
+            .flatten_download(
+                STARTING_MOVIES,
+                &FlattenRequest {
+                    key: plan.key,
+                    token: Some(plan.token)
+                }
+            )
+            .await
+            .is_err()
+    );
+    sqlx::query("INSERT INTO conversion_jobs(id,item_id,library_id,revision,source_version,source_path,target_path,state,created_at,updated_at) VALUES('busy',?,?,0,'v',?,?,'encoding',0,0)").bind(&first.id).bind(STARTING_MOVIES).bind(&first.rel_path).bind(&first.rel_path).execute(&h.lib.db).await.unwrap();
+    let plan = h
+        .lib
+        .preview_download_flatten(STARTING_MOVIES, "folder:Source")
+        .await
+        .unwrap();
+    assert!(plan.blocked.iter().any(|s| s.contains("converting")));
+    sqlx::query("DELETE FROM conversion_jobs")
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    let outside = h.write("Other/outside.srt", b"outside");
+    std::os::unix::fs::symlink(&outside, h.root.join("Movies/Source/one/a.srt")).unwrap();
+    assert!(
+        h.lib
+            .preview_download_flatten(STARTING_MOVIES, "folder:Source")
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(outside).unwrap(), b"outside");
+    assert!(h.exists(&first.rel_path));
+}
+
+#[tokio::test]
+#[ignore = "requires an explicitly provided synthetic NAS test directory"]
+async fn physical_download_flatten_on_real_nas_filesystem() {
+    use super::{defs::STARTING_MOVIES, flatten_downloads::FlattenRequest};
+    let base = std::env::var("POPCORN_FLATTEN_TEST_ROOT").expect("synthetic test root required");
+    let temp = tempfile::Builder::new()
+        .prefix(".popcorn-flatten-test-")
+        .tempdir_in(base)
+        .unwrap();
+    let h = harness_in(temp).await;
+    h.write("Movies/Source/deep/a.mkv", b"synthetic video");
+    h.write("Movies/Source/deep/a.en.srt", b"synthetic subtitle");
+    let item = h
+        .lib
+        .index_path("Movies/Source/deep/a.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    let plan = h
+        .lib
+        .preview_download_flatten(STARTING_MOVIES, "folder:Source")
+        .await
+        .unwrap();
+    assert!(plan.blocked.is_empty(), "{:?}", plan.blocked);
+    let result = h
+        .lib
+        .flatten_download(
+            STARTING_MOVIES,
+            &FlattenRequest {
+                key: plan.key,
+                token: Some(plan.token),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(result.failed.is_empty(), "{:?}", result.failed);
+    assert_eq!(
+        std::fs::read(h.root.join("Movies/Source/a.mkv")).unwrap(),
+        b"synthetic video"
+    );
+    assert_eq!(
+        std::fs::read(h.root.join("Movies/Source/a.en.srt")).unwrap(),
+        b"synthetic subtitle"
+    );
+    assert_eq!(h.item(&item.id).await.rel_path, "Movies/Source/a.mkv");
+    h.lib.db.close().await;
+}
+
+#[tokio::test]
+async fn physical_download_flatten_recovers_interrupted_staging_and_publication() {
+    use super::{cleanup::Root, defs::STARTING_MOVIES, flatten_downloads::recovery::Journal};
+    let h = harness().await;
+    h.write("Movies/Source/deep/a.mkv", b"video");
+    h.write("Movies/Source/deep/a.srt", b"subtitle");
+    let item = h
+        .lib
+        .index_path("Movies/Source/deep/a.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    let root = Root::open(h.lib.layout.root()).unwrap();
+    for committed in [false, true] {
+        let plan = h
+            .lib
+            .preview_download_flatten(STARTING_MOVIES, "folder:Source")
+            .await
+            .unwrap();
+        let files: Vec<_> = plan.files.iter().collect();
+        let journal =
+            Journal::new(&item.id, STARTING_MOVIES, "folder:Source", &files, &root).unwrap();
+        let stage = root.new_trash_dir("flatten").unwrap();
+        root.write_flatten_journal(&stage, &serde_json::to_vec(&journal).unwrap())
+            .unwrap();
+        for (index, f) in plan.files.iter().enumerate() {
+            root.rename_trash(&f.from, &format!("{stage}/file-{index}"))
+                .unwrap();
+        }
+        // A crash can occur halfway through publication, before the catalogue commit.
+        for (index, f) in plan
+            .files
+            .iter()
+            .enumerate()
+            .take(if committed { 2 } else { 1 })
+        {
+            root.rename_trash(&format!("{stage}/file-{index}"), &f.to)
+                .unwrap();
+        }
+        if committed {
+            sqlx::query("UPDATE items SET rel_path='Movies/Source/a.mkv' WHERE id=?")
+                .bind(&item.id)
+                .execute(&h.lib.db)
+                .await
+                .unwrap();
+        }
+        h.lib.recover_flattened_files().await.unwrap();
+        assert!(!h.exists(&stage));
+        let parent = if committed {
+            "Movies/Source"
+        } else {
+            "Movies/Source/deep"
+        };
+        assert_eq!(
+            std::fs::read(h.root.join(format!("{parent}/a.mkv"))).unwrap(),
+            b"video"
+        );
+        assert_eq!(
+            std::fs::read(h.root.join(format!("{parent}/a.srt"))).unwrap(),
+            b"subtitle"
+        );
+        assert_eq!(h.item(&item.id).await.rel_path, format!("{parent}/a.mkv"));
+    }
+}
+
+#[tokio::test]
+async fn physical_download_flatten_failed_recovery_blocks_mutations_and_preparation_is_discarded() {
+    use super::{cleanup::Root, defs::STARTING_MOVIES, flatten_downloads::recovery::Journal};
+    let h = harness().await;
+    let root = Root::open(&h.root).unwrap();
+    let unfinished = root.new_trash_dir("flatten").unwrap();
+    h.write(&format!("{unfinished}/preparing.json"), b"{truncated");
+    h.lib.recover_flattened_files().await.unwrap();
+    assert!(!h.exists(&unfinished));
+    h.write("Movies/Source/deep/a.mkv", b"original");
+    let item = h
+        .lib
+        .index_path("Movies/Source/deep/a.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    let plan = h
+        .lib
+        .preview_download_flatten(STARTING_MOVIES, "folder:Source")
+        .await
+        .unwrap();
+    let files: Vec<_> = plan.files.iter().collect();
+    let journal = Journal::new(&item.id, STARTING_MOVIES, &plan.key, &files, &root).unwrap();
+    let stage = root.new_trash_dir("flatten").unwrap();
+    root.write_flatten_journal(&stage, &serde_json::to_vec(&journal).unwrap())
+        .unwrap();
+    let private = format!("{stage}/file-0");
+    root.rename_trash(&item.rel_path, &private).unwrap();
+    h.write(&item.rel_path, b"external replacement");
+    h.lib
+        .flatten_pending
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(h.lib.rescan().await.is_err());
+    assert!(h.lib.index_path(&item.rel_path).await.is_err());
+    assert!(h.lib.trash_item(&item.id, None).await.is_err());
+    assert_eq!(h.item(&item.id).await.rel_path, item.rel_path);
+    assert_eq!(std::fs::read(h.root.join(&private)).unwrap(), b"original");
+    assert_eq!(
+        std::fs::read(h.root.join(&item.rel_path)).unwrap(),
+        b"external replacement"
+    );
+    std::fs::remove_file(h.root.join(&item.rel_path)).unwrap();
+    h.lib.index_path(&item.rel_path).await.unwrap();
+    assert!(!h.exists(&stage));
+    assert_eq!(
+        std::fs::read(h.root.join(&item.rel_path)).unwrap(),
+        b"original"
     );
 }

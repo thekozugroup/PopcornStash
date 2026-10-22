@@ -719,3 +719,9 @@ data class SelectedFiles(val itemIds: List<String>)
 
 @Serializable
 data class DownloadFolder(val key: String, val name: String, @SerialName("item_count") val itemCount: Int, val size: Long, @SerialName("added_at") val addedAt: Long, val custom: Boolean = false)
+
+
+@Serializable
+data class FlattenPreview(val key: String, val folder: String, val files: List<FlattenFile>, val blocked: List<String>, val token: String)
+@Serializable
+data class FlattenFile(@SerialName("item_id") val itemId: String, val from: String, val to: String, val kind: String, val fingerprint: String)

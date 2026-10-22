@@ -38,7 +38,7 @@ pub(super) async fn publish(
     root: &Root,
     cancel: &CancellationToken,
 ) -> Result<()> {
-    let _guard = lib.lock_moves().await;
+    let _guard = lib.lock_moves().await?;
     if cancel.is_cancelled()
         || !current(lib, job).await?
         || fingerprint(&root.metadata(&job.source_path)?) != before
@@ -158,7 +158,7 @@ pub(super) async fn recover_job(lib: &Library, id: &str) -> Result<()> {
 }
 
 async fn reconcile(lib: &Library, id: Option<&str>) -> Result<()> {
-    let _guard = lib.lock_moves().await;
+    let _guard = lib.lock_moves().await?;
     let jobs = sqlx::query_as::<_, Journal>(&format!("SELECT {JOURNAL_COLUMNS} FROM conversion_jobs WHERE stage IS NOT NULL AND (? IS NULL OR id=?) ORDER BY created_at,id")).bind(id).bind(id).fetch_all(&lib.db).await?;
     let root = Root::open(lib.layout.root())?;
     for job in jobs {

@@ -165,6 +165,8 @@ pub async fn test_state(dir: &std::path::Path) -> anyhow::Result<AppState> {
 
 /// Register job handlers and spawn every background task.
 pub async fn start_background(state: &AppState, cancel: CancellationToken) -> anyhow::Result<()> {
+    // Finish or restore explicit file moves before scans or workers can observe them.
+    state.library.recover_flattened_files().await?;
     if let Err(error) = stash_core::library::conversion::recover(&state.library).await {
         tracing::error!(%error, "automatic conversion needs recovery; other services remain available");
     }

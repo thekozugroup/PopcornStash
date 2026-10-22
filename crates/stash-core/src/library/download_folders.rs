@@ -71,7 +71,7 @@ impl Library {
         if body.name.is_empty() || body.name.contains('/') {
             return Err(CoreError::invalid("Enter one folder name."));
         }
-        let _moves = self.lock_moves().await;
+        let _moves = self.lock_moves().await?;
         let groups = self.download_folders(id).await?;
         if body
             .key
@@ -98,7 +98,7 @@ impl Library {
     pub async fn move_to_download_folder(&self, id: &str, body: &MoveToFolder) -> Result<()> {
         folders::validate_ids(&body.item_ids)?;
         validate_key(&body.key)?;
-        let _moves = self.lock_moves().await;
+        let _moves = self.lock_moves().await?;
         let groups = self.download_folders(id).await?;
         let group = groups
             .iter()

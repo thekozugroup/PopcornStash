@@ -93,7 +93,7 @@ fun DownloadFoldersScreen(id: String, name: String, services: LibraryServices, i
                         SecondaryButton(if (key.isEmpty()) "All videos" else "Download folders", { if (key.isEmpty()) onAllVideos() else key = "" }, enabled = !busy)
                         QuietButton("Organize files", onFiles, enabled = !busy)
                     }
-                    Text("Folders organize this library view. Videos appear together; original files stay in place.", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
+                    Text("Folders group videos from each download, including nested source folders. Files stay in place.", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
                     OutlinedTextField(query, { query = it; selected = emptyList(); loading = true }, label = { Text(if (key.isEmpty()) "Find a download folder" else "Search this folder") }, singleLine = true,
                         enabled = !busy, colors = popcornFieldColors(), shape = Popcorn.shapes.control, modifier = Modifier.fillMaxWidth())
                     Box {
@@ -108,6 +108,7 @@ fun DownloadFoldersScreen(id: String, name: String, services: LibraryServices, i
                             if (group != null) QuietButton("Rename folder", { editing = "rename"; newName = group.name }, enabled = !busy)
                         }
                         if (group != null) {
+                            FlattenDownloadFiles(id, key, api, onMoved = { revision++ }, onBusy = { busy = it })
                             SecondaryButton(if (selecting) "Done selecting" else "Select videos", { selecting = !selecting; selected = emptyList() }, enabled = !busy)
                             if (selecting) {
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

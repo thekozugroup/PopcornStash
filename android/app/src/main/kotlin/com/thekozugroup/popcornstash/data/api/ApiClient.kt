@@ -104,6 +104,13 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
 
     suspend fun library(id: String): Library = get("/api/libraries/${seg(id)}", Library.serializer())
 
+    suspend fun previewFlatten(id: String, key: String): FlattenPreview = send(
+        request("/api/libraries/${seg(id)}/download-folders/flatten-preview").post(buildJsonObject { put("key", key) }.toString().toRequestBody(JSON)).build(), FlattenPreview.serializer(),
+    )
+    suspend fun flattenDownload(id: String, key: String, token: String): FileBatchResult = send(
+        request("/api/libraries/${seg(id)}/download-folders/flatten").post(buildJsonObject { put("key", key); put("token", token) }.toString().toRequestBody(JSON)).build(), FileBatchResult.serializer(),
+    )
+
     suspend fun downloadFolders(id: String): List<DownloadFolder> = get("/api/libraries/${seg(id)}/download-folders", ListSerializer(DownloadFolder.serializer()))
 
     suspend fun nameDownloadFolder(id: String, name: String, key: String? = null): String = send(

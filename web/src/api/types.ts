@@ -993,3 +993,11 @@ export interface TranscodingOverview {
   savings: ConversionSavings;
   generated_at: number;
 }
+
+export interface FlattenPreview {
+  key: string;
+  folder: string;
+  files: {item_id: string; from: string; to: string; kind: 'video' | 'sidecar'; fingerprint: string}[];
+  blocked: string[];
+  token: string;
+}

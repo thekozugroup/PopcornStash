@@ -618,7 +618,7 @@ pub(crate) async fn mark_vanished(
         if paths::top_folder(rel).is_some_and(|top| frozen.contains(top)) {
             continue;
         }
-        let _moves = lib.lock_moves().await;
+        let _moves = lib.lock_moves().await?;
         if !is_gone(lib, rel).await {
             continue;
         }
@@ -652,7 +652,7 @@ pub(crate) async fn index_inner(
     lib: &Library,
     rel_path: &str,
 ) -> Result<Option<(ItemRow, Change)>> {
-    let _moves = lib.lock_moves().await;
+    let _moves = lib.lock_moves().await?;
     index_locked(lib, rel_path).await
 }
 
@@ -1138,7 +1138,7 @@ pub async fn rescan(lib: &Library) -> Result<ScanReport> {
             continue;
         }
         let (deleted, before) = {
-            let _moves = lib.lock_moves().await;
+            let _moves = lib.lock_moves().await?;
             if !is_gone(lib, &item.rel_path).await {
                 continue;
             }
@@ -1196,7 +1196,7 @@ pub async fn rescan(lib: &Library) -> Result<ScanReport> {
 
     // 6. Library and place follow the path; repair any row that went stale.
     {
-        let _moves = lib.lock_moves().await;
+        let _moves = lib.lock_moves().await?;
         let mut conn = lib.db.acquire().await?;
         let fixed = defs::rederive_all(&mut conn).await?;
         if fixed > 0 {

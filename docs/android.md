@@ -196,3 +196,5 @@ The server copies audio, subtitles, attachments, chapters and metadata, then ful
 Torrent review shows file types, size bounds and name filters together. Press Filter to select matching files; then adjust individual checkboxes and choose Start download. Invalid filters block confirmation. Opening an existing torrent preserves its current choices.
 
 Video libraries open **By download**. Open a source folder to see all its videos together, including those from nested torrent directories. Use All videos for the existing poster/show view. Owners can create/rename presentation folders and select videos to move between them; original files, source identity and watch history stay unchanged. Organize files retains the separate physical move controls.
+
+Inside a download folder, owners can choose **Flatten files**, inspect the destination and file moves, then choose **Move files**. Previewing alone moves nothing. Busy files and name conflicts must be resolved before retrying; unrelated files and folders stay in place.
