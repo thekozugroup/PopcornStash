@@ -26,6 +26,10 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/home", get(home))
+        .route(
+            "/api/libraries/{id}/download-folders/create",
+            post(create_download_directory),
+        )
         .route("/api/libraries", get(list).post(create))
         .route("/api/libraries/icons", get(icons))
         .route("/api/transcoding", get(transcoding))
@@ -66,6 +70,18 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/api/libraries/{id}/download-folders/flatten",
             post(flatten_download),
+        )
+        .route(
+            "/api/libraries/{id}/download-folders/contents",
+            get(download_contents),
+        )
+        .route(
+            "/api/libraries/{id}/download-folders/rename-preview",
+            post(rename_preview),
+        )
+        .route(
+            "/api/libraries/{id}/download-folders/rename",
+            post(rename_directory),
         )
         .route("/api/libraries/{id}/shows", get(shows))
         .route("/api/libraries/{id}/shows/{name}", get(show))
@@ -624,6 +640,66 @@ async fn retry_conversion(
     Ok(Json(
         stash_core::library::conversion::retry(&state.library, &id).await?,
     ))
+}
+
+async fn download_contents(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    uri: Uri,
+) -> ApiResult<Json<stash_core::library::download_tree::DownloadTree>> {
+    user.require(Scope::LibraryRead)?;
+    let access = user.access(&state.db).await?;
+    visible_library(&state, &access, &id).await?;
+    let q: stash_core::library::download_tree::TreeQuery = parse_query(&uri)?;
+    Ok(Json(
+        state.library.download_tree(&id, &q.key, &q.folder).await?,
+    ))
+}
+async fn rename_preview(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<stash_core::library::rename_folder::RenameRequest>,
+) -> ApiResult<Json<stash_core::library::rename_folder::RenamePreview>> {
+    user.require(Scope::LibraryRead)?;
+    let access = user.access(&state.db).await?;
+    visible_library(&state, &access, &id).await?;
+    user.require_owner()?;
+    Ok(Json(state.library.preview_folder_rename(&id, &body).await?))
+}
+async fn rename_directory(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<stash_core::library::rename_folder::RenameRequest>,
+) -> ApiResult<StatusCode> {
+    user.require(Scope::LibraryRead)?;
+    let access = user.access(&state.db).await?;
+    visible_library(&state, &access, &id).await?;
+    user.require_owner()?;
+    let library = state.library.clone();
+    tokio::spawn(async move { library.rename_download_directory(&id, &body).await })
+        .await
+        .map_err(|e| CoreError::external(e.to_string()))??;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn create_download_directory(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    JsonBody(body): JsonBody<stash_core::library::download_tree::CreateDownloadFolder>,
+) -> ApiResult<Json<serde_json::Value>> {
+    user.require(Scope::LibraryRead)?;
+    let access = user.access(&state.db).await?;
+    visible_library(&state, &access, &id).await?;
+    user.require_owner()?;
+    let library = state.library.clone();
+    let key = tokio::spawn(async move { library.create_download_directory(&id, &body).await })
+        .await
+        .map_err(|e| CoreError::external(e.to_string()))??;
+    Ok(Json(serde_json::json!({"key":key})))
 }
 
 #[cfg(test)]
@@ -1494,14 +1570,24 @@ mod tests {
             .await;
         assert_eq!(status, StatusCode::OK, "{created}");
         assert!(created["key"].as_str().unwrap().starts_with("custom:"));
-        for route in ["flatten-preview", "flatten"] {
+        for route in [
+            "flatten-preview",
+            "flatten",
+            "rename-preview",
+            "rename",
+            "create",
+        ] {
             for token in [&member, &reader] {
                 assert_eq!(
                     app.send_json(
                         "POST",
                         &format!("{folders}/{route}"),
                         token,
-                        serde_json::json!({"key":created["key"]})
+                        if route.starts_with("flatten") {
+                            serde_json::json!({"key":created["key"]})
+                        } else {
+                            serde_json::json!({"key":created["key"],"name":"Renamed"})
+                        }
                     )
                     .await
                     .0,
@@ -1561,13 +1647,23 @@ mod tests {
             serde_json::json!({"visibility":"selected","member_ids":[]}),
         )
         .await;
-        for route in ["flatten-preview", "flatten"] {
+        for route in [
+            "flatten-preview",
+            "flatten",
+            "rename-preview",
+            "rename",
+            "create",
+        ] {
             assert_eq!(
                 app.send_json(
                     "POST",
                     &format!("{folders}/{route}"),
                     &member,
-                    serde_json::json!({"key":"invalid"})
+                    if route.starts_with("flatten") {
+                        serde_json::json!({"key":"invalid"})
+                    } else {
+                        serde_json::json!({"key":"invalid","name":"Renamed"})
+                    }
                 )
                 .await
                 .0,

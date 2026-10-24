@@ -204,3 +204,6 @@ Video libraries open **By download**. Open a source folder to see all its videos
 Inside a download folder, owners can choose **Flatten files**, inspect the destination and file moves, then choose **Move files**. Previewing alone moves nothing. Busy files and name conflicts must be resolved before retrying; unrelated files and folders stay in place.
 
 Library conversion includes original/current/saved storage totals and a horizontal storage bar. Clear finished activity hides results while preserving active work and verified savings. Legacy RM/RMVB/WMV/ASF downloads count as videos in server-provided file filters. Conversion outputs AV1 or H.265 MKV only when smaller and fully verified.
+
+
+Download folders now support nested browsing and a reversible Collapse subfolders option. Folder actions creates real server folders or previews a physical rename, including companions and empty subfolders. Rename on Atlas confirms the displayed plan. Active work, collisions and stale previews block changes. Use Flatten files to consolidate a download that spans physical folders.

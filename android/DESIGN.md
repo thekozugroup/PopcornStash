@@ -394,3 +394,7 @@ Search is always one tap away. Use one labeled scope selector and the existing s
 The bounded torrent sheet shows the title, source name, a selection count/byte total, a lazy manifest and a fixed primary action. Filters expand in the same lazy region above the file rows. Filters apply to the local selection explicitly; every checkbox remains editable. Search only changes visible rows. Start download is the only action that releases a new torrent’s metadata hold; Save edits existing selections. The sheet clears navigation and keyboard insets, follows theme/text scale, and shows fetching/error/empty states.
 
 Torrent review keeps type choices in two columns, followed by a neutral MB/GB choice, paired size fields and name fields. Filters update selection immediately. File checkboxes remain manually editable; the pinned confirmation stays outside the lazy list. Checkbox marks retain the native 20dp visual within full-row targets of at least 48dp. Large text scrolls without compressing controls.
+
+
+### Download folders
+Download roots open their actual subfolder hierarchy; Collapse subfolders keeps all videos together without moving files. Breadcrumbs and Back follow the current subfolder. Folder actions holds physical creation, previewed renames and Flatten files; keep Select videos and collapse available without opening it. Search and sorting share a row, actions wrap on compact screens. Renames show the actual destination and counts, keep errors inline, require a fresh preview after failure, and retain watch history and metadata.

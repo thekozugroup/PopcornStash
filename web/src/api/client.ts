@@ -10,7 +10,7 @@ import type {ConversionPolicy, ConversionView, TranscodingOverview} from './type
  * refresh `/api/auth/state` and route to sign-in.
  */
 import type {
-  CleanupFile, FileTrashEntry, FolderList, BatchResult, DownloadFolder, FlattenPreview,
+  CleanupFile, FileTrashEntry, FolderList, BatchResult, DownloadFolder, FlattenPreview, DownloadTree, RenameFolderPreview,
   AuditEntry,
   AuthState,
   AuthenticationCredentialJSON,
@@ -200,7 +200,7 @@ export function buildUrl(path: string, query?: Query): string {
   if (!query) return path;
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
-    if (value === undefined || value === null || value === '') continue;
+    if (value === undefined || value === null || (value === '' && key !== 'download_folder')) continue;
     params.set(key, String(value));
   }
   const qs = params.toString();
@@ -386,6 +386,10 @@ export const libraries = {
   retryConversion: (id: string) => post<ConversionView>(`/api/libraries/${enc(id)}/conversion/retry`),
   previewFlatten: (id: string, key: string) => post<FlattenPreview>(`/api/libraries/${enc(id)}/download-folders/flatten-preview`, {key}),
   flattenDownload: (id: string, key: string, token: string) => post<BatchResult>(`/api/libraries/${enc(id)}/download-folders/flatten`, {key, token}),
+  downloadTree: (id:string,key:string,folder:string,signal?:AbortSignal) => get<DownloadTree>(`/api/libraries/${enc(id)}/download-folders/contents`,{key,folder},signal),
+  createDownloadDirectory: (id:string,name:string,key?:string,parent='') => post<{key:string}>(`/api/libraries/${enc(id)}/download-folders/create`,{name,key,parent}),
+  previewFolderRename: (id:string,key:string,folder:string,name:string) => post<RenameFolderPreview>(`/api/libraries/${enc(id)}/download-folders/rename-preview`,{key,folder,name}),
+  renameDirectory: (id:string,key:string,folder:string,name:string,token:string) => post<void>(`/api/libraries/${enc(id)}/download-folders/rename`,{key,folder,name,token}),
   downloadFolders: (id: string, signal?: AbortSignal) => get<DownloadFolder[]>(`/api/libraries/${enc(id)}/download-folders`, {}, signal),
   nameDownloadFolder: (id: string, name: string, key?: string) => post<{key: string}>(`/api/libraries/${enc(id)}/download-folders`, {name, key}),
   moveToDownloadFolder: (id: string, key: string, item_ids: string[]) => post<void>(`/api/libraries/${enc(id)}/download-folders/move`, {key, item_ids}),
@@ -428,6 +432,7 @@ export const items = {
         library_id: query.library_id,
         folder: query.folder,
         download_group: query.download_group,
+        download_folder: query.download_folder,
         include_inbox: query.include_inbox,
         place: query.place,
         category: query.category,

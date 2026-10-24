@@ -51,7 +51,10 @@ class DownloadFoldersTest {
                     target.endsWith("/flatten-preview") -> """{"key":"download:one","folder":"Movies/Harbor collection","files":[{"item_id":"one","from":"Movies/Original/deep/a.mkv","to":"Movies/Harbor collection/a.mkv","kind":"video","fingerprint":"f"}],"blocked":${if (blockFlatten) "[\"A video is converting. Try again after it finishes.\"]" else "[]"},"token":"confirmed-preview"}"""
                     target.endsWith("/flatten") -> """{"completed":["one"],"failed":[]}"""
                     target.endsWith("/download-folders/move") -> return MockResponse.Builder().code(if (failMove) 409 else 204).body(if (failMove) """{"error":{"code":"conflict","message":"A video moved. Refresh and select it again."}}""" else "").build()
-                    target.endsWith("/download-folders") && request.method == "POST" -> { groups = groups + DownloadFolder("custom:new", "My collection", 0, 0, 0, true); """{"key":"custom:new"}""" }
+                    target.endsWith("/download-folders/create") && request.method == "POST" -> { groups = groups + DownloadFolder("custom:new", "My collection", 0, 0, 0, true); """{"key":"custom:new"}""" }
+                    target.endsWith("/contents") -> """{"folder":"","folders":[{"name":"Clips","folder":"Clips","item_count":1,"size":100}]}"""
+                    target.endsWith("/rename-preview") -> """{"from":"Movies/Original","to":"Movies/Renamed","file_count":3,"folder_count":2,"blocked":[],"token":"rename-proof"}"""
+                    target.endsWith("/rename") -> return MockResponse.Builder().code(204).build()
                     target.endsWith("/download-folders") -> json(ListSerializer(DownloadFolder.serializer()), groups)
                     target == "/api/items" -> json(ItemPage.serializer(), ItemPage(if (request.target.contains("custom%3Anew")) emptyList() else videos))
                     else -> "{}"
@@ -74,6 +77,7 @@ class DownloadFoldersTest {
     private fun open() { compose.onNodeWithText("Harbor collection").performClick(); waitFor("Harbor One") }
     @Test fun flatSourceContentsUseTheScopedPagedQuery() {
         show(); open()
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText("Harbor Two"))
         compose.onNodeWithText("Harbor Two").assertExists()
         assertTrue(paths.any { it.startsWith("GET /api/items?") && it.contains("library_id=movies") && it.contains("download_group=download%3Aone") })
         assertTrue(paths.none { it.contains("/folders?") })
@@ -95,10 +99,32 @@ class DownloadFoldersTest {
         show()
         compose.onNodeWithText("New folder").performClick()
         compose.onNodeWithText("Folder name").performTextInput("My collection")
-        compose.onNodeWithText("Save folder").performClick()
+        compose.onNodeWithText("Create folder").performClick()
         waitFor("My collection")
         assertTrue(writes.single().contains("My collection"))
         assertTrue(writes.single().contains("name"))
+    }
+    @Test fun collapseRemovesTheDirectoryFilterWithoutMovingFiles() {
+        show();open()
+        assertTrue(paths.any{it.contains("download_folder=")})
+        compose.onNodeWithText("Collapse subfolders").performClick()
+        compose.waitUntil(5_000){paths.count{it.startsWith("GET /api/items?")}>1}
+        assertFalse(paths.last{it.startsWith("GET /api/items?")}.contains("download_folder="))
+        assertTrue(writes.isEmpty())
+    }
+    @Test fun renameRequiresTheExplicitPhysicalPreview() {
+        show();open();compose.onNodeWithText("Folder actions").performClick();compose.onNodeWithText("Rename folder").performClick()
+        compose.onNodeWithText("Folder name").performTextReplacement("Renamed")
+        compose.onNodeWithText("Preview rename").performClick();waitFor("Rename on Atlas")
+        assertTrue(paths.none{it.endsWith("/rename")})
+        compose.onNodeWithText("Rename on Atlas").performClick()
+        compose.waitUntil(5_000){paths.any{it.endsWith("/rename")}}
+        assertTrue(writes.last().contains("rename-proof"))
+    }
+    @Test fun nestedFolderUsesItsOwnScopedQuery() {
+        show();open();compose.onNodeWithText("Clips").performClick()
+        compose.waitUntil(5_000){paths.any{it.contains("download_folder=Clips")}}
+        assertTrue(writes.isEmpty())
     }
     @Test fun membersCanBrowseButCannotEdit() {
         show(owner = false); open()
@@ -109,7 +135,7 @@ class DownloadFoldersTest {
     }
     @Test fun flattenRequiresPreviewAndExplicitConfirmation() {
         show(); open()
-        compose.onNodeWithText("Flatten files").performClick()
+        compose.onNodeWithText("Folder actions").performClick();compose.onNodeWithText("Flatten files").performClick()
         waitFor("Move files")
         assertTrue(paths.none { it.endsWith("/flatten") })
         compose.onNodeWithText("Destination: Movies/Harbor collection").assertExists()
@@ -120,12 +146,12 @@ class DownloadFoldersTest {
     }
     @Test fun blockedFlattenDisablesConfirmation() {
         blockFlatten = true; show(); open()
-        compose.onNodeWithText("Flatten files").performClick(); waitFor("Move files")
+        compose.onNodeWithText("Folder actions").performClick();compose.onNodeWithText("Flatten files").performClick(); waitFor("Move files")
         compose.onNodeWithText("Move files").assertIsNotEnabled()
         assertTrue(paths.none { it.endsWith("/flatten") })
     }
-    @Test fun flattenPreviewDark() { show(dark = true); open(); compose.onNodeWithText("Flatten files").performClick(); waitFor("Move files"); compose.onRoot().captureRoboImage("src/test/screenshots/download-folder-flatten-dark.png") }
-    @Test fun flattenPreviewLight() { show(); open(); compose.onNodeWithText("Flatten files").performClick(); waitFor("Move files"); compose.onRoot().captureRoboImage("src/test/screenshots/download-folder-flatten-light.png") }
+    @Test fun flattenPreviewDark() { show(dark = true); open(); compose.onNodeWithText("Folder actions").performClick();compose.onNodeWithText("Flatten files").performClick(); waitFor("Move files"); compose.onRoot().captureRoboImage("src/test/screenshots/download-folder-flatten-dark.png") }
+    @Test fun flattenPreviewLight() { show(); open(); compose.onNodeWithText("Folder actions").performClick();compose.onNodeWithText("Flatten files").performClick(); waitFor("Move files"); compose.onRoot().captureRoboImage("src/test/screenshots/download-folder-flatten-light.png") }
     @Test fun foldersLight() { show(); compose.onRoot().captureRoboImage("src/test/screenshots/download-folders-light.png") }
     @Test fun foldersDark() { show(dark = true); compose.onRoot().captureRoboImage("src/test/screenshots/download-folders-dark.png") }
     @Test fun contentsLight() { show(); open(); compose.onRoot().captureRoboImage("src/test/screenshots/download-folder-videos-light.png") }

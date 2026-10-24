@@ -332,6 +332,19 @@ impl Root {
         Ok(())
     }
 
+    /// Only removes an already verified empty directory; never recursive.
+    pub(super) fn remove_empty_organized_dir(&self, rel: &str) -> Result<()> {
+        let (parent, name) = self.parent(rel, false)?;
+        nix::unistd::unlinkat(
+            &parent,
+            name.as_c_str(),
+            nix::unistd::UnlinkatFlags::RemoveDir,
+        )
+        .map_err(std::io::Error::from)?;
+        parent.sync_all()?;
+        Ok(())
+    }
+
     /// Public moves always require an atomic, exclusive native rename.
     pub(super) fn rename(&self, from: &str, to: &str) -> Result<()> {
         let (src, from) = self.parent(from, false)?;

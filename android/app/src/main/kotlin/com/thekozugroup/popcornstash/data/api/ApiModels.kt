@@ -421,6 +421,7 @@ data class ItemPage(val items: List<Item>, val nextCursor: String? = null)
 /** `GET /api/items` filters; null ones are left out. */
 data class ItemQuery(
     val downloadGroup: String? = null,
+    val downloadFolder: String? = null,
     val folder: String? = null,
     val includeInbox: Boolean? = null,
     val libraryId: String? = null,
@@ -725,3 +726,10 @@ data class DownloadFolder(val key: String, val name: String, @SerialName("item_c
 data class FlattenPreview(val key: String, val folder: String, val files: List<FlattenFile>, val blocked: List<String>, val token: String)
 @Serializable
 data class FlattenFile(@SerialName("item_id") val itemId: String, val from: String, val to: String, val kind: String, val fingerprint: String)
+
+@Serializable
+data class DownloadTree(val folder:String, val folders:List<DownloadTreeFolder>)
+@Serializable
+data class DownloadTreeFolder(val name:String, val folder:String, val itemCount:Int, val size:Long)
+@Serializable
+data class RenameFolderPreview(val from:String,val to:String,val fileCount:Int,val folderCount:Int,val blocked:List<String>,val token:String)

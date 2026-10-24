@@ -11,7 +11,7 @@ import {newestAddedFirst, newestTakenFirst, placeInOrder} from '../../lib/order'
 import {useLibraryEvents} from './useLibraryEvents';
 
 /** One library's items, or every item in one kind of place (Other files). */
-export type PagedItemsScope = {library_id?: string; place?: ItemPlace; include_inbox?: boolean; download_group?: string};
+export type PagedItemsScope = {library_id?: string; place?: ItemPlace; include_inbox?: boolean; download_folder?: string; download_group?: string};
 
 export type PagedItemsQuery = PagedItemsScope & {
   q?: string;
@@ -54,9 +54,9 @@ export interface PagedItems {
 }
 
 export function usePagedItems(query: PagedItemsQuery): PagedItems {
-  const {library_id: libraryId, place, include_inbox: includeInbox = false, download_group: downloadGroup, q = '', sort, order, favorite = false} = query;
+  const {library_id: libraryId, place, include_inbox: includeInbox = false, download_group: downloadGroup, download_folder: downloadFolder, q = '', sort, order, favorite = false} = query;
   const [nonce, setNonce] = useState(0);
-  const key = JSON.stringify([libraryId, place, includeInbox, downloadGroup, q, sort, order, favorite, nonce]);
+  const key = JSON.stringify([libraryId, place, includeInbox, downloadGroup, downloadFolder, q, sort, order, favorite, nonce]);
   /** Whether an item still belongs on this page after a live update. */
   const belongs = (item: Item) =>
     (item.status === 'ready' || (includeInbox && item.status === 'needs_review')) && (!libraryId || item.library_id === libraryId) && (!place || item.place === place);
@@ -74,7 +74,7 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
     loadingMore.current = false;
     itemsApi
       .list(
-        {library_id: libraryId, place, include_inbox: includeInbox, download_group: downloadGroup, q: q || undefined, sort, order, favorite: favorite || undefined, limit: PAGE_SIZE},
+        {library_id: libraryId, place, include_inbox: includeInbox, download_group: downloadGroup, download_folder: downloadFolder, q: q || undefined, sort, order, favorite: favorite || undefined, limit: PAGE_SIZE},
         controller.signal,
       )
       .then(
@@ -85,7 +85,7 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
         },
       );
     return () => controller.abort();
-  }, [key, libraryId, place, includeInbox, downloadGroup, q, sort, order, favorite]);
+  }, [key, libraryId, place, includeInbox, downloadGroup, downloadFolder, q, sort, order, favorite]);
 
   const isCurrent = state.key === key;
 
@@ -99,7 +99,7 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
       .list({
         library_id: libraryId,
         place,
-        include_inbox: includeInbox, download_group: downloadGroup,
+        include_inbox: includeInbox, download_group: downloadGroup, download_folder: downloadFolder,
         q: q || undefined,
         sort,
         order,
@@ -120,7 +120,7 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
       .finally(() => {
         loadingMore.current = false;
       });
-  }, [key, libraryId, place, includeInbox, downloadGroup, q, sort, order, favorite]);
+  }, [key, libraryId, place, includeInbox, downloadGroup, downloadFolder, q, sort, order, favorite]);
 
   const retry = useCallback(() => setNonce(n => n + 1), []);
 
@@ -130,7 +130,7 @@ export function usePagedItems(query: PagedItemsQuery): PagedItems {
     if ((sort !== 'added' && sort !== 'taken') || order !== 'desc' || q || favorite) return;
     const requestKey = key;
     const newestFirst = sort === 'taken' ? newestTakenFirst : newestAddedFirst;
-    itemsApi.list({library_id: libraryId, place, include_inbox: includeInbox, download_group: downloadGroup, sort, order, limit: 20}).then(
+    itemsApi.list({library_id: libraryId, place, include_inbox: includeInbox, download_group: downloadGroup, download_folder: downloadFolder, sort, order, limit: 20}).then(
       page =>
         setState(s =>
           s.key !== requestKey ? s : {...s, items: mergeUnique(page.items, s.items).sort(newestFirst)},

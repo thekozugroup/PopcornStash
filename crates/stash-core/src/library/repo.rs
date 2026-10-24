@@ -45,6 +45,8 @@ pub struct ItemQuery {
     pub folder: Option<String>,
     /// Flat presentation folder, including all nested source paths. Requires library_id.
     pub download_group: Option<String>,
+    /// Group-relative directory; absent collapses all descendants.
+    pub download_folder: Option<String>,
     /// Search includes waiting Inbox files, never missing or trashed ones.
     pub include_inbox: bool,
     pub place: Option<Place>,
@@ -506,6 +508,24 @@ pub async fn list(db: &Db, query: &ItemQuery, viewer: &Viewer) -> Result<Page<It
             .push(super::download_folders::GROUP_KEY)
             .push(" = ")
             .push_bind(group.clone());
+    }
+    if let Some(folder) = &query.download_folder {
+        let id = query
+            .library_id
+            .as_deref()
+            .ok_or_else(|| CoreError::invalid("Choose a library before a download folder."))?;
+        let key = query
+            .download_group
+            .as_deref()
+            .ok_or_else(|| CoreError::invalid("Choose a download before a subfolder."))?;
+        let prefix = super::download_tree::prefix(db, id, key, folder).await?;
+        qb.push(" AND substr(i.rel_path,1,")
+            .push_bind(prefix.chars().count() as i64)
+            .push(")=")
+            .push_bind(prefix.clone());
+        qb.push(" AND instr(substr(i.rel_path,")
+            .push_bind(prefix.chars().count() as i64 + 1)
+            .push("),'/')=0");
     }
     if let Some(place) = query.place {
         qb.push(" AND i.place = ").push_bind(place.as_str());

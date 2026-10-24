@@ -4357,3 +4357,308 @@ async fn physical_download_flatten_failed_recovery_blocks_mutations_and_preparat
         b"original"
     );
 }
+
+#[tokio::test]
+async fn download_tree_browses_nested_and_empty_folders_and_collapses_without_moves() {
+    use super::{defs::STARTING_MOVIES, download_tree::CreateDownloadFolder};
+    let h = harness().await;
+    for path in [
+        "Movies/Collection/root.mkv",
+        "Movies/Collection/deep/a.mkv",
+        "Movies/Collection/deep/nested/b.mkv",
+    ] {
+        h.write(path, b"synthetic");
+        h.lib.index_path(path).await.unwrap();
+    }
+    let key = "folder:Collection";
+    let tree = h.lib.download_tree(STARTING_MOVIES, key, "").await.unwrap();
+    assert_eq!(tree.folders.len(), 1);
+    assert_eq!(tree.folders[0].folder, "deep");
+    assert_eq!(tree.folders[0].item_count, 2);
+    let mut q = ItemQuery {
+        library_id: Some(STARTING_MOVIES.into()),
+        download_group: Some(key.into()),
+        download_folder: Some(String::new()),
+        ..Default::default()
+    };
+    assert_eq!(
+        repo::list(&h.lib.db, &q, &h.owner())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
+    q.download_folder = Some("deep".into());
+    assert_eq!(
+        repo::list(&h.lib.db, &q, &h.owner())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
+    q.download_folder = None;
+    assert_eq!(
+        repo::list(&h.lib.db, &q, &h.owner())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        3
+    );
+    h.lib
+        .create_download_directory(
+            STARTING_MOVIES,
+            &CreateDownloadFolder {
+                key: Some(key.into()),
+                parent: "deep".into(),
+                name: "Empty".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        h.lib
+            .download_tree(STARTING_MOVIES, key, "deep")
+            .await
+            .unwrap()
+            .folders
+            .iter()
+            .any(|f| f.name == "Empty" && f.item_count == 0)
+    );
+    q.download_folder = Some("../escape".into());
+    assert!(repo::list(&h.lib.db, &q, &h.owner()).await.is_err());
+    assert!(h.exists("Movies/Collection/deep/a.mkv"));
+}
+
+#[tokio::test]
+async fn physical_folder_rename_preserves_tree_companions_metadata_and_stable_group() {
+    use super::{defs::STARTING_MOVIES, rename_folder::RenameRequest};
+    let h = harness().await;
+    h.write("Movies/Collection/deep/clip.mkv", b"synthetic-video");
+    h.write("Movies/Collection/deep/clip.srt", b"subtitle");
+    h.write("Movies/Collection/notes.txt", b"document");
+    std::fs::create_dir_all(h.root.join("Movies/Collection/empty")).unwrap();
+    let item = h
+        .lib
+        .index_path("Movies/Collection/deep/clip.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query("UPDATE items SET favorite=1 WHERE id=?")
+        .bind(&item.id)
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    let mut b = RenameRequest {
+        key: "folder:Collection".into(),
+        folder: "".into(),
+        name: "Renamed".into(),
+        token: None,
+    };
+    let preview = h
+        .lib
+        .preview_folder_rename(STARTING_MOVIES, &b)
+        .await
+        .unwrap();
+    assert_eq!(preview.file_count, 3);
+    assert!(preview.blocked.is_empty());
+    assert!(
+        h.lib
+            .rename_download_directory(STARTING_MOVIES, &b)
+            .await
+            .is_err()
+    );
+    b.token = Some(preview.token);
+    h.lib
+        .rename_download_directory(STARTING_MOVIES, &b)
+        .await
+        .unwrap();
+    assert!(!h.exists("Movies/Collection"));
+    for p in [
+        "Movies/Renamed/deep/clip.mkv",
+        "Movies/Renamed/deep/clip.srt",
+        "Movies/Renamed/notes.txt",
+        "Movies/Renamed/empty",
+    ] {
+        assert!(h.exists(p));
+    }
+    let current = h.item(&item.id).await;
+    assert!(current.favorite);
+    assert_eq!(current.rel_path, "Movies/Renamed/deep/clip.mkv");
+    assert_eq!(current.quick_hash, item.quick_hash);
+    assert!(
+        h.lib
+            .download_folders(STARTING_MOVIES)
+            .await
+            .unwrap()
+            .iter()
+            .any(|g| g.key == b.key && g.name == "Renamed")
+    );
+    let mut nested = RenameRequest {
+        key: b.key,
+        folder: "deep".into(),
+        name: "Clips".into(),
+        token: None,
+    };
+    nested.token = Some(
+        h.lib
+            .preview_folder_rename(STARTING_MOVIES, &nested)
+            .await
+            .unwrap()
+            .token,
+    );
+    h.lib
+        .rename_download_directory(STARTING_MOVIES, &nested)
+        .await
+        .unwrap();
+    assert_eq!(
+        h.item(&item.id).await.rel_path,
+        "Movies/Renamed/Clips/clip.mkv"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM library_folder_edits")
+            .fetch_one(&h.lib.db)
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn folder_rename_rejects_stale_collisions_links_busy_work_and_rolls_back_database_failure() {
+    use super::{defs::STARTING_MOVIES, rename_folder::RenameRequest};
+    let h = harness().await;
+    h.write("Movies/Collection/deep/clip.mkv", b"original");
+    h.write("Movies/Collection/note.txt", b"note");
+    let item = h
+        .lib
+        .index_path("Movies/Collection/deep/clip.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    let mut b = RenameRequest {
+        key: "folder:Collection".into(),
+        folder: "".into(),
+        name: "Renamed".into(),
+        token: None,
+    };
+    b.token = Some(
+        h.lib
+            .preview_folder_rename(STARTING_MOVIES, &b)
+            .await
+            .unwrap()
+            .token,
+    );
+    h.write("Movies/Collection/new.txt", b"new");
+    assert!(
+        h.lib
+            .rename_download_directory(STARTING_MOVIES, &b)
+            .await
+            .is_err()
+    );
+    h.write("Movies/Renamed/existing.txt", b"kept");
+    assert!(
+        !h.lib
+            .preview_folder_rename(STARTING_MOVIES, &b)
+            .await
+            .unwrap()
+            .blocked
+            .is_empty()
+    );
+    std::fs::remove_file(h.root.join("Movies/Renamed/existing.txt")).unwrap();
+    std::fs::remove_dir(h.root.join("Movies/Renamed")).unwrap();
+    std::os::unix::fs::symlink("note.txt", h.root.join("Movies/Collection/link")).unwrap();
+    assert!(
+        h.lib
+            .preview_folder_rename(STARTING_MOVIES, &b)
+            .await
+            .is_err()
+    );
+    std::fs::remove_file(h.root.join("Movies/Collection/link")).unwrap();
+    sqlx::query("CREATE TRIGGER refuse_folder_rename BEFORE UPDATE OF rel_path ON items BEGIN SELECT RAISE(ABORT,'synthetic failure'); END").execute(&h.lib.db).await.unwrap();
+    b.token = Some(
+        h.lib
+            .preview_folder_rename(STARTING_MOVIES, &b)
+            .await
+            .unwrap()
+            .token,
+    );
+    assert!(
+        h.lib
+            .rename_download_directory(STARTING_MOVIES, &b)
+            .await
+            .is_err()
+    );
+    assert_eq!(h.item(&item.id).await.rel_path, item.rel_path);
+    assert_eq!(
+        std::fs::read(h.root.join(&item.rel_path)).unwrap(),
+        b"original"
+    );
+    assert!(h.exists("Movies/Collection/new.txt"));
+    assert!(!h.exists("Movies/Renamed"));
+    assert_eq!(
+        std::fs::read_dir(h.root.join(".popcornstash/Trash"))
+            .unwrap()
+            .count(),
+        0
+    );
+    sqlx::query("DROP TRIGGER refuse_folder_rename")
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO conversion_jobs(id,item_id,library_id,revision,source_version,source_path,target_path,state,created_at,updated_at) VALUES('busy',?,?,1,'x',?,?,'encoding',0,0)").bind(&item.id).bind(STARTING_MOVIES).bind(&item.rel_path).bind(&item.rel_path).execute(&h.lib.db).await.unwrap();
+    assert!(
+        !h.lib
+            .preview_folder_rename(STARTING_MOVIES, &b)
+            .await
+            .unwrap()
+            .blocked
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires STASH_FILESYSTEM_TEST_ROOT pointing to a disposable native NAS directory"]
+async fn physical_folder_rename_on_real_nas_filesystem() {
+    use super::{defs::STARTING_MOVIES, rename_folder::RenameRequest};
+    let base = std::env::var("STASH_FILESYSTEM_TEST_ROOT").unwrap();
+    let dir = tempfile::Builder::new()
+        .prefix("organization-fixture-")
+        .tempdir_in(base)
+        .unwrap();
+    let h = harness_in(dir).await;
+    h.write("Movies/Collection/deep/clip.mkv", b"synthetic");
+    h.write("Movies/Collection/notes.txt", b"synthetic-notes");
+    let item = h
+        .lib
+        .index_path("Movies/Collection/deep/clip.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    let mut b = RenameRequest {
+        key: "folder:Collection".into(),
+        folder: "".into(),
+        name: "Renamed".into(),
+        token: None,
+    };
+    b.token = Some(
+        h.lib
+            .preview_folder_rename(STARTING_MOVIES, &b)
+            .await
+            .unwrap()
+            .token,
+    );
+    h.lib
+        .rename_download_directory(STARTING_MOVIES, &b)
+        .await
+        .unwrap();
+    assert!(!h.exists("Movies/Collection"));
+    assert!(h.exists("Movies/Renamed/notes.txt"));
+    assert_eq!(
+        h.item(&item.id).await.rel_path,
+        "Movies/Renamed/deep/clip.mkv"
+    );
+    h.lib.db.close().await;
+}

@@ -115,6 +115,15 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
         request("/api/libraries/${seg(id)}/download-folders/flatten").post(buildJsonObject { put("key", key); put("token", token) }.toString().toRequestBody(JSON)).build(), FileBatchResult.serializer(),
     )
 
+    suspend fun downloadTree(id:String,key:String,folder:String):DownloadTree = get("/api/libraries/${seg(id)}/download-folders/contents",DownloadTree.serializer(),"key" to key,"folder" to folder)
+    suspend fun previewFolderRename(id:String,key:String,folder:String,name:String):RenameFolderPreview = send(
+        request("/api/libraries/${seg(id)}/download-folders/rename-preview").post(buildJsonObject {put("key",key);put("folder",folder);put("name",name)}.toString().toRequestBody(JSON)).build(),RenameFolderPreview.serializer())
+    suspend fun renameDirectory(id:String,key:String,folder:String,name:String,token:String) = sendEmpty(
+        request("/api/libraries/${seg(id)}/download-folders/rename").post(buildJsonObject {put("key",key);put("folder",folder);put("name",name);put("token",token)}.toString().toRequestBody(JSON)).build())
+    suspend fun createDownloadDirectory(id:String,name:String,key:String?,parent:String):String {
+        val value=send(request("/api/libraries/${seg(id)}/download-folders/create").post(buildJsonObject {put("name",name);key?.let {put("key",it)};put("parent",parent)}.toString().toRequestBody(JSON)).build(),JsonObject.serializer())
+        return value.getValue("key").jsonPrimitive.content
+    }
     suspend fun downloadFolders(id: String): List<DownloadFolder> = get("/api/libraries/${seg(id)}/download-folders", ListSerializer(DownloadFolder.serializer()))
 
     suspend fun nameDownloadFolder(id: String, name: String, key: String? = null): String = send(
@@ -202,6 +211,7 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
             "library_id" to query.libraryId,
             "folder" to query.folder,
             "download_group" to query.downloadGroup,
+            "download_folder" to query.downloadFolder,
             "include_inbox" to query.includeInbox?.toString(),
             "place" to query.place?.let { wire(Place.serializer(), it) },
             "category" to query.category?.wire,

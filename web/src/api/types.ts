@@ -625,6 +625,7 @@ export interface BatchResult { completed: string[]; failed: {id: string; message
 
 export interface ItemQuery extends PageParams {
   download_group?: string;
+  download_folder?: string;
   folder?: string;
   include_inbox?: boolean;
   /** Items of one library (404 when the caller cannot see it). */
@@ -1001,3 +1002,6 @@ export interface FlattenPreview {
   blocked: string[];
   token: string;
 }
+
+export interface DownloadTree {folder:string; folders:{name:string; folder:string; item_count:number; size:number}[]}
+export interface RenameFolderPreview {from:string; to:string; file_count:number; folder_count:number; blocked:string[]; token:string}
