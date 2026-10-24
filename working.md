@@ -1,3 +1,11 @@
+## Current continuation: targeted organization and original filenames, 2026-10-23
+
+- Owner authorized consolidation of a matched download pack, restoration of original torrent filenames in a second pack, and repair of Move selected. Never publish personal file/folder names or paths. Private operator evidence is outside synced storage under /tmp/ai-development/popcornstash-correction-20261023; delete it after verification.
+- Read-only evidence identifies 119 files for one-level consolidation (48 reassigned from placeholder groups) and 40 uniquely matched torrent filenames for restoration. Preserve converted container extensions, item IDs, history, hashes, accounts, policies and active transfers. No media writes before collision/identity/rollback checks.
+- Active source remains the existing unsynced workspace /Users/michaelwong/.codex/workspaces/popcornstash-transcoding-dashboard. Preserve the Documents checkout and its 45 unrelated untracked files. Task resources are registered in the private manifest before creation.
+- Implemented Move selected with durable private-endpoint staging on Atlas/shfs, recovery before further batch mutations, active-work and occupied-destination guards, physical destination grouping, and completed conversion path preservation. Existing batch API and authorization remain intact; no UI/Android source changes.
+- Verification before candidate packaging: native Linux fmt, strict workspace/all-target clippy, 640 Rust tests (10 intentional hardware/manual ignores), three actual NAS move/flatten/rename workflows, four actual NAS operator commit/rollback/interruption cases, web/extension checks and builds, and Android full test/lint/build/screenshot/glyph gates (891 tests, four intentional real-server skips). A collision regression was caught and fixed before production work. Optimized server build and native container smoke are pending; actual library changes remain pending.
+
 ## Completed: Owner-directed Atlas library organization, 2026-10-23
 
 - Follow-up owner action explicitly requests organizing the existing library, beyond deploying folder controls. No real file/folder names or paths were printed, published or included in evidence. Existing unsynced prepared checkout reused; original Documents source and unrelated untracked files preserved.

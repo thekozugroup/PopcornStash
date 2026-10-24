@@ -251,7 +251,7 @@ impl Library {
         for item_id in ids {
             let files: Vec<_> = plan.files.iter().filter(|f| f.item_id == item_id).collect();
             match self
-                .flatten_one(&root, id, &body.key, item_id, &files)
+                .organized_move_one(&root, id, Some((&body.key, &plan.folder)), item_id, &files)
                 .await
             {
                 Ok(()) => result.completed.push(item_id.to_string()),
@@ -267,11 +267,11 @@ impl Library {
         Ok(result)
     }
 
-    async fn flatten_one(
+    pub(super) async fn organized_move_one(
         &self,
         root: &Root,
         library_id: &str,
-        key: &str,
+        group: Option<(&str, &str)>,
         id: &str,
         files: &[&FlattenFile],
     ) -> Result<()> {
@@ -288,7 +288,8 @@ impl Library {
             .ok_or(CoreError::NotFound)?;
         root.prepare_flatten_destination(target)?;
         let stage = root.new_trash_dir("flatten")?;
-        let journal = recovery::Journal::new(id, library_id, key, files, root)?;
+        let journal =
+            recovery::Journal::new(id, library_id, group.map_or("", |g| g.0), files, root)?;
         root.write_flatten_journal(
             &stage,
             &serde_json::to_vec(&journal).map_err(|e| CoreError::invalid(e.to_string()))?,
@@ -318,11 +319,14 @@ impl Library {
                 recovery::sync_parent(root, &file.to)?;
                 journal.files[index].check(root, &file.to)?;
             }
-            let video = files.iter().find(|f| f.kind == "video").ok_or(CoreError::NotFound)?;
-            let name = Path::new(target).file_name().and_then(|s| s.to_str()).ok_or(CoreError::NotFound)?;
-            sqlx::query("INSERT OR IGNORE INTO library_download_folders(library_id,group_key,name) VALUES(?,?,?)").bind(library_id).bind(key).bind(name).execute(&mut *tx).await?;
-            sqlx::query("UPDATE items SET rel_path=?,updated_at=? WHERE id=?").bind(&video.to).bind(now()).bind(id).execute(&mut *tx).await?;
-            sqlx::query("INSERT INTO library_download_members(item_id,library_id,group_key) VALUES(?,?,?) ON CONFLICT(item_id) DO UPDATE SET library_id=excluded.library_id,group_key=excluded.group_key").bind(id).bind(library_id).bind(key).execute(&mut *tx).await?;
+            let primary = files.iter().find(|f| matches!(f.kind.as_str(), "video" | "item")).ok_or(CoreError::NotFound)?;
+            sqlx::query("UPDATE items SET rel_path=?,updated_at=? WHERE id=?").bind(&primary.to).bind(now()).bind(id).execute(&mut *tx).await?;
+            sqlx::query("UPDATE conversion_jobs SET target_path=? WHERE item_id=? AND state='complete' AND target_path=?").bind(&primary.to).bind(id).bind(&primary.from).execute(&mut *tx).await?;
+            if let Some((key, folder)) = group {
+                let name = Path::new(folder).file_name().and_then(|s| s.to_str()).ok_or(CoreError::NotFound)?;
+                sqlx::query("INSERT OR IGNORE INTO library_download_folders(library_id,group_key,name) VALUES(?,?,?)").bind(library_id).bind(key).bind(name).execute(&mut *tx).await?;
+                sqlx::query("INSERT INTO library_download_members(item_id,library_id,group_key) VALUES(?,?,?) ON CONFLICT(item_id) DO UPDATE SET library_id=excluded.library_id,group_key=excluded.group_key").bind(id).bind(library_id).bind(key).execute(&mut *tx).await?;
+            }
             Ok(())
         }.await;
         if let Err(error) = result {

@@ -85,7 +85,7 @@ pub(super) async fn recover_one(
     let video = journal
         .files
         .iter()
-        .find(|f| f.choice.kind == "video")
+        .find(|f| matches!(f.choice.kind.as_str(), "video" | "item"))
         .ok_or(CoreError::NotFound)?;
     if journal.files.is_empty() || journal.files.len() > 2000 {
         return Err(CoreError::invalid("Invalid flatten recovery journal."));

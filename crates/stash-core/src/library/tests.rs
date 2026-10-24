@@ -4662,3 +4662,127 @@ async fn physical_folder_rename_on_real_nas_filesystem() {
     );
     h.lib.db.close().await;
 }
+
+#[tokio::test]
+async fn selected_moves_protect_active_work_and_retain_conversion_targets() {
+    use super::{defs::STARTING_MOVIES, folders::MoveItems};
+    let h = harness().await;
+    h.write("Movies/Source/clip.mkv", b"synthetic");
+    std::fs::create_dir_all(h.root.join("Movies/Destination/nested")).unwrap();
+    let item = h
+        .lib
+        .index_path("Movies/Source/clip.mkv")
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query("INSERT INTO conversion_jobs(id,item_id,library_id,revision,source_version,source_path,target_path,state,created_at,updated_at) VALUES('selected-test',?,?,0,'v',?,?,'encoding',0,0)")
+        .bind(&item.id).bind(STARTING_MOVIES).bind(&item.rel_path).bind(&item.rel_path).execute(&h.lib.db).await.unwrap();
+    let request = MoveItems {
+        item_ids: vec![item.id.clone()],
+        folder: "Destination/nested".into(),
+    };
+    let blocked = h
+        .lib
+        .move_library_items(STARTING_MOVIES, &request)
+        .await
+        .unwrap();
+    assert_eq!(blocked.failed.len(), 1);
+    assert!(h.exists(&item.rel_path));
+    sqlx::query("UPDATE conversion_jobs SET state='complete' WHERE id='selected-test'")
+        .execute(&h.lib.db)
+        .await
+        .unwrap();
+    let moved = h
+        .lib
+        .move_library_items(STARTING_MOVIES, &request)
+        .await
+        .unwrap();
+    assert_eq!(moved.completed, std::slice::from_ref(&item.id));
+    let target: String =
+        sqlx::query_scalar("SELECT target_path FROM conversion_jobs WHERE id='selected-test'")
+            .fetch_one(&h.lib.db)
+            .await
+            .unwrap();
+    assert_eq!(target, "Movies/Destination/nested/clip.mkv");
+    let source: String =
+        sqlx::query_scalar("SELECT source_path FROM conversion_jobs WHERE id='selected-test'")
+            .fetch_one(&h.lib.db)
+            .await
+            .unwrap();
+    assert_eq!(source, item.rel_path);
+    let groups = h.lib.download_folders(STARTING_MOVIES).await.unwrap();
+    assert!(
+        groups
+            .iter()
+            .any(|g| g.key == "folder:Destination" && g.item_count == 1)
+    );
+    assert!(
+        std::fs::read_dir(h.root.join(".popcornstash/Trash"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires STASH_FILESYSTEM_TEST_ROOT pointing to a disposable native NAS directory"]
+async fn selected_moves_on_real_nas_filesystem() {
+    use super::{
+        defs::{STARTING_MOVIES, STARTING_PHOTOS},
+        folders::MoveItems,
+    };
+    let base = std::env::var("STASH_FILESYSTEM_TEST_ROOT").unwrap();
+    let dir = tempfile::Builder::new()
+        .prefix("selected-fixture-")
+        .tempdir_in(base)
+        .unwrap();
+    let h = harness_in(dir).await;
+    for (library, source, destination) in [
+        (
+            STARTING_MOVIES,
+            "Movies/clip.mkv",
+            "Movies/Collection/clip.mkv",
+        ),
+        (
+            STARTING_PHOTOS,
+            "Photos/photo.jpg",
+            "Photos/Collection/photo.jpg",
+        ),
+    ] {
+        h.write(source, b"synthetic-preserved");
+        std::fs::create_dir_all(h.root.join(destination).parent().unwrap()).unwrap();
+        let item = h.lib.index_path(source).await.unwrap().unwrap();
+        let request = MoveItems {
+            item_ids: vec![item.id.clone()],
+            folder: "Collection".into(),
+        };
+        let result = h.lib.move_library_items(library, &request).await.unwrap();
+        assert_eq!(result.completed, std::slice::from_ref(&item.id));
+        assert!(!h.exists(source));
+        assert_eq!(
+            std::fs::read(h.root.join(destination)).unwrap(),
+            b"synthetic-preserved"
+        );
+        assert_eq!(h.item(&item.id).await.rel_path, destination);
+        h.write(source, b"different");
+        let other = h.lib.index_path(source).await.unwrap().unwrap();
+        let failed = h
+            .lib
+            .move_library_items(
+                library,
+                &MoveItems {
+                    item_ids: vec![other.id],
+                    ..request
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(failed.failed.len(), 1);
+        assert_eq!(
+            std::fs::read(h.root.join(destination)).unwrap(),
+            b"synthetic-preserved"
+        );
+        assert_eq!(std::fs::read(h.root.join(source)).unwrap(), b"different");
+    }
+    h.lib.db.close().await;
+}

@@ -3,9 +3,9 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use super::{Library, cleanup::Root, defs, repo, scanner};
-use crate::events::{Event, LibraryChange};
+use crate::events::Event;
 use crate::models::{ItemStatus, Place};
-use crate::{CoreError, Result, now};
+use crate::{CoreError, Result};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_BATCH: usize = 500;
@@ -164,10 +164,43 @@ impl Library {
         let target = join(def.folder(), &body.folder);
         let root = Root::open(self.layout.root())?;
         root.directory(&target)?; // A destination must already exist.
+        let group = if let Some(top) = body.folder.split('/').next().filter(|s| !s.is_empty()) {
+            let groups = self.download_folders(id).await?;
+            let matches: Vec<_> = groups
+                .iter()
+                .filter(|g| g.name.to_lowercase() == top.to_lowercase())
+                .collect();
+            if matches.len() > 1 {
+                return Err(CoreError::conflict(
+                    "More than one download folder has this name. Rename the conflicting folders first.",
+                ));
+            }
+            Some((
+                matches
+                    .first()
+                    .map_or_else(|| format!("folder:{top}"), |g| g.key.clone()),
+                top.to_string(),
+            ))
+        } else {
+            None
+        };
         let mut result = BatchResult::default();
         for id in &body.item_ids {
+            if self
+                .flatten_pending
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                self.recover_flattened_files_locked().await?;
+            }
             match self
-                .move_library_item(&root, def.id(), def.folder(), &target, id)
+                .move_library_item(
+                    &root,
+                    def.id(),
+                    def.folder(),
+                    &target,
+                    id,
+                    group.as_ref().map(|(k, n)| (k.as_str(), n.as_str())),
+                )
                 .await
             {
                 Ok(()) => result.completed.push(id.clone()),
@@ -177,6 +210,7 @@ impl Library {
                 }),
             }
         }
+        self.events.publish(Event::Libraries);
         Ok(result)
     }
 
@@ -187,6 +221,7 @@ impl Library {
         source_folder: &str,
         target: &str,
         id: &str,
+        group: Option<(&str, &str)>,
     ) -> Result<()> {
         let item = repo::get(&self.db, id).await?.ok_or(CoreError::NotFound)?;
         if !item.rel_path.starts_with(&format!("{source_folder}/"))
@@ -206,30 +241,46 @@ impl Library {
         if dest == item.rel_path {
             return Ok(());
         }
-        if !root.metadata(&item.rel_path)?.is_file() {
+        match root.metadata(&dest) {
+            Err(CoreError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(CoreError::conflict(
+                    "A file already uses this name. No file was overwritten.",
+                ));
+            }
+            Err(e) => return Err(e),
+        }
+        let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM downloads d WHERE d.state IN ('queued','downloading','paused','seeding','sorting') AND (d.id=? OR EXISTS(SELECT 1 FROM download_items di WHERE di.download_id=d.id AND di.item_id=?))) OR EXISTS(SELECT 1 FROM conversion_jobs WHERE item_id=? AND (state IN ('encoding','verifying','publishing') OR stage IS NOT NULL))")
+            .bind(&item.source_download_id).bind(id).bind(id).fetch_one(&self.db).await?;
+        if busy {
+            return Err(CoreError::conflict(
+                "This file is downloading, seeding or converting. Try again after it finishes.",
+            ));
+        }
+        let meta = root.metadata(&item.rel_path)?;
+        if !meta.is_file() {
             return Err(CoreError::invalid("Choose a regular file."));
         }
-        let mut tx = crate::db::begin_write(&self.db).await?;
-        root.rename(&item.rel_path, &dest).map_err(folder_error)?; // Atomic, no overwrite, no symlinks.
-        let write = async {
-            sqlx::query("UPDATE items SET rel_path = ?, updated_at = ? WHERE id = ?")
-                .bind(&dest)
-                .bind(now())
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-            tx.commit().await
+        use std::os::unix::fs::MetadataExt;
+        if meta.len() != item.size as u64 || meta.mtime() != item.mtime {
+            return Err(CoreError::conflict(
+                "This file changed since indexing. Refresh the library first.",
+            ));
         }
-        .await;
-        if let Err(e) = write {
-            root.rename(&dest, &item.rel_path)?;
-            return Err(e.into());
-        }
-        self.events.publish(Event::Library {
-            r#type: LibraryChange::Updated,
-            item_id: id.to_string(),
-            before: Some(item.facts()),
-        });
+        let file = super::flatten_downloads::FlattenFile {
+            item_id: id.into(),
+            from: item.rel_path.clone(),
+            to: dest,
+            kind: "item".into(),
+            fingerprint: super::cleanup::fingerprint(&meta),
+        };
+        let result = self
+            .organized_move_one(root, library, group, id, &[&file])
+            .await
+            .map_err(folder_error);
+        // Recover interrupted per-item work before allowing the next file to move.
+        self.recover_flattened_files_locked().await?;
+        result?;
         Ok(())
     }
 
