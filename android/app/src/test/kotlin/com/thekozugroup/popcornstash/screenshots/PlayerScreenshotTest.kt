@@ -5,6 +5,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.geometry.Offset
+import com.thekozugroup.popcornstash.testing.WithSampleImages
 import com.thekozugroup.popcornstash.feature.player.PlayerItems
 import androidx.compose.ui.test.onRoot
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -87,6 +91,45 @@ class PlayerScreenshotTest {
     }
 
     private fun shoot(name: String) = compose.onRoot().captureRoboImage(screenshot(name))
+
+    private fun preview(flex: FlexHinge? = null) {
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            PlayerTheme {
+                WithSampleImages {
+                    PlayerScreen(PlayerSamples.episode.copy(itemId = "seek-fixture"), { PlayerSamples.clock }, PlayerActions(), true, {}, flexHinge = flex) { SampleFrame(it) }
+                }
+            }
+        }
+        compose.onNodeWithTag("seek bar").performTouchInput {
+            down(Offset(width * .3f, centerY))
+            moveTo(Offset(width * .7f, centerY))
+        }
+        compose.mainClock.advanceTimeBy(500)
+        compose.waitForIdle()
+        compose.onNodeWithTag("seek preview", useUnmergedTree = true).assertIsDisplayed()
+    }
+
+    @Test @Config(qualifiers = PHONE)
+    fun seekPreviewPortrait() {
+        preview()
+        captureScreenRoboImage(screenshot("player-seek-preview-portrait"))
+        compose.onNodeWithTag("seek bar").performTouchInput { up() }
+    }
+
+    @Test
+    fun seekPreviewLandscape() {
+        preview()
+        captureScreenRoboImage(screenshot("player-seek-preview-landscape"))
+        compose.onNodeWithTag("seek bar").performTouchInput { up() }
+    }
+
+    @Test @Config(qualifiers = "w673dp-h841dp-mdpi")
+    fun seekPreviewTabletop() {
+        preview(FlexHinge(410, 430))
+        captureScreenRoboImage(screenshot("player-seek-preview-flex"))
+        compose.onNodeWithTag("seek bar").performTouchInput { up() }
+    }
 
     @Test @Config(qualifiers = "w673dp-h841dp-mdpi")
     fun tabletop() {

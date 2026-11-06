@@ -11,6 +11,7 @@ import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performTouchInput
@@ -120,6 +121,19 @@ class PlayerScreenTest {
             val target = done.single().removePrefix("seek ").toLong()
             assertTrue(target in 4_700_000..5_000_000)
         }
+    }
+
+    @Test fun draggingShowsAPreviewAndDoesNotSeekUntilRelease() {
+        show(PlayerSamples.film.copy(itemId = "seek-fixture"))
+        compose.onNodeWithTag("seek bar").performTouchInput {
+            down(Offset(width * .3f, centerY))
+            moveTo(Offset(width * .6f, centerY))
+        }
+        compose.onNodeWithTag("seek preview", useUnmergedTree = true).assertIsDisplayed()
+        compose.runOnIdle { assertTrue(done.isEmpty()) }
+        compose.onNodeWithTag("seek bar").performTouchInput { up() }
+        compose.runOnIdle { assertEquals(1, done.size); assertTrue(done.single().startsWith("seek ")) }
+        assertTrue(compose.onAllNodesWithTag("seek preview").fetchSemanticsNodes().isEmpty())
     }
 
     @Test fun tappingTheThumbKeepsItsPositionAndDraggingStillSeeks() {

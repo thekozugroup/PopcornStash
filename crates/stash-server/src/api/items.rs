@@ -63,6 +63,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/items/{id}", get(detail).patch(update).delete(remove))
         .route("/api/items/{id}/organize", post(organize))
         .route("/api/items/{id}/thumb", get(thumb))
+        .route("/api/items/{id}/preview", get(seek_preview))
         .route("/api/items/{id}/file", get(file))
         .route("/api/items/{id}/view", get(view))
         .route("/api/items/{id}/playback", post(start_playback))
@@ -429,6 +430,31 @@ async fn thumb(
 #[serde(default)]
 struct FileQuery {
     download: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PreviewQuery {
+    time_s: f64,
+}
+
+async fn seek_preview(
+    State(state): State<AppState>,
+    user: AuthUser,
+    UrlPath(id): UrlPath<String>,
+    req: Request,
+) -> ApiResult<Response> {
+    user.require(Scope::LibraryRead)?;
+    let query: PreviewQuery = parse_query(req.uri())?;
+    let item = visible_item(&state, &user, &id).await?;
+    let bytes = state.media.seek_preview(&item, query.time_s).await?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/jpeg"),
+            (header::CACHE_CONTROL, "private, no-store"),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 async fn file(
@@ -1007,6 +1033,10 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _, _) = app.get("/api/items", None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _, _) = app.get("/api/items/x/preview?time_s=0", None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = app.json("/api/items/x/preview?time_s=0", &token).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
@@ -1080,8 +1110,77 @@ mod tests {
         assert_eq!(json["id"], a.as_str());
         let (status, _) = app.json(&format!("/api/items/{gone}"), &token).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+        for id in [&gone, &b] {
+            let (status, _) = app
+                .json(&format!("/api/items/{id}/preview?time_s=0"), &token)
+                .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        }
+        for time in ["-1", "NaN", "inf", "garbage"] {
+            let (status, _) = app
+                .json(&format!("/api/items/{a}/preview?time_s={time}"), &token)
+                .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
         let (status, _) = app.json("/api/items/does-not-exist", &token).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn seek_preview_is_an_authenticated_nonpersistent_jpeg() {
+        let app = TestApp::new().await;
+        let (_, token) = app.user("member").await;
+        let fixture = app._dir.path().join("seek-fixture.mkv");
+        let mut cmd = stash_core::media::tools::command("ffmpeg");
+        cmd.args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=s=64x36:r=1:d=4",
+            "-c:v",
+            "ffv1",
+            "-threads",
+            "1",
+        ])
+        .arg(&fixture);
+        stash_core::media::tools::run_ok(cmd, "ffmpeg", std::time::Duration::from_secs(10))
+            .await
+            .unwrap();
+        let bytes = std::fs::read(fixture).unwrap();
+        let id = app
+            .item(
+                "Movies/seek-fixture.mkv",
+                MediaKind::Video,
+                Category::Movie,
+                ItemStatus::Ready,
+                Some(&bytes),
+            )
+            .await;
+        sqlx::query("UPDATE items SET duration_s = 4 WHERE id = ?")
+            .bind(&id)
+            .execute(&app.state.db)
+            .await
+            .unwrap();
+        let url = format!("/api/items/{id}/preview?time_s=2");
+        let (status, headers, frame) = app.get(&url, Some(&token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
+        assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
+        assert!(frame.starts_with(&[0xff, 0xd8]));
+        sqlx::query("UPDATE items SET status = 'missing' WHERE id = ?")
+            .bind(&id)
+            .execute(&app.state.db)
+            .await
+            .unwrap();
+        let (status, _, _) = app.get(&url, Some(&token)).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "cached frames never bypass current access"
+        );
     }
 
     #[tokio::test]

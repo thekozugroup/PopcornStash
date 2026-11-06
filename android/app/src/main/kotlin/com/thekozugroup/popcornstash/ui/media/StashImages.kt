@@ -18,6 +18,7 @@ import coil3.disk.DiskCache
 import coil3.memory.MemoryCache
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.ImageRequest
+import coil3.request.CachePolicy
 import coil3.request.crossfade
 import coil3.size.Precision
 import coil3.size.Size
@@ -53,6 +54,10 @@ class Pictures(private val server: HttpUrl) {
     /** The photo as a phone can show it (the original, or a rendition of HEIC, RAW and TIFF). */
     fun view(id: String): String =
         server.newBuilder().addPathSegments("api/items").addPathSegment(id).addPathSegment("view").build().toString()
+
+    fun preview(id: String, second: Long): String =
+        server.newBuilder().addPathSegments("api/items").addPathSegment(id).addPathSegment("preview")
+            .addQueryParameter("time_s", second.toString()).build().toString()
 
     companion object {
         /** For previews and tests: addresses that go nowhere. */
@@ -99,6 +104,7 @@ fun StashImage(
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,
     size: Size? = null,
+    cache: Boolean = true,
     onLoaded: () -> Unit = {},
     placeholder: @Composable () -> Unit = {},
 ) {
@@ -109,10 +115,11 @@ fun StashImage(
     Box(modifier) {
         if (!shown) placeholder()
         if (url != null && loader != null) {
-            val request = remember(url, reduceMotion, size) {
+            val request = remember(url, reduceMotion, size, cache) {
                 ImageRequest.Builder(context)
                     .data(url)
                     .crossfade(if (reduceMotion) 0 else PopcornMotion.FAST_MS)
+                    .apply { if (!cache) diskCachePolicy(CachePolicy.DISABLED).memoryCachePolicy(CachePolicy.DISABLED) }
                     .apply { if (size != null) size(size).precision(Precision.INEXACT) }
                     .build()
             }

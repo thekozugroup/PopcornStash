@@ -1,5 +1,5 @@
 /**
- * The video stage: a true black surface with the native <video> controls.
+ * The video stage: a true black surface with accessible controls and seek previews.
  *
  * Playback starts on demand (so opening a page never starts a transcode):
  * the browser's codec support goes to `POST /api/items/:id/playback`, which
@@ -29,6 +29,7 @@ import {formatClock} from '../../lib/format';
 import {audioTrackDetail, audioTrackLabel, largeThumb, resolutionName, resumePosition} from '../library/libraryFormat';
 import {SAFE_CAPS, detectPlaybackCaps, hasNativeHls, type PlaybackCaps} from './capabilities';
 import {endStreamOnExit, saveProgressOnExit} from './keepalive';
+import {PlayerControls} from './PlayerControls';
 
 const styles = stylex.create({
   seekFeedback: {
@@ -40,9 +41,10 @@ const styles = stylex.create({
   stage: {
     position: 'relative',
     width: 'auto',
-    aspectRatio: '16 / 9',
-    maxHeight: {default: 'calc(100dvh - 200px)', '@media (max-width: 799px)': '70dvh'},
-    minHeight: 200,
+    aspectRatio: {default: '16 / 9', ':fullscreen': 'auto'},
+    height: {default: 'auto', ':fullscreen': '100dvh'},
+    maxHeight: {default: 'calc(100dvh - 200px)', '@media (max-width: 799px)': '70dvh', ':fullscreen': '100dvh'},
+    minHeight: {default: 200, '@media (max-width: 399px)': 160},
     marginInline: {default: 0, '@media (max-width: 799px)': -20},
     overflow: 'hidden',
     borderRadius: {default: 'var(--radius-container)', '@media (max-width: 799px)': 0},
@@ -388,11 +390,23 @@ export function VideoPlayer({item, autoPlay = false, onNext = null}: VideoPlayer
             if (node) lastVideoRef.current = node;
           }}
           poster={poster}
-          controls={phase === 'ready'}
+          controls={false}
           playsInline
           preload="metadata"
           aria-label={item.title}
           tabIndex={phase === 'ready' ? 0 : -1}
+          onKeyDown={event => {
+            const video = event.currentTarget;
+            if (phase !== 'ready') return;
+            if (event.key === ' ' || event.key.toLowerCase() === 'k') {
+              event.preventDefault();
+              if (video.paused) void video.play().catch(() => undefined); else video.pause();
+            } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+              event.preventDefault();
+              video.currentTime = Math.max(0, Math.min(video.duration || item.duration_s || 0, video.currentTime + (event.key === 'ArrowLeft' ? -5 : 5)));
+              report();
+            }
+          }}
           onDoubleClick={event => {
             event.preventDefault();
             if (performance.now() - lastTouchSeek.current > 500) seekAt(event.currentTarget, event.clientX, event.clientY);
@@ -425,6 +439,7 @@ export function VideoPlayer({item, autoPlay = false, onNext = null}: VideoPlayer
           onError={onVideoError}
           {...stylex.props(styles.video)}
         />
+        {phase === 'ready' ? <PlayerControls videoRef={videoRef} itemId={item.id} durationHint={item.duration_s ?? 0} onSeek={() => { setHasEnded(false); report(); }} /> : null}
         {seekFeedback ? <div role="status" {...stylex.props(styles.seekFeedback, seekFeedback.side === 'left' ? styles.seekLeft : styles.seekRight)}>{seekFeedback.side === 'left' ? '−15 seconds' : '+15 seconds'}</div> : null}
         {phase !== 'ready' ? (
           <div {...stylex.props(styles.overlay, phase === 'error' && styles.overlaySolid)}>

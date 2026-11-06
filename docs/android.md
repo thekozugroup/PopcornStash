@@ -207,3 +207,5 @@ Library conversion includes original/current/saved storage totals and a horizont
 
 
 Download folders now support nested browsing and a reversible Collapse subfolders option. Folder actions creates real server folders or previews a physical rename, including companions and empty subfolders. Rename on Atlas confirms the displayed plan. Active work, collisions and stale previews block changes. Use Flatten files to consolidate a download that spans physical folders.
+
+Seek bar previews: while dragging, a small frame and target time appear above the thumb in portrait, landscape and foldable tabletop mode. Release to seek; playback stays in place while choosing. Frames come only from the signed-in server, stay off the phone’s disk cache, and remain protected by the app’s biometric gate and secure window. The server must include the seek-preview endpoint.

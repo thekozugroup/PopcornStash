@@ -17,6 +17,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -48,6 +49,9 @@ import com.thekozugroup.popcornstash.MainActivity
 import com.thekozugroup.popcornstash.PopcornStashApplication
 import com.thekozugroup.popcornstash.data.session.SessionState
 import com.thekozugroup.popcornstash.ui.theme.Popcorn
+import com.thekozugroup.popcornstash.ui.media.LocalPictures
+import com.thekozugroup.popcornstash.ui.media.LocalStashImages
+import com.thekozugroup.popcornstash.ui.media.Pictures
 
 /**
  * The full-screen player (docs/architecture.md section 10, Item and player; android/DESIGN.md,
@@ -185,7 +189,11 @@ private fun PlayerActivity.PlayerHost(container: AppContainer, request: PlayerRe
                 attach(model.controller)
                 onDispose { attach(null) }
             }
-            PlayerRoute(model, request, inPictureInPicture, layout)
+            val ui = remember(current.session) { container.sessionUi(current.session) }
+            val pictures = remember(current.session) { Pictures(current.session.server) }
+            CompositionLocalProvider(LocalStashImages provides ui.images, LocalPictures provides pictures) {
+                PlayerRoute(model, request, inPictureInPicture, layout)
+            }
         }
     }
 }

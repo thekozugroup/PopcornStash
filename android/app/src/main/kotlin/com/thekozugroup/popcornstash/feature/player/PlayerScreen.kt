@@ -495,7 +495,7 @@ private fun BottomRow(
     if (stacked) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(tokens.gap), horizontalAlignment = Alignment.End) {
             MediaPlate(Modifier.fillMaxWidth()) {
-                SeekBar(now.positionMs, now.bufferedMs, state.durationMs, actions.onSeek, onSeeking)
+                SeekBar(now.positionMs, now.bufferedMs, state.durationMs, actions.onSeek, onSeeking, state.itemId)
             }
             NextEpisodeButton(state, actions)
         }
@@ -512,6 +512,7 @@ private fun BottomRow(
                 durationMs = state.durationMs,
                 onSeek = actions.onSeek,
                 onSeeking = onSeeking,
+                itemId = state.itemId,
             )
         }
         NextEpisodeButton(state, actions)
@@ -548,10 +549,11 @@ private fun RowScope.SeekBar(
     durationMs: Long,
     onSeek: (Long) -> Unit,
     onSeeking: (Boolean) -> Unit,
+    itemId: String?,
 ) {
     val tokens = LocalPlayerTokens.current
     val colors = Popcorn.colors
-    var dragFraction by remember { mutableStateOf<Float?>(null) }
+    var dragFraction by remember(itemId) { mutableStateOf<Float?>(null) }
     val duration = durationMs.coerceAtLeast(0)
     val fraction = if (duration > 0) (positionMs.toFloat() / duration).coerceIn(0f, 1f) else 0f
     val buffered = if (duration > 0) (bufferedMs.toFloat() / duration).coerceIn(0f, 1f) else 0f
@@ -589,7 +591,9 @@ private fun RowScope.SeekBar(
                     .testTag("seek thumb")
                     .background(colors.accent, CircleShape)
                     .border(tokens.seekThumbRing, colors.onMedia, CircleShape),
-            )
+            ) {
+                if (dragFraction != null && itemId != null) SeekPreview(itemId, shownMs, duration)
+            }
         },
         track = {
             SeekTrack(played = dragFraction ?: fraction, buffered = buffered)

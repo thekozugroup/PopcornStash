@@ -57,7 +57,7 @@ fn publish_updated(media: &MediaService, item_id: &str) {
 }
 
 /// Call under the shared library/publication lock before installing generated media.
-async fn current_version(media: &MediaService, item: &ItemRow) -> Result<bool> {
+pub(super) async fn current_version(media: &MediaService, item: &ItemRow) -> Result<bool> {
     Ok(sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM items WHERE id = ? AND rel_path = ? AND size = ?
          AND mtime = ? AND quick_hash IS ? AND status NOT IN ('missing', 'trashed'))",
@@ -1117,6 +1117,50 @@ mod tests {
         );
         assert_eq!(item.mime.as_deref(), Some("video/quicktime"));
         assert_eq!(item.camera.as_deref(), Some("Apple iPhone 15 Pro"));
+        sqlx::query("UPDATE items SET size = ? WHERE id = ?")
+            .bind(
+                std::fs::metadata(media.layout.abs(rel).unwrap())
+                    .unwrap()
+                    .len() as i64,
+            )
+            .bind(&id)
+            .execute(&media.db)
+            .await
+            .unwrap();
+        let preview_item = row(media, &id).await;
+        let original_bytes = std::fs::read(media.layout.abs(rel).unwrap()).unwrap();
+        let first = media.seek_preview(&preview_item, 0.0).await.unwrap();
+        let second = media.seek_preview(&preview_item, 4.0).await.unwrap();
+        assert!(first.starts_with(&[0xff, 0xd8]));
+        assert_ne!(
+            first, second,
+            "seek frames must match different video positions"
+        );
+        let permit = media.previews.worker.try_acquire().unwrap();
+        assert_eq!(media.seek_preview(&preview_item, 0.0).await.unwrap(), first);
+        assert!(matches!(
+            media.seek_preview(&preview_item, 2.0).await,
+            Err(CoreError::Conflict(_))
+        ));
+        drop(permit);
+        sqlx::query("UPDATE items SET mtime = mtime + 1 WHERE id = ?")
+            .bind(&id)
+            .execute(&media.db)
+            .await
+            .unwrap();
+        assert!(matches!(
+            media.seek_preview(&preview_item, 0.0).await,
+            Err(CoreError::NotFound)
+        ));
+        sqlx::query("UPDATE items SET mtime = mtime - 1 WHERE id = ?")
+            .bind(&id)
+            .execute(&media.db)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(media.layout.abs(rel).unwrap()).unwrap(),
+            original_bytes
+        );
         assert_eq!(item.taken_at, Some(1_718_274_060));
         let summary = item.media().unwrap();
         assert_eq!(summary.video.as_ref().unwrap().rotation, 90);

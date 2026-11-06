@@ -4,6 +4,7 @@
 pub mod exif;
 pub mod filters;
 pub mod playback;
+pub mod previews;
 pub mod probe;
 pub mod thumbs;
 pub mod tools;
@@ -55,6 +56,7 @@ pub struct MediaService {
     /// Shared with the library move lock: file-version checks and cache publication
     /// must be atomic with replacement invalidation, without locking conversions.
     pub(crate) publication: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) previews: previews::SeekPreviews,
 }
 
 impl MediaService {
@@ -72,6 +74,7 @@ impl MediaService {
             layout,
             events,
             publication: Arc::new(tokio::sync::Mutex::new(())),
+            previews: previews::SeekPreviews::default(),
         }
     }
 

@@ -73,6 +73,7 @@ sealed interface PlayerPhase {
 data class NextEpisode(val itemId: String, val label: String? = null)
 
 data class PlayerUiState(
+    val itemId: String? = null,
     val title: String = "",
     val subtitle: String? = null,
     val phase: PlayerPhase = PlayerPhase.Loading,
@@ -346,7 +347,7 @@ class PlayerController(
         recovering = false
         hls = false
         choice = if (keepQuality) StreamChoice(qualityHeight = choice.qualityHeight) else StreamChoice()
-        _state.value = PlayerUiState(phase = PlayerPhase.Loading, selectedQuality = choice.qualityHeight)
+        _state.value = PlayerUiState(itemId = itemId, phase = PlayerPhase.Loading, selectedQuality = choice.qualityHeight)
         job = scope.launch {
             val detail = try {
                 api.item(itemId)

@@ -18,6 +18,13 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.ui.compose.ContentFrame
 import androidx.window.layout.WindowInfoTracker
+import androidx.core.net.toUri
+import coil3.asImage
+import coil3.ImageLoader
+import coil3.intercept.Interceptor
+import coil3.request.ImageResult
+import coil3.request.SuccessResult
+import com.thekozugroup.popcornstash.ui.media.LocalStashImages
 import com.thekozugroup.popcornstash.R
 import com.thekozugroup.popcornstash.feature.player.*
 import com.thekozugroup.popcornstash.navigation.AppShell
@@ -56,8 +63,22 @@ class VisualQaActivity : ComponentActivity() {
                 .onEach { android.util.Log.i("PopcornLayoutQa", it.toString()) } }
             val layout by flow.collectAsStateWithLifecycle(initialValue = null)
             if (showPlayer) PlayerTheme {
+                val pictures = remember {
+                    val retriever = android.media.MediaMetadataRetriever()
+                    val frame = try {
+                        retriever.setDataSource(context, "android.resource://${context.packageName}/${R.raw.qa_clip}".toUri())
+                        requireNotNull(retriever.getScaledFrameAtTime(4_000_000, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 320, 180))
+                    } finally { retriever.release() }
+                    ImageLoader.Builder(context).components {
+                        add(object : Interceptor {
+                            override suspend fun intercept(chain: Interceptor.Chain): ImageResult = SuccessResult(frame.asImage(), chain.request)
+                        })
+                    }.build()
+                }
+                DisposableEffect(pictures) { onDispose { pictures.shutdown() } }
+                CompositionLocalProvider(LocalStashImages provides pictures) {
                 PlayerScreen(
-                    PlayerUiState(title = "Playback preview", phase = PlayerPhase.Ready,
+                    PlayerUiState(itemId = "qa-clip", title = "Playback preview", phase = PlayerPhase.Ready,
                         playWhenReady = playing, durationMs = 12000, videoWidth = 640, videoHeight = 360,
                         recommendations = listOf(com.thekozugroup.popcornstash.data.api.Item(id = "qa-next", title = "Paper Boats", kind = com.thekozugroup.popcornstash.data.api.MediaKind.Video, durationS = 6.0))),
                     { PlayerClock(position, 12000) },
@@ -65,8 +86,10 @@ class VisualQaActivity : ComponentActivity() {
                         onPlayVideo = { android.util.Log.i("PopcornPlayerQa", "Selected $it"); player.seekTo(0) },
                         onTogglePlay = { playing = !playing; player.playWhenReady = playing },
                         onSeek = { target -> player.seekTo(target); android.util.Log.i("PopcornPlayerQa", "Seek target=$target position=${player.currentPosition} playing=${player.playWhenReady}") }),
-                    chromeVisible = chrome, onChromeVisibleChange = { chrome = it }, flexHinge = layout?.flexHinge(),
+                    chromeVisible = chrome, onChromeVisibleChange = { chrome = it },
+                    flexHinge = if (intent.getBooleanExtra("tabletop", false)) FlexHinge(410, 430) else layout?.flexHinge(),
                 ) { ContentFrame(player = player, modifier = it) }
+                }
             } else if (intent.getBooleanExtra("conversion", false)) PopcornTheme {
                 val policy = com.thekozugroup.popcornstash.data.api.ConversionPolicy()
                 var draft by remember { mutableStateOf(policy) }

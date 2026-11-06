@@ -283,6 +283,7 @@ async fn a_member_learns_nothing_about_items_they_cannot_see() {
             ("GET", format!("/api/items/{id}"), None),
             ("GET", format!("/api/items/{id}/thumb?size=sm"), None),
             ("GET", format!("/api/items/{id}/thumb?size=sm&v=1"), None),
+            ("GET", format!("/api/items/{id}/preview?time_s=0"), None),
             ("GET", format!("/api/items/{id}/file"), None),
             ("GET", format!("/api/items/{id}/file?download=1"), None),
             ("GET", format!("/api/items/{id}/view"), None),

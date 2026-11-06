@@ -1,0 +1,5 @@
+/* Astryx exposes this stable slot class, but no control-height prop. Keep the
+   actual slider pointer target as tall as Popcorn's other playback controls. */
+[data-player-controls] .astryx-slider-control {
+  min-height: 44px;
+}
