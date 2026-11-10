@@ -93,6 +93,7 @@ fun LibraryScreen(
     modifier: Modifier = Modifier,
     format: MediaFormat = MediaFormat(),
     gridState: LazyGridState = rememberLazyGridState(),
+    viewActions: (@Composable () -> Unit)? = null,
 ) {
     val library = ui.library
     val title = library?.name ?: name
@@ -104,6 +105,7 @@ fun LibraryScreen(
             onBack = actions.back,
             scrolled = gridState.canScrollBackward,
             actions = {
+                viewActions?.invoke()
                 if (content is LibraryViewModel.Content.Items && library != null) {
                     SortAction(content.sort, ItemSort.optionsFor(library.layout), actions.sort)
                 }

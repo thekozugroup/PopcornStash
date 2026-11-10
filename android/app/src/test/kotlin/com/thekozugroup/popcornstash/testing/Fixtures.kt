@@ -76,6 +76,10 @@ object Fixtures {
                    "latest":$EPISODE,"last_added_at":1760400300}]},
         {"library":$PHOTOS,"recent":[$PHOTO],"show_posters":{},"shows":[]}],
         "other_files_count":2,"inbox_count":1,"total_bytes":382044}"""
+
+    fun videoFeed() = """{"continue_watching":[$ITEM],"suggested":[$EPISODE],"recent":[$ITEM],
+        "collections":[{"folder":{"key":"download:fixture","name":"Sample collection","item_count":2,
+        "size":382044,"added_at":1760400300,"custom":false},"recent":[$ITEM,$EPISODE]}],"next_cursor":"12"}"""
 }
 
 fun MockWebServer.respond(body: String, code: Int = 200, vararg headers: Pair<String, String>) {

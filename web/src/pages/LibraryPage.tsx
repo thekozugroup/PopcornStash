@@ -11,7 +11,10 @@
 import * as stylex from '@stylexjs/stylex';
 import {Button} from '@astryxdesign/core/Button';
 import {HStack} from '@astryxdesign/core/Layout';
-import {Selector} from '@astryxdesign/core/Selector';
+import {DropdownMenu} from '@astryxdesign/core/DropdownMenu';
+import {MoreHorizontal} from 'lucide-react';
+import {IconButton} from '@astryxdesign/core/IconButton';
+import {VideoFeedView} from '../components/library/VideoFeedView';
 import {Skeleton} from '@astryxdesign/core/Skeleton';
 import {useEffect, useState} from 'react';
 import {useParams, useSearchParams} from 'react-router';
@@ -62,6 +65,8 @@ interface PageState {
 export default function LibraryPage() {
   const {id = ''} = useParams();
   const [params, setParams] = useSearchParams();
+  const viewKey = `${id}:${params.get('view') ?? 'feed'}:${params.get('download') ?? ''}`;
+  useEffect(() => {window.scrollTo({top: 0});}, [viewKey]);
   const {isOwner} = useAuth();
   const {find, status} = useLibraries();
   const listed = find(id);
@@ -128,9 +133,12 @@ export default function LibraryPage() {
     />
   );
 
-  const byDownload = library.content_type === 'video' && params.get('view') !== 'all';
+  const byDownload = library.content_type === 'video' && (params.get('view') === 'folders' || params.has('download'));
+  const isFeed = library.content_type === 'video' && !byDownload && params.get('view') !== 'all';
   let view;
-  if (byDownload) {
+  if (isFeed) {
+    view = <VideoFeedView key={library.id} id={library.id} empty={empty} />;
+  } else if (byDownload) {
     view = <DownloadFoldersView key={library.id} id={library.id} isOwner={isOwner} />;
   } else if (library.layout === 'series') {
     view = <SeriesView key={library.id} libraryId={library.id} libraryName={library.name} icon={Icon} empty={empty} />;
@@ -168,9 +176,16 @@ export default function LibraryPage() {
   return (
     <>
       <PageHeader title={library.name} subtitle={libraryCountLine(library)} actions={<HStack gap={2} wrap="wrap">
-        {library.content_type === 'video' ? <Selector label="Library view" isLabelHidden value={byDownload ? 'downloads' : 'all'} options={[{value: 'downloads', label: 'By download'}, {value: 'all', label: 'All videos'}]} onChange={value => setParams(value === 'all' ? {view: 'all'} : {})} /> : null}
         <Button label="Search" variant="ghost" href={`/search?library=${encodeURIComponent(library.id)}`} />
-        <Button label={isOwner ? 'Organize files' : 'Browse folders'} variant="secondary" href={`/libraries/${encodeURIComponent(library.id)}/folders`} />
+        <DropdownMenu alignment="end" presentation="adaptive" renderTrigger={props => <IconButton {...props} label="Library options" icon={<MoreHorizontal size={20} />} variant="ghost" />} items={[
+          ...(library.content_type === 'video' ? [
+            {label: 'Video feed', onClick: () => setParams({})},
+            {label: 'Folder view', onClick: () => setParams({view: 'folders'})},
+            {label: 'All videos', onClick: () => setParams({view: 'all'})},
+          ] : []),
+          {label: isOwner ? 'Organize files' : 'Browse folders', href: `/libraries/${encodeURIComponent(library.id)}/folders`},
+          ...(isOwner ? [{label: 'Edit library', href: `/settings/libraries/${encodeURIComponent(library.id)}`}] : []),
+        ]} />
       </HStack>} />
       {view}
     </>

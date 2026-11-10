@@ -209,3 +209,7 @@ Library conversion includes original/current/saved storage totals and a horizont
 Download folders now support nested browsing and a reversible Collapse subfolders option. Folder actions creates real server folders or previews a physical rename, including companions and empty subfolders. Rename on Atlas confirms the displayed plan. Active work, collisions and stale previews block changes. Use Flatten files to consolidate a download that spans physical folders.
 
 Seek bar previews: while dragging, a small frame and target time appear above the thumb in portrait, landscape and foldable tabletop mode. Release to seek; playback stays in place while choosing. Frames come only from the signed-in server, stay off the phone’s disk cache, and remain protected by the app’s biometric gate and secure window. The server must include the seek-preview endpoint.
+
+## Video discovery
+
+Home shows Continue watching and Suggested for you from your local library. Open a video library for its own resume, suggestions and recent shelves, followed by source-download collections. Tap See all on a collection to show every video inside it, including videos in nested source folders. The three-dot Library view menu switches between Feed, Folder view and All videos. Folder view keeps the existing rename, subfolder and organizing controls; changing a view never moves files. Photos retain their timeline. This feed requires the updated server. Suggestions and watch progress stay on your own server.

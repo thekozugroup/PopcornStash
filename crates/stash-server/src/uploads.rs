@@ -766,7 +766,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(item.rel_path, "Photos/2014/06/scan0001.png");
+        assert_eq!(item.rel_path, "Photos/scan0001.png/scan0001.png");
+        assert_eq!(item.taken_at, Some(scanned));
 
         // Dates that cannot be right are not used: the file keeps its upload time.
         let started = now();

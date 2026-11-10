@@ -391,6 +391,8 @@ async fn a_member_learns_nothing_about_items_they_cannot_see() {
             format!("/api/libraries/{library}"),
             format!("/api/libraries/{library}/shows"),
             format!("/api/libraries/{library}/shows/Secret%20Show"),
+            format!("/api/libraries/{library}/feed"),
+            format!("/api/libraries/{library}/feed?cursor=bad"),
             format!("/api/libraries/{library}/timeline"),
             format!("/api/libraries/{library}/timeline?cursor=garbage&limit=-1"),
         ] {

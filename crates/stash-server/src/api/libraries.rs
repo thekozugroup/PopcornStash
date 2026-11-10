@@ -26,6 +26,7 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/home", get(home))
+        .route("/api/libraries/{id}/feed", get(video_feed))
         .route(
             "/api/libraries/{id}/download-folders/create",
             post(create_download_directory),
@@ -107,6 +108,30 @@ async fn home(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<H
     user.require(Scope::LibraryRead)?;
     let access = user.access(&state.db).await?;
     Ok(Json(repo::home(&state.db, &state.layout, &access).await?))
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct FeedQuery {
+    cursor: Option<usize>,
+}
+
+async fn video_feed(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    uri: Uri,
+) -> ApiResult<Json<repo::VideoFeed>> {
+    user.require(Scope::LibraryRead)?;
+    let access = user.access(&state.db).await?;
+    let library = visible_library(&state, &access, &id).await?;
+    if library.row.content_type != stash_core::models::ContentType::Video {
+        return Err(ApiError::library_not_found());
+    }
+    let query: FeedQuery = parse_query(&uri)?;
+    Ok(Json(
+        repo::video_feed(&state.library, &access, &id, query.cursor.unwrap_or(0)).await?,
+    ))
 }
 
 #[derive(Debug, Serialize)]
@@ -1326,6 +1351,100 @@ mod tests {
             )
             .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn video_feed_scopes_progress_suggestions_and_pages_every_collection() {
+        let app = TestApp::new().await;
+        let (user, token) = app.user("member").await;
+        for n in 0..14 {
+            app.item(
+                &format!("Movies/Collection {n}/nested/video.mp4"),
+                MediaKind::Video,
+                Category::Movie,
+                ItemStatus::Ready,
+                None,
+            )
+            .await;
+        }
+        for n in 0..13 {
+            app.item(
+                &format!("Movies/Photos/image{n}.jpg"),
+                MediaKind::Photo,
+                Category::Photo,
+                ItemStatus::Ready,
+                None,
+            )
+            .await;
+        }
+        let watched: String = sqlx::query_scalar(
+            "SELECT id FROM items WHERE rel_path='Movies/Collection 0/nested/video.mp4'",
+        )
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+        stash_core::library::repo::set_progress(&app.state.db, &user, &watched, 60.0, 600.0)
+            .await
+            .unwrap();
+        let (status, first) = app
+            .json(&format!("/api/libraries/{STARTING_MOVIES}/feed"), &token)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{first}");
+        assert_eq!(first["continue_watching"][0]["id"], watched);
+        assert_eq!(first["recent"].as_array().unwrap().len(), 12);
+        assert!(
+            first["recent"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|i| i["kind"] == "video")
+        );
+        assert!(
+            first["suggested"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|i| i["id"] != watched && i["library_id"] == STARTING_MOVIES)
+        );
+        assert_eq!(first["collections"].as_array().unwrap().len(), 12);
+        assert_eq!(first["next_cursor"], "12");
+        for row in first["collections"].as_array().unwrap() {
+            assert_eq!(row["recent"].as_array().unwrap().len(), 1);
+            assert_eq!(row["recent"][0]["library_id"], STARTING_MOVIES);
+        }
+        let (_, second) = app
+            .json(
+                &format!("/api/libraries/{STARTING_MOVIES}/feed?cursor=12"),
+                &token,
+            )
+            .await;
+        assert_eq!(second["collections"].as_array().unwrap().len(), 2);
+        assert!(second["next_cursor"].is_null());
+        assert_eq!(second["continue_watching"], serde_json::json!([]));
+        assert_eq!(second["suggested"], serde_json::json!([]));
+        let (status, _) = app
+            .json(
+                &format!("/api/libraries/{STARTING_MOVIES}/feed?cursor=9999"),
+                &token,
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = app
+            .json(
+                &format!("/api/libraries/{STARTING_MOVIES}/feed?cursor=bad"),
+                &token,
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (_, home) = app.json("/api/home", &token).await;
+        assert!(!home["suggested"].as_array().unwrap().is_empty());
+        assert!(
+            home["suggested"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|i| i["id"] != watched)
+        );
     }
 
     /// The JSON clients read (section 8): a series library's `shows` on Home, and the

@@ -392,6 +392,7 @@ export interface HomeShow {
 
 /** `GET /api/home`. */
 export interface HomeResponse {
+  suggested?: Item[];
   continue_watching: Item[];
   /** Every library the caller sees, in order. */
   libraries: HomeLibrary[];
@@ -1005,3 +1006,6 @@ export interface FlattenPreview {
 
 export interface DownloadTree {folder:string; folders:{name:string; folder:string; item_count:number; size:number}[]}
 export interface RenameFolderPreview {from:string; to:string; file_count:number; folder_count:number; blocked:string[]; token:string}
+
+/** Local video discovery, with twelve collection shelves per page. */
+export interface VideoFeed {continue_watching: Item[]; suggested: Item[]; recent: Item[]; collections: {folder: DownloadFolder; recent: Item[]}[]; next_cursor: string | null}

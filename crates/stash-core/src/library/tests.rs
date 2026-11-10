@@ -1,4 +1,5 @@
 //! Integration tests: a real `Library` over a temporary stash folder and an in-memory database.
+mod completed_download_import;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -426,12 +427,17 @@ async fn completed_download_folder_is_sorted_and_linked() {
 
     let ids = h.lib.sort_path(folder, Some("dl1")).await.unwrap();
     assert_eq!(ids.len(), 2);
-    assert!(h.exists("Shows/The Office US/Season 02/The Office US - S02E01.mkv"));
-    assert!(h.exists("Shows/The Office US/Season 02/The Office US - S02E02.mkv"));
-    // Samples, extras and non-media stay behind in Completed.
-    assert!(h.exists(&format!("{folder}/Sample/the.office.s02e01.sample.mkv")));
-    assert!(h.exists(&format!("{folder}/Extras/Bloopers.mkv")));
-    assert!(h.exists(&format!("{folder}/release.txt")));
+    assert!(h.exists("Shows/The.Office.US.S02.720p.WEB-DL/The.Office.US.S02E01.720p.WEB-DL.mkv"));
+    assert!(h.exists("Shows/The.Office.US.S02.720p.WEB-DL/The.Office.US.S02E02.720p.WEB-DL.mkv"));
+    // Every selected companion follows its video into the source download folder.
+    for name in [
+        "the.office.s02e01.sample.mkv",
+        "Bloopers.mkv",
+        "release.txt",
+    ] {
+        assert!(h.exists(&format!("Shows/The.Office.US.S02.720p.WEB-DL/{name}")));
+    }
+    assert!(!h.exists(folder));
 
     let (state, sorted_at): (String, Option<i64>) =
         sqlx::query_as("SELECT state, sorted_at FROM downloads WHERE id = 'dl1'")
@@ -502,7 +508,7 @@ async fn sorter_finds_the_download_by_path_and_cleans_empty_folders() {
     .unwrap();
     let ids = h.lib.sort_path(folder, None).await.unwrap();
     assert_eq!(ids.len(), 1);
-    assert!(h.exists("Movies/Arrival (2016)/Arrival (2016).mkv"));
+    assert!(h.exists("Movies/Arrival.2016.1080p/Arrival.2016.1080p.BluRay.mkv"));
     assert!(!h.exists(folder), "emptied download folder is removed");
     assert!(
         h.exists("Downloads/Completed"),
@@ -1586,7 +1592,7 @@ async fn a_sorted_download_has_no_leftover_error() {
     h.write("Downloads/Completed/Arrival.2016.mkv", &bytes("arrival"));
     sqlx::query(
         "INSERT INTO downloads (id, kind, name, source, state, error, created_at, updated_at, rel_path)
-         VALUES ('dl', 'http', 'Arrival', 'https://example.com/a.mkv', 'failed', 'An older failure.', 1, 1,
+         VALUES ('dl', 'http', 'Arrival', 'https://example.com/a.mkv', 'completed', 'An older failure.', 1, 1,
                  'Downloads/Completed/Arrival.2016.mkv')",
     )
     .execute(&h.lib.db)
@@ -1855,19 +1861,27 @@ async fn files_that_are_not_media_wait_for_review_under_other() {
     .unwrap();
     let ids = h.lib.sort_path(folder, Some("dl1")).await.unwrap();
     assert_eq!(ids.len(), 1);
+    let main = "Movies/Arrival.2016.1080p.BluRay.x264-GRP";
     assert_eq!(
         h.item(&ids[0]).await.rel_path,
-        "Movies/Arrival (2016)/Arrival (2016).mkv"
+        format!("{main}/Arrival.2016.1080p.BluRay.x264-GRP.mkv")
     );
-    assert!(h.exists("Movies/Arrival (2016)/Arrival (2016).en.srt"));
-    // The folder changed, so it is sorted again; without its video the leftovers are
-    // still the release's, not documents of their own.
-    assert!(h.lib.sort_path(folder, None).await.unwrap().is_empty());
-    for left in ["RARBG.txt", "arrival.sfv", "Visit the site.url"] {
-        let rel = format!("{folder}/{left}");
-        assert!(h.exists(&rel), "{left} stays in the download");
-        assert!(repo::get_by_path(&h.lib.db, &rel).await.unwrap().is_none());
+    for name in [
+        "Arrival.2016.1080p.BluRay.x264-GRP.en.srt",
+        "RARBG.txt",
+        "arrival.sfv",
+        "Visit the site.url",
+    ] {
+        assert!(h.exists(&format!("{main}/{name}")));
+        assert!(
+            repo::get_by_path(&h.lib.db, &format!("{main}/{name}"))
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
+    assert!(!h.exists(folder));
+    assert!(h.lib.sort_path(folder, None).await.unwrap().is_empty());
 }
 
 /// Only Inbox/ and Downloads/Completed/ are sorted. Anything else in Downloads/ may
@@ -1962,39 +1976,28 @@ async fn artwork_in_downloads_is_not_filed_as_family_photos() {
     .await
     .unwrap();
     let ids = h.lib.sort_path(folder, Some("dl1")).await.unwrap();
-    assert_eq!(ids.len(), 2, "the movie and one picture to review");
-    let mut items = Vec::new();
-    for id in &ids {
-        items.push(h.item(id).await);
-    }
-    items.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     assert_eq!(
-        items[0].rel_path,
-        format!("{folder}/behind the scenes photo.jpg")
+        ids.len(),
+        1,
+        "selected artwork follows its video without becoming family photos"
     );
-    assert_eq!(items[0].status, ItemStatus::NeedsReview);
-    assert_eq!(items[0].category, Category::Other);
-    let suggestion = items[0].suggestion().unwrap();
-    assert_eq!(suggestion.confidence, crate::models::Confidence::Low);
+    let main = "Movies/Some.Movie.2019.1080p.WEB.x264-GRP";
     assert_eq!(
-        h.destination(&items[0]).await,
-        "Other/behind the scenes photo.jpg"
+        h.item(&ids[0]).await.rel_path,
+        format!("{main}/Some.Movie.2019.1080p.WEB.x264-GRP.mkv")
     );
-    assert_eq!(
-        items[1].rel_path,
-        "Movies/Some Movie (2019)/Some Movie (2019).mkv"
-    );
-    for left in [
+    for name in [
         "poster.jpg",
         "fanart.jpg",
         "Some.Movie.2019-poster.jpg",
         "screen01.png",
         "www.YTS.MX.jpg",
-        "Screens/screen02.png",
-        "Screenshots/frame.png",
-        "Artwork/back.png",
+        "screen02.png",
+        "frame.png",
+        "back.png",
+        "behind the scenes photo.jpg",
     ] {
-        assert!(h.exists(&format!("{folder}/{left}")), "{left} stays");
+        assert!(h.exists(&format!("{main}/{name}")));
     }
     let photos_is_empty = || {
         std::fs::read_dir(h.root.join("Photos"))
@@ -2002,36 +2005,9 @@ async fn artwork_in_downloads_is_not_filed_as_family_photos() {
             .next()
             .is_none()
     };
-    assert!(photos_is_empty(), "nothing was filed as a family photo");
-
-    // With the movie gone the folder changed and is sorted again: the artwork is still
-    // the movie's, not a download of pictures.
-    assert!(h.lib.sort_path(folder, None).await.unwrap().is_empty());
     assert!(photos_is_empty());
-    assert!(h.exists(&format!("{folder}/poster.jpg")));
-
-    // The leftovers do not send the folder back to the sorter on every rescan once it
-    // has settled.
-    for entry in walkdir::WalkDir::new(h.root.join(folder)) {
-        let entry = entry.unwrap();
-        if entry.file_type().is_dir() {
-            std::fs::File::open(entry.path())
-                .unwrap()
-                .set_modified(SystemTime::now() - Duration::from_secs(60))
-                .unwrap();
-        }
-    }
-    sqlx::query("UPDATE jobs SET state = 'done'")
-        .execute(&h.lib.db)
-        .await
-        .unwrap();
-    let report = h.lib.rescan().await.unwrap();
-    assert_eq!(
-        report.queued_for_sort,
-        0,
-        "{report:?} {:?}",
-        h.jobs("sort").await
-    );
+    assert!(!h.exists(folder));
+    assert!(h.lib.sort_path(folder, None).await.unwrap().is_empty());
 
     // A release folder copied into Completed by hand has no download to remember it by,
     // but its name still says it is a release: once the movie has moved, the poster

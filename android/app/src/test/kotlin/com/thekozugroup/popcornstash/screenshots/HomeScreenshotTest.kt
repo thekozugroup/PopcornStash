@@ -19,6 +19,7 @@ import com.thekozugroup.popcornstash.navigation.Tab
 import com.thekozugroup.popcornstash.navigation.TabPage
 import com.thekozugroup.popcornstash.testing.SampleMedia
 import com.thekozugroup.popcornstash.testing.WithSampleImages
+import com.thekozugroup.popcornstash.testing.VideoFeedFixtures
 import com.thekozugroup.popcornstash.ui.theme.PopcornTheme
 import org.junit.Rule
 import org.junit.Test
@@ -59,6 +60,12 @@ class HomeScreenshotTest {
 
     @Test
     fun contentDark() = home("home-dark", dark = true, Loadable.Ready(SampleMedia.home))
+
+    @Test
+    fun suggestionsLight() = home("home-suggested-light", false, Loadable.Ready(VideoFeedFixtures.home.copy(continueWatching = emptyList())))
+
+    @Test
+    fun suggestionsDark() = home("home-suggested-dark", true, Loadable.Ready(VideoFeedFixtures.home.copy(continueWatching = emptyList())))
 
     /**
      * A series library of three shows whose twelve newest episodes all belong to two of them:

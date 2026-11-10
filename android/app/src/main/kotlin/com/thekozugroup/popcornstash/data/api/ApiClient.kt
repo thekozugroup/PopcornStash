@@ -90,6 +90,9 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
 
     suspend fun home(): Home = get("/api/home", Home.serializer())
 
+    suspend fun libraryFeed(id: String, cursor: String? = null): VideoLibraryFeed =
+        get("/api/libraries/${seg(id)}/feed", VideoLibraryFeed.serializer(), "cursor" to cursor)
+
     suspend fun libraries(): List<Library> = get("/api/libraries", LibraryList.serializer()).libraries
 
     suspend fun libraryConversion(id: String): LibraryConversion = get("/api/libraries/${seg(id)}/conversion", LibraryConversion.serializer())

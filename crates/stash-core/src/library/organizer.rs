@@ -1,4 +1,5 @@
 //! Moving files: automatic sorting, explicit organize, review, trash.
+pub(super) mod download_import;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -220,8 +221,39 @@ pub(crate) async fn sort_path_as_of(
     let abs = lib.layout.abs(&rel)?;
     let download_id = match download_id {
         Some(id) => Some(id.to_string()),
-        None => download_for_path(lib, &rel).await?,
+        None => {
+            download_for_path(
+                lib,
+                &super::watcher::top_level_entry(&rel).unwrap_or_else(|| rel.clone()),
+            )
+            .await?
+        }
     };
+    let download = match &download_id {
+        Some(id) => download_row(lib, id).await?,
+        None => None,
+    };
+    let importing = download.as_ref().filter(|d| {
+        d.rel_path
+            .as_deref()
+            .is_some_and(|p| StashLayout::zone(p) == Zone::Completed)
+    });
+    if let Some(d) = &download
+        && matches!(
+            d.state,
+            crate::models::DownloadState::Queued
+                | crate::models::DownloadState::Downloading
+                | crate::models::DownloadState::Paused
+                | crate::models::DownloadState::Seeding
+        )
+    {
+        return Err(CoreError::conflict(
+            "This download is still active. Its files were kept in place.",
+        ));
+    }
+    if let Some(d) = importing {
+        download_import::released(lib, &d.id, d.rel_path.as_deref().unwrap()).await?;
+    }
     let meta = match tokio::fs::symlink_metadata(&abs).await {
         Ok(meta) => meta,
         Err(e) if super::scanner::is_not_found(&e) => {
@@ -240,7 +272,9 @@ pub(crate) async fn sort_path_as_of(
 
     let review_before = repo::needs_review_count(&lib.db).await?;
     let completed = StashLayout::zone(&rel) == Zone::Completed;
-    let files = {
+    let plan = if let Some(download) = importing {
+        download_import::prepare(lib, download).await?
+    } else {
         // A file inside a download is judged with the rest of that download (is there a
         // video next to this picture?), so the plan covers the whole top-level entry.
         let top = super::watcher::top_level_entry(&rel).unwrap_or_else(|| rel.clone());
@@ -254,7 +288,7 @@ pub(crate) async fn sort_path_as_of(
             Taken::default()
         };
         let (abs, layout) = (abs.clone(), lib.layout.clone());
-        tokio::task::spawn_blocking(move || {
+        let files = tokio::task::spawn_blocking(move || {
             plan_sort(&layout, &root, completed, taken)
                 .files
                 .into_iter()
@@ -262,25 +296,27 @@ pub(crate) async fn sort_path_as_of(
                 .collect::<Vec<_>>()
         })
         .await
-        .map_err(|e| CoreError::Other(e.into()))?
+        .map_err(|e| CoreError::Other(e.into()))?;
+        download_import::Plan {
+            files,
+            companions: HashMap::new(),
+        }
     };
     let auto_sort = lib.settings.get().await.auto_sort;
     // One sort job, one set of claims (section 4): when a library write changes where
     // files go while this job runs, the rest of its files wait in Inbox.
-    let download = match &download_id {
-        Some(id) => download_row(lib, id).await?,
-        None => None,
-    };
     let job = SortJob {
         library_id: download.as_ref().and_then(|d| d.library_id.clone()),
         download_id: download_id.clone(),
-        added_by: download.and_then(|d| d.created_by),
+        added_by: download.as_ref().and_then(|d| d.created_by.clone()),
+        import: importing.cloned(),
+        companions: plan.companions,
         auto_sort,
         generation,
     };
     let mut changed = Vec::new();
     let mut linked = Vec::new();
-    for (file, role) in files {
+    for (file, role) in plan.files {
         match sort_file(lib, &file, role, &job).await {
             Ok(Sorted::Changed(id)) => {
                 linked.push(id.clone());
@@ -289,6 +325,7 @@ pub(crate) async fn sort_path_as_of(
             Ok(Sorted::Unchanged(id)) => linked.push(id),
             Ok(Sorted::Skipped) => {}
             Err(CoreError::Db(e)) => return Err(CoreError::Db(e)),
+            Err(e) if job.import.is_some() => return Err(e),
             Err(e) => tracing::warn!(error = %e, file = %file.display(), "could not sort a file"),
         }
     }
@@ -618,6 +655,8 @@ struct SortJob {
     download_id: Option<String>,
     /// Who brought the files in (the download's creator).
     added_by: Option<String>,
+    import: Option<DownloadRow>,
+    companions: HashMap<String, Vec<String>>,
     auto_sort: bool,
     /// The claims generation when the job started.
     generation: u64,
@@ -686,7 +725,11 @@ async fn sort_file(lib: &Library, abs: &Path, role: Role, job: &SortJob) -> Resu
     let existing = repo::get_by_path(&lib.db, &rel).await?;
     if let Some(item) = &existing {
         // Unchanged files are not looked at again.
-        if item.size == size && item.mtime == mtime && item.status != ItemStatus::Missing {
+        if item.size == size
+            && item.mtime == mtime
+            && item.status != ItemStatus::Missing
+            && (job.import.is_none() || item.status == ItemStatus::Ready)
+        {
             return Ok(Sorted::Unchanged(item.id.clone()));
         }
         // The owner reviewed this one and chose to leave it here: refresh it in place.
@@ -711,6 +754,9 @@ async fn sort_file(lib: &Library, abs: &Path, role: Role, job: &SortJob) -> Resu
     // Probing took a while without the lock. Only act if neither the file nor its row
     // changed meanwhile (an organize, review, trash or a new copy of the file).
     let _moves = lib.lock_moves().await?;
+    if let Some(download) = &job.import {
+        download_import::released(lib, &download.id, download.rel_path.as_deref().unwrap()).await?;
+    }
     let current = repo::get_by_path(&lib.db, &rel).await?;
     let same_row = match (&existing, &current) {
         (None, None) => true,
@@ -807,6 +853,66 @@ async fn sort_file(lib: &Library, abs: &Path, role: Role, job: &SortJob) -> Resu
     if claims_changed {
         tracing::info!(path = %rel, "the libraries changed while this download was sorted; leaving the rest in Inbox");
     }
+    if let (Some(dest), Some(download)) = (&destination, &job.import) {
+        let parent = dest.split('/').next().ok_or(CoreError::NotFound)?;
+        let dest = download_import::destination(
+            lib,
+            &download.id,
+            download.rel_path.as_deref().ok_or(CoreError::NotFound)?,
+            parent,
+            &file_name(abs),
+        )
+        .await?;
+        let mut suggestion = serde_json::to_value(&c)?;
+        if let Some(companions) = job.companions.get(&rel) {
+            suggestion["download_companions"] = serde_json::to_value(companions)?;
+        }
+        if let Some(def) = &preferred {
+            suggestion["preferred_library_id"] = serde_json::Value::String(def.id().into());
+        }
+        row.suggestion_json = Some(serde_json::to_string(&suggestion)?);
+        let id = record(lib, target, row).await?;
+        let root = super::cleanup::Root::open(lib.layout.root())?;
+        let mut files = vec![super::flatten_downloads::FlattenFile {
+            item_id: id.clone(),
+            from: rel.clone(),
+            to: dest.clone(),
+            kind: "item".into(),
+            fingerprint: super::cleanup::fingerprint(&root.metadata(&rel)?),
+        }];
+        let companions = job.companions.get(&rel).cloned().unwrap_or_default();
+        for from in companions {
+            let sidecar = lib.layout.abs(&from)?;
+            if repo::get_by_path(&lib.db, &from).await?.is_some() {
+                return Err(CoreError::conflict(
+                    "A companion is a separate indexed item. Import it separately.",
+                ));
+            }
+            let to = format!(
+                "{}/{}",
+                dest.rsplit_once('/').unwrap().0,
+                file_name(&sidecar)
+            );
+            files.push(super::flatten_downloads::FlattenFile {
+                item_id: String::new(),
+                from: from.clone(),
+                to,
+                kind: "sidecar".into(),
+                fingerprint: super::cleanup::fingerprint(&root.metadata(&from)?),
+            });
+        }
+        download_import::relocate(
+            lib,
+            &download.id,
+            download.rel_path.as_deref().unwrap(),
+            &files,
+            true,
+            None,
+        )
+        .await?;
+        publish(lib, LibraryChange::Updated, &id);
+        return Ok(Sorted::Changed(id));
+    }
     if let Some(dest) = destination {
         match move_into_library(lib, abs, &dest, own_id.as_deref()).await {
             Ok(new_rel) => {
@@ -823,6 +929,9 @@ async fn sort_file(lib: &Library, abs: &Path, role: Role, job: &SortJob) -> Resu
         }
     }
     let mut suggestion = serde_json::to_value(&c)?;
+    if let Some(companions) = job.companions.get(&rel) {
+        suggestion["download_companions"] = serde_json::to_value(companions)?;
+    }
     if let Some(def) = preferred {
         suggestion["preferred_library_id"] = serde_json::Value::String(def.id().into());
     }
@@ -926,6 +1035,7 @@ async fn show_destination(
     let existing: Option<String> = sqlx::query_scalar(
         "SELECT rel_path FROM items
          WHERE library_id = ? AND category = 'episode' AND status IN ('ready', 'missing') AND show_name = ?
+           AND source_download_id IS NULL
          ORDER BY added_at, id LIMIT 1",
     )
     .bind(def.id())
@@ -1189,7 +1299,7 @@ async fn remove_empty_dirs(layout: &StashLayout, start: &Path) {
 /// A finished download waiting for this path, when the caller did not name one.
 async fn download_for_path(lib: &Library, rel: &str) -> Result<Option<String>> {
     Ok(sqlx::query_scalar(
-        "SELECT id FROM downloads WHERE rel_path = ? AND state IN ('completed', 'sorting')
+        "SELECT id FROM downloads WHERE rel_path = ?
          ORDER BY updated_at DESC LIMIT 1",
     )
     .bind(rel)
@@ -1593,7 +1703,7 @@ async fn organize_item(
             "The file is no longer where PopcornStash expected it. Try a rescan.",
         ));
     }
-    let destination = match &target {
+    let mut destination = match &target {
         Target::OtherFiles => destination_in(None, &target_class, &name),
         Target::Library(def) => {
             defs::ready_folder(lib, def).await?;
@@ -1603,27 +1713,116 @@ async fn organize_item(
             show_destination(lib, def, &target_class, &name).await?
         }
     };
-
-    let review_before = repo::needs_review_count(&lib.db).await?;
-    let new_rel =
-        if destination == item.rel_path || is_numbered_variant(&item.rel_path, &destination) {
-            item.rel_path.clone()
-        } else {
-            move_into_library(lib, &abs, &destination, Some(&item.id)).await?
-        };
-    let target = target_class;
-    let taken = match target.category {
-        Category::HomeVideo | Category::Photo => target.taken(),
-        _ => item.taken(),
+    if pending_download_folder(&item).is_some() {
+        let parent = destination.split('/').next().ok_or(CoreError::NotFound)?;
+        let source = super::watcher::top_level_entry(&item.rel_path).ok_or(CoreError::NotFound)?;
+        let download_id = item
+            .source_download_id
+            .as_deref()
+            .ok_or(CoreError::NotFound)?;
+        destination =
+            download_import::destination(lib, download_id, &source, parent, &name).await?;
+    }
+    let metadata = ReviewMetadata {
+        item_id: &item.id,
+        classification: &target_class,
+        taken: match target_class.category {
+            Category::HomeVideo | Category::Photo => target_class.taken(),
+            _ => item.taken(),
+        },
     };
-    let (taken_at, taken_local, taken_offset) = CaptureTime::columns(taken.as_ref());
-    sqlx::query(
+    let mut metadata_committed = false;
+    let review_before = repo::needs_review_count(&lib.db).await?;
+    let new_rel = if destination == item.rel_path
+        || is_numbered_variant(&item.rel_path, &destination)
+    {
+        item.rel_path.clone()
+    } else if pending_download_folder(&item).is_some() {
+        let source = super::watcher::top_level_entry(&item.rel_path).ok_or(CoreError::NotFound)?;
+        let download_id = item
+            .source_download_id
+            .as_deref()
+            .ok_or(CoreError::NotFound)?;
+        let root = super::cleanup::Root::open(lib.layout.root())?;
+        let mut files = vec![super::flatten_downloads::FlattenFile {
+            item_id: item.id.clone(),
+            from: item.rel_path.clone(),
+            to: destination.clone(),
+            kind: "item".into(),
+            fingerprint: super::cleanup::fingerprint(&root.metadata(&item.rel_path)?),
+        }];
+        let raw: serde_json::Value =
+            serde_json::from_str(item.suggestion_json.as_deref().unwrap_or("{}"))?;
+        if let Some(companions) = raw
+            .get("download_companions")
+            .and_then(serde_json::Value::as_array)
+        {
+            for from in companions {
+                let from = from
+                    .as_str()
+                    .ok_or_else(|| CoreError::invalid("Invalid download companion manifest."))?;
+                if !from.starts_with(&format!("{source}/"))
+                    || normalize_rel(from)? != from
+                    || repo::get_by_path(&lib.db, from).await?.is_some()
+                {
+                    return Err(CoreError::conflict(
+                        "A selected companion changed. Review the download before importing.",
+                    ));
+                }
+                let name = Path::new(from)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .ok_or(CoreError::NotFound)?;
+                let to = format!("{}/{name}", destination.rsplit_once('/').unwrap().0);
+                files.push(super::flatten_downloads::FlattenFile {
+                    item_id: String::new(),
+                    from: from.into(),
+                    to,
+                    kind: "companion".into(),
+                    fingerprint: super::cleanup::fingerprint(&root.metadata(from)?),
+                });
+            }
+        }
+        download_import::relocate(lib, download_id, &source, &files, true, Some(metadata)).await?;
+        metadata_committed = true;
+        destination.clone()
+    } else {
+        move_into_library(lib, &abs, &destination, Some(&item.id)).await?
+    };
+    if !metadata_committed {
+        let mut conn = lib.db.acquire().await?;
+        metadata.write(&mut conn, &new_rel).await?;
+    }
+    if zone.auto_sorts()
+        && let Some(parent) = abs.parent()
+    {
+        remove_empty_dirs(&lib.layout, parent).await;
+    }
+    tracing::info!(item = %item.id, from = %item.rel_path, to = %new_rel, "organized an item");
+    publish_moved(lib, LibraryChange::Updated, &item.id, item.facts());
+    publish_inbox_if_changed(lib, review_before).await?;
+    repo::get(&lib.db, &item.id)
+        .await?
+        .ok_or(CoreError::NotFound)
+}
+
+#[derive(Clone, Copy)]
+struct ReviewMetadata<'a> {
+    item_id: &'a str,
+    classification: &'a Classification,
+    taken: Option<CaptureTime>,
+}
+impl ReviewMetadata<'_> {
+    async fn write(&self, conn: &mut sqlx::SqliteConnection, rel_path: &str) -> Result<()> {
+        let target = self.classification;
+        let (taken_at, taken_local, taken_offset) = CaptureTime::columns(self.taken.as_ref());
+        sqlx::query(
         "UPDATE items SET rel_path = ?, category = ?, title = ?, sort_title = ?, year = ?, show_name = ?, season = ?,
             episode = ?, episode_title = ?, taken_at = ?, taken_local = ?, taken_offset = ?, status = 'ready',
             suggestion_json = NULL, missing_since = NULL, updated_at = ?
          WHERE id = ?",
     )
-    .bind(&new_rel)
+    .bind(rel_path)
     .bind(target.category.as_str())
     .bind(&target.title)
     .bind(repo::sort_title(&target.title))
@@ -1636,20 +1835,11 @@ async fn organize_item(
     .bind(&taken_local)
     .bind(taken_offset)
     .bind(now())
-    .bind(&item.id)
-    .execute(&lib.db)
+    .bind(self.item_id)
+    .execute(&mut *conn)
     .await?;
-    if zone.auto_sorts()
-        && let Some(parent) = abs.parent()
-    {
-        remove_empty_dirs(&lib.layout, parent).await;
+        Ok(())
     }
-    tracing::info!(item = %item.id, from = %item.rel_path, to = %new_rel, "organized an item");
-    publish_moved(lib, LibraryChange::Updated, &item.id, item.facts());
-    publish_inbox_if_changed(lib, review_before).await?;
-    repo::get(&lib.db, &item.id)
-        .await?
-        .ok_or(CoreError::NotFound)
 }
 
 /// The sentence for an Inbox decision on an item that is no longer waiting.
@@ -1708,7 +1898,7 @@ pub fn suggestion_view(
     c.layout = layout_for(&c, name);
     let waiting_now = row.status == ItemStatus::NeedsReview;
     let low = c.confidence == Confidence::Low;
-    let (place, library_id, destination, waiting) = if c.category == Category::Other {
+    let (place, library_id, mut destination, waiting) = if c.category == Category::Other {
         let waiting = if low {
             Waiting::LowConfidence
         } else {
@@ -1744,6 +1934,10 @@ pub fn suggestion_view(
             }
         }
     };
+    if let (Some(folder), Some(dest)) = (pending_download_folder(row), &mut destination) {
+        let parent = dest.split('/').next().unwrap_or(paths::OTHER);
+        *dest = format!("{parent}/{folder}/{name}");
+    }
     Some(Suggestion {
         classification: c,
         place,
@@ -1751,6 +1945,13 @@ pub fn suggestion_view(
         destination,
         waiting: waiting_now.then_some(waiting),
     })
+}
+
+fn pending_download_folder(item: &ItemRow) -> Option<String> {
+    item.source_download_id.as_ref()?;
+    let rest = item.rel_path.strip_prefix("Downloads/Completed/")?;
+    let (folder, name) = rest.split_once('/')?;
+    (!name.contains('/')).then(|| component(folder))
 }
 
 // ---------------------------------------------------------------------------

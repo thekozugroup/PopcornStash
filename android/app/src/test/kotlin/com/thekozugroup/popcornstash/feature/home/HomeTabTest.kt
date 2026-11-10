@@ -6,6 +6,7 @@ import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -15,6 +16,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.thekozugroup.popcornstash.TabRequests
 import com.thekozugroup.popcornstash.data.api.ApiClient
 import com.thekozugroup.popcornstash.data.api.Home
+import com.thekozugroup.popcornstash.data.api.DownloadFolder
 import com.thekozugroup.popcornstash.data.api.ItemDetail
 import com.thekozugroup.popcornstash.data.api.ItemPage
 import com.thekozugroup.popcornstash.data.api.Library
@@ -25,6 +27,7 @@ import com.thekozugroup.popcornstash.data.api.ShowDetail
 import com.thekozugroup.popcornstash.data.api.ShowSummary
 import com.thekozugroup.popcornstash.data.api.StashEvent
 import com.thekozugroup.popcornstash.data.api.User
+import com.thekozugroup.popcornstash.data.api.VideoLibraryFeed
 import com.thekozugroup.popcornstash.data.api.baseHttpClient
 import com.thekozugroup.popcornstash.data.repo.StashData
 import com.thekozugroup.popcornstash.feature.library.FileFetcher
@@ -33,6 +36,7 @@ import com.thekozugroup.popcornstash.navigation.AppShell
 import com.thekozugroup.popcornstash.navigation.Tab
 import com.thekozugroup.popcornstash.navigation.ViewModelStores
 import com.thekozugroup.popcornstash.testing.SampleMedia
+import com.thekozugroup.popcornstash.testing.VideoFeedFixtures
 import com.thekozugroup.popcornstash.testing.json
 import com.thekozugroup.popcornstash.testing.jsonList
 import com.thekozugroup.popcornstash.ui.theme.PopcornTheme
@@ -48,6 +52,8 @@ import mockwebserver3.MockWebServer
 import mockwebserver3.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -76,6 +82,8 @@ class HomeTabTest {
     private val played = CopyOnWriteArrayList<Pair<String, Boolean>>()
     private val managed = CopyOnWriteArrayList<String?>()
     private val pages = ViewModelStores()
+    private val paths = CopyOnWriteArrayList<String>()
+    private val restoration by lazy { StateRestorationTester(compose) }
 
     @Volatile
     private var visible = listOf(SampleMedia.movies, SampleMedia.shows, SampleMedia.homeVideos, SampleMedia.photos)
@@ -104,6 +112,7 @@ class HomeTabTest {
         .body("""{"error":{"code":"not_found","message":"That library no longer exists."}}""").build()
 
     private fun answer(request: RecordedRequest): MockResponse {
+        paths += "${request.method} ${request.target}"
         val path = request.url.encodedPath
         val libraries = visible
         fun library(id: String) = libraries.firstOrNull { it.id == id }
@@ -114,6 +123,9 @@ class HomeTabTest {
                 val id = path.removePrefix("/api/libraries/").substringBefore('/')
                 val found = library(id) ?: return notFound()
                 when {
+                    path.endsWith("/feed") -> ok(json(VideoLibraryFeed.serializer(), VideoFeedFixtures.movies))
+                    path.endsWith("/download-folders") -> ok(jsonList(DownloadFolder.serializer(), VideoFeedFixtures.collections.map { it.folder }))
+                    path.endsWith("/download-folders/contents") -> ok("""{"folder":"","folders":[]}""")
                     path.endsWith("/shows") -> ok(jsonList(ShowSummary.serializer(), SampleMedia.showSummaries))
                     path.contains("/shows/") -> ok(json(ShowDetail.serializer(), SampleMedia.lanternShow))
                     path.endsWith("/timeline") -> ok(json(PhotoTimeline.serializer(), PhotoTimeline(SampleMedia.timeline)))
@@ -137,7 +149,7 @@ class HomeTabTest {
             openedDir = folder.newFolder("opened"),
             pages = pages,
         )
-        compose.setContent {
+        restoration.setContent {
             PopcornTheme(darkTheme = false, reduceMotion = true) {
                 AppShell { page ->
                     if (page.tab == Tab.Home) {
@@ -168,6 +180,7 @@ class HomeTabTest {
 
     private fun openMovies() {
         waitFor(hasText("Movies")).performClick()
+        waitFor(hasContentDescription("Library view")).performClick()
         waitFor(hasText("All videos")).performClick()
         waitFor(hasText("A Quiet Orchard"))
         compose.onNodeWithTag("library grid").assertExists()
@@ -178,6 +191,8 @@ class HomeTabTest {
         show()
         openMovies()
         compose.onNodeWithText("Continue watching").assertDoesNotExist()
+        back()
+        waitFor(hasTestTag("library feed"))
         back()
         waitFor(hasText("Continue watching"))
         gone(hasTestTag("library grid"))
@@ -190,10 +205,13 @@ class HomeTabTest {
         waitFor(hasText("Continue watching"))
         val movies = SampleMedia.movies
         compose.runOnUiThread { requests.openHome(HomeRoute.Library(movies.id, movies.name, movies.icon)) }
+        waitFor(hasContentDescription("Library view")).performClick()
         waitFor(hasText("All videos")).performClick()
         waitFor(hasTestTag("library grid"))
         waitFor(hasText("A Quiet Orchard"))
         compose.runOnIdle { assertEquals(null, requests.home) }
+        back()
+        waitFor(hasTestTag("library feed"))
         back()
         waitFor(hasText("Continue watching"))
         gone(hasTestTag("library grid"))
@@ -276,5 +294,42 @@ class HomeTabTest {
         openMovies()
         compose.onNodeWithContentDescription("Edit library").performClick()
         assertEquals(listOf<String?>(SampleMedia.movies.id), managed.toList())
+    }
+
+    @Test
+    fun videoLibraryStartsAtFeedAndCollectionDescendantsSurviveRecreation() {
+        show()
+        waitFor(hasText("Movies")).performClick()
+        waitFor(hasTestTag("library feed"))
+        compose.onNodeWithTag("library feed").performScrollToIndex(3)
+        waitFor(hasText("Collection 1")).performClick()
+        waitFor(hasText("Collapse subfolders"))
+        waitFor(hasText("Northbound"))
+        restoration.emulateSavedInstanceStateRestore()
+        waitFor(hasText("Collapse subfolders"))
+        waitFor(hasText("Northbound"))
+        val scoped = paths.filter { it.startsWith("GET /api/items?") && it.contains("download_group=") }
+        assertTrue(scoped.isNotEmpty())
+        assertTrue(scoped.all { it.contains("library_id=lib-movies") && it.contains("download_group=download%3Asample-1") })
+        assertTrue(scoped.none { it.contains("download_folder=") })
+        assertFalse(paths.any { it.startsWith("POST ") || it.startsWith("PATCH ") || it.startsWith("DELETE ") })
+        back()
+        waitFor(hasTestTag("library feed"))
+        back()
+        waitFor(hasTestTag("list Home"))
+        gone(hasTestTag("library feed"))
+    }
+
+    @Test
+    fun folderViewIsAvailableInTheOverflowAndBackReturnsToFeed() {
+        show()
+        waitFor(hasText("Movies")).performClick()
+        waitFor(hasContentDescription("Library view")).performClick()
+        waitFor(hasText("Folder view")).performClick()
+        waitFor(hasText("Find a download folder"))
+        back()
+        waitFor(hasTestTag("library feed"))
+        back()
+        waitFor(hasTestTag("list Home"))
     }
 }

@@ -115,6 +115,8 @@ pub struct HomeShow {
 /// `GET /api/home`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Home {
+    #[serde(default)]
+    pub suggested: Vec<Item>,
     pub continue_watching: Vec<Item>,
     pub libraries: Vec<HomeLibrary>,
     pub other_files_count: i64,
@@ -824,6 +826,7 @@ pub async fn home(db: &Db, layout: &StashLayout, access: &Access) -> Result<Home
     push_visible(&mut qb, viewer);
     let (total_bytes, other_files_count): (i64, i64) = qb.build_query_as().fetch_one(db).await?;
     Ok(Home {
+        suggested: suggestions(db, viewer, None).await?,
         continue_watching: continue_watching
             .into_iter()
             .map(ItemWithProgress::into_item)
@@ -832,6 +835,97 @@ pub async fn home(db: &Db, layout: &StashLayout, access: &Access) -> Result<Home
         other_files_count,
         inbox_count: inbox_count(db, viewer).await?,
         total_bytes,
+    })
+}
+
+/// Local discovery only: unstarted videos, favourites first, stable daily rotation.
+pub async fn suggestions(db: &Db, viewer: &Viewer, library_id: Option<&str>) -> Result<Vec<Item>> {
+    let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
+    qb.push_bind(viewer.user_id.clone()).push(" WHERE i.status='ready' AND i.place='library' AND i.kind='video' AND (p.item_id IS NULL OR (p.finished=0 AND p.position_s<=30))");
+    push_visible(&mut qb, viewer);
+    if let Some(id) = library_id {
+        qb.push(" AND i.library_id=").push_bind(id.to_string());
+    }
+    // A different UUID slice each day avoids expensive random sorting and remains stable while browsing.
+    qb.push(" ORDER BY i.favorite DESC, substr(i.id,")
+        .push_bind((crate::now() / 86400) % 24 + 1)
+        .push(") ASC, i.id ASC LIMIT ")
+        .push_bind(HOME_ROW);
+    let rows: Vec<ItemWithProgress> = qb.build_query_as().fetch_all(db).await?;
+    Ok(rows.into_iter().map(ItemWithProgress::into_item).collect())
+}
+
+#[derive(Debug, Serialize)]
+pub struct CollectionShelf {
+    pub folder: super::download_folders::DownloadFolder,
+    pub recent: Vec<Item>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VideoFeed {
+    pub continue_watching: Vec<Item>,
+    pub suggested: Vec<Item>,
+    pub recent: Vec<Item>,
+    pub collections: Vec<CollectionShelf>,
+    pub next_cursor: Option<String>,
+}
+
+pub async fn video_feed(
+    library: &super::Library,
+    access: &Access,
+    id: &str,
+    offset: usize,
+) -> Result<VideoFeed> {
+    let db = &library.db;
+    let viewer = &access.viewer;
+    let groups = library.download_folders(id).await?;
+    if offset > groups.len() {
+        return Err(CoreError::invalid(
+            "This collection page is no longer available. Refresh the library.",
+        ));
+    }
+    let total = groups.len();
+    let end = (offset + 12).min(total);
+    let mut collections = Vec::new();
+    for folder in groups.into_iter().skip(offset).take(12) {
+        let page = list(
+            db,
+            &ItemQuery {
+                library_id: Some(id.to_string()),
+                download_group: Some(folder.key.clone()),
+                limit: Some(8),
+                ..Default::default()
+            },
+            viewer,
+        )
+        .await?;
+        collections.push(CollectionShelf {
+            folder,
+            recent: page.items,
+        });
+    }
+    let mut continue_watching = Vec::new();
+    let mut suggested = Vec::new();
+    let mut recent = Vec::new();
+    if offset == 0 {
+        let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
+        qb.push_bind(viewer.user_id.clone()).push(" WHERE i.library_id=").push_bind(id.to_string())
+            .push(" AND i.status='ready' AND i.kind='video' AND p.finished=0 AND p.position_s>30 ORDER BY p.updated_at DESC,i.id DESC LIMIT ").push_bind(HOME_ROW);
+        let rows: Vec<ItemWithProgress> = qb.build_query_as().fetch_all(db).await?;
+        continue_watching = rows.into_iter().map(ItemWithProgress::into_item).collect();
+        suggested = suggestions(db, viewer, Some(id)).await?;
+        let mut qb = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
+        qb.push_bind(viewer.user_id.clone()).push(" WHERE i.library_id=").push_bind(id.to_string())
+            .push(" AND i.status='ready' AND i.kind='video' ORDER BY i.added_at DESC,i.id DESC LIMIT ").push_bind(HOME_ROW);
+        let rows: Vec<ItemWithProgress> = qb.build_query_as().fetch_all(db).await?;
+        recent = rows.into_iter().map(ItemWithProgress::into_item).collect();
+    }
+    Ok(VideoFeed {
+        continue_watching,
+        suggested,
+        recent,
+        collections,
+        next_cursor: (end < total).then(|| end.to_string()),
     })
 }
 

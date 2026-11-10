@@ -61,6 +61,15 @@ class LibraryViewModelTest {
     private fun respondItems(items: List<Item>, next: String? = null) = server.respond(json(ItemPage.serializer(), ItemPage(items, next)))
 
     @Test
+    fun feedNavigationLoadsVideoMetadataWithoutFetchingTheOldGrid() = runTest {
+        respondLibrary(SampleMedia.movies)
+        val model = main.keep { LibraryViewModel(api, events, reconnects, SampleMedia.movies.id, loadVideoContent = false) }
+        model.ui.awaitUntil { it.library != null }
+        assertEquals("/api/libraries/lib-movies", server.next().target)
+        assertNull(server.nextOrNull())
+    }
+
+    @Test
     fun postersLoadTheNewestItemsOfTheLibrary() = runTest {
         respondLibrary(SampleMedia.movies)
         respondItems(SampleMedia.recentMovies, next = "c2")

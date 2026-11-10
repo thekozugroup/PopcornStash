@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.thekozugroup.popcornstash.data.api.ApiClient
 import com.thekozugroup.popcornstash.data.api.ApiException
+import com.thekozugroup.popcornstash.data.api.ContentType
 import com.thekozugroup.popcornstash.data.api.Item
 import com.thekozugroup.popcornstash.data.api.ItemPage
 import com.thekozugroup.popcornstash.data.api.ItemQuery
@@ -80,6 +81,7 @@ class LibraryViewModel(
     private val libraryId: String,
     seed: Library? = null,
     private val settleMillis: Long = 400,
+    private val loadVideoContent: Boolean = true,
 ) : ViewModel() {
     sealed interface Content {
         data object Loading : Content
@@ -221,6 +223,7 @@ class LibraryViewModel(
     }
 
     private suspend fun loadContent(library: Library, keepLoaded: Boolean) {
+        if (library.contentType == ContentType.Video && !loadVideoContent) return
         val current = _ui.value.content
         try {
             val content = when (library.layout) {

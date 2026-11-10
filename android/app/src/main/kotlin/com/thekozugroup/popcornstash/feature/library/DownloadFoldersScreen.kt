@@ -25,10 +25,12 @@ import kotlinx.coroutines.launch
 /** Source download roots with optional collapsed browsing and explicit physical edits. */
 @Composable
 fun DownloadFoldersScreen(id: String, name: String, services: LibraryServices, isOwner: Boolean, bottomClearance: Dp,
-    onBack: () -> Unit, onAllVideos: () -> Unit, onFiles: () -> Unit, onOpen: (Item) -> Unit) {
-    var key by rememberSaveable(id) { mutableStateOf("") }
+    onBack: () -> Unit, onAllVideos: () -> Unit, onFiles: () -> Unit, onOpen: (Item) -> Unit,
+    initialKey: String = "", initialCollapsed: Boolean = false, onFolderView: (() -> Unit)? = null,
+    onGone: () -> Unit = {}, viewActions: @Composable () -> Unit = {}) {
+    var key by rememberSaveable(id, initialKey) { mutableStateOf(initialKey) }
     var folder by rememberSaveable(id, key) { mutableStateOf("") }
-    var collapsed by rememberSaveable(id) { mutableStateOf(false) }
+    var collapsed by rememberSaveable(id, initialKey) { mutableStateOf(initialCollapsed) }
     var tree by remember(id, key, folder) { mutableStateOf<DownloadTree?>(null) }
     var preview by remember(id, key, folder) { mutableStateOf<RenameFolderPreview?>(null) }
     var query by rememberSaveable(id, key) { mutableStateOf("") }
@@ -55,7 +57,7 @@ fun DownloadFoldersScreen(id: String, name: String, services: LibraryServices, i
     val group = groups?.firstOrNull { it.key == key }
     fun message(e: Exception): String { if (e is CancellationException) throw e; return (e as? ApiException)?.message ?: "PopcornStash did not answer. Try again." }
     fun request(after: String? = null) = ItemQuery(libraryId = id, downloadGroup = key, downloadFolder = if (collapsed) null else folder, q = query.trim(), sort = sort, order = if (sort == "title") "asc" else "desc", limit = 60, cursor = after)
-    fun up() { if (folder.isNotEmpty()) folder = folder.substringBeforeLast('/', "") else if (key.isNotEmpty()) key = "" else onBack() }
+    fun up() { if (folder.isNotEmpty()) folder = folder.substringBeforeLast('/', "") else if (key.isNotEmpty() && key != initialKey) key = "" else onBack() }
     BackHandler(key.isNotEmpty() || busy) { if (!busy) up() }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { revision++ }
     LaunchedEffect(services) { services.events.collect { event -> if (event is StashEvent.LibraryChanged || event is StashEvent.LibrariesChanged) revision++ } }
@@ -69,7 +71,13 @@ fun DownloadFoldersScreen(id: String, name: String, services: LibraryServices, i
             val page = if (key.isNotEmpty()) api.items(request()) else null
             val nextTree = if (key.isNotEmpty() && !collapsed) api.downloadTree(id,key,folder) else null
             if (current == generation) { groups = nextGroups; tree = nextTree; files = page?.items.orEmpty(); cursor = page?.nextCursor }
-        } catch (e: Exception) { if (e is CancellationException) throw e; if (current == generation) error = message(e) }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            if (current == generation) {
+                error = message(e)
+                if (e is ApiException && e.isNotFound) { files = emptyList(); groups = null; tree = null; onGone() }
+            }
+        }
         finally { if (current == generation) loading = false }
     }
     fun saveName() {
@@ -99,12 +107,12 @@ fun DownloadFoldersScreen(id: String, name: String, services: LibraryServices, i
     val gutter = Modifier.padding(vertical = Popcorn.spacing.s)
     Column(Modifier.fillMaxSize()) {
         PageTopBar(title = folder.substringAfterLast('/').ifEmpty { group?.name ?: name }, onBack = if (busy) null else ::up,
-            actions = { TopBarAction(PopcornIcons.StartAgain, "Refresh folders", { if (!busy) revision++ }) })
+            actions = { TopBarAction(PopcornIcons.StartAgain, "Refresh folders", { if (!busy) revision++ }); if (!busy) viewActions() })
         LazyVerticalGrid(columns = GridCells.Adaptive(180.dp), contentPadding = PaddingValues(start = Popcorn.spacing.gutter, end = Popcorn.spacing.gutter, bottom = bottomClearance), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item("view", span = { GridItemSpan(maxLineSpan) }) {
                 Column(gutter, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        SecondaryButton(if (key.isEmpty()) "All videos" else "Download folders", { if (key.isEmpty()) onAllVideos() else key = "" }, enabled = !busy)
+                        SecondaryButton(if (key.isEmpty()) "All videos" else "Download folders", { if (key.isEmpty()) onAllVideos() else if (onFolderView != null) onFolderView() else key = "" }, enabled = !busy)
                         if(group!=null && isOwner) QuietButton(if(organizing) "Close folder actions" else "Folder actions",{organizing=!organizing},enabled=!busy)
                         else QuietButton("Organize files", onFiles, enabled = !busy)
                     }

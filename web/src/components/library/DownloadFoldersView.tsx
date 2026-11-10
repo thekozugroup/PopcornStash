@@ -62,7 +62,7 @@ export function DownloadFoldersView({id, isOwner}: {id: string; isOwner: boolean
   const browse = (path:string) => {setEditing(null);setPreview(null);setError(null);setParams(current=>{const next=new URLSearchParams(current);if(path)next.set('subfolder',path);else next.delete('subfolder');return next;});};
   const open = (key: string) => {
     setEditing(null); setPreview(null); setError(null);
-    setParams(current => { const next = new URLSearchParams(current); if (key) next.set('download', key); else next.delete('download'); next.delete('q'); next.delete('sort'); next.delete('subfolder'); return next; });
+    setParams(current => { const next = new URLSearchParams(current); if (key) next.set('download', key); else next.delete('download'); next.delete('q'); next.delete('sort'); next.delete('subfolder'); next.delete('subfolders'); return next; });
   };
   const saveName = async () => {
     setBusy(true); setError(null);
@@ -84,7 +84,7 @@ export function DownloadFoldersView({id, isOwner}: {id: string; isOwner: boolean
     (sort === 'recent' ? b.added_at - a.added_at : sort === 'size' ? b.size - a.size : a.name.localeCompare(b.name)) || a.key.localeCompare(b.key));
   return <VStack gap={4}>
     <HStack gap={2} wrap="wrap">
-      {groupKey ? <Button label="Download folders" variant="ghost" icon={<Folder size={18} />} onClick={() => open('')} /> : null}
+      {groupKey ? <Button label={params.get('view') === 'folders' ? 'Download folders' : 'Video feed'} variant="ghost" icon={<Folder size={18} />} onClick={() => open('')} /> : null}
       {isOwner && group ? <Button label={organizing ? "Close folder actions" : "Folder actions"} variant="secondary" isDisabled={busy} onClick={()=>{setOrganizing(v=>!v);setEditing(null);setPreview(null);}} /> : null}
       {isOwner && (!group || organizing) ? <>
         <Button label={group ? "New subfolder" : "New folder"} variant="secondary" isDisabled={busy} onClick={() => { setEditing('create'); setName(''); setPreview(null); }} />

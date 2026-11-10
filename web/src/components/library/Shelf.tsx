@@ -44,6 +44,7 @@ const styles = stylex.create({
     columnGap: 10,
     rowGap: 2,
     minWidth: 0,
+    overflowWrap: 'anywhere',
   },
   // Icon, name and count share one baseline row; the icon sits on the name's line.
   iconTitle: {

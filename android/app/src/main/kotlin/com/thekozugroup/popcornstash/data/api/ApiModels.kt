@@ -486,6 +486,21 @@ data class Home(
     val otherFilesCount: Long = 0,
     val inboxCount: Long = 0,
     val totalBytes: Long = 0,
+    /** Older servers omit suggestions. */
+    val suggested: List<Item> = emptyList(),
+)
+
+@Serializable
+data class VideoCollection(val folder: DownloadFolder, val recent: List<Item> = emptyList())
+
+/** One page of a video library's feed; only the first page includes the main rows. */
+@Serializable
+data class VideoLibraryFeed(
+    val continueWatching: List<Item> = emptyList(),
+    val suggested: List<Item> = emptyList(),
+    val recent: List<Item> = emptyList(),
+    val collections: List<VideoCollection> = emptyList(),
+    val nextCursor: String? = null,
 )
 
 @Serializable

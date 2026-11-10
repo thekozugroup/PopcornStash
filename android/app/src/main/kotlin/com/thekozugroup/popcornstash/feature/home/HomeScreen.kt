@@ -32,6 +32,7 @@ import com.thekozugroup.popcornstash.data.api.Library
 import com.thekozugroup.popcornstash.data.repo.Loadable
 import com.thekozugroup.popcornstash.feature.library.MediaFormat
 import com.thekozugroup.popcornstash.feature.library.PhotoTile
+import com.thekozugroup.popcornstash.feature.library.VideoShelf
 import com.thekozugroup.popcornstash.feature.library.displayTitle
 import com.thekozugroup.popcornstash.feature.library.libraryCountLine
 import com.thekozugroup.popcornstash.feature.library.tileShape
@@ -70,7 +71,7 @@ class HomeActions(
 
 /**
  * Home, the start tab (android/DESIGN.md, Home): continue watching when there is something
- * to resume, then every library the person can see in the owner's order, each with its
+ * to resume, suggestions, then every library the person can see in the owner's order, each with its
  * icon, name and a shelf of its newest items, then Other files when the person has any.
  */
 @Composable
@@ -119,6 +120,13 @@ fun HomeScreen(
                             )
                             Spacer(Modifier.height(Popcorn.spacing.xxl - Popcorn.spacing.s))
                         }
+                    }
+                }
+                if (value.suggested.isNotEmpty()) {
+                    item(key = "suggested") {
+                        val icons = value.libraries.associate { it.library.id to it.library.icon }
+                        VideoShelf("Suggested for you", value.suggested, format, libraryIcon = { icons[it.libraryId] }, onOpen = actions.openItem)
+                        Spacer(Modifier.height(Popcorn.spacing.xxl - Popcorn.spacing.s))
                     }
                 }
                 items(value.libraries, key = { "library ${it.library.id}" }) { entry ->

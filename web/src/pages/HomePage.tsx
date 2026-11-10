@@ -318,6 +318,9 @@ export default function HomePage() {
             )}
           </Shelf>
         ) : null}
+        {data.suggested?.length ? <Shelf title="Suggested for you" headingLevel={2} shape="frame">
+          {renderTiles(data.suggested.map(item => ({key: item.id, href: itemHref(item), title: displayTitle(item), meta: itemMeta(item), image: thumbSources(item, versions[item.id])})), 'frame')}
+        </Shelf> : null}
         <ShelfRuns shelves={shelves} />
         {data.other_files_count > 0 ? (
           <Shelf

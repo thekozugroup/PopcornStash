@@ -209,6 +209,13 @@ impl Library {
             let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| {
                 CoreError::invalid("Organization journal could not be read. Files were kept.")
             })?;
+            if value.get("import_version").is_some() {
+                let journal: super::super::organizer::download_import::Journal =
+                    serde_json::from_value(value)?;
+                super::super::organizer::download_import::recover(self, &root, &stage, &journal)
+                    .await?;
+                continue;
+            }
             if value.get("tree_version").is_some() {
                 let journal: super::super::rename_folder::TreeJournal =
                     serde_json::from_value(value).map_err(|_| {
@@ -227,6 +234,9 @@ impl Library {
             recover_one(self, &root, &stage, &journal).await?;
         }
         sqlx::query("DELETE FROM library_folder_edits")
+            .execute(&self.db)
+            .await?;
+        sqlx::query("DELETE FROM download_import_edits")
             .execute(&self.db)
             .await?;
         self.flatten_pending

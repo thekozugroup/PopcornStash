@@ -51,6 +51,50 @@ class ApiClientTest {
         assertEquals("Bearer ${Fixtures.TOKEN}", request.headers["Authorization"])
 
     @Test
+    fun homeSuggestionsAreOptionalOnOlderServers() = runTest {
+        server.respond(Fixtures.home())
+        assertTrue(api.home().suggested.isEmpty())
+        assertAuthorized(server.next())
+        server.respond(Fixtures.home().replace("\"continue_watching\":", "\"suggested\":[${Fixtures.EPISODE}],\"continue_watching\":"))
+        val home = api.home()
+        assertEquals("i-lantern-1", home.suggested.single().id)
+        assertEquals("i-paper", home.continueWatching.single().id)
+        assertEquals(2L, home.otherFilesCount)
+        assertEquals(1L, home.inboxCount)
+        assertEquals(382044L, home.totalBytes)
+        assertAuthorized(server.next())
+    }
+
+    @Test
+    fun videoFeedUsesTheLibraryScopeSnakeCaseFieldsAndOffsetCursor() = runTest {
+        server.respond(Fixtures.videoFeed())
+        val feed = api.libraryFeed("lib-1")
+        assertEquals("i-paper", feed.continueWatching.single().id)
+        assertEquals("i-lantern-1", feed.suggested.single().id)
+        assertEquals("i-paper", feed.recent.single().id)
+        assertEquals(2, feed.collections.single().folder.itemCount)
+        assertEquals(1760400300L, feed.collections.single().folder.addedAt)
+        assertEquals("12", feed.nextCursor)
+        val first = server.next()
+        assertEquals("GET /api/libraries/lib-1/feed", "${first.method} ${first.target}")
+        assertAuthorized(first)
+        server.respond("""{"continue_watching":[],"suggested":[],"recent":[],"collections":[],"next_cursor":null}""")
+        assertNull(api.libraryFeed("lib-1", feed.nextCursor).nextCursor)
+        assertEquals("/api/libraries/lib-1/feed?cursor=12", server.next().target)
+    }
+
+    @Test
+    fun inaccessibleFeedFailsWithoutUsingAnyOtherLibraryRoute() = runTest {
+        server.respond("""{"error":{"code":"not_found","message":"That no longer exists."}}""", 404)
+        try {
+            api.libraryFeed("hidden")
+            fail("Hidden feed must fail")
+        } catch (e: ApiException) { assertTrue(e.isNotFound) }
+        assertEquals("/api/libraries/hidden/feed", server.next().target)
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
     fun foldersAndBulkActionsUseExplicitScopedRequests() = runTest {
         server.respond("""{"folder":"Box sets","folders":["Box sets/Series"]}""")
         assertEquals(listOf("Box sets/Series"), api.libraryFolders("lib-1", "Box sets").folders)

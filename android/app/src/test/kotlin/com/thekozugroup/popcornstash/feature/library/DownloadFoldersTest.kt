@@ -68,9 +68,9 @@ class DownloadFoldersTest {
     }
     @After fun cleanup() { scope.cancel(); server.close() }
     private fun waitFor(text: String) = compose.waitUntil(5_000) { compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty() }
-    private fun show(dark: Boolean = false, owner: Boolean = true) {
+    private fun show(dark: Boolean = false, owner: Boolean = true, initialKey: String = "", collapsed: Boolean = false, onBack: () -> Unit = {}) {
         compose.setContent { PopcornTheme(darkTheme = dark, reduceMotion = true) { Box(Modifier.fillMaxSize().background(Popcorn.colors.page)) {
-            DownloadFoldersScreen("movies", "Movies", services, owner, 96.dp, {}, {}, {}, {})
+            DownloadFoldersScreen("movies", "Movies", services, owner, 96.dp, onBack, {}, {}, {}, initialKey = initialKey, initialCollapsed = collapsed)
         } } }
         waitFor("Harbor collection")
     }
@@ -126,6 +126,21 @@ class DownloadFoldersTest {
         compose.waitUntil(5_000){paths.any{it.contains("download_folder=Clips")}}
         assertTrue(writes.isEmpty())
     }
+    @Test fun chosenCollectionIncludesNestedVideosAndBackExitsToTheFeed() {
+        var returned = false
+        show(initialKey = "download:one", collapsed = true, onBack = { returned = true })
+        waitFor("Harbor One")
+        val request = paths.last { it.startsWith("GET /api/items?") }
+        assertTrue(request.contains("download_group=download%3Aone"))
+        assertFalse(request.contains("download_folder="))
+        assertTrue(paths.none { it.contains("/contents?") })
+        compose.onNodeWithText("Collapse subfolders").assertIsOn()
+        compose.onNodeWithContentDescription("Back").performClick()
+        assertTrue(returned)
+        assertTrue(writes.isEmpty())
+    }
+    @Test fun collectionDescendantsLight() { show(initialKey = "download:one", collapsed = true); waitFor("Harbor One"); compose.onRoot().captureRoboImage("src/test/screenshots/collection-descendants-light.png") }
+    @Test fun collectionDescendantsDark() { show(dark = true, initialKey = "download:one", collapsed = true); waitFor("Harbor One"); compose.onRoot().captureRoboImage("src/test/screenshots/collection-descendants-dark.png") }
     @Test fun membersCanBrowseButCannotEdit() {
         show(owner = false); open()
         compose.onNodeWithText("New folder").assertDoesNotExist()
