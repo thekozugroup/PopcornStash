@@ -19,7 +19,7 @@ struct Entry {
     file: FlattenFile,
     identity: [u64; 5],
 }
-fn identity(m: &std::fs::Metadata) -> [u64; 5] {
+pub(super) fn identity(m: &std::fs::Metadata) -> [u64; 5] {
     [
         m.dev(),
         m.ino(),
@@ -50,6 +50,7 @@ pub(super) async fn released(lib: &Library, id: &str, source: &str) -> Result<()
             "Unfinished downloads cannot be imported.",
         ));
     }
+    super::super::torrent_handoff::owner(lib, source, Some(id)).await?;
     let Some(row) = download_row(lib, id).await? else {
         let known: bool =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM download_origins WHERE id=?)")
@@ -119,10 +120,19 @@ pub(super) async fn prepare(lib: &Library, download: &DownloadRow) -> Result<Pla
     released(lib, &download.id, source).await?;
     let root = Root::open(lib.layout.root())?;
     let abs = lib.layout.abs(source)?;
-    let original = plan_sort(&lib.layout, &abs, true, Taken::default());
-    let roles: HashMap<_, _> = original.files.into_iter().collect();
+    let mut members = torrent_import::Members::load(lib, &root, download, source).await?;
+    let scan = match &members {
+        Some(m) => lib.layout.abs(&m.scan)?,
+        None => abs.clone(),
+    };
+    let fresh = members.as_ref().is_some_and(|m| m.fresh);
+    let marker = if fresh {
+        None
+    } else {
+        super::super::torrent_handoff::import_marker(lib, &download.id, source).await?
+    };
     let mut found = Vec::new();
-    for entry in WalkDir::new(&abs).follow_links(false) {
+    for entry in WalkDir::new(&scan).follow_links(false) {
         let entry = entry.map_err(|e| CoreError::Other(e.into()))?;
         if entry.depth() > 32 || found.len() >= 2000 {
             return Err(CoreError::invalid(
@@ -130,8 +140,19 @@ pub(super) async fn prepare(lib: &Library, download: &DownloadRow) -> Result<Pla
             ));
         }
         let rel = lib.layout.rel(entry.path()).ok_or(CoreError::NotFound)?;
+        if members.is_some() && entry.path().to_str().is_none() {
+            return Err(CoreError::conflict(
+                "Unexpected filename in the completed torrent.",
+            ));
+        }
+        if marker.as_deref() == Some(rel.as_str()) {
+            continue;
+        }
         let meta = root.metadata(&rel)?;
         if meta.is_dir() {
+            if let Some(members) = &mut members {
+                members.check_dir(&rel, &meta)?;
+            }
             continue;
         }
         if !meta.is_file() || meta.nlink() != 1 || rel.split('/').any(is_junk_name) {
@@ -141,6 +162,17 @@ pub(super) async fn prepare(lib: &Library, download: &DownloadRow) -> Result<Pla
         }
         found.push((entry.into_path(), rel, meta));
     }
+    if let Some(members) = &members {
+        members.validate(lib, &root, &download.id, &found).await?;
+        if fresh {
+            // Recheck the private wrapper (including its siblings) before the
+            // handoff starts allowing the importer's own flattened paths.
+            super::super::torrent_handoff::owner(lib, source, Some(&download.id)).await?;
+            super::super::torrent_handoff::import_marker(lib, &download.id, source).await?;
+        }
+    }
+    let original = plan_sort(&lib.layout, &scan, true, Taken::default());
+    let roles: HashMap<_, _> = original.files.into_iter().collect();
     found.sort_by(|a, b| {
         a.0.components()
             .count()
@@ -270,7 +302,7 @@ pub(super) async fn prepare(lib: &Library, download: &DownloadRow) -> Result<Pla
                 .or_default()
                 .push(files[n].to.clone());
         }
-        remove_empty_dirs(&lib.layout, &abs).await;
+        remove_empty_dirs(lib, &abs).await?;
         return Ok(Plan {
             files: videos
                 .iter()
@@ -319,7 +351,7 @@ pub(super) async fn prepare(lib: &Library, download: &DownloadRow) -> Result<Pla
             });
         plan.push((lib.layout.abs(&file.to)?, role));
     }
-    remove_empty_dirs(&lib.layout, &abs).await;
+    remove_empty_dirs(lib, &abs).await?;
     Ok(Plan {
         files: plan,
         companions,
@@ -351,7 +383,7 @@ pub(super) async fn destination(
         .find(|d| d.folder() == parent);
     let saved: Option<String> = if let Some(def) = &def {
         sqlx::query_scalar(
-            "SELECT name FROM library_download_folders WHERE library_id=? AND group_key=?",
+            "SELECT name FROM library_download_folders WHERE library_id=? AND group_key=? AND follows_directory IS NOT 0",
         )
         .bind(def.id())
         .bind(&key)
@@ -360,13 +392,26 @@ pub(super) async fn destination(
     } else {
         None
     };
-    let own: Option<String> = sqlx::query_scalar("SELECT rel_path FROM items WHERE source_download_id=? AND substr(rel_path,1,?)=? AND status='ready' ORDER BY id LIMIT 1")
-        .bind(download_id).bind((parent.chars().count()+1) as i64).bind(format!("{parent}/")).fetch_optional(&lib.db).await?;
-    let own = own
-        .as_deref()
-        .and_then(|p| p.strip_prefix(&format!("{parent}/")))
-        .and_then(|p| p.split_once('/'))
-        .map(|(folder, _)| folder.to_string());
+    let roots: Vec<String> = sqlx::query_scalar(
+        "WITH members AS (
+        SELECT substr(rel_path,length(?2)+1) AS path,status FROM items
+        WHERE source_download_id=?1 AND substr(rel_path,1,length(?2))=?2)
+        SELECT DISTINCT CASE WHEN status='ready' AND instr(path,'/')>0
+            THEN substr(path,1,instr(path,'/')-1) ELSE '' END FROM members LIMIT 2",
+    )
+    .bind(download_id)
+    .bind(format!("{parent}/"))
+    .fetch_all(&lib.db)
+    .await?;
+    let own = match roots.as_slice() {
+        [] => None,
+        [only] if !only.is_empty() => Some(only.clone()),
+        _ => {
+            return Err(CoreError::conflict(
+                "This download has no single available destination folder. Review its organization before importing more files.",
+            ));
+        }
+    };
     if let (Some(saved), Some(own)) = (&saved, &own)
         && saved != own
     {
@@ -375,6 +420,7 @@ pub(super) async fn destination(
         ));
     }
     let root = Root::open(lib.layout.root())?;
+    let has_indexed_members = own.is_some();
     if let Some(folder) = saved.or(own) {
         super::super::folders::validate_folder(&folder)?;
         let target = format!("{parent}/{folder}");
@@ -387,6 +433,10 @@ pub(super) async fn destination(
         }
         if exists(&root, &target)? {
             root.directory(&target)?;
+        } else if has_indexed_members {
+            return Err(CoreError::conflict(
+                "The indexed download folder is unavailable. Rescan before importing more files.",
+            ));
         }
         return Ok(format!("{target}/{name}"));
     }
@@ -451,7 +501,9 @@ pub(super) async fn relocate(
         ));
     }
     let root = Root::open(lib.layout.root())?;
+    let tracked = torrent_import::tracked(lib, download_id).await?;
     let mut destinations = HashSet::new();
+    let mut entries = Vec::with_capacity(files.len());
     for f in files {
         if !destinations.insert(f.to.to_lowercase()) {
             return Err(CoreError::conflict(
@@ -486,11 +538,19 @@ pub(super) async fn relocate(
                 }
             }
         }
-        if fingerprint(&root.metadata(&f.from)?) != f.fingerprint {
+        let meta = root.metadata(&f.from)?;
+        if tracked {
+            torrent_import::check_member(lib, download_id, &f.from, &meta).await?;
+        }
+        if fingerprint(&meta) != f.fingerprint {
             return Err(CoreError::conflict(
                 "A download file changed. Nothing was moved.",
             ));
         }
+        entries.push(Entry {
+            file: f.clone(),
+            identity: identity(&meta),
+        });
         if !f.item_id.is_empty() {
             let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM conversion_jobs WHERE item_id=? AND (stage IS NOT NULL OR state IN ('encoding','verifying','publishing')))")
                 .bind(&f.item_id).fetch_one(&lib.db).await?;
@@ -516,15 +576,7 @@ pub(super) async fn relocate(
         id: crate::new_id(),
         download_id: download_id.into(),
         source: source.into(),
-        files: files
-            .iter()
-            .map(|file| {
-                Ok(Entry {
-                    file: file.clone(),
-                    identity: identity(&root.metadata(&file.from)?),
-                })
-            })
-            .collect::<Result<_>>()?,
+        files: entries,
     };
     let stage = root.new_trash_dir("flatten-import")?;
     lib.flatten_pending
@@ -555,6 +607,13 @@ pub(super) async fn relocate(
             recovery::sync_parent(&root, &private)?;
             recovery::sync_parent(&root, &f.to)?;
             check(&root, &f.to, entry.identity)?;
+            if tracked {
+                let current = Path::new(&f.to).starts_with(source).then_some(&f.to);
+                let changed = sqlx::query("UPDATE torrent_import_files SET current_path=? WHERE download_id=? AND current_path=? AND identity=?")
+                    .bind(current).bind(download_id).bind(&f.from).bind(serde_json::to_string(&entry.identity)?)
+                    .execute(&mut *tx).await?.rows_affected();
+                if changed != 1 { return Err(CoreError::conflict("A selected torrent file changed during import.")); }
+            }
             if f.item_id.is_empty() { continue; }
             let changed = sqlx::query("UPDATE items SET rel_path=?,updated_at=?,status=CASE WHEN ? THEN 'ready' ELSE status END,suggestion_json=CASE WHEN ? THEN NULL ELSE suggestion_json END WHERE id=? AND rel_path=?")
                 .bind(&f.to).bind(now()).bind(ready).bind(ready).bind(&f.item_id).bind(&f.from).execute(&mut *tx).await?.rows_affected();
@@ -570,7 +629,7 @@ pub(super) async fn relocate(
                 if let Some(library) = library {
                     let name = Path::new(&f.to).parent().and_then(Path::file_name).and_then(|s| s.to_str()).ok_or(CoreError::NotFound)?;
                     let key = format!("download:{download_id}");
-                    sqlx::query("INSERT OR IGNORE INTO library_download_folders(library_id,group_key,name) VALUES(?,?,?)").bind(&library).bind(&key).bind(name).execute(&mut *tx).await?;
+                    sqlx::query("INSERT OR IGNORE INTO library_download_folders(library_id,group_key,name,follows_directory) VALUES(?,?,?,1)").bind(&library).bind(&key).bind(name).execute(&mut *tx).await?;
                     sqlx::query("INSERT INTO library_download_members(item_id,library_id,group_key) VALUES(?,?,?) ON CONFLICT(item_id) DO UPDATE SET library_id=excluded.library_id,group_key=excluded.group_key").bind(&f.item_id).bind(&library).bind(&key).execute(&mut *tx).await?;
                 }
             }

@@ -12,18 +12,20 @@ pub mod download_folders;
 pub mod download_tree;
 pub mod flatten_downloads;
 pub mod folders;
+mod observed;
 pub mod organizer;
 pub mod parse;
 pub mod rename_folder;
 pub mod repo;
 pub mod scanner;
+mod torrent_handoff;
 pub mod watcher;
 
 #[cfg(test)]
 mod tests;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
@@ -93,6 +95,7 @@ pub struct Library {
     generation: AtomicU64,
     /// Pending physical organization must reconcile before any other mutation.
     flatten_pending: AtomicBool,
+    retirement_retry_at: AtomicI64,
 }
 
 impl Library {
@@ -114,6 +117,7 @@ impl Library {
             media,
             generation: AtomicU64::new(0),
             flatten_pending: AtomicBool::new(true),
+            retirement_retry_at: AtomicI64::new(0),
         }
     }
 
@@ -131,6 +135,17 @@ impl Library {
         let guard = self.moves.lock().await;
         if self.flatten_pending.load(Ordering::SeqCst) {
             self.recover_flattened_files_locked().await?;
+        }
+        if self.retirement_retry_at.load(Ordering::Relaxed) <= crate::now() {
+            let recovered = torrent_handoff::recover_retirements(self).await?;
+            self.retirement_retry_at.store(
+                if recovered {
+                    i64::MAX
+                } else {
+                    crate::now() + 30
+                },
+                Ordering::Relaxed,
+            );
         }
         Ok(guard)
     }

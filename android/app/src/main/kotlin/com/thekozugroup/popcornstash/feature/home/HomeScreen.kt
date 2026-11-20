@@ -13,8 +13,10 @@ import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -48,6 +50,7 @@ import com.thekozugroup.popcornstash.ui.components.PrimaryButton
 import com.thekozugroup.popcornstash.ui.components.Shelf
 import com.thekozugroup.popcornstash.ui.components.TabRootScaffold
 import com.thekozugroup.popcornstash.ui.components.TileShape
+import com.thekozugroup.popcornstash.ui.components.needsLargeThumbnail
 import com.thekozugroup.popcornstash.ui.components.shelfTileWidth
 import com.thekozugroup.popcornstash.ui.icons.LibraryIcons
 import com.thekozugroup.popcornstash.ui.icons.LucideGlyph
@@ -157,7 +160,7 @@ private fun LibrarySection(entry: HomeLibrary, format: MediaFormat, actions: Hom
     Column(Modifier.testTag("library ${library.name}")) {
         val empty = library.itemCount == 0L && (library.showCount ?: 0L) == 0L
         HeaderRow(glyph, library.name, if (empty) null else format.libraryCountLine(library), onClick = { actions.openLibrary(library) })
-        val tiles = shelfTiles(entry)
+        val tiles = remember(entry) { shelfTiles(entry) }
         if (tiles.isEmpty()) {
             Text(
                 "Nothing here yet",
@@ -171,27 +174,35 @@ private fun LibrarySection(entry: HomeLibrary, format: MediaFormat, actions: Hom
         Spacer(Modifier.height(Popcorn.spacing.xxs))
         val shape = library.layout.tileShape()
         val width = shelfTileWidth(shape)
+        val tileWidthPx = with(LocalDensity.current) { width.roundToPx() }
         Shelf {
             items(tiles, key = { it.key }) { tile ->
                 when (tile) {
-                    is ShelfTile.Show -> MediaTile(
-                        title = tile.name,
-                        line = format.showTileLine(tile),
-                        url = tile.posterId?.let { pictures.thumbOf(it, large = true) } ?: pictures.thumb(tile.latest, large = true),
-                        shape = shape,
-                        glyph = glyph,
-                        onClick = { actions.openShow(library, tile.name) },
-                        modifier = Modifier.width(width),
-                    )
+                    is ShelfTile.Show -> {
+                        val posterId = tile.posterId
+                        val source = if (posterId == null || posterId == tile.latest.id) tile.latest
+                            else entry.recent.firstOrNull { it.id == posterId }
+                        val large = shape.needsLargeThumbnail(source, tileWidthPx)
+                        MediaTile(
+                            title = tile.name,
+                            line = format.showTileLine(tile),
+                            url = posterId?.let { pictures.thumbOf(it, large) } ?: pictures.thumb(tile.latest, large),
+                            shape = shape,
+                            glyph = glyph,
+                            onClick = { actions.openShow(library, tile.name) },
+                            modifier = Modifier.width(width),
+                        )
+                    }
                     is ShelfTile.Single -> {
                         val item = tile.item
+                        val large = shape.needsLargeThumbnail(item, tileWidthPx)
                         if (shape == TileShape.Square) {
-                            PhotoTile(item, format.displayTitle(item), glyph, Modifier.width(width)) { actions.openPhoto(library, item) }
+                            PhotoTile(item, format.displayTitle(item), glyph, Modifier.width(width), largeThumbnail = large) { actions.openPhoto(library, item) }
                         } else {
                             MediaTile(
                                 title = format.displayTitle(item),
                                 line = format.tileLine(item),
-                                url = pictures.thumb(item, large = true),
+                                url = pictures.thumb(item, large),
                                 shape = shape,
                                 glyph = glyph,
                                 progress = format.watchedFraction(item.progress),

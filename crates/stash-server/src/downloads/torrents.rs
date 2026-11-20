@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use stash_core::internal_api::{
     AddTorrentRequest, AddTorrentResponse, EngineRunState, EngineTorrent, EngineTorrentState,
-    LimitsRequest,
+    LimitsRequest, MSG_CHECKING_FILES, MSG_WAITING_FOR_ENGINE, TorrentFiles,
 };
 use stash_core::models::{Download, DownloadKind, DownloadRow, DownloadState};
 use stash_core::paths::{self, StashLayout, Zone};
@@ -16,10 +16,16 @@ use stash_core::{new_id, now};
 use tokio_util::sync::CancellationToken;
 
 use super::manager::{
-    DownloadManager, MSG_WAITING_FOR_VPN, NewDownload, engine_wait_message, slot_message,
+    DownloadManager, MSG_WAITING_FOR_VPN, NewDownload, active_engine_id, engine_error,
+    engine_wait_message, slot_message,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::torrentd_client::TorrentdError;
+
+#[path = "torrent_manifest.rs"]
+pub(super) mod torrent_manifest;
+use stash_core::internal_api::TorrentCompletion;
+use torrent_manifest::Frozen;
 
 pub const MSG_LOST: &str = "The torrent engine lost track of this download.";
 const MSG_ENGINE_REFUSED: &str = "The torrent engine could not add this torrent.";
@@ -284,17 +290,40 @@ impl DownloadManager {
     /// Record the engine's id. When the engine already had this torrent under another
     /// active row, the new row is dropped and the existing id returned.
     async fn attach_engine(&self, id: &str, added: &AddTorrentResponse) -> ApiResult<String> {
-        let existing: Option<(String,)> = sqlx::query_as(
-            "SELECT id FROM downloads WHERE kind = 'torrent' AND engine_id = ? AND id != ?
-             AND state IN ('queued', 'downloading', 'paused', 'seeding') LIMIT 1",
+        let existing: Option<DownloadRow> = sqlx::query_as(
+            "SELECT * FROM downloads WHERE kind = 'torrent' AND engine_id = ? AND id != ?
+             AND (state IN ('queued', 'downloading', 'paused', 'seeding') OR (state = 'completed' AND rel_path LIKE 'Downloads/In Progress/%')) LIMIT 1",
         )
         .bind(&added.id)
         .bind(id)
         .fetch_optional(&self.db)
         .await?;
-        if let Some((existing,)) = existing {
-            self.forget_torrent_row(id).await;
-            return Ok(existing);
+        if let Some(existing) = existing {
+            let same = if existing.state == DownloadState::Completed {
+                // Release may have succeeded before the old row recorded it.
+                // A re-add in that window has a new output folder or pending metadata.
+                let live = self
+                    .torrentd
+                    .list()
+                    .await
+                    .map_err(|e| engine_error(&e))?
+                    .into_iter()
+                    .find(|t| t.id == added.id)
+                    .ok_or_else(|| ApiError::conflict(MSG_LOST))?;
+                live.output_dir
+                    .as_deref()
+                    .and_then(|p| self.engine_path_to_local(p))
+                    .and_then(|p| self.layout.rel(&p))
+                    == existing.rel_path
+            } else {
+                true
+            };
+            if same {
+                self.forget_torrent_row(id).await;
+                return Ok(existing.id);
+            }
+            sqlx::query("UPDATE downloads SET engine_id = NULL WHERE id = ? AND state = 'completed' AND engine_id = ?")
+                .bind(&existing.id).bind(&added.id).execute(&self.db).await?;
         }
         let name = added
             .name
@@ -455,8 +484,9 @@ async fn finish_pending(manager: &DownloadManager, poller: &mut Poller) {
 
 async fn poll_once(manager: &Arc<DownloadManager>, poller: &mut Poller) -> Duration {
     let tuning = manager.tuning();
-    // The engine first, then the rows: a pause or resume that lands in between is seen
-    // in the rows, and one that lands later is protected by `apply`'s state check.
+    // Selection can change without changing the download state. Serialize the engine
+    // snapshot, DB updates and handoff with controls so an old poll cannot finish a new selection.
+    let controls = manager.torrent_slots.lock().await;
     let list = match manager.torrentd.list().await {
         Ok(list) => list,
         Err(TorrentdError::Disabled) => return tuning.torrent_slow * 6,
@@ -527,6 +557,7 @@ async fn poll_once(manager: &Arc<DownloadManager>, poller: &mut Poller) -> Durat
             }
         }
     }
+    drop(controls);
     busy |= fill_slots(manager).await;
     if busy {
         tuning.torrent_fast
@@ -775,9 +806,16 @@ pub(super) async fn apply(
         .unwrap_or(&row.name)
         .to_string();
     let total = torrent.total_bytes.filter(|&b| b > 0);
-    // Initial checks report checked bytes, not verified payload completion. An
-    // empty selection has no positive total and must keep waiting for a choice.
-    let complete = total.is_some_and(|total| torrent.done_bytes >= total)
+    // Pending magnets have no output folder. A paused integrity check also
+    // carries the explicit engine reason so it cannot look like a finished pause.
+    let resolved = torrent.output_dir.as_deref().is_some_and(|p| !p.is_empty());
+    let checking = resolved
+        && (torrent.state == EngineTorrentState::Initializing
+            || torrent.error.as_deref() == Some(MSG_CHECKING_FILES));
+    let waiting_for_engine = resolved && torrent.error.as_deref() == Some(MSG_WAITING_FOR_ENGINE);
+    let provisional = checking || waiting_for_engine;
+    let complete = !provisional
+        && total.is_some_and(|total| torrent.done_bytes >= total)
         && matches!(
             torrent.state,
             EngineTorrentState::Downloading
@@ -823,29 +861,42 @@ pub(super) async fn apply(
     } else {
         DownloadState::Downloading
     };
-    // Only a torrent still in line keeps its reason.
     let error = if torrent.error.as_deref() == Some("Ready to choose files.") {
         torrent.error.clone()
+    } else if state == DownloadState::Queued {
+        row.error.clone()
+    } else if checking {
+        Some(MSG_CHECKING_FILES.into())
+    } else if waiting_for_engine {
+        torrent.error.clone()
     } else {
-        (state == DownloadState::Queued)
-            .then(|| row.error.clone())
-            .flatten()
+        None
     };
 
-    let progress = match total {
-        Some(total) => (torrent.done_bytes as f64 / total as f64).clamp(0.0, 1.0),
-        None => torrent.progress.clamp(0.0, 1.0),
-    };
+    let as_i64 = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
+    let (total_bytes, done_bytes, progress) =
+        if provisional && row.total_bytes.is_some_and(|b| b > 0) {
+            // SQLite survives both a cold engine and a server restart. Preserve the
+            // selected-byte denominator too: initialization reports the whole torrent.
+            (row.total_bytes, row.done_bytes, row.progress)
+        } else {
+            let done = if checking { 0 } else { torrent.done_bytes };
+            let progress = match total {
+                Some(total) => (done as f64 / total as f64).clamp(0.0, 1.0),
+                None if checking => 0.0,
+                None => torrent.progress.clamp(0.0, 1.0),
+            };
+            (total.map(as_i64), as_i64(done), progress)
+        };
     let rel_path = manager
         .torrent_content(torrent, &name)
         .and_then(|p| manager.layout.rel(&p));
-    let as_i64 = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
     let updated = DownloadRow {
         name,
         state,
         progress,
-        total_bytes: total.map(as_i64),
-        done_bytes: as_i64(torrent.done_bytes),
+        total_bytes,
+        done_bytes,
         down_bps: as_i64(torrent.down_bps),
         up_bps: as_i64(torrent.up_bps),
         peers: torrent.peers.map(i64::from),
@@ -912,110 +963,143 @@ pub(super) async fn apply(
 /// Only explicit deselections in this torrent's manifest are removed, after the
 /// engine has let go and adoption succeeded. Never follow links, touch siblings,
 /// remove selected files, or act outside Downloads/In Progress.
-async fn discard_unselected(
+async fn inspect_payload(
     layout: &StashLayout,
     content: &Path,
-    files: &stash_core::internal_api::TorrentFiles,
-) -> std::io::Result<()> {
+    frozen: Arc<Frozen>,
+    prune: bool,
+) -> std::io::Result<std::fs::Metadata> {
     let layout = layout.clone();
     let content = content.to_path_buf();
-    let files = files.clone();
-    tokio::task::spawn_blocking(move || discard_unselected_blocking(&layout, &content, &files))
-        .await
-        .map_err(std::io::Error::other)?
+    tokio::task::spawn_blocking(move || {
+        let witness = frozen
+            .release_witness
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("Missing release evidence"))?;
+        let leaf = content
+            .strip_prefix(layout.in_progress())
+            .map_err(std::io::Error::other)?;
+        torrent_manifest::inspect_payload(layout.root(), leaf, &frozen.files, witness, prune)
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
-fn discard_unselected_blocking(
-    layout: &StashLayout,
-    content: &Path,
-    files: &stash_core::internal_api::TorrentFiles,
-) -> std::io::Result<()> {
-    use nix::errno::Errno;
-    use nix::fcntl::{AtFlags, OFlag, open, openat};
-    use nix::sys::stat::{Mode, SFlag, fstatat};
-    use nix::unistd::{UnlinkatFlags, unlinkat};
-
-    let Some(name) = content.strip_prefix(layout.in_progress()).ok().filter(|p| {
-        p.components().count() == 1
-            && p.components()
-                .all(|c| matches!(c, std::path::Component::Normal(_)))
-    }) else {
-        return Err(std::io::Error::other("Invalid torrent folder"));
-    };
-    if std::fs::symlink_metadata(content)?.is_file() {
-        return Ok(());
+/// Freeze the exact files that may leave the engine. Old manifests can be read after
+/// restart, but missing verification in a new engine response never authorizes an import.
+fn verified_selection(files: &mut TorrentFiles, allow_partial: bool) -> ApiResult<i64> {
+    if !files.ready || files.review_required {
+        return Err(ApiError::conflict(
+            "Start the download and wait for verified files.",
+        ));
     }
-    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-    let root = open(
-        layout.root(),
-        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
-        Mode::empty(),
-    )?;
-    let downloads = openat(&root, "Downloads", flags, Mode::empty())?;
-    let in_progress = openat(&downloads, "In Progress", flags, Mode::empty())?;
-    let torrent = openat(&in_progress, name, flags, Mode::empty())?;
-    let mut paths = std::collections::HashSet::new();
-    for file in &files.files {
-        if !paths.insert(&file.path) {
-            return Err(std::io::Error::other("Duplicate torrent path"));
-        }
-    }
-    'files: for file in files.files.iter().filter(|f| !f.selected) {
-        let relative = Path::new(&file.path);
-        let parts = relative.components().collect::<Vec<_>>();
-        if parts.is_empty()
-            || parts
-                .iter()
-                .any(|c| !matches!(c, std::path::Component::Normal(_)))
-            || file.path.contains('\\')
+    let mut total = None;
+    for file in files.files.iter_mut().filter(|f| f.selected) {
+        if file.complete && file.verified_bytes == Some(file.size) {
+            total = Some(
+                total
+                    .unwrap_or(0u64)
+                    .checked_add(file.size)
+                    .ok_or_else(ApiError::internal)?,
+            );
+        } else if allow_partial
+            && !file.complete
+            && file.verified_bytes.is_some_and(|bytes| bytes < file.size)
         {
-            return Err(std::io::Error::other("Invalid torrent path"));
+            file.selected = false;
+        } else {
+            return Err(ApiError::conflict(
+                "Some selected files are still being verified.",
+            ));
         }
-        // Retain directory handles throughout traversal and unlinking. A parent
-        // swapped for a symlink after validation cannot redirect a deletion.
-        let mut directories = vec![openat(&torrent, ".", flags, Mode::empty())?];
-        for part in &parts[..parts.len() - 1] {
-            match openat(
-                directories.last().unwrap(),
-                part.as_os_str(),
-                flags,
-                Mode::empty(),
-            ) {
-                Ok(dir) => directories.push(dir),
-                Err(Errno::ENOENT) => continue 'files,
-                Err(error) => return Err(error.into()),
-            }
-        }
-        let parent = directories.last().unwrap();
-        let filename = parts.last().unwrap().as_os_str();
-        match fstatat(parent, filename, AtFlags::AT_SYMLINK_NOFOLLOW) {
-            Ok(meta)
-                if SFlag::from_bits_truncate(meta.st_mode) & SFlag::S_IFMT == SFlag::S_IFREG =>
-            {
-                unlinkat(parent, filename, UnlinkatFlags::NoRemoveDir)?;
-            }
-            Ok(_) => {
-                return Err(std::io::Error::other(
-                    "Unselected path is not a regular file",
+    }
+    let total = total.ok_or_else(|| ApiError::conflict("No selected files are complete yet."))?;
+    i64::try_from(total).map_err(|_| ApiError::internal())
+}
+
+impl DownloadManager {
+    pub async fn finish_verified_files(
+        &self,
+        id: &str,
+        expected_selected: Option<Vec<usize>>,
+        expected_complete: &[usize],
+    ) -> ApiResult<()> {
+        let _controls = self.torrent_slots.lock().await;
+        let row = self.load_row(id).await?;
+        let engine_id = active_engine_id(&row)?;
+        let snapshot = self
+            .torrentd
+            .completion(engine_id, false)
+            .await
+            .map_err(|e| engine_error(&e))?;
+        let mut files = snapshot.files;
+        if let Some(mut expected) = expected_selected {
+            // Compare the whole selection before filtering by completion. More data
+            // arriving is fine; another device choosing different files needs review.
+            expected.sort_unstable();
+            expected.dedup();
+            let mut selected: Vec<_> = files
+                .files
+                .iter()
+                .filter(|f| f.selected)
+                .map(|f| f.index)
+                .collect();
+            selected.sort_unstable();
+            if selected != expected {
+                return Err(ApiError::conflict(
+                    "The selected files changed. Refresh the file list and review it again.",
                 ));
             }
-            Err(Errno::ENOENT) => {}
-            Err(error) => return Err(error.into()),
         }
-        // Empty directories only, never the torrent root or its siblings.
-        for index in (0..parts.len() - 1).rev() {
-            if unlinkat(
-                &directories[index],
-                parts[index].as_os_str(),
-                UnlinkatFlags::RemoveDir,
-            )
-            .is_err()
+        let total = verified_selection(&mut files, true)?;
+        if !expected_complete.is_empty() {
+            let verified: std::collections::HashSet<_> = files
+                .files
+                .iter()
+                .filter(|file| file.selected)
+                .map(|file| file.index)
+                .collect();
+            if !expected_complete
+                .iter()
+                .all(|index| verified.contains(index))
             {
-                break;
+                return Err(ApiError::conflict(
+                    "A previously complete file needs verification. Review the files again.",
+                ));
             }
         }
+        let rel = format!("{}/{}", paths::IN_PROGRESS, snapshot.folder);
+        if !is_torrent_content_rel(&rel) || snapshot.folder.contains('\\') {
+            return Err(ApiError::conflict(
+                "The torrent's output folder is unavailable.",
+            ));
+        }
+        record_completion(
+            self,
+            &row,
+            &row.name,
+            &rel,
+            total,
+            Frozen {
+                files,
+                release_witness: Some(snapshot.release_witness),
+            },
+        )
+        .await?;
+        let decided = self.load_row(id).await?;
+        finish_completed(self, &decided).await;
+        self.torrent_wake.notify_one();
+        let outcome = self.load_row(id).await?;
+        if outcome.error.as_deref() == Some(MSG_RELEASE_HOLD) {
+            return Err(ApiError::conflict(MSG_RELEASE_HOLD));
+        }
+        if outcome.state == DownloadState::Paused {
+            return Err(ApiError::conflict(
+                "The verified files changed. Review the torrent again.",
+            ));
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// The torrent is done: record that first (state `completed`, its files' place in
@@ -1033,56 +1117,191 @@ async fn finish(
     else {
         // Keep this row active until the engine has let go. A failed DELETE must
         // never strand a seeder outside the poller's active rows.
-        if !remove_finished(manager, row).await {
+        if !remove_finished(manager, row, None).await {
             return Ok(());
         }
         manager.fail(&row.id, MSG_FILES_MISSING).await;
         return Ok(());
     };
-    // Persist before releasing the engine; interrupted completion can still discard
-    // unselected boundary fragments without guessing from filenames or extensions.
-    let manifest = match row.engine_id.as_deref() {
-        Some(id) => match manager.torrentd.files(id).await {
-            Ok(files) if files.ready => {
-                Some(serde_json::to_string(&files).map_err(|_| ApiError::internal())?)
-            }
-            // Older engines have no selection API and only download whole torrents.
-            Err(crate::torrentd_client::TorrentdError::Api { status: 404, .. }) => None,
-            _ => return Ok(()),
-        },
-        None => None,
+    let Some(engine_id) = row.engine_id.as_deref() else {
+        return Ok(());
     };
+    if let Ok(path) = manager.layout.abs(&rel)
+        && tokio::fs::symlink_metadata(path)
+            .await
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+    {
+        if remove_finished(manager, row, None).await {
+            manager.fail(&row.id, MSG_FILES_MISSING).await;
+        }
+        return Ok(());
+    }
+    let snapshot = match manager.torrentd.completion(engine_id, true).await {
+        Ok(snapshot) if rel == format!("{}/{}", paths::IN_PROGRESS, snapshot.folder) => snapshot,
+        _ => return Ok(()),
+    };
+    let mut files = snapshot.files;
+    let Ok(total) = verified_selection(&mut files, false) else {
+        return Ok(());
+    };
+    record_completion(
+        manager,
+        row,
+        name,
+        &rel,
+        total,
+        Frozen {
+            files,
+            release_witness: Some(snapshot.release_witness),
+        },
+    )
+    .await?;
+    let row = manager.load_row(&row.id).await?;
+    finish_completed(manager, &row).await;
+    Ok(())
+}
+
+async fn record_completion(
+    manager: &DownloadManager,
+    row: &DownloadRow,
+    name: &str,
+    rel: &str,
+    total: i64,
+    frozen: Frozen,
+) -> ApiResult<()> {
+    let manifest = serde_json::to_string(&frozen).map_err(|_| ApiError::internal())?;
     let t = now();
-    let total = torrent
-        .total_bytes
-        .or(Some(torrent.done_bytes))
-        .and_then(|b| i64::try_from(b).ok());
+    let mut conn = manager.db.acquire().await?;
+    sqlx::query("PRAGMA synchronous=FULL")
+        .execute(&mut *conn)
+        .await?;
     let updated = sqlx::query(
         "UPDATE downloads SET state = 'completed', name = ?, rel_path = ?, progress = 1.0,
                 total_bytes = COALESCE(?, total_bytes), done_bytes = COALESCE(?, total_bytes, done_bytes),
                 down_bps = 0, up_bps = 0, peers = NULL, eta_s = NULL, error = NULL,
                 completed_at = COALESCE(completed_at, ?), updated_at = ?, torrent_files_json = ?
-         WHERE id = ? AND state IN ('queued', 'downloading', 'paused', 'seeding')",
+         WHERE id = ? AND state = ? AND engine_id = ?",
     )
     .bind(name)
-    .bind(&rel)
+    .bind(rel)
     .bind(total)
     .bind(total)
     .bind(t)
     .bind(t)
     .bind(&manifest)
     .bind(&row.id)
-    .execute(&manager.db)
+    .bind(row.state.as_str())
+    .bind(&row.engine_id)
+    .execute(&mut *conn)
     .await?
     .rows_affected();
+    drop(conn);
     if updated == 0 {
-        // Removed or changed meanwhile.
-        return Ok(());
+        return Err(ApiError::conflict(
+            "This download has changed. Refresh its files.",
+        ));
     }
     let row = manager.load_row(&row.id).await?;
     manager.publish_row(&row);
-    finish_completed(manager, &row).await;
     Ok(())
+}
+
+const MSG_RELEASE_HOLD: &str = "The torrent files could not be matched to the verified download. Its files are being kept in place for review.";
+
+/// Only a live engine can upgrade a pre-witness decision. Preserve its selected
+/// membership; an absent engine is idempotent only after evidence was committed.
+async fn frozen_for_release(
+    manager: &DownloadManager,
+    row: &DownloadRow,
+    rel: &str,
+) -> ApiResult<Frozen> {
+    let stored = row
+        .torrent_files_json
+        .as_deref()
+        .map(serde_json::from_str::<Frozen>)
+        .transpose()
+        .map_err(|_| ApiError::conflict(MSG_RELEASE_HOLD))?;
+    if let Some(
+        frozen @ Frozen {
+            release_witness: Some(_),
+            ..
+        },
+    ) = stored
+    {
+        return Ok(frozen);
+    }
+    let engine = row
+        .engine_id
+        .as_deref()
+        .ok_or_else(|| ApiError::conflict(MSG_RELEASE_HOLD))?;
+    let TorrentCompletion {
+        folder,
+        mut files,
+        release_witness,
+    } = manager
+        .torrentd
+        .completion(engine, true)
+        .await
+        .map_err(|e| engine_error(&e))?;
+    if rel != format!("{}/{}", paths::IN_PROGRESS, folder) || !is_torrent_content_rel(rel) {
+        return Err(ApiError::conflict(MSG_RELEASE_HOLD));
+    }
+    if let Some(old) = stored {
+        let by_id: HashMap<_, _> = old.files.files.iter().map(|f| (f.index, f)).collect();
+        if !old.files.ready
+            || old.files.review_required
+            || by_id.len() != files.files.len()
+            || by_id.len() != old.files.files.len()
+        {
+            return Err(ApiError::conflict(MSG_RELEASE_HOLD));
+        }
+        for f in &mut files.files {
+            let was = by_id
+                .get(&f.index)
+                .ok_or_else(|| ApiError::conflict(MSG_RELEASE_HOLD))?;
+            if was.path != f.path || was.size != f.size || was.selected && !f.selected {
+                return Err(ApiError::conflict(MSG_RELEASE_HOLD));
+            }
+            f.selected = was.selected;
+        }
+    } else if files.files.iter().any(|f| !f.selected) {
+        // A historical whole-torrent decision contains no proof of a subset.
+        return Err(ApiError::conflict(MSG_RELEASE_HOLD));
+    }
+    verified_selection(&mut files, false)?;
+    let frozen = Frozen {
+        files,
+        release_witness: Some(release_witness),
+    };
+    let mut conn = manager.db.acquire().await?;
+    sqlx::query("PRAGMA synchronous=FULL")
+        .execute(&mut *conn)
+        .await?;
+    let updated = sqlx::query(
+        "UPDATE downloads SET torrent_files_json=? WHERE id=? AND state='completed'
+        AND engine_id=? AND rel_path=? AND torrent_files_json IS ?",
+    )
+    .bind(serde_json::to_string(&frozen).map_err(|_| ApiError::internal())?)
+    .bind(&row.id)
+    .bind(engine)
+    .bind(rel)
+    .bind(&row.torrent_files_json)
+    .execute(&mut *conn)
+    .await?;
+    if updated.rows_affected() != 1 {
+        return Err(ApiError::conflict(MSG_RELEASE_HOLD));
+    }
+    Ok(frozen)
+}
+
+async fn hold_release(manager: &DownloadManager, row: &DownloadRow) -> bool {
+    let changed = sqlx::query("UPDATE downloads SET error=?,updated_at=? WHERE id=? AND state='completed' AND rel_path=? AND error IS NOT ?")
+        .bind(MSG_RELEASE_HOLD).bind(now()).bind(&row.id).bind(&row.rel_path).bind(MSG_RELEASE_HOLD)
+        .execute(&manager.db).await;
+    if changed.is_ok_and(|r| r.rows_affected() == 1) {
+        let _ = manager.publish_id(&row.id).await;
+    }
+    false
 }
 
 /// A finished torrent whose files are still in `In Progress`: take it out of the engine,
@@ -1096,87 +1315,151 @@ pub(crate) async fn finish_completed(manager: &DownloadManager, row: &DownloadRo
     else {
         return true;
     };
-    if !remove_finished(manager, row).await {
-        return false;
-    }
-    // Only a real file or folder strictly inside In Progress is moved, never a link.
-    let content = manager.layout.abs(rel).ok().filter(|p| {
-        manager
-            .layout
-            .rel(p)
-            .is_some_and(|r| is_torrent_content_rel(&r))
-    });
-    let Some(content) = content else {
-        manager.fail(&row.id, MSG_FILES_MISSING).await;
-        return true;
-    };
-    match tokio::fs::symlink_metadata(&content).await {
-        Ok(meta) if !meta.file_type().is_symlink() => {}
-        _ => {
-            manager.fail(&row.id, MSG_FILES_MISSING).await;
+    // A rename may already have succeeded. In that case the old name can
+    // belong to a different transfer: never adopt, prune or move it again.
+    match manager.library.handoff_torrent(&row.id, rel, None).await {
+        Ok(true) => {
+            let _ = manager.publish_id(&row.id).await;
             return true;
         }
+        Ok(false) => {}
+        Err(e) => return move_retry(manager, row, &e).await,
     }
-    let Some(component) = content
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(str::to_string)
+    let Some(content) = manager
+        .layout
+        .abs(rel)
+        .ok()
+        .filter(|_| is_torrent_content_rel(rel))
     else {
-        manager.fail(&row.id, MSG_FILES_MISSING).await;
-        return true;
+        return hold_release(manager, row).await;
     };
-    // Files written by the engine user become PUID:PGID before they move on.
-    // Never let engine-owned files into the library: retry later instead of moving.
-    if let Err(e) = crate::supervisor_client::adopt(&manager.config, &component).await {
-        tracing::warn!(error = %format!("{e:#}"), download = %row.id, "the supervisor could not adopt a torrent; will retry");
+    let Ok(frozen) = frozen_for_release(manager, row, rel).await else {
+        return hold_release(manager, row).await;
+    };
+    let frozen = Arc::new(frozen);
+    if inspect_payload(&manager.layout, &content, frozen.clone(), false)
+        .await
+        .is_err()
+    {
+        return hold_release(manager, row).await;
+    }
+    if !remove_finished(manager, row, Some(&frozen.files)).await {
         return false;
     }
-    if let Some(manifest) = &row.torrent_files_json {
-        let files: stash_core::internal_api::TorrentFiles = match serde_json::from_str(manifest) {
-            Ok(files) => files,
-            Err(_) => return false,
-        };
-        if let Err(e) = discard_unselected(&manager.layout, &content, &files).await {
-            tracing::warn!(error = %e, download = %row.id, "could not remove unselected torrent fragments; will retry");
+    if row.engine_id.is_some() {
+        let cleared = sqlx::query(
+            "UPDATE downloads SET engine_id=NULL WHERE id=? AND state='completed' AND engine_id=?",
+        )
+        .bind(&row.id)
+        .bind(&row.engine_id)
+        .execute(&manager.db)
+        .await;
+        if !cleared.is_ok_and(|r| r.rows_affected() == 1) {
             return false;
         }
     }
-    match manager.move_to_completed(&content, &component).await {
-        Ok((_, dest)) => {
-            tracing::info!(download = %row.id, rel = %dest, "torrent finished");
-            if let Err(e) = manager
-                .complete_and_sort(&row.id, &dest, row.total_bytes)
-                .await
-            {
-                tracing::warn!(error = %e.message, download = %row.id, "could not queue a finished torrent for sorting");
-            }
+    let component = content
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("validated torrent component");
+    // A release may have taken time, or completed before the previous process stopped.
+    if row.engine_id.is_some()
+        && inspect_payload(&manager.layout, &content, frozen.clone(), false)
+            .await
+            .is_err()
+    {
+        return hold_release(manager, row).await;
+    }
+    // Files written by the engine user become PUID:PGID before they move on.
+    // Never let engine-owned files into the library: retry later instead of moving.
+    if let Err(e) = crate::supervisor_client::adopt(&manager.config, component).await {
+        tracing::warn!(error = %format!("{e:#}"), download = %row.id, "the supervisor could not adopt a torrent; will retry");
+        return false;
+    }
+    let prepared = match inspect_payload(&manager.layout, &content, frozen, true).await {
+        Ok(meta) => meta,
+        Err(_) => return hold_release(manager, row).await,
+    };
+    match manager
+        .library
+        .handoff_torrent(&row.id, rel, Some(&prepared))
+        .await
+    {
+        Ok(true) => {
+            let _ = manager.publish_id(&row.id).await;
             true
         }
-        Err(e) => {
-            tracing::warn!(error = %e, download = %row.id, "could not move a finished torrent; will try again");
-            let noted = sqlx::query(
-                "UPDATE downloads SET error = ?, updated_at = ? WHERE id = ? AND state = 'completed'",
-            )
-            .bind(MSG_MOVE_RETRY)
-            .bind(now())
-            .bind(&row.id)
-            .execute(&manager.db)
-            .await;
-            if noted.is_ok_and(|r| r.rows_affected() > 0) {
-                let _ = manager.publish_id(&row.id).await;
-            }
-            false
-        }
+        Ok(false) => false,
+        Err(e) => move_retry(manager, row, &e).await,
     }
 }
 
+async fn move_retry(
+    manager: &DownloadManager,
+    row: &DownloadRow,
+    error: &stash_core::CoreError,
+) -> bool {
+    tracing::warn!(%error, download = %row.id, "could not publish a finished torrent; will retry");
+    let noted = sqlx::query(
+        "UPDATE downloads SET error=?, updated_at=? WHERE id=? AND state='completed' AND rel_path=?",
+    )
+    .bind(MSG_MOVE_RETRY)
+    .bind(now())
+    .bind(&row.id)
+    .bind(&row.rel_path)
+    .execute(&manager.db)
+    .await;
+    if noted.is_ok_and(|r| r.rows_affected() > 0) {
+        let _ = manager.publish_id(&row.id).await;
+    }
+    false
+}
+
 /// Stop uploading even when removal fails, and leave the row eligible for retry.
-async fn remove_finished(manager: &DownloadManager, row: &DownloadRow) -> bool {
+async fn remove_finished(
+    manager: &DownloadManager,
+    row: &DownloadRow,
+    manifest: Option<&TorrentFiles>,
+) -> bool {
     let Some(engine_id) = row.engine_id.as_deref() else {
         return true;
     };
-    match manager.torrentd.remove(engine_id, false).await {
-        Ok(()) | Err(TorrentdError::Api { status: 404, .. }) => true,
+    let checked = manifest.is_some();
+    let result = if let Some(manifest) = manifest {
+        let Some(folder) = row
+            .rel_path
+            .as_deref()
+            .filter(|r| is_torrent_content_rel(r))
+            .and_then(|r| r.rsplit('/').next())
+        else {
+            return false;
+        };
+        let indices = manifest
+            .files
+            .iter()
+            .filter(|f| f.selected)
+            .map(|f| f.index)
+            .collect();
+        manager.torrentd.release(engine_id, folder, indices).await
+    } else {
+        manager.torrentd.remove(engine_id, false).await
+    };
+    match result {
+        Ok(()) => true,
+        Err(TorrentdError::Api { status: 404, .. }) if !checked => true,
+        Err(TorrentdError::Api { status: 412, .. }) if checked => {
+            if manager.torrentd.pause(engine_id).await.is_ok() {
+                let reset = sqlx::query("UPDATE downloads SET state='paused', completed_at=NULL, torrent_files_json=NULL,
+                    progress=0, done_bytes=0, error=?, updated_at=? WHERE id=? AND state='completed' AND engine_id=?")
+                    .bind("The verified files changed. Review this torrent before continuing.")
+                    .bind(now()).bind(&row.id).bind(engine_id).execute(&manager.db).await;
+                if reset.is_ok() {
+                    let _ = manager.publish_id(&row.id).await;
+                }
+            }
+            false
+        }
+        Err(TorrentdError::Api { status: 409, .. } | TorrentdError::Blocked(_)) if checked => false,
         Err(e) => {
             tracing::warn!(error = %e, download = %row.id, "could not remove a finished torrent; pausing and retrying");
             if let Err(error) = manager.torrentd.pause(engine_id).await {
@@ -1232,6 +1515,8 @@ mod tests {
                     size: 8,
                     kind: TorrentFileKind::Video,
                     selected: true,
+                    verified_bytes: Some(8),
+                    complete: true,
                 },
                 TorrentFile {
                     index: 1,
@@ -1239,8 +1524,20 @@ mod tests {
                     size: 8,
                     kind: TorrentFileKind::Other,
                     selected: false,
+                    verified_bytes: Some(2),
+                    complete: false,
                 },
             ],
+        };
+        let proof = torrent_manifest::fixture_witness(&content, &manifest);
+        let discard_unselected = |layout: &StashLayout, content: &Path, files: &TorrentFiles| {
+            let layout = layout.clone();
+            let content = content.to_owned();
+            let frozen = Arc::new(Frozen {
+                files: files.clone(),
+                release_witness: Some(proof.clone()),
+            });
+            async move { inspect_payload(&layout, &content, frozen, true).await }
         };
         discard_unselected(&layout, &content, &manifest)
             .await

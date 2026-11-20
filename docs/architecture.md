@@ -669,8 +669,10 @@ VpnStatus { configured: bool, reachable: bool /* torrentd answered */, state: "c
 | POST | `/api/library/rescan` | full | → 202 `{job_id}` |
 | GET | `/api/trash` / POST `/api/trash/:id/restore` / DELETE `/api/trash` | owner | list / restore / empty (restore into a library that would not show the file answers 409, section 11) |
 | GET | `/api/downloads` | downloads:read | `?state=active|finished|all&limit` → `{items: Download[]}` |
-| GET | `/api/downloads/:id/files` | full | → `{ready, review_required:bool, rules:TorrentFileRules|null, files:[{index,path,size,kind,selected}]}`; creator/full owner only, otherwise 404; no absolute NAS paths |
+| GET | `/api/downloads/:id/files` | full | → `{ready, review_required:bool, rules:TorrentFileRules|null, files:[{index,path,size,kind,selected,verified_bytes:number|null,complete:bool}]}`; creator/full owner only, otherwise 404; no absolute NAS paths |
 | PUT | `/api/downloads/:id/files` | full | `{indices:number[]}` → 204; active torrents only, nonempty valid indices; leaves other torrents and pause state unchanged |
+| POST | `/api/downloads/:id/files/:index/skip` | full | `{}` → 204. Skip one selected file and retain every other choice. At least one file must stay selected. Same creator/owner visibility as the file list. |
+| POST | `/api/downloads/:id/finish-completed` | full | `{expected_selected?:number[], expected_complete?:number[]}` → updated `Download`. Clients send the reviewed selection and the indices confirmed complete. A changed selection, lost verified file or unavailable progress returns 409. Additional files that finished during confirmation are kept. An empty object requests the current selection. After review, finish the selected verified files and exclude incomplete files. An empty verified selection returns a conflict. The server saves the completion manifest before engine release and sorting. |
 | POST | `/api/downloads/:id/start` | full | `{indices:number[]}` → `Download`; creator/full owner only; validates and durably saves a nonempty selection, approves review, then starts or queues under the torrent slot limit. Never starts another torrent. |
 | PUT | `/api/downloads/:id/rules` | full | `TorrentFileRules` → 204; creator/full owner only, active torrents with metadata; replaces rules and selection, preserves pause state, pauses on zero matches |
 | GET | `/api/downloads/destinations` | downloads:create | `[{id, name, icon, kinds}]`: only libraries visible to this user; no `library:read` grant required |
@@ -806,7 +808,10 @@ Bearer internal token on every route except `/livez`. The engine binds to 127.0.
 | GET | `/health` | → `{vpn: TunnelStatus, engine: {state:"running"|"blocked", reason|null, allow_no_vpn}, public_ip|null, country|null, protected|null, checked_at|null}` |
 | GET | `/torrents` | → `[{id, info_hash, name, state:"initializing"|"downloading"|"paused"|"seeding"|"error", progress, total_bytes, done_bytes, uploaded_bytes, down_bps, up_bps, peers, eta_s, error, output_dir}]` |
 | POST | `/torrents` | `{magnet?: string, torrent_base64?: string, file_types?: ("video"|"subtitle"|"image"|"other")[], file_rules?: TorrentFileRules, review_before_download?: bool}` → `{id, info_hash, name}` (409 when blocked by VPN state) |
-| GET | `/torrents/:id/files` | → `{ready:bool, review_required:bool, rules:TorrentFileRules|null, files:[{index,path,size,kind,selected}]}`; `path` is relative to this torrent's output folder. Pending metadata returns `ready:false` |
+| GET | `/torrents/:id/files` | → `{ready:bool, review_required:bool, rules:TorrentFileRules|null, files:[{index,path,size,kind,selected,verified_bytes:number|null,complete:bool}]}`; `path` is relative to this torrent's output folder. Pending metadata returns `ready:false` |
+| GET | `/torrents/:id/completion` | Returns `{folder,files,release_witness}` from the same engine handle. The internal `allow_direct_file=true` query also permits verified legacy single-file output for automatic completion or recovery. |
+| POST | `/torrents/:id/release` | `{folder,indices}` → 204. Rechecks ownership of that output directory and current verification of the files before releasing the torrent for adoption. |
+| POST | `/torrents/:id/files/:index/skip` | `{}` → 204. Removes one file from the current selection while preserving a nonempty selection. |
 | PUT | `/torrents/:id/files` | `{indices:number[]}` → 204; at least one valid non-padding file, metadata ready; persists selection without a session restart |
 | POST | `/torrents/:id/approve` | `{indices:number[]}` → 204; validates and durably persists the exact selection before clearing review; leaves paused for the server’s slot-aware resume. |
 | PUT | `/torrents/:id/rules` | `TorrentFileRules` → 204; metadata required; persists rules and selection; zero matches pauses |
@@ -960,6 +965,8 @@ Web and Android open one review picker after adding a torrent. The list shows re
 
 `POST /api/downloads/:id/start` uses the existing full-session visibility checks. Engine approval persists file choices successfully before removing the hold, and leaves the handle paused. The server then uses its existing slot-aware resume path. If a later step fails, the selected torrent remains paused or queued and can be resumed; other downloads retain their state. The original passkey, VPN, kill switch and file ownership rules remain in force.
 
+The file list remains available from metadata review through an active or paused transfer. Each file reports its selected state, the number of its bytes covered by verified torrent pieces, and whether verification is complete. During a check, unavailable progress is null. File allocation and an aggregate percentage do not establish completion. The explicit Finish completed files action takes a fresh engine snapshot. Only selected complete files enter the ordinary release, adoption, cleanup and sorting workflow. Polling the file list has no effect on selection or the download queue.
+
 ### Automatic library conversion (migrations 0008–0009, 0011)
 
 Owner-only routes, hidden-library 404 before owner checks, authenticated library-read scope:
@@ -1032,6 +1039,12 @@ Folder renames support shfs without a directory-rename fallback that could overw
 
 Ordinary selected-file moves use the same durable private-endpoint staging and startup recovery as Flatten files, including on NAS filesystems without native exclusive rename. Recovery journals accept primary kind `item` as well as legacy `video`; old journals remain readable. Photos and videos preserve identity and playback metadata. Active downloads/seeding/conversions, changed catalog versions and occupied destinations block affected files. Moving into a subfolder assigns the destination's top-level download group (or a new physical-folder group); ambiguous labels are rejected. Moving to the library root retains the existing group. Completed conversion target paths move with the catalog so verified savings remain anchored. Each failed per-file move is reconciled before another move starts; unresolved recovery blocks further mutations.
 
+### External directory renames (migration 0014)
+
+Startup scans and filesystem notifications reconcile the catalog with the share. A 30-second check of top-level library and collection directories also catches renames when a share drops notifications. The periodic full scan still covers deeper changes. A physical collection follows its directory when all members occupy that directory exclusively. Explicit virtual aliases and scattered or shared groups keep their labels. This works for previously indexed imports whose original source label still matches their stored label.
+
+The catalog records file and library directory identities. An external rename of a bound library root requires the same stash, the same unclaimed directory identity and a matching indexed file witness. The library keeps its display name, access rules and item history. A missing library with no prior witness stays missing. Catalog reconciliation performs no physical moves. Existing library events carry the changes to open clients.
+
 ### Video discovery feeds
 
 Home adds `suggested: Item[]` (up to12 ready, visible library videos). Suggestions are generated locally: unstarted videos, favourites first, stable daily rotation; no media names, watch history or metadata are sent elsewhere. Started unfinished videos with more than30seconds of progress appear in Continue watching instead, and finished videos are excluded from suggestions. Legacy clients ignore the additive field; new clients default it to empty for older servers.
@@ -1039,6 +1052,16 @@ Home adds `suggested: Item[]` (up to12 ready, visible library videos). Suggestio
 `GET /api/libraries/:id/feed` returns `{continue_watching: Item[], suggested: Item[], recent: Item[], collections: {folder: DownloadFolder, recent: Item[]}[], next_cursor: string|null}`. Every row is confined to the visible requested video library. On the first page, Continue watching includes up to12 unfinished videos ordered by last playback, suggestions use the Home rule restricted to that library, and recent includes up to12 newest videos. Each page holds up to12 download-folder collections with up to8 newest videos, including all nested paths. Main rows are empty on later collection pages. The cursor is a collection offset in the current name/key ordering; negative/malformed/out-of-range offsets return400. Collection changes require refreshing the feed. Empty custom collections remain discoverable. The API reads only; it never moves or renames media.
 
 Web and Android video libraries default to this feed. A collection header opens the existing paged item query with `library_id` and `download_group` and no `download_folder`, showing all descendants. The top three-dot Library options menu offers Video feed, Folder view and All videos; folder organization remains explicitly available. Photo libraries retain their timeline. Home shows suggestions after Continue watching and before existing library shelves.
+
+Web Continue watching cards open the existing item player at the saved position with a single activation. Left and Right move focus between cards, Up and Down move between shelves, Home and End reach the shelf edges, and the desktop paging buttons move by whole cards. Resume artwork has a larger bounded width on wide screens. Android caps its resume card width on expanded screens. Collection preview IDs are ranked together per feed page before loading metadata and per-viewer progress for the returned tiles.
+
+### Verified torrent handoff (migrations 0015 and 0016)
+
+During an engine recheck, per-file progress is unavailable until the piece map is ready. Active rows retain their last known transfer totals and show “Checking downloaded files”. Both clients keep the review open after Start and refresh file progress while it is visible.
+
+Before releasing a torrent, the server persists the verified selection. After the engine releases the payload and the supervisor adopts it, `torrent_handoffs` records the In Progress source, reserved Completed destination and observed filesystem identity. A retry after a restart checks that identity and resumes the same handoff. Catalog publication and the owned sorting job commit together. On shares without exclusive rename support, publication uses an exclusively created private directory with a persistent ownership marker. Sorting imports the selected files into the normal flat download collection. Conflicting entries remain available for inspection.
+
+The engine records the identity, size and modification time of the selected files through its open storage handles. The frozen `torrent_files_json` includes a private `release_witness` with `root_dev`, `root_ino` and file indices mapped to `{dev,ino,size,mtime_sec,mtime_nsec,uid,ctime_sec,ctime_nsec}`. The public file list exposes only transfer information. The server persists this evidence with the completion decision and checks it again after release. The import journal tracks the selected files as they move through flattening and sorting. Unexpected additions in nested folders and changed files hold the import for review. Once sorting commits, the private wrapper can retire and a later download can reuse the public name.
 
 ### Flat completed-download imports
 

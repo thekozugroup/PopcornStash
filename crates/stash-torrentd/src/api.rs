@@ -17,7 +17,8 @@ use base64::Engine as _;
 use serde::Deserialize;
 use stash_core::internal_api::{
     AddTorrentRequest, AddTorrentResponse, EngineHealth, EngineTorrent, LimitsRequest,
-    SelectTorrentFiles, TorrentFileKind, TorrentFileRules, TorrentFiles,
+    ReleaseTorrent, SelectTorrentFiles, TorrentCompletion, TorrentFileKind, TorrentFileRules,
+    TorrentFiles,
 };
 
 use crate::sys::constant_time_eq;
@@ -45,6 +46,10 @@ pub enum BackendError {
     NotFound,
     #[error("{0}")]
     BadRequest(String),
+    #[error("{0}")]
+    Conflict(String),
+    #[error("The torrent files changed during verification.")]
+    FilesChanged,
     #[error("{0}")]
     Internal(String),
 }
@@ -89,6 +94,20 @@ pub trait TorrentBackend: Send + Sync + 'static {
     ) -> impl Future<Output = Result<TorrentFiles, BackendError>> + Send {
         async { Err(BackendError::NotFound) }
     }
+    fn completion(
+        &self,
+        _id: String,
+        _allow_direct_file: bool,
+    ) -> impl Future<Output = Result<TorrentCompletion, BackendError>> + Send {
+        async { Err(BackendError::NotFound) }
+    }
+    fn skip_file(
+        &self,
+        _id: String,
+        _index: usize,
+    ) -> impl Future<Output = Result<(), BackendError>> + Send {
+        async { Err(BackendError::NotFound) }
+    }
     fn set_rules(
         &self,
         _id: String,
@@ -118,6 +137,13 @@ pub trait TorrentBackend: Send + Sync + 'static {
         id: String,
         delete_files: bool,
     ) -> impl Future<Output = Result<(), BackendError>> + Send;
+    fn release(
+        &self,
+        _id: String,
+        _release: ReleaseTorrent,
+    ) -> impl Future<Output = Result<(), BackendError>> + Send {
+        async { Err(BackendError::NotFound) }
+    }
     fn set_limits(
         &self,
         limits: LimitsRequest,
@@ -156,6 +182,12 @@ impl IntoResponse for BackendError {
                 "not_found",
                 "No torrent with this id.",
             ),
+            BackendError::FilesChanged => error(
+                StatusCode::PRECONDITION_FAILED,
+                "files_changed",
+                "The torrent files changed during verification.",
+            ),
+            BackendError::Conflict(message) => error(StatusCode::CONFLICT, "conflict", message),
             BackendError::BadRequest(message) => {
                 error(StatusCode::BAD_REQUEST, "bad_request", message)
             }
@@ -184,6 +216,9 @@ pub fn router<B: TorrentBackend>(backend: Arc<B>, token: &str) -> Router {
             "/torrents/{id}/files",
             get(files::<B>).put(select_files::<B>),
         )
+        .route("/torrents/{id}/completion", get(completion::<B>))
+        .route("/torrents/{id}/release", post(release::<B>))
+        .route("/torrents/{id}/files/{index}/skip", post(skip_file::<B>))
         .route("/torrents/{id}/pause", post(pause::<B>))
         .route("/torrents/{id}/resume", post(resume::<B>))
         .route("/torrents/{id}/approve", axum::routing::post(approve::<B>))
@@ -339,6 +374,44 @@ async fn select_files<B: TorrentBackend>(
         return Err(BackendError::BadRequest("Select at least one file.".into()));
     }
     state.backend.select_files(id, selection.indices).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize, Default)]
+struct CompletionQuery {
+    #[serde(default)]
+    allow_direct_file: bool,
+}
+
+async fn completion<B: TorrentBackend>(
+    State(state): State<ApiState<B>>,
+    Path(id): Path<String>,
+    Query(query): Query<CompletionQuery>,
+) -> Result<Json<TorrentCompletion>, BackendError> {
+    valid_id(&id)?;
+    state
+        .backend
+        .completion(id, query.allow_direct_file)
+        .await
+        .map(Json)
+}
+
+async fn release<B: TorrentBackend>(
+    State(state): State<ApiState<B>>,
+    Path(id): Path<String>,
+    Json(body): Json<ReleaseTorrent>,
+) -> Result<StatusCode, BackendError> {
+    valid_id(&id)?;
+    state.backend.release(id, body).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn skip_file<B: TorrentBackend>(
+    State(state): State<ApiState<B>>,
+    Path((id, index)): Path<(String, usize)>,
+) -> Result<StatusCode, BackendError> {
+    valid_id(&id)?;
+    state.backend.skip_file(id, index).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

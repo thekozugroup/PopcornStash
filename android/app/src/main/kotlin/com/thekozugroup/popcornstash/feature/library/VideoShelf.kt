@@ -26,6 +26,7 @@ import com.thekozugroup.popcornstash.data.api.Item
 import com.thekozugroup.popcornstash.ui.components.MediaTile
 import com.thekozugroup.popcornstash.ui.components.Shelf
 import com.thekozugroup.popcornstash.ui.components.TileShape
+import com.thekozugroup.popcornstash.ui.components.needsLargeThumbnail
 import com.thekozugroup.popcornstash.ui.components.shelfTileWidth
 import com.thekozugroup.popcornstash.ui.icons.LibraryIcons
 import com.thekozugroup.popcornstash.ui.media.LocalPictures
@@ -68,12 +69,13 @@ fun VideoShelf(
         } else {
             BoxWithConstraints(Modifier.fillMaxWidth()) {
                 val width = (shelfTileWidth(shape) * fontScale).coerceAtMost(maxWidth - Popcorn.spacing.gutter * 2)
+                val tileWidthPx = with(LocalDensity.current) { width.roundToPx() }
                 Shelf(Modifier.testTag("shelf $title")) {
                     items(items, key = { it.id }) { item ->
                         MediaTile(
                             title = format.displayTitle(item),
                             line = format.tileLine(item),
-                            url = pictures.thumb(item, large = true),
+                            url = pictures.thumb(item, large = shape.needsLargeThumbnail(item, tileWidthPx)),
                             shape = shape,
                             glyph = LibraryIcons.glyph(libraryIcon(item) ?: "clapperboard"),
                             onClick = { onOpen(item) },

@@ -1,6 +1,6 @@
 //! Full rescans and single-file indexing (section 5, Watcher).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -65,7 +65,10 @@ impl Meta {
 
 /// xxh3-64 of size + first 1 MiB + last 1 MiB, hex.
 pub fn quick_hash(path: &Path) -> std::io::Result<String> {
-    let mut file = std::fs::File::open(path)?;
+    hash_file(std::fs::File::open(path)?)
+}
+
+pub(super) fn hash_file(mut file: std::fs::File) -> std::io::Result<String> {
     let size = file.metadata()?.len();
     let mut hasher = xxhash_rust::xxh3::Xxh3::new();
     hasher.update(&size.to_le_bytes());
@@ -424,6 +427,17 @@ pub(crate) fn new_row(
 /// when `row` has none, the source download and who added it). The database works out
 /// `library_id` and `place` from the new path in the same write.
 pub(crate) async fn overwrite_row(lib: &Library, id: &str, row: &ItemRow) -> Result<()> {
+    let mut conn = lib.db.acquire().await?;
+    overwrite_on(&mut conn, id, row).await
+}
+
+async fn record_identity(lib: &Library, id: &str, identity: (i64, i64)) -> Result<()> {
+    sqlx::query("UPDATE items SET file_dev=?1,file_ino=?2 WHERE id=?3 AND (file_dev IS NOT ?1 OR file_ino IS NOT ?2)")
+        .bind(identity.0).bind(identity.1).bind(id).execute(&lib.db).await?;
+    Ok(())
+}
+
+async fn overwrite_on(conn: &mut sqlx::SqliteConnection, id: &str, row: &ItemRow) -> Result<()> {
     sqlx::query(
         "UPDATE items SET rel_path = ?, kind = ?, category = ?, status = ?, title = ?, sort_title = ?, year = ?,
             show_name = ?, season = ?, episode = ?, episode_title = ?, size = ?, mtime = ?, quick_hash = ?, mime = ?,
@@ -462,33 +476,83 @@ pub(crate) async fn overwrite_row(lib: &Library, id: &str, row: &ItemRow) -> Res
     .bind(&row.added_by)
     .bind(now())
     .bind(id)
-    .execute(&lib.db)
+    .execute(conn)
     .await?;
     Ok(())
 }
 
-/// A missing item with the same size and quick hash: the same file under a new name.
-pub(crate) async fn find_moved(
+/// Distinguish an ambiguous content match from no match, so extension heuristics
+/// cannot transfer another edition's history after an ambiguity.
+pub(super) enum MoveMatch {
+    Found(String),
+    Absent,
+    Ambiguous,
+    NeedsScan,
+}
+
+pub(super) async fn find_moved(
     lib: &Library,
-    size: i64,
+    rel: &str,
+    meta: &std::fs::Metadata,
     hash: Option<&str>,
-) -> Result<Option<ItemRow>> {
-    let Some(hash) = hash else { return Ok(None) };
-    let candidates = sqlx::query_as::<_, ItemRow>(
-        "SELECT * FROM items WHERE status != 'trashed' AND size = ? AND quick_hash = ?
-         ORDER BY missing_since DESC, id",
+    unique_destination: Option<bool>,
+) -> Result<MoveMatch> {
+    use std::os::unix::fs::MetadataExt;
+    let Some(hash) = hash else {
+        return Ok(MoveMatch::Absent);
+    };
+    let (dev, ino) = super::observed::identity(meta);
+    #[derive(sqlx::FromRow)]
+    struct Candidate {
+        id: String,
+        rel_path: String,
+        library_id: Option<String>,
+        file_dev: Option<i64>,
+        file_ino: Option<i64>,
+    }
+    let candidates: Vec<Candidate> = sqlx::query_as(
+        "SELECT id,rel_path,library_id,file_dev,file_ino FROM items
+        WHERE status!='trashed' AND size=? AND quick_hash=?",
     )
-    .bind(size)
+    .bind(meta.len() as i64)
     .bind(hash)
     .fetch_all(&lib.db)
     .await?;
-    // A rename notification may arrive before the removal notification.
-    for item in candidates {
-        if is_gone(lib, &item.rel_path).await {
-            return Ok(Some(item));
+    let mut exact = Vec::new();
+    let mut vanished = Vec::new();
+    for c in candidates {
+        let same =
+            c.file_dev == Some(dev) && c.file_ino == Some(ino) && ino != 0 && meta.nlink() == 1;
+        if !(is_gone(lib, &c.rel_path).await
+            || same && super::observed::changed_spelling(lib, &c.rel_path, rel))
+        {
+            continue;
         }
+        if let Some(library_id) = &c.library_id
+            && let Some(top) = paths::top_folder(&c.rel_path)
+            && !super::observed::source_available(lib, library_id, top).await?
+        {
+            continue;
+        }
+        if same {
+            exact.push(c.id.clone());
+        }
+        vanished.push(c.id);
     }
-    Ok(None)
+    if exact.len() == 1 {
+        return Ok(MoveMatch::Found(exact.remove(0)));
+    }
+    if vanished.is_empty() {
+        return Ok(MoveMatch::Absent);
+    }
+    if vanished.len() > 1 || unique_destination == Some(false) || meta.nlink() != 1 {
+        return Ok(MoveMatch::Ambiguous);
+    }
+    Ok(if unique_destination.is_some() {
+        MoveMatch::Found(vanished.remove(0))
+    } else {
+        MoveMatch::NeedsScan
+    })
 }
 
 /// A transcoder can change the container extension as well as the bytes. Only
@@ -644,7 +708,23 @@ pub(crate) async fn mark_vanished(
 }
 
 pub async fn index_path(lib: &Library, rel_path: &str) -> Result<Option<ItemRow>> {
-    Ok(index_inner(lib, rel_path).await?.map(|(row, _)| row))
+    let indexed = index_inner(lib, rel_path).await?;
+    if let Some((row, Change::Moved)) = &indexed
+        && let Some(id) = &row.library_id
+    {
+        reconcile_collections(lib, &HashSet::from([id.clone()])).await?;
+    }
+    Ok(indexed.map(|(row, _)| row))
+}
+
+pub(super) async fn reconcile_collections(lib: &Library, affected: &HashSet<String>) -> Result<()> {
+    let _moves = lib.lock_moves().await?;
+    for id in affected {
+        if let Some(def) = defs::load_one(&lib.db, id).await? {
+            super::download_folders::reconcile_directories(lib, &def).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Index one file in place and say what changed.
@@ -653,7 +733,7 @@ pub(crate) async fn index_inner(
     rel_path: &str,
 ) -> Result<Option<(ItemRow, Change)>> {
     let _moves = lib.lock_moves().await?;
-    index_locked(lib, rel_path).await
+    index_locked(lib, rel_path, None).await
 }
 
 /// Mark items at `rel` (or below it) missing without re-checking the disk. The caller holds
@@ -703,7 +783,11 @@ async fn mark_missing_now(lib: &Library, rel: &str, defs: &[LibraryDef]) -> Resu
 }
 
 /// [`index_inner`] with the move lock already held.
-async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, Change)>> {
+async fn index_locked(
+    lib: &Library,
+    rel_path: &str,
+    duplicate_hashes: Option<&HashSet<String>>,
+) -> Result<Option<(ItemRow, Change)>> {
     let rel = normalize_rel(rel_path)?;
     if rel.split('/').any(is_junk_name) {
         return Ok(None);
@@ -711,6 +795,9 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
     let zone = StashLayout::zone(&rel);
     if !zone.indexed() {
         return Ok(None);
+    }
+    if zone == Zone::Completed {
+        super::torrent_handoff::owner(lib, &rel, None).await?;
     }
     let defs = defs::load_all(&lib.db).await?;
     let library = match zone {
@@ -733,11 +820,21 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
     let existing = repo::get_by_path(&lib.db, &rel).await?;
     // Items already indexed stay (a file keeps the category it was first given); only new
     // files must be ones the place indexes.
-    if existing.is_none() && !indexable(zone, library, &rel, kind, meta.len()) {
-        return Ok(None);
+    let accepts_new = indexable(zone, library, &rel, kind, meta.len());
+    if existing.is_none() && !accepts_new {
+        let Some(def) = library else { return Ok(None) };
+        // An existing library item can move beneath a directory normally skipped
+        // for new imports. Only hash a candidate if an indexed file could match it.
+        let possible:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM items WHERE library_id=? AND size=? AND kind=? AND status!='trashed' AND quick_hash IS NOT NULL)")
+            .bind(def.id()).bind(meta.len() as i64).bind(kind.as_str()).fetch_one(&lib.db).await?;
+        if !possible {
+            return Ok(None);
+        }
     }
     let size = i64::try_from(meta.len()).unwrap_or(i64::MAX);
-    let mtime = mtime_secs(&meta);
+    let identity = super::observed::identity(&meta);
+    let disk_meta = meta;
+    let mtime = mtime_secs(&disk_meta);
 
     // Inbox and Completed belong to the sorter; only refresh items it already left there.
     if zone.auto_sorts() && existing.is_none() {
@@ -759,6 +856,7 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
             && item.mtime == mtime
             && item.quick_hash == quick_hash_async(&abs).await
         {
+            record_identity(lib, &item.id, identity).await?;
             if item.status == ItemStatus::Missing {
                 sqlx::query("UPDATE items SET status = ?, missing_since = NULL, updated_at = ? WHERE id = ?")
                     .bind(restored_status.as_str())
@@ -812,6 +910,7 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
         .bind(&item.id)
         .execute(&lib.db)
         .await?;
+        record_identity(lib, &item.id, identity).await?;
         organizer::remove_cached_media(lib, &item.id).await;
         enqueue_media_jobs(lib, &item.id).await?;
         publish_moved(lib, LibraryChange::Updated, &item.id, item.facts());
@@ -825,7 +924,7 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
     // In a library folder the library's rules say what the file is; in `Other/` it is
     // `other`; elsewhere the classifier's guess is kept as the suggestion for Organize.
     let fixed = match (zone, library) {
-        (Zone::Custom, Some(def)) => in_place_category(def, &rel, kind, meta.len()),
+        (Zone::Custom, Some(def)) => in_place_category(def, &rel, kind, disk_meta.len()),
         (Zone::Other, _) => Some(Category::Other),
         _ => None,
     };
@@ -838,14 +937,27 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
     };
 
     // Same bytes as a missing item: it was moved or renamed outside PopcornStash.
-    let moved = find_moved(lib, size, hash.as_deref()).await?;
-    let replaced = if moved.is_none() {
-        find_replaced_video(lib, &rel, kind).await?
-    } else {
-        None
-    };
-    let is_replacement = replaced.is_some();
-    if let Some(old) = moved.or(replaced) {
+    let unique = duplicate_hashes.map(|dups| hash.as_ref().is_none_or(|h| !dups.contains(h)));
+    let (matched, is_replacement) =
+        match find_moved(lib, &rel, &disk_meta, hash.as_deref(), unique).await? {
+            MoveMatch::Found(id) => (repo::get(&lib.db, &id).await?, false),
+            MoveMatch::Absent if accepts_new => (find_replaced_video(lib, &rel, kind).await?, true),
+            MoveMatch::Absent | MoveMatch::Ambiguous => (None, false),
+            MoveMatch::NeedsScan => {
+                lib.jobs
+                    .enqueue(JobKind::Scan, None, serde_json::json!({}))
+                    .await?;
+                return Ok(None);
+            }
+        };
+    if !accepts_new
+        && matched.as_ref().is_none_or(|old| {
+            old.library_id.as_deref() != library.map(LibraryDef::id) || old.kind != kind
+        })
+    {
+        return Ok(None);
+    }
+    if let Some(old) = matched {
         let category_changed = fixed.is_some_and(|c| c != old.category);
         let mut row = old.clone();
         row.rel_path = rel.clone();
@@ -873,10 +985,20 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
             row.episode_title = meta.episode_title.clone();
             row.set_taken(kept_capture_time(category, old.taken(), meta.taken));
         }
+        let mut tx = crate::db::begin_write(&lib.db).await?;
         if !is_replacement {
-            row.source_download_id = None;
+            super::observed::remember_collection_move(&mut tx, lib, &old, &rel).await?;
+            sqlx::query("UPDATE conversion_jobs SET target_path=? WHERE item_id=? AND state='complete' AND target_path=?")
+                .bind(&rel).bind(&old.id).bind(&old.rel_path).execute(&mut *tx).await?;
         }
-        overwrite_row(lib, &old.id, &row).await?;
+        overwrite_on(&mut tx, &old.id, &row).await?;
+        sqlx::query("UPDATE items SET file_dev=?,file_ino=? WHERE id=?")
+            .bind(identity.0)
+            .bind(identity.1)
+            .bind(&old.id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         if is_replacement {
             organizer::remove_cached_media(lib, &old.id).await;
             enqueue_media_jobs(lib, &old.id).await?;
@@ -888,7 +1010,7 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
                 .await?;
         }
         publish_moved(lib, LibraryChange::Updated, &old.id, old.facts());
-        tracing::info!(item = %old.id, from = %old.rel_path, to = %rel, "found a moved file");
+        tracing::info!(item = %old.id, "found a moved file");
         let row = repo::get(&lib.db, &old.id)
             .await?
             .ok_or(CoreError::NotFound)?;
@@ -904,6 +1026,7 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
             .ok_or(CoreError::NotFound)?;
         return Ok(Some((current, Change::Unchanged)));
     }
+    record_identity(lib, &row.id, identity).await?;
     enqueue_media_jobs(lib, &row.id).await?;
     publish(lib, LibraryChange::Added, &row.id);
     Ok(Some((row, Change::Added)))
@@ -913,6 +1036,7 @@ async fn index_locked(lib: &Library, rel_path: &str) -> Result<Option<(ItemRow, 
 // Full rescans
 
 struct WalkedFile {
+    identity: (i64, i64),
     size: i64,
     mtime: i64,
 }
@@ -967,6 +1091,7 @@ fn walk_stash(layout: &StashLayout, taken: &HashMap<String, organizer::Taken>) -
         walk.files.insert(
             rel,
             WalkedFile {
+                identity: super::observed::identity(&meta),
                 size: i64::try_from(meta.len()).unwrap_or(i64::MAX),
                 mtime: mtime_secs(&meta),
             },
@@ -1016,7 +1141,10 @@ fn sort_candidates(
     out
 }
 
+#[derive(sqlx::FromRow)]
 struct KnownItem {
+    file_dev: Option<i64>,
+    file_ino: Option<i64>,
     id: String,
     rel_path: String,
     size: i64,
@@ -1026,6 +1154,10 @@ struct KnownItem {
 }
 
 pub async fn rescan(lib: &Library) -> Result<ScanReport> {
+    {
+        let _moves = lib.lock_moves().await?;
+        super::observed::roots(lib).await?;
+    }
     let started = now();
     let review_before = repo::needs_review_count(&lib.db).await?;
     let layout = lib.layout.clone();
@@ -1033,17 +1165,15 @@ pub async fn rescan(lib: &Library) -> Result<ScanReport> {
     let walk = tokio::task::spawn_blocking(move || walk_stash(&layout, &taken))
         .await
         .map_err(|e| CoreError::Other(e.into()))?;
+    // A root may have changed during the walk, before its notification was delivered.
+    {
+        let _moves = lib.lock_moves().await?;
+        super::observed::roots(lib).await?;
+    }
     let mut report = ScanReport::default();
     let library_defs = defs::load_all(&lib.db).await?;
 
-    let known: Vec<KnownItem> = sqlx::query_as::<_, (String, String, i64, i64, ItemStatus, Option<i64>)>(
-        "SELECT id, rel_path, size, mtime, status, missing_since FROM items WHERE status != 'trashed'",
-    )
-    .fetch_all(&lib.db)
-    .await?
-    .into_iter()
-    .map(|(id, rel_path, size, mtime, status, missing_since)| KnownItem { id, rel_path, size, mtime, status, missing_since })
-    .collect();
+    let known: Vec<KnownItem> = sqlx::query_as("SELECT id,rel_path,size,mtime,status,missing_since,file_dev,file_ino FROM items WHERE status!='trashed'").fetch_all(&lib.db).await?;
 
     // An unmounted share or a wrong mount looks like a stash where every file vanished.
     // Never conclude that from an empty walk: nothing is marked missing or forgotten.
@@ -1083,6 +1213,58 @@ pub async fn rescan(lib: &Library) -> Result<ScanReport> {
     // 2. New and changed files.
     let by_path: HashMap<&str, &KnownItem> =
         known.iter().map(|k| (k.rel_path.as_str(), k)).collect();
+    let missing_sizes: HashSet<i64> = known
+        .iter()
+        .filter(|k| !walk.files.contains_key(&k.rel_path))
+        .map(|k| k.size)
+        .collect();
+    let mut by_size = HashMap::<i64, Vec<&String>>::new();
+    for (path, file) in &walk.files {
+        if !by_path.contains_key(path.as_str()) && missing_sizes.contains(&file.size) {
+            by_size.entry(file.size).or_default().push(path);
+        }
+    }
+    let mut duplicate_hashes = HashSet::new();
+    for group in by_size.values().filter(|paths| paths.len() > 1) {
+        let mut seen = HashSet::new();
+        let mut incomplete = false;
+        for path in group {
+            let hash = match lib.layout.abs(path) {
+                Ok(abs) => quick_hash_async(&abs).await,
+                Err(_) => None,
+            };
+            if let Some(hash) = hash {
+                if !seen.insert(hash.clone()) {
+                    duplicate_hashes.insert(hash);
+                }
+            } else {
+                incomplete = true;
+            }
+        }
+        if incomplete {
+            duplicate_hashes.extend(seen);
+        }
+    }
+    // Existing catalogs gain file identity from this stat walk. Verify their stored
+    // content hash when consuming a witness, without rereading the entire library on upgrade.
+    {
+        let _moves = lib.lock_moves().await?;
+        let mut tx = crate::db::begin_write(&lib.db).await?;
+        for item in &known {
+            if item.file_ino.is_some() {
+                continue;
+            }
+            if let Some(file) = walk.files.get(&item.rel_path)
+                && item.size == file.size
+                && item.mtime == file.mtime
+            {
+                sqlx::query("UPDATE items SET file_dev=?,file_ino=? WHERE id=? AND rel_path=? AND size=? AND mtime=? AND file_ino IS NULL")
+                    .bind(file.identity.0).bind(file.identity.1).bind(&item.id).bind(&item.rel_path).bind(file.size).bind(file.mtime)
+                    .execute(&mut *tx).await?;
+            }
+        }
+        tx.commit().await?;
+    }
     let mut paths: Vec<&String> = walk.files.keys().collect();
     paths.sort();
     for rel in paths {
@@ -1092,24 +1274,32 @@ pub async fn rescan(lib: &Library) -> Result<ScanReport> {
             Some(k)
                 if k.size == file.size
                     && k.mtime == file.mtime
-                    && k.status != ItemStatus::Missing =>
+                    && k.status != ItemStatus::Missing
+                    && (k.file_ino.is_none()
+                        || (k.file_dev, k.file_ino)
+                            == (Some(file.identity.0), Some(file.identity.1))) =>
             {
                 continue;
             }
             None if zone.auto_sorts() => continue,
-            None if !indexable(
-                zone,
-                defs::library_for_path(&library_defs, rel),
-                rel,
-                media_kind(Path::new(rel)),
-                u64::try_from(file.size).unwrap_or(0),
-            ) =>
+            None if !missing_sizes.contains(&file.size)
+                && !indexable(
+                    zone,
+                    defs::library_for_path(&library_defs, rel),
+                    rel,
+                    media_kind(Path::new(rel)),
+                    u64::try_from(file.size).unwrap_or(0),
+                ) =>
             {
                 continue;
             }
             _ => {}
         }
-        match index_inner(lib, rel).await {
+        let indexed = {
+            let _moves = lib.lock_moves().await?;
+            index_locked(lib, rel, Some(&duplicate_hashes)).await
+        };
+        match indexed {
             Ok(Some((_, Change::Added))) => report.added += 1,
             Ok(Some((_, Change::Updated))) => report.updated += 1,
             Ok(Some((_, Change::Moved))) => report.moved += 1,
@@ -1175,6 +1365,7 @@ pub async fn rescan(lib: &Library) -> Result<ScanReport> {
         if !unsorted {
             continue;
         }
+        let _moves = lib.lock_moves().await?;
         match organizer::enqueue_sort_inner(lib, &candidate.rel, None).await {
             Ok(true) => report.queued_for_sort += 1,
             Ok(false) => {}
@@ -1199,6 +1390,10 @@ pub async fn rescan(lib: &Library) -> Result<ScanReport> {
         let _moves = lib.lock_moves().await?;
         let mut conn = lib.db.acquire().await?;
         let fixed = defs::rederive_all(&mut conn).await?;
+        drop(conn);
+        for def in defs::load_all(&lib.db).await? {
+            super::download_folders::reconcile_directories(lib, &def).await?;
+        }
         if fixed > 0 {
             tracing::info!(count = fixed, "worked out the library of items again");
         }

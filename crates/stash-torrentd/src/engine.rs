@@ -29,8 +29,9 @@ use serde::{Deserialize, Serialize};
 pub use stash_core::internal_api::MSG_NOT_PROTECTED;
 use stash_core::internal_api::{
     AddTorrentResponse, EXIT_RELOAD, EngineHealth, EngineRunState, EngineState, EngineTorrent,
-    EngineTorrentState, LimitsRequest, MIN_SPEED_LIMIT_KBPS, TorrentFile, TorrentFileKind,
-    TorrentFiles, TunnelState, TunnelStatus, VpnProvider,
+    EngineTorrentState, LimitsRequest, MIN_SPEED_LIMIT_KBPS, MSG_CHECKING_FILES,
+    MSG_WAITING_FOR_ENGINE, TorrentCompletion, TorrentFile, TorrentFileKind, TorrentFiles,
+    TunnelState, TunnelStatus, VpnProvider,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, RwLock, watch};
@@ -305,7 +306,7 @@ pub struct Engine {
     restart_trackers: AtomicBool,
     session: RwLock<Option<Live>>,
     /// Serialize metadata handoff with pause, resume, remove and re-add.
-    pending_ops: tokio::sync::Mutex<()>,
+    pending_ops: Arc<tokio::sync::Mutex<()>>,
     inner: Mutex<Inner>,
     running_tx: watch::Sender<bool>,
     seed_tx: watch::Sender<bool>,
@@ -417,9 +418,37 @@ fn engine_torrent(handle: &ManagedTorrent) -> EngineTorrent {
         up_bps: up,
         peers,
         eta_s,
-        error: stats.error.clone(),
+        error: if !empty_selection && matches!(stats.state, TorrentStatsState::Initializing { .. })
+        {
+            Some(MSG_CHECKING_FILES.into())
+        } else {
+            stats.error.clone()
+        },
         output_dir: Some(handle.output_folder().display().to_string()),
     }
+}
+
+/// Count the intersection of this file's byte interval with each verified v1 piece.
+fn verified_bytes(
+    offset: u64,
+    len: u64,
+    piece_len: u64,
+    have: impl Fn(u64) -> Option<bool>,
+) -> Option<u64> {
+    if piece_len == 0 {
+        return None;
+    }
+    let end = offset.checked_add(len)?;
+    let mut pos = offset;
+    let mut verified = 0;
+    while pos < end {
+        let bytes = (piece_len - pos % piece_len).min(end - pos);
+        if have(pos / piece_len)? {
+            verified += bytes;
+        }
+        pos += bytes;
+    }
+    Some(verified)
 }
 
 fn selected_indices(
@@ -482,6 +511,181 @@ fn if_index(name: &str) -> Option<u32> {
 }
 
 impl Engine {
+    async fn files_locked(&self, id: String) -> Result<TorrentFiles, BackendError> {
+        let hash = id.parse().map_err(|_| BackendError::NotFound)?;
+        if let Some(session) = self.live_session().await
+            && let Some(handle) = session.get(TorrentIdOrHash::Hash(hash))
+        {
+            let selected = handle
+                .only_files()
+                .map(|ids| ids.into_iter().collect::<HashSet<_>>());
+            let review_required = self.needs_review(&id);
+            // A single immutable copy of the verified bitfield covers every file, including
+            // skipped files sharing boundary pieces. During initialization there is no bitfield.
+            let haves = librqbit::Api::new(session.clone(), None)
+                .api_dump_haves(TorrentIdOrHash::Hash(hash))
+                .ok();
+            let rule = lock(&self.rules).get(&id).cloned();
+            return handle
+                .with_metadata(|meta| TorrentFiles {
+                    review_required,
+                    ready: true,
+                    rules: rule.clone(),
+                    files: meta
+                        .file_infos
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, f)| !f.attrs.padding)
+                        .map(|(index, f)| {
+                            let path = f.relative_filename.to_string_lossy().into_owned();
+                            let verified = haves.as_ref().and_then(|(bits, count)| {
+                                verified_bytes(
+                                    f.offset_in_torrent,
+                                    f.len,
+                                    u64::from(meta.lengths().default_piece_length()),
+                                    |piece| {
+                                        (piece < u64::from(*count)).then(|| bits[piece as usize])
+                                    },
+                                )
+                            });
+                            TorrentFile {
+                                verified_bytes: verified,
+                                complete: !review_required && verified == Some(f.len),
+                                index,
+                                kind: TorrentFileKind::of(&path),
+                                path,
+                                size: f.len,
+                                selected: selected.as_ref().is_none_or(|ids| ids.contains(&index)),
+                            }
+                        })
+                        .collect(),
+                })
+                .map_err(|_| {
+                    BackendError::BadRequest(
+                        "Fetching the torrent's file list. Try again shortly.".into(),
+                    )
+                });
+        }
+        if lock(&self.inner).pending.contains_key(&id) {
+            return Ok(TorrentFiles {
+                review_required: self.needs_review(&id),
+                ..Default::default()
+            });
+        }
+        if self
+            .persisted_torrents()
+            .iter()
+            .any(|torrent| torrent.id == id)
+        {
+            // A stopped VPN session still owns a persisted selection. Reporting
+            // 404 would make the server mistake this for an older, whole-file
+            // engine and sort unselected boundary fragments without its manifest.
+            return Err(BackendError::Blocked(MSG_VPN_WAIT.into()));
+        }
+        Err(BackendError::NotFound)
+    }
+
+    async fn select_files_locked(
+        &self,
+        id: String,
+        indices: Vec<usize>,
+    ) -> Result<(), BackendError> {
+        let session = self
+            .live_session()
+            .await
+            .ok_or_else(|| BackendError::Blocked(MSG_VPN_WAIT.into()))?;
+        let hash = id.parse().map_err(|_| BackendError::NotFound)?;
+        let handle = session
+            .get(TorrentIdOrHash::Hash(hash))
+            .ok_or(BackendError::NotFound)?;
+        let valid = handle
+            .with_metadata(|meta| {
+                indices.iter().all(|&i| {
+                    meta.file_infos
+                        .get(i)
+                        .is_some_and(|file| !file.attrs.padding)
+                })
+            })
+            .unwrap_or(false);
+        if indices.is_empty() || !valid {
+            return Err(BackendError::BadRequest(
+                "Choose at least one valid file.".into(),
+            ));
+        }
+        session
+            .update_only_files(&handle, &indices.into_iter().collect())
+            .await
+            .map_err(|_| {
+                BackendError::BadRequest(
+                    "Files cannot be changed while this torrent is checking. Try again shortly."
+                        .into(),
+                )
+            })?;
+        session
+            .persist_torrent_metadata(&handle)
+            .await
+            .map_err(|_| {
+                BackendError::Internal("File choices could not be saved. Try again.".into())
+            })?;
+        self.forget_rules(&id)
+    }
+
+    async fn remove_locked(&self, id: String, delete_files: bool) -> Result<(), BackendError> {
+        let hash = parse_id(&id)?;
+        self.forget_rules(&id)?;
+        self.write_review(&id, false)?;
+        let was_pending = {
+            let mut inner = lock(&self.inner);
+            let removed = inner
+                .pending
+                .remove(&id)
+                .map(|pending| {
+                    if let Some(cancel) = pending.resolving {
+                        cancel.cancel();
+                    }
+                })
+                .is_some();
+            if removed {
+                let pending = inner.pending.clone();
+                drop(inner);
+                self.save_pending(&pending);
+            }
+            removed
+        };
+        match self.live_session().await {
+            Some(session) => {
+                if session.get(TorrentIdOrHash::Hash(hash)).is_none() {
+                    return if was_pending {
+                        Ok(())
+                    } else {
+                        Err(BackendError::NotFound)
+                    };
+                }
+                session
+                    .delete(TorrentIdOrHash::Hash(hash), delete_files)
+                    .await
+                    .map_err(|e| BackendError::Internal(format!("{e:#}")))?;
+            }
+            None => match self.edit_persisted(&id, |_| true) {
+                Ok(output) => {
+                    for ext in ["torrent", "bitv"] {
+                        let _ = std::fs::remove_file(
+                            self.state_dir.join(SESSION_DIR).join(format!("{id}.{ext}")),
+                        );
+                    }
+                    if delete_files && let Some(output) = output {
+                        self.delete_output(&output);
+                    }
+                }
+                Err(BackendError::NotFound) if was_pending => {}
+                Err(e) => return Err(e),
+            },
+        }
+        lock(&self.inner).last_known.remove(&id);
+        tracing::info!(id = %id, delete_files, "torrent removed");
+        Ok(())
+    }
+
     async fn add_configured(
         &self,
         torrent: NewTorrent,
@@ -649,7 +853,7 @@ impl Engine {
             public_trackers: Mutex::new(PublicTrackers::load(&options.state_dir)),
             restart_trackers: AtomicBool::new(false),
             session: RwLock::new(None),
-            pending_ops: tokio::sync::Mutex::new(()),
+            pending_ops: Arc::default(),
             inner: Mutex::new(Inner {
                 tunnel: None,
                 running: false,
@@ -947,7 +1151,9 @@ impl Engine {
                 }),
             }),
             bind_device_name,
-            fastresume: true,
+            // File-level completion must survive a replacement or truncation during
+            // downtime. Restore the selection, then verify the payload on disk.
+            fastresume: false,
             persistence: Some(SessionPersistenceConfig::Json {
                 folder: Some(self.state_dir.join(SESSION_DIR)),
             }),
@@ -1045,12 +1251,9 @@ impl Engine {
     async fn stop_session_locked(&self) {
         let live = self.session.write().await.take();
         if let Some(live) = live {
-            let snapshot: Vec<EngineTorrent> = live
-                .session
-                .with_torrents(|iter| iter.map(|(_, handle)| engine_torrent(handle)).collect());
+            self.session_snapshot(&live.session);
             {
                 let mut inner = lock(&self.inner);
-                inner.last_known = snapshot.into_iter().map(|t| (t.id.clone(), t)).collect();
                 for pending in inner.pending.values_mut() {
                     if let Some(cancel) = pending.resolving.take() {
                         cancel.cancel();
@@ -1084,6 +1287,7 @@ impl Engine {
     fn watch_completion(&self, session: &Arc<Session>, handle: Arc<ManagedTorrent>) {
         let session = session.clone();
         let mut seed = self.seed_tx.subscribe();
+        let controls = self.pending_ops.clone();
         tokio::spawn(async move {
             let cancellation = session.cancellation_token();
             loop {
@@ -1093,12 +1297,19 @@ impl Engine {
                 }
                 let stats = handle.stats();
                 let seed_allowed = *seed.borrow_and_update();
-                if stats.finished
-                    && !seed_allowed
-                    && !handle.is_paused()
-                    && let Err(error) = session.pause(&handle).await
-                {
-                    tracing::warn!(%error, "could not pause a completed torrent; will retry");
+                if stats.finished && !seed_allowed && !handle.is_paused() {
+                    let _operation = controls.lock().await;
+                    let still_allowed = *seed.borrow();
+                    if !still_allowed
+                        && handle.stats().finished
+                        && !handle.is_paused()
+                        && session
+                            .get(TorrentIdOrHash::Hash(handle.info_hash()))
+                            .is_some_and(|current| Arc::ptr_eq(&current, &handle))
+                        && let Err(error) = session.pause(&handle).await
+                    {
+                        tracing::warn!(%error, "could not pause a completed torrent; will retry");
+                    }
                 }
                 tokio::select! {
                     _ = cancellation.cancelled() => return,
@@ -1327,6 +1538,53 @@ impl Engine {
             .map_err(|e| BackendError::Internal(e.to_string()))
     }
 
+    /// Session::delete can log a persistence failure after dropping the live handle.
+    /// An absent live handle alone cannot authorize moving its payload.
+    fn saved_output(&self, id: &str) -> Result<Option<PathBuf>, BackendError> {
+        let unreadable =
+            || BackendError::Internal("The engine could not confirm release on disk.".into());
+        let bytes = match std::fs::read(self.session_db()) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(unreadable()),
+        };
+        let db: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| unreadable())?;
+        let torrents = db["torrents"].as_object().ok_or_else(unreadable)?;
+        for entry in torrents.values() {
+            if entry["info_hash"]
+                .as_str()
+                .ok_or_else(unreadable)?
+                .eq_ignore_ascii_case(id)
+            {
+                return entry["output_folder"]
+                    .as_str()
+                    .map(PathBuf::from)
+                    .map(Some)
+                    .ok_or_else(unreadable);
+            }
+        }
+        Ok(None)
+    }
+
+    fn session_snapshot(&self, session: &Session) -> Vec<EngineTorrent> {
+        let mut torrents: Vec<_> =
+            session.with_torrents(|iter| iter.map(|(_, handle)| engine_torrent(handle)).collect());
+        let mut inner = lock(&self.inner);
+        for torrent in &mut torrents {
+            if torrent.error.as_deref() == Some(MSG_CHECKING_FILES)
+                && let Some(last) = inner.last_known.get(&torrent.id)
+                && last.output_dir == torrent.output_dir
+                && last.total_bytes.is_some()
+            {
+                torrent.done_bytes = last.done_bytes;
+                torrent.total_bytes = last.total_bytes;
+                torrent.progress = last.progress;
+            }
+            inner.last_known.insert(torrent.id.clone(), torrent.clone());
+        }
+        torrents
+    }
+
     /// Torrents remembered by librqbit while no session runs.
     fn persisted_torrents(&self) -> Vec<EngineTorrent> {
         let db = self.read_session_db();
@@ -1365,6 +1623,7 @@ impl Engine {
                         output_dir: output.clone(),
                     });
                 torrent.state = EngineTorrentState::Paused;
+                torrent.error = Some(MSG_WAITING_FOR_ENGINE.into());
                 torrent.down_bps = 0;
                 torrent.up_bps = 0;
                 torrent.peers = None;
@@ -1552,15 +1811,7 @@ impl TorrentBackend for Engine {
 
     async fn list(&self) -> Vec<EngineTorrent> {
         let mut torrents = match self.live_session().await {
-            Some(session) => {
-                let list: Vec<EngineTorrent> = session
-                    .with_torrents(|iter| iter.map(|(_, handle)| engine_torrent(handle)).collect());
-                let mut inner = lock(&self.inner);
-                for t in &list {
-                    inner.last_known.insert(t.id.clone(), t.clone());
-                }
-                list
-            }
+            Some(session) => self.session_snapshot(&session),
             None => self.persisted_torrents(),
         };
         for torrent in &mut torrents {
@@ -1572,6 +1823,7 @@ impl TorrentBackend for Engine {
                 continue;
             }
             if lock(&self.rules).contains_key(&torrent.id)
+                && torrent.error.is_none()
                 && torrent.total_bytes.is_none()
                 && torrent.state == EngineTorrentState::Paused
             {
@@ -1586,92 +1838,140 @@ impl TorrentBackend for Engine {
     }
 
     async fn files(&self, id: String) -> Result<TorrentFiles, BackendError> {
-        let hash = id.parse().map_err(|_| BackendError::NotFound)?;
-        if let Some(session) = self.live_session().await
-            && let Some(handle) = session.get(TorrentIdOrHash::Hash(hash))
-        {
-            let selected = handle.only_files();
-            let rule = lock(&self.rules).get(&id).cloned();
-            return handle
-                .with_metadata(|meta| TorrentFiles {
-                    review_required: self.needs_review(&id),
-                    ready: true,
-                    rules: rule.clone(),
-                    files: meta
-                        .file_infos
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, f)| !f.attrs.padding)
-                        .map(|(index, f)| {
-                            let path = f.relative_filename.to_string_lossy().into_owned();
-                            TorrentFile {
-                                index,
-                                kind: TorrentFileKind::of(&path),
-                                path,
-                                size: f.len,
-                                selected: selected.as_ref().is_none_or(|ids| ids.contains(&index)),
-                            }
-                        })
-                        .collect(),
-                })
-                .map_err(|_| {
-                    BackendError::BadRequest(
-                        "Fetching the torrent's file list. Try again shortly.".into(),
-                    )
-                });
-        }
-        if lock(&self.inner).pending.contains_key(&id) {
-            return Ok(TorrentFiles {
-                review_required: self.needs_review(&id),
-                ..Default::default()
-            });
-        }
-        if self
-            .persisted_torrents()
-            .iter()
-            .any(|torrent| torrent.id == id)
-        {
-            // A stopped VPN session still owns a persisted selection. Reporting
-            // 404 would make the server mistake this for an older, whole-file
-            // engine and sort unselected boundary fragments without its manifest.
-            return Err(BackendError::Blocked(MSG_VPN_WAIT.into()));
-        }
-        Err(BackendError::NotFound)
+        let _operation = self.pending_ops.lock().await;
+        self.files_locked(id).await
     }
 
     async fn select_files(&self, id: String, indices: Vec<usize>) -> Result<(), BackendError> {
+        let _operation = self.pending_ops.lock().await;
+        self.select_files_locked(id, indices).await
+    }
+
+    async fn completion(
+        &self,
+        id: String,
+        allow_direct_file: bool,
+    ) -> Result<TorrentCompletion, BackendError> {
+        use stash_core::internal_api::{FileWitness, ReleaseWitness};
+        use std::os::unix::fs::MetadataExt;
         let _operation = self.pending_ops.lock().await;
         let session = self
             .live_session()
             .await
             .ok_or_else(|| BackendError::Blocked(MSG_VPN_WAIT.into()))?;
-        let hash = id.parse().map_err(|_| BackendError::NotFound)?;
+        let hash = parse_id(&id)?;
         let handle = session
             .get(TorrentIdOrHash::Hash(hash))
-            .ok_or(BackendError::NotFound)?;
-        let files = self.files(id.clone()).await?;
-        let valid: HashSet<_> = files.files.iter().map(|f| f.index).collect();
-        if indices.is_empty() || indices.iter().any(|i| !valid.contains(i)) {
-            return Err(BackendError::BadRequest(
-                "Choose at least one valid file.".into(),
+            .ok_or_else(|| BackendError::Conflict("Wait for the torrent's file list.".into()))?;
+        let output = handle.output_folder();
+        let private = output.parent() == Some(self.downloads_dir.as_path())
+            && session.with_torrents(|torrents| {
+                for (_, other) in torrents {
+                    if other.info_hash() != hash
+                        && (other.output_folder().starts_with(output)
+                            || output.starts_with(other.output_folder()))
+                    {
+                        return false;
+                    }
+                }
+                true
+            });
+        let files = self.files_locked(id).await?;
+        let root = if private {
+            output.to_owned()
+        } else if allow_direct_file
+            && output == self.downloads_dir
+            && let [file] = files.files.as_slice()
+            && Path::new(&file.path).file_name().and_then(|s| s.to_str())
+                == Some(file.path.as_str())
+        {
+            let path = output.join(&file.path);
+            let shared = session.with_torrents(|torrents| {
+                for (_, other) in torrents {
+                    if other.info_hash() == hash {
+                        continue;
+                    }
+                    let base = other.output_folder();
+                    if base.starts_with(&path)
+                        || path.starts_with(base)
+                            && other
+                                .with_metadata(|m| {
+                                    m.file_infos
+                                        .iter()
+                                        .any(|f| base.join(&f.relative_filename).starts_with(&path))
+                                })
+                                .unwrap_or(true)
+                    {
+                        return true;
+                    }
+                }
+                false
+            });
+            if shared {
+                return Err(BackendError::Conflict("The output file is shared.".into()));
+            }
+            path
+        } else {
+            return Err(BackendError::Conflict(
+                "This torrent needs its own output folder.".into(),
+            ));
+        };
+        let folder = root
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or(BackendError::FilesChanged)?;
+        let meta = root
+            .symlink_metadata()
+            .map_err(|_| BackendError::FilesChanged)?;
+        if !(private && meta.is_dir() || !private && meta.is_file()) {
+            return Err(BackendError::FilesChanged);
+        }
+        let mut witnesses = std::collections::BTreeMap::new();
+        for file in &files.files {
+            let opened = handle
+                .opened_file_metadata(file.index)
+                .map_err(|_| BackendError::Conflict("Wait for file verification.".into()))?;
+            if !opened.is_file() || opened.nlink() != 1 || opened.dev() != meta.dev() {
+                return Err(BackendError::FilesChanged);
+            }
+            witnesses.insert(file.index, FileWitness::from(&opened));
+        }
+        Ok(TorrentCompletion {
+            folder: folder.to_owned(),
+            files,
+            release_witness: ReleaseWitness {
+                root_dev: meta.dev(),
+                root_ino: meta.ino(),
+                files: witnesses,
+            },
+        })
+    }
+
+    async fn skip_file(&self, id: String, index: usize) -> Result<(), BackendError> {
+        let _operation = self.pending_ops.lock().await;
+        let files = self.files_locked(id.clone()).await?;
+        if !files.ready || files.review_required {
+            return Err(BackendError::Conflict(
+                "Start the download before skipping files.".into(),
             ));
         }
-        session
-            .update_only_files(&handle, &indices.into_iter().collect())
-            .await
-            .map_err(|_| {
-                BackendError::BadRequest(
-                    "Files cannot be changed while this torrent is checking. Try again shortly."
-                        .into(),
-                )
-            })?;
-        session
-            .persist_torrent_metadata(&handle)
-            .await
-            .map_err(|_| {
-                BackendError::Internal("File choices could not be saved. Try again.".into())
-            })?;
-        self.forget_rules(&id)
+        if !files.files.iter().any(|f| f.index == index) {
+            return Err(BackendError::BadRequest("Choose a valid file.".into()));
+        }
+        let indices: Vec<_> = files
+            .files
+            .iter()
+            .filter(|f| f.selected && f.index != index)
+            .map(|f| f.index)
+            .collect();
+        if indices.is_empty() {
+            return Err(BackendError::Conflict(
+                "Keep at least one file selected.".into(),
+            ));
+        }
+        // Re-persist on a retry even if the first call applied its in-memory update
+        // but failed to store the session or remove an old automatic rule.
+        self.select_files_locked(id, indices).await
     }
 
     async fn add(&self, torrent: NewTorrent) -> Result<AddTorrentResponse, BackendError> {
@@ -1713,22 +2013,14 @@ impl TorrentBackend for Engine {
     }
 
     async fn approve(&self, id: String, indices: Vec<usize>) -> Result<(), BackendError> {
-        self.select_files(id.clone(), indices).await?;
         let _operation = self.pending_ops.lock().await;
-        // Approval leaves the torrent paused. The server resumes it under its slot limit.
-        let session = self
-            .live_session()
-            .await
-            .ok_or_else(|| BackendError::Blocked(MSG_VPN_WAIT.into()))?;
-        let handle = session
-            .get(TorrentIdOrHash::Hash(parse_id(&id)?))
-            .ok_or(BackendError::NotFound)?;
-        session
-            .persist_torrent_metadata(&handle)
-            .await
-            .map_err(|_| {
-                BackendError::Internal("File choices could not be saved. Try again.".into())
-            })?;
+        if !self.needs_review(&id) {
+            return Err(BackendError::Conflict(
+                "This torrent has already been reviewed.".into(),
+            ));
+        }
+        self.select_files_locked(id.clone(), indices).await?;
+        // select_files_locked persisted the exact selection under this same lock.
         self.write_review(&id, false)
     }
 
@@ -1794,61 +2086,78 @@ impl TorrentBackend for Engine {
         }
     }
 
-    async fn remove(&self, id: String, delete_files: bool) -> Result<(), BackendError> {
+    async fn release(
+        &self,
+        id: String,
+        release: stash_core::internal_api::ReleaseTorrent,
+    ) -> Result<(), BackendError> {
+        let _operation = self.pending_ops.lock().await;
         let hash = parse_id(&id)?;
-        let _pending_op = self.pending_ops.lock().await;
-        self.forget_rules(&id)?;
-        self.write_review(&id, false)?;
-        let was_pending = {
-            let mut inner = lock(&self.inner);
-            let removed = inner
-                .pending
-                .remove(&id)
-                .map(|pending| {
-                    if let Some(cancel) = pending.resolving {
-                        cancel.cancel();
-                    }
-                })
-                .is_some();
-            if removed {
-                let pending = inner.pending.clone();
-                drop(inner);
-                self.save_pending(&pending);
-            }
-            removed
-        };
-        match self.live_session().await {
-            Some(session) => {
-                if session.get(TorrentIdOrHash::Hash(hash)).is_none() {
-                    return if was_pending {
-                        Ok(())
-                    } else {
-                        Err(BackendError::NotFound)
-                    };
-                }
-                session
-                    .delete(TorrentIdOrHash::Hash(hash), delete_files)
-                    .await
-                    .map_err(|e| BackendError::Internal(format!("{e:#}")))?;
-            }
-            None => match self.edit_persisted(&id, |_| true) {
-                Ok(output) => {
-                    for ext in ["torrent", "bitv"] {
-                        let _ = std::fs::remove_file(
-                            self.state_dir.join(SESSION_DIR).join(format!("{id}.{ext}")),
-                        );
-                    }
-                    if delete_files && let Some(output) = output {
-                        self.delete_output(&output);
-                    }
-                }
-                Err(BackendError::NotFound) if was_pending => {}
-                Err(e) => return Err(e),
-            },
+        let folder = &release.folder;
+        if release.indices.is_empty()
+            || Path::new(folder).file_name().and_then(|n| n.to_str()) != Some(folder.as_str())
+        {
+            return Err(BackendError::BadRequest("Invalid torrent handoff.".into()));
         }
-        lock(&self.inner).last_known.remove(&id);
-        tracing::info!(id = %id, delete_files, "torrent removed");
+        let expected = self.downloads_dir.join(folder);
+        let session = self.live_session().await;
+        let handle = session
+            .as_ref()
+            .and_then(|session| session.get(TorrentIdOrHash::Hash(hash)));
+        let Some(handle) = handle else {
+            if self.saved_output(&id)?.is_some() {
+                return Err(BackendError::Conflict(
+                    "Waiting to verify the saved torrent.".into(),
+                ));
+            }
+            return Ok(());
+        };
+        let legacy_single = handle.output_folder() == self.downloads_dir
+            && handle
+                .with_metadata(|m| {
+                    m.file_infos.len() == 1
+                        && m.file_infos[0].relative_filename == Path::new(folder)
+                })
+                .unwrap_or(false);
+        if handle.output_folder() != expected && !legacy_single {
+            if expected.starts_with(handle.output_folder())
+                || handle.output_folder().starts_with(&expected)
+            {
+                return Err(BackendError::Conflict(
+                    "The output folder is shared.".into(),
+                ));
+            }
+            return Ok(()); // a re-add owns a different folder
+        }
+        let files = self.files_locked(id.clone()).await?;
+        let keep: HashSet<_> = release.indices.into_iter().collect();
+        let mut verified = 0;
+        for file in files.files.iter().filter(|f| keep.contains(&f.index)) {
+            if file.verified_bytes.is_none() {
+                return Err(BackendError::Conflict(
+                    "Checking torrent files. Try again shortly.".into(),
+                ));
+            }
+            if !file.selected || !file.complete {
+                return Err(BackendError::FilesChanged);
+            }
+            verified += 1;
+        }
+        if verified != keep.len() || files.review_required {
+            return Err(BackendError::FilesChanged);
+        }
+        self.remove_locked(id.clone(), false).await?;
+        if self.saved_output(&id)?.is_some() {
+            return Err(BackendError::Internal(
+                "The engine could not persist release.".into(),
+            ));
+        }
         Ok(())
+    }
+
+    async fn remove(&self, id: String, delete_files: bool) -> Result<(), BackendError> {
+        let _operation = self.pending_ops.lock().await;
+        self.remove_locked(id, delete_files).await
     }
 
     async fn set_limits(&self, limits: LimitsRequest) -> Result<(), BackendError> {
@@ -1888,6 +2197,151 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicU32;
 
+    /// A v1 piece crosses a selected file, virtual padding, and an unselected
+    /// file. The second selected file is preallocated to its full length but corrupt.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shared_piece_handoff_checks_real_storage_and_rechecks_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let opts = options(dir.path());
+        let folder = opts.downloads_dir.join("isolated");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("a"), vec![0x11; 4000]).unwrap();
+        std::fs::write(folder.join("b"), vec![0x22; 11872]).unwrap();
+        std::fs::write(folder.join("c"), vec![0xff; 8192]).unwrap();
+        let mut bytes = b"d4:infod5:files".to_vec();
+        bytes.extend_from_slice(
+            b"ld6:lengthi4000e4:pathl1:aeed4:attr1:p6:lengthi512e4:pathl3:padee",
+        );
+        bytes.extend_from_slice(b"d6:lengthi20000e4:pathl1:beed6:lengthi8192e4:pathl1:ceee");
+        bytes.extend_from_slice(b"4:name8:isolated12:piece lengthi16384e6:pieces40:");
+        bytes.extend(
+            hex::decode(
+                "286bcc27cb3cf15574bc06be1afd95e4c46ac25cc4054e1e2a670bc7770d8b1936861417eab91687",
+            )
+            .unwrap(),
+        );
+        bytes.extend_from_slice(b"ee");
+        let session = selection_session(&opts).await;
+        let handle = session
+            .add_torrent(
+                AddTorrent::from_bytes(bytes),
+                Some(AddTorrentOptions {
+                    paused: true,
+                    overwrite: true,
+                    sub_folder: Some("isolated".into()),
+                    only_files: Some(vec![0, 3]),
+                    disable_trackers: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap()
+            .into_handle()
+            .unwrap();
+        let id = handle.info_hash().as_string();
+        handle.wait_until_initialized().await.unwrap();
+        let engine = Engine::new(&opts);
+        *engine.session.write().await = Some(Live {
+            session: session.clone(),
+            ifindex: None,
+        });
+        let snap = engine.completion(id.clone(), false).await.unwrap();
+        assert_eq!(snap.folder, "isolated");
+        // A public name can be replaced while the hash handle still refers to
+        // the original inode. Evidence must come from that open descriptor.
+        let kept = folder.join("a");
+        let aside = folder.join("held");
+        std::fs::rename(&kept, &aside).unwrap();
+        std::fs::write(&kept, vec![0x42; 4000]).unwrap();
+        let swapped = engine.completion(id.clone(), false).await.unwrap();
+        assert_eq!(
+            swapped.release_witness.files[&0].ino,
+            snap.release_witness.files[&0].ino
+        );
+        assert_ne!(
+            swapped.release_witness.files[&0],
+            stash_core::internal_api::FileWitness::from(&kept.metadata().unwrap())
+        );
+        std::fs::remove_file(&kept).unwrap();
+        std::fs::rename(aside, kept).unwrap();
+        // A late release for a previous instance of the same hash must leave this handle alone.
+        engine
+            .release(
+                id.clone(),
+                stash_core::internal_api::ReleaseTorrent {
+                    folder: "previous".into(),
+                    indices: vec![0],
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            session
+                .get(TorrentIdOrHash::Hash(handle.info_hash()))
+                .is_some()
+        );
+        assert!(!folder.join("pad").exists());
+        let progress = |files: &TorrentFiles| {
+            files
+                .files
+                .iter()
+                .map(|f| (f.index, f.selected, f.verified_bytes, f.complete))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            progress(&snap.files),
+            vec![
+                (0, true, Some(4000), true),
+                (2, false, Some(11872), false),
+                (3, true, Some(0), false),
+            ]
+        );
+        assert!(engine.skip_file(id.clone(), 1).await.is_err()); // padding
+        engine.skip_file(id.clone(), 3).await.unwrap();
+        engine.skip_file(id.clone(), 3).await.unwrap(); // repeat after a lost response
+        assert!(matches!(
+            engine.skip_file(id.clone(), 0).await,
+            Err(BackendError::Conflict(_))
+        ));
+        engine.stop_session().await;
+        drop(handle);
+        drop(session);
+
+        // Same byte length, different content. Repair and retry entirely offline.
+        for (value, verified) in [(0xeeu8, false), (0x11, true)] {
+            std::fs::write(folder.join("a"), vec![value; 4000]).unwrap();
+            let restored = selection_session(&opts).await;
+            let handle = restored
+                .get(TorrentIdOrHash::Hash(id.parse().unwrap()))
+                .unwrap();
+            handle.wait_until_initialized().await.unwrap();
+            *engine.session.write().await = Some(Live {
+                session: restored,
+                ifindex: None,
+            });
+            let snapshot = engine.completion(id.clone(), false).await.unwrap();
+            assert_eq!(snapshot.files.files[0].complete, verified);
+            assert_eq!(
+                snapshot.files.files[1].verified_bytes,
+                Some(if verified { 11872 } else { 0 })
+            );
+            assert!(!snapshot.files.files[2].selected);
+            let release = stash_core::internal_api::ReleaseTorrent {
+                folder: snapshot.folder,
+                indices: vec![0],
+            };
+            let result = engine.release(id.clone(), release.clone()).await;
+            if verified {
+                result.unwrap();
+                engine.release(id.clone(), release).await.unwrap();
+            } else {
+                assert!(matches!(result, Err(BackendError::FilesChanged)));
+            }
+
+            engine.stop_session().await;
+        }
+    }
+
     #[tokio::test]
     async fn unapproved_metadata_and_review_survive_restart_and_duplicate_adds() {
         let dir = tempfile::tempdir().unwrap();
@@ -1925,7 +2379,48 @@ mod tests {
             !matches!(handle.stats().state, TorrentStatsState::Initializing { .. })
         })
         .await;
+        let snapshot = engine.completion(added.id.clone(), false).await.unwrap();
+        assert_eq!(
+            opts.downloads_dir.join(&snapshot.folder),
+            handle.output_folder()
+        );
+        assert_ne!(handle.output_folder(), opts.downloads_dir);
+        assert!(
+            handle
+                .output_folder()
+                .join(&snapshot.files.files[0].path)
+                .is_file()
+        );
         assert!(handle.is_paused());
+        // Legacy single-file handles may write directly in a shared session root.
+        // Such a handle cannot supply a manual completion snapshot.
+        let legacy_opts = options(&dir.path().join("legacy"));
+        let legacy = Engine::new(&legacy_opts);
+        let shared = offline_session(&legacy_opts).await;
+        shared
+            .add_torrent(
+                AddTorrent::from_bytes(bytes.clone()),
+                Some(AddTorrentOptions {
+                    paused: true,
+                    output_folder: Some(legacy_opts.downloads_dir.to_string_lossy().into_owned()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        *legacy.session.write().await = Some(Live {
+            session: shared,
+            ifindex: None,
+        });
+        assert!(matches!(
+            legacy.completion(added.id.clone(), false).await,
+            Err(BackendError::Conflict(_))
+        ));
+        wait_until("legacy file ready for automatic release", async || {
+            legacy.completion(added.id.clone(), true).await.is_ok()
+        })
+        .await;
+        legacy.stop_session().await;
         engine
             .prepare(NewTorrent::File(bytes), None, None)
             .await
@@ -2297,7 +2792,9 @@ mod tests {
                 listen: None,
                 disable_local_service_discovery: true,
                 ipv4_only: true,
-                fastresume: true,
+                // File-level completion must survive a replacement or truncation during
+                // downtime. Restore the selection, then verify the payload on disk.
+                fastresume: false,
                 persistence: Some(SessionPersistenceConfig::Json {
                     folder: Some(options.state_dir.join(SESSION_DIR)),
                 }),

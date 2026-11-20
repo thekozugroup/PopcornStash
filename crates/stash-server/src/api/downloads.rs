@@ -90,6 +90,11 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/api/downloads/{id}", axum::routing::delete(remove))
         .route("/api/downloads/{id}/files", get(files).put(select_files))
+        .route("/api/downloads/{id}/files/{index}/skip", post(skip_file))
+        .route(
+            "/api/downloads/{id}/finish-completed",
+            post(finish_completed),
+        )
         .route(
             "/api/downloads/{id}/start",
             axum::routing::post(start_torrent),
@@ -283,13 +288,82 @@ async fn as_seen(state: &AppState, user: &AuthUser, id: &str) -> ApiResult<Downl
         .ok_or_else(|| ApiError::not_found("That download no longer exists."))
 }
 
+async fn require_torrent_owner(state: &AppState, user: &AuthUser, id: &str) -> ApiResult<()> {
+    user.require(Scope::Full)?;
+    let row = state.downloads.load_row(id).await?;
+    if user.is_owner() || row.created_by.as_deref() == Some(user.user_id.as_str()) {
+        Ok(())
+    } else {
+        Err(ApiError::not_found("That download no longer exists."))
+    }
+}
+
+async fn skip_file(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((id, index)): Path<(String, usize)>,
+) -> ApiResult<StatusCode> {
+    require_torrent_owner(&state, &user, &id).await?;
+    state.downloads.skip_torrent_file(&id, index).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Default, Debug, PartialEq)]
+struct FinishReview {
+    selected: Option<Vec<usize>>,
+    complete: Vec<usize>,
+}
+
+fn finish_review(body: &[u8]) -> ApiResult<FinishReview> {
+    if body.is_empty() {
+        return Ok(FinishReview::default());
+    }
+    let invalid = || ApiError::bad_request("Send the reviewed file indices.");
+    let mut fields: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(body).map_err(|_| invalid())?;
+    let mut indices = |key| -> ApiResult<Option<Vec<usize>>> {
+        let values: Option<Vec<usize>> = fields
+            .remove(key)
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| invalid())?;
+        if values.as_ref().is_some_and(|v| v.len() > 100_000) {
+            return Err(invalid());
+        }
+        Ok(values)
+    };
+    let selected = indices("expected_selected")?;
+    let complete = indices("expected_complete")?;
+    if !fields.is_empty() || (complete.is_some() && selected.is_none()) {
+        return Err(invalid());
+    }
+    Ok(FinishReview {
+        selected,
+        complete: complete.unwrap_or_default(),
+    })
+}
+
+async fn finish_completed(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    body: axum::body::Bytes,
+) -> ApiResult<Json<Download>> {
+    require_torrent_owner(&state, &user, &id).await?;
+    let review = finish_review(&body)?;
+    state
+        .downloads
+        .finish_verified_files(&id, review.selected, &review.complete)
+        .await?;
+    Ok(Json(as_seen(&state, &user, &id).await?))
+}
+
 async fn files(
     State(state): State<AppState>,
     user: AuthUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<stash_core::internal_api::TorrentFiles>> {
-    user.require(Scope::Full)?;
-    require_visible(&state, &user, &id).await?;
+    require_torrent_owner(&state, &user, &id).await?;
     Ok(Json(state.downloads.torrent_files(&id).await?))
 }
 
@@ -299,8 +373,7 @@ async fn select_files(
     Path(id): Path<String>,
     ApiJson(selection): ApiJson<stash_core::internal_api::SelectTorrentFiles>,
 ) -> ApiResult<StatusCode> {
-    user.require(Scope::Full)?;
-    require_visible(&state, &user, &id).await?;
+    require_torrent_owner(&state, &user, &id).await?;
     if selection.indices.is_empty() || selection.indices.len() > 100_000 {
         return Err(ApiError::bad_request("Select at least one file."));
     }
@@ -317,8 +390,7 @@ async fn start_torrent(
     Path(id): Path<String>,
     ApiJson(selection): ApiJson<stash_core::internal_api::SelectTorrentFiles>,
 ) -> ApiResult<Json<Download>> {
-    user.require(Scope::Full)?;
-    require_visible(&state, &user, &id).await?;
+    require_torrent_owner(&state, &user, &id).await?;
     if selection.indices.is_empty() || selection.indices.len() > 100_000 {
         return Err(ApiError::bad_request("Select at least one file."));
     }
@@ -335,8 +407,7 @@ async fn set_rules(
     Path(id): Path<String>,
     ApiJson(rules): ApiJson<stash_core::internal_api::TorrentFileRules>,
 ) -> ApiResult<StatusCode> {
-    user.require(Scope::Full)?;
-    require_visible(&state, &user, &id).await?;
+    require_torrent_owner(&state, &user, &id).await?;
     rules.validate().map_err(ApiError::bad_request)?;
     state.downloads.set_torrent_rules(&id, rules).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -382,4 +453,43 @@ async fn remove(
         .remove(&id, query.delete_files.unwrap_or(false))
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod finish_request_tests {
+    use super::*;
+
+    #[test]
+    fn finish_current_or_exact_reviewed_selection() {
+        assert_eq!(finish_review(b"").unwrap(), FinishReview::default());
+        assert_eq!(finish_review(b"{}").unwrap(), FinishReview::default());
+        assert_eq!(
+            finish_review(br#"{"expected_selected":[]}"#)
+                .unwrap()
+                .selected,
+            Some(vec![])
+        );
+        assert_eq!(
+            finish_review(br#"{"expected_selected":[3,1]}"#)
+                .unwrap()
+                .selected,
+            Some(vec![3, 1])
+        );
+        assert_eq!(
+            finish_review(br#"{"expected_selected":[1,2],"expected_complete":[2]}"#)
+                .unwrap()
+                .complete,
+            vec![2]
+        );
+        for invalid in [
+            b"[]".as_slice(),
+            br#"{"expected_complete":[0]}"#,
+            br#"{"expected_selected":[0],"expected_complete":null}"#,
+            br#"{"expected_selected":null}"#,
+            br#"{"expected_select":[0]}"#,
+            br#"{"expected_selected":[-1]}"#,
+        ] {
+            assert!(finish_review(invalid).is_err());
+        }
+    }
 }

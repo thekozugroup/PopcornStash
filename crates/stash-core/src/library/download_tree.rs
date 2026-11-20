@@ -230,7 +230,7 @@ impl Library {
         root.mkdir(&target)?;
         if body.key.is_none() {
             let result = sqlx::query(
-                "INSERT INTO library_download_folders(library_id,group_key,name) VALUES(?,?,?)",
+                "INSERT INTO library_download_folders(library_id,group_key,name,follows_directory) VALUES(?,?,?,1)",
             )
             .bind(id)
             .bind(&key)

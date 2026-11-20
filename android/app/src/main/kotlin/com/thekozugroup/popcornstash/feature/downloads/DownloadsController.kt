@@ -172,6 +172,8 @@ class DownloadsController(
         load = api::torrentFiles, save = api::selectTorrentFiles, scope = scope,
         onSaved = { refresh() },
         start = { id, indices -> data.apply(StashEvent.DownloadChanged(api.startTorrent(id, indices))) },
+        skip = api::skipTorrentFile,
+        finish = { id, request -> data.apply(StashEvent.DownloadChanged(api.finishCompletedTorrentFiles(id, request))) },
     )
 
     private var lastStatus: EventStream.Status = connection.value

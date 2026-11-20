@@ -136,8 +136,12 @@ impl JobQueue {
         .bind(t)
         .fetch_one(&self.db)
         .await?;
-        self.notify.notify_waiters();
+        self.wake_workers();
         Ok(id)
+    }
+
+    pub(crate) fn wake_workers(&self) {
+        self.notify.notify_waiters();
     }
 
     /// Return jobs interrupted by a restart to the queue.

@@ -332,8 +332,8 @@ impl Library {
             if !remaining.is_empty()||dirs.iter().map(|d|(&d.from,d.identity[0],d.identity[1])).collect::<Vec<_>>()!=journal.dirs.iter().map(|d|(&d.from,d.identity[0],d.identity[1])).collect::<Vec<_>>(){return Err(CoreError::conflict("The source folder changed during the rename. Files were kept."));}
             for (n,f) in journal.files.iter().enumerate(){let private=format!("{stage}/file-{n}");root.rename_trash(&private,&f.to)?;sync(&root,&f.to)?;sync(&root,&private)?;check(&root,&f.to,f.identity)?;}
             // Memberships reference the saved group, including previously derived groups.
-            sqlx::query("INSERT INTO library_download_folders(library_id,group_key,name) VALUES(?,?,?) ON CONFLICT(library_id,group_key) DO UPDATE SET name=excluded.name")
-                .bind(id).bind(&body.key).bind(journal.name.as_deref().unwrap_or(&group_name)).execute(&mut *tx).await?;
+            sqlx::query("INSERT INTO library_download_folders(library_id,group_key,name,follows_directory) VALUES(?,?,?,?) ON CONFLICT(library_id,group_key) DO UPDATE SET name=excluded.name,follows_directory=coalesce(excluded.follows_directory,follows_directory)")
+                .bind(id).bind(&body.key).bind(journal.name.as_deref().unwrap_or(&group_name)).bind(journal.name.as_ref().map(|_| true)).execute(&mut *tx).await?;
             for (item,from,to) in &journal.items {
                 let changed=sqlx::query("UPDATE items SET rel_path=? WHERE id=? AND library_id=? AND rel_path=?").bind(to).bind(item).bind(id).bind(from).execute(&mut *tx).await?.rows_affected();
                 if changed!=1{return Err(CoreError::conflict("An item changed. The rename was not committed."));}

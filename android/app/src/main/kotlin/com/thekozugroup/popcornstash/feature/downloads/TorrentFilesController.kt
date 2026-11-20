@@ -3,16 +3,21 @@ package com.thekozugroup.popcornstash.feature.downloads
 import com.thekozugroup.popcornstash.data.api.ApiException
 import com.thekozugroup.popcornstash.data.api.Download
 import com.thekozugroup.popcornstash.data.api.DownloadKind
+import com.thekozugroup.popcornstash.data.api.FinishCompletedRequest
 import com.thekozugroup.popcornstash.data.api.TorrentFile
+import com.thekozugroup.popcornstash.data.api.TorrentFileKind
 import com.thekozugroup.popcornstash.data.api.TorrentFiles
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
+
+private const val PROGRESS_VALID_MS = 9_000L
 
 data class TorrentFilesState(
     val download: Download,
@@ -27,10 +32,31 @@ data class TorrentFilesState(
     val filtersPending: Boolean = false,
     val reviewRequired: Boolean = false,
     val draft: TorrentRuleDraft = TorrentRuleDraft(),
-    val types: List<com.thekozugroup.popcornstash.data.api.TorrentFileKind> = listOf(com.thekozugroup.popcornstash.data.api.TorrentFileKind.Video, com.thekozugroup.popcornstash.data.api.TorrentFileKind.Subtitle),
+    val types: List<TorrentFileKind> = listOf(TorrentFileKind.Video, TorrentFileKind.Subtitle),
+    val refreshing: Boolean = false,
+    val needsRefresh: Boolean = false,
 ) {
-    val changed: Boolean get() = selected != files.filter { it.selected }.map { it.index }.toSet()
-    val canSave: Boolean get() = ready && !loading && !busy && !filtersPending && filterError == null && selected.isNotEmpty() && (changed || reviewRequired)
+    val changed: Boolean by lazy { selected != files.filter { it.selected }.map { it.index }.toSet() }
+    val canSave: Boolean get() = ready && !loading && !busy && !needsRefresh && !filtersPending && filterError == null && selected.isNotEmpty() && (changed || reviewRequired)
+    val hasFileProgress: Boolean by lazy { files.any { it.complete != null } }
+    private val canManageFiles: Boolean get() = ready && !reviewRequired && !busy && !needsRefresh &&
+        !changed && !filtersPending && filterError == null
+    val finishPlan: FinishFilesPlan? by lazy {
+        if (!canManageFiles) return@lazy null
+        val wanted = files.filter { it.selected }
+        if (wanted.any { !it.isVerifiedComplete && !it.isVerifiedIncomplete }) return@lazy null
+        val completed = wanted.filter { it.isVerifiedComplete }.map { it.index }.toSet()
+        if (completed.isEmpty()) null else FinishFilesPlan(selected, completed)
+    }
+
+    private val incompleteSelection by lazy { files.filter { it.selected && it.isVerifiedIncomplete }.map { it.index }.toSet() }
+    fun canSkip(index: Int): Boolean = canManageFiles && selected.size > 1 && index in incompleteSelection
+}
+
+data class FinishFilesPlan(val selected: Set<Int>, val completed: Set<Int>) {
+    /** Additional verified files can safely join the same selection. Losing a reviewed file requires confirmation again. */
+    fun stillAppliesTo(latest: FinishFilesPlan?): Boolean =
+        latest != null && selected == latest.selected && latest.completed.containsAll(completed)
 }
 
 fun Download.canChooseTorrentFiles(): Boolean = kind == DownloadKind.Torrent && isActive()
@@ -45,56 +71,82 @@ class TorrentFilesController(
     private val scope: CoroutineScope,
     private val onSaved: () -> Unit = {},
     private val start: suspend (String, List<Int>) -> Unit = save,
+    private val finish: (suspend (String, FinishCompletedRequest) -> Unit)? = null,
+    private val skip: (suspend (String, Int) -> Unit)? = null,
 ) {
     private val mutableState = MutableStateFlow<TorrentFilesState?>(null)
     val state: StateFlow<TorrentFilesState?> = mutableState.asStateFlow()
     private var loadJob: Job? = null
+    private var expiryJob: Job? = null
     private var generation = 0L
 
     fun open(download: Download) {
         if (!download.canChooseTorrentFiles() || mutableState.value?.busy == true) return
         generation++
         loadJob?.cancel()
+        expiryJob?.cancel()
         loadJob = null
         mutableState.value = TorrentFilesState(download)
         refresh()
     }
 
-    fun refresh() {
+    fun refresh() = reload(message = null)
+
+    private fun reload(message: String?) {
         val current = mutableState.value ?: return
-        if (current.busy) return
+        if (current.busy || current.refreshing) return
         generation++
         loadJob?.cancel()
         val requestGeneration = generation
-        mutableState.value = current.copy(loading = true, error = null)
+        mutableState.value = current.copy(loading = !current.ready && (current.loading || current.needsRefresh), refreshing = true, error = message)
         loadJob = scope.launch {
             try {
-                do {
                 val manifest = load(current.download.id)
                 if (generation == requestGeneration) {
-                    mutableState.update { latest ->
-                        latest?.copy(
-                            loading = false,
-                            ready = manifest.ready,
-                            files = manifest.files,
-                            reviewRequired = manifest.reviewRequired,
-                            draft = if (latest.filtersEdited) latest.draft else manifest.rules?.toDraft() ?: TorrentRuleDraft(),
-                            types = if (latest.filtersEdited) latest.types else manifest.rules?.fileTypes ?: latest.types,
-                            selected = if (latest.changed || latest.filtersEdited) {
-                                latest.selected.intersect(manifest.files.map { it.index }.toSet())
-                            } else {
-                                manifest.files.filter { it.selected }.map { it.index }.toSet()
-                            },
-                            error = null,
-                        )
-                    }
+                    val latest = mutableState.value ?: return@launch
+                    publish(latest.withManifest(manifest).copy(error = message))
                 }
-                if (!manifest.ready) delay(3000)
-                } while (!manifest.ready && generation == requestGeneration)
             } catch (e: ApiException) {
-                if (generation == requestGeneration) mutableState.update { it?.copy(loading = false, error = e.message) }
+                if (generation == requestGeneration) reportFailure(e, needsRefresh = true, priorMessage = message)
             }
         }
+    }
+
+    private fun TorrentFilesState.withManifest(manifest: TorrentFiles): TorrentFilesState = copy(
+        loading = false, refreshing = false, needsRefresh = false, busy = false, error = null,
+        ready = manifest.ready, files = manifest.files, reviewRequired = manifest.reviewRequired,
+        draft = if (filtersEdited) draft else manifest.rules?.toDraft() ?: TorrentRuleDraft(),
+        types = if (filtersEdited) types else manifest.rules?.fileTypes ?: types,
+        selected = mergeSelection(manifest),
+    )
+
+    private fun publish(next: TorrentFilesState) {
+        expiryJob?.cancel()
+        mutableState.value = next
+        if (next.ready && !next.reviewRequired && next.hasFileProgress) expiryJob = scope.launch {
+            delay(PROGRESS_VALID_MS)
+            mutableState.update { it?.copy(needsRefresh = true) }
+        }
+    }
+
+    private fun reportFailure(error: ApiException, needsRefresh: Boolean, priorMessage: String? = null) {
+        mutableState.update { current ->
+            if (current == null) return@update null
+            if (error.status in setOf(401, 403, 404)) {
+                TorrentFilesState(current.download, loading = false, needsRefresh = true, error = error.message)
+            } else current.copy(
+                loading = false, refreshing = false, busy = false, needsRefresh = needsRefresh || current.needsRefresh,
+                error = if (priorMessage == null) error.message else "$priorMessage ${error.message}",
+            )
+        }
+    }
+
+    private fun TorrentFilesState.mergeSelection(manifest: TorrentFiles): Set<Int> {
+        val previous = files.filter { it.selected }.map { it.index }.toSet()
+        return manifest.files.filter { file ->
+            // Preserve local checkbox edits. Untouched files follow other clients' saved choices.
+            if ((file.index in previous) != (file.index in selected)) file.index in selected else file.selected
+        }.map { it.index }.toSet()
     }
 
     fun toggle(index: Int) {
@@ -111,11 +163,11 @@ class TorrentFilesController(
         mutableState.update { current -> current?.editFilters(value, current.types) }
     }
 
-    fun type(value: com.thekozugroup.popcornstash.data.api.TorrentFileKind) {
+    fun type(value: TorrentFileKind) {
         mutableState.update { current -> current?.editFilters(current.draft, if (value in current.types) current.types - value else current.types + value) }
     }
 
-    private fun TorrentFilesState.editFilters(value: TorrentRuleDraft, nextTypes: List<com.thekozugroup.popcornstash.data.api.TorrentFileKind>): TorrentFilesState {
+    private fun TorrentFilesState.editFilters(value: TorrentRuleDraft, nextTypes: List<TorrentFileKind>): TorrentFilesState {
         if (!ready || loading || busy) return this
         return copy(draft = value.copy(enabled = true), types = nextTypes, filtersEdited = true, filtersPending = true, filterError = null, error = null)
     }
@@ -135,21 +187,77 @@ class TorrentFilesController(
         if (mutableState.value?.busy == true) return
         generation++
         loadJob?.cancel()
+        expiryJob?.cancel()
         mutableState.value = null
     }
 
     fun submit() {
         val current = mutableState.value ?: return
         if (!current.canSave) return
-        mutableState.value = current.copy(busy = true, error = null)
+        mutate(current, keepOpen = current.reviewRequired) {
+            if (current.reviewRequired) start(current.download.id, current.selected.sorted())
+            else save(current.download.id, current.selected.sorted())
+        }
+    }
+
+    fun finishCompleted(confirmed: FinishFilesPlan) {
+        val finish = finish ?: return
+        val current = mutableState.value ?: return
+        if (!confirmed.stillAppliesTo(current.finishPlan)) return
+        mutate(current, recheck = { confirmed.stillAppliesTo(it.finishPlan) }) {
+            finish(current.download.id, FinishCompletedRequest(
+                expectedSelected = confirmed.selected.sorted(),
+                expectedComplete = confirmed.completed.sorted(),
+            ))
+        }
+    }
+
+    fun skipFile(index: Int) {
+        val skip = skip ?: return
+        val current = mutableState.value ?: return
+        if (!current.canSkip(index)) return
+        mutate(current, keepOpen = true, recheck = { it.canSkip(index) }) { skip(current.download.id, index) }
+    }
+
+    private fun mutate(
+        current: TorrentFilesState,
+        keepOpen: Boolean = false,
+        recheck: ((TorrentFilesState) -> Boolean)? = null,
+        action: suspend () -> Unit,
+    ) {
+        generation++
+        loadJob?.cancel()
+        if (recheck != null) expiryJob?.cancel()
+        mutableState.value = current.copy(busy = true, refreshing = false, error = null)
         scope.launch {
             try {
-                if (current.reviewRequired) start(current.download.id, current.selected.sorted())
-                else save(current.download.id, current.selected.sorted())
-                mutableState.value = null
+                if (recheck != null) {
+                    val manifest = withTimeoutOrNull(PROGRESS_VALID_MS) { load(current.download.id) } ?: throw ApiException.network()
+                    val latest = current.withManifest(manifest)
+                    if (!recheck(latest)) {
+                        publish(latest.copy(error = "The file status changed. Review the latest progress and try again."))
+                        return@launch
+                    }
+                }
+                action()
+                if (keepOpen) {
+                    mutableState.value = if (current.reviewRequired) {
+                        // Start committed the draft. The next read owns selection and live progress.
+                        TorrentFilesState(
+                            current.download, loading = false, ready = true, needsRefresh = true,
+                            files = current.files.map { it.copy(selected = it.index in current.selected) },
+                            selected = current.selected,
+                        )
+                    } else current.copy(busy = false, refreshing = false, needsRefresh = true)
+                    refresh()
+                } else {
+                    expiryJob?.cancel()
+                    mutableState.value = null
+                }
                 onSaved()
             } catch (e: ApiException) {
-                mutableState.update { it?.copy(busy = false, error = e.message) }
+                reportFailure(e, needsRefresh = recheck != null)
+                if (recheck != null && e.status == 409) reload(message = e.message)
             }
         }
     }

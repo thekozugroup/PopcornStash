@@ -118,6 +118,10 @@ impl<U: StorageFactory + ?Sized> StorageFactory for Box<U> {
 }
 
 pub trait TorrentStorage: Send + Sync {
+    /// Metadata for the open file used by piece verification.
+    fn opened_file_metadata(&self, _file_id: usize) -> anyhow::Result<std::fs::Metadata> {
+        anyhow::bail!("storage does not expose file identities")
+    }
     // Create/open files etc.
     fn init(
         &mut self,
@@ -171,6 +175,9 @@ pub trait TorrentStorage: Send + Sync {
 }
 
 impl<U: TorrentStorage + ?Sized> TorrentStorage for Box<U> {
+    fn opened_file_metadata(&self, file_id: usize) -> anyhow::Result<std::fs::Metadata> {
+        (**self).opened_file_metadata(file_id)
+    }
     fn pread_exact(&self, file_id: usize, offset: u64, buf: &mut [u8]) -> anyhow::Result<()> {
         (**self).pread_exact(file_id, offset, buf)
     }

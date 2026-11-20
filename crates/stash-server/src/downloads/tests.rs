@@ -247,6 +247,23 @@ impl Env {
             .unwrap()
     }
 
+    // The sortable root is a private wrapper on shfs. Inspect bytes at the
+    // recorded payload, never infer the physical location from the user label.
+    async fn torrent_payload(&self, id: &str) -> PathBuf {
+        let (destination, child): (String, Option<String>) = sqlx::query_as(
+            "SELECT destination,payload_leaf FROM torrent_handoffs WHERE download_id=?",
+        )
+        .bind(id)
+        .fetch_one(&self.db)
+        .await
+        .unwrap();
+        let root = self.root.join(destination);
+        match child {
+            Some(child) => root.join(child),
+            None => root,
+        }
+    }
+
     /// Sort jobs as `(rel_path, download_id)`.
     async fn sort_jobs(&self) -> Vec<(String, Option<String>)> {
         let rows: Vec<(String,)> = sqlx::query_as("SELECT payload FROM jobs WHERE kind = 'sort'")
@@ -496,6 +513,7 @@ struct EngineInner {
     added: Vec<AddTorrentRequest>,
     removed: Vec<(String, bool)>,
     remove_failures: u32,
+    completion: Option<stash_core::internal_api::TorrentCompletion>,
     limits: Vec<LimitsRequest>,
     next: u32,
 }
@@ -523,6 +541,8 @@ impl FakeEngine {
             .route("/health", get(engine_health))
             .route("/torrents", get(engine_list).post(engine_add))
             .route("/torrents/{id}/files", get(engine_files))
+            .route("/torrents/{id}/completion", get(engine_completion))
+            .route("/torrents/{id}/release", post(engine_release))
             .route("/torrents/{id}", axum::routing::delete(engine_remove))
             .route("/torrents/{id}/{action}", post(engine_action))
             .route("/limits", put(engine_limits))
@@ -629,6 +649,36 @@ async fn engine_list(State(s): State<EngineShared>, headers: HeaderMap) -> Respo
     Json(s.inner.lock().unwrap().torrents.clone()).into_response()
 }
 
+async fn engine_completion(
+    State(s): State<EngineShared>,
+    headers: HeaderMap,
+    AxPath(id): AxPath<String>,
+) -> Response {
+    if !authorized(&s, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let inner = s.inner.lock().unwrap();
+    let Some(torrent) = inner.torrents.iter().find(|t| t.id == id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if let Some(snapshot) = &inner.completion {
+        return Json(snapshot).into_response();
+    }
+    let folder = torrent.name.clone().unwrap();
+    let content = s.root.join("Downloads/In Progress").join(&folder);
+    if !content.is_dir() {
+        return StatusCode::CONFLICT.into_response();
+    }
+    let files = fake_files(torrent);
+    let release_witness = super::torrents::torrent_manifest::fixture_witness(&content, &files);
+    Json(stash_core::internal_api::TorrentCompletion {
+        folder,
+        files,
+        release_witness,
+    })
+    .into_response()
+}
+
 async fn engine_files(
     State(s): State<EngineShared>,
     headers: HeaderMap,
@@ -638,10 +688,14 @@ async fn engine_files(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let inner = s.inner.lock().unwrap();
-    let Some(torrent) = inner.torrents.iter().find(|torrent| torrent.id == id) else {
+    let Some(torrent) = inner.torrents.iter().find(|t| t.id == id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    Json(stash_core::internal_api::TorrentFiles {
+    Json(fake_files(torrent)).into_response()
+}
+
+fn fake_files(torrent: &EngineTorrent) -> stash_core::internal_api::TorrentFiles {
+    stash_core::internal_api::TorrentFiles {
         review_required: false,
         rules: None,
         ready: true,
@@ -651,9 +705,10 @@ async fn engine_files(
             size: torrent.total_bytes.unwrap_or(1000),
             kind: stash_core::internal_api::TorrentFileKind::Video,
             selected: true,
+            verified_bytes: Some(torrent.done_bytes),
+            complete: torrent.total_bytes == Some(torrent.done_bytes),
         }],
-    })
-    .into_response()
+    }
 }
 
 async fn engine_add(
@@ -719,6 +774,31 @@ async fn engine_add(
 #[derive(Deserialize)]
 struct RemoveQuery {
     delete_files: Option<bool>,
+}
+
+async fn engine_release(
+    state: State<EngineShared>,
+    headers: HeaderMap,
+    id: AxPath<String>,
+    Json(release): Json<stash_core::internal_api::ReleaseTorrent>,
+) -> Response {
+    if release.indices.is_empty() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let response = engine_remove(
+        state,
+        headers,
+        id,
+        Query(RemoveQuery {
+            delete_files: Some(false),
+        }),
+    )
+    .await;
+    if response.status() == StatusCode::NOT_FOUND {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        response
+    }
 }
 
 async fn engine_remove(
@@ -1501,8 +1581,9 @@ async fn magnet_completes_into_completed_and_leaves_the_engine() {
         vec![(engine_id, false)]
     );
     assert!(
-        env.completed()
-            .join("Big Buck Bunny/Big Buck Bunny.mkv")
+        env.torrent_payload(&d.id)
+            .await
+            .join("Big Buck Bunny.mkv")
             .exists()
     );
     assert!(!env.in_progress().join("Big Buck Bunny").exists());
@@ -1553,6 +1634,219 @@ async fn checked_initialization_and_empty_selection_never_finish_a_download() {
             DownloadState::Downloading | DownloadState::Paused
         ));
     }
+}
+
+#[tokio::test]
+async fn restart_recheck_preserves_transfer_bytes_until_verified_counters_return() {
+    use stash_core::internal_api::{MSG_CHECKING_FILES, MSG_WAITING_FOR_ENGINE};
+    let env = env(Opts {
+        engine: true,
+        ..Default::default()
+    })
+    .await;
+    let download = env.add(MAGNET).await;
+    let id = &download.id;
+    let mut torrent = env.engine().with(|e| e.torrents[0].clone());
+    let gib = 1u64 << 30;
+    let selected = 48 * gib;
+    let retained = 45 * gib;
+    torrent.total_bytes = Some(selected);
+    torrent.done_bytes = retained;
+    super::torrents::apply(&env.manager, &env.row(id).await, &torrent)
+        .await
+        .unwrap();
+
+    // A cold engine first has only its stored output folder. It then reports
+    // the whole metadata size (including skipped files) and bytes checked.
+    for (state, reason, reported_total, reported_done, expected_reason) in [
+        (
+            EngineTorrentState::Paused,
+            Some(MSG_WAITING_FOR_ENGINE),
+            None,
+            0,
+            MSG_WAITING_FOR_ENGINE,
+        ),
+        (
+            EngineTorrentState::Initializing,
+            None,
+            Some(64 * gib),
+            0,
+            MSG_CHECKING_FILES,
+        ),
+        (
+            EngineTorrentState::Initializing,
+            None,
+            Some(64 * gib),
+            64 * gib,
+            MSG_CHECKING_FILES,
+        ),
+        (
+            EngineTorrentState::Paused,
+            Some(MSG_CHECKING_FILES),
+            Some(selected),
+            selected,
+            MSG_CHECKING_FILES,
+        ),
+    ] {
+        torrent.state = state;
+        torrent.error = reason.map(str::to_owned);
+        torrent.total_bytes = reported_total;
+        torrent.done_bytes = reported_done;
+        torrent.progress = 1.0;
+        super::torrents::apply(&env.manager, &env.row(id).await, &torrent)
+            .await
+            .unwrap();
+        let view = env.manager.get(id).await.unwrap();
+        assert_eq!(view.total_bytes, Some(selected as i64));
+        assert_eq!(view.done_bytes, retained as i64);
+        assert_eq!(view.progress, retained as f64 / selected as f64);
+        assert_eq!(view.error.as_deref(), Some(expected_reason));
+        assert!(env.engine().with(|e| e.removed.is_empty()));
+        assert!(env.sort_jobs().await.is_empty());
+    }
+
+    // Some pieces failed verification. The first authoritative update may drop.
+    torrent.state = EngineTorrentState::Downloading;
+    torrent.error = None;
+    torrent.done_bytes = 43 * gib;
+    super::torrents::apply(&env.manager, &env.row(id).await, &torrent)
+        .await
+        .unwrap();
+    let verified = env.manager.get(id).await.unwrap();
+    assert_eq!(verified.done_bytes, torrent.done_bytes as i64);
+    assert_eq!(verified.progress, 43.0 / 48.0);
+    assert!(verified.error.is_none());
+
+    // Metadata discovery still has neither a resolved output folder nor a size.
+    torrent.state = EngineTorrentState::Initializing;
+    torrent.output_dir = None;
+    torrent.total_bytes = None;
+    torrent.done_bytes = 0;
+    torrent.progress = 0.0;
+    super::torrents::apply(&env.manager, &env.row(id).await, &torrent)
+        .await
+        .unwrap();
+    let pending = env.manager.get(id).await.unwrap();
+    assert_eq!(pending.total_bytes, None);
+    assert_eq!(pending.done_bytes, 0);
+    assert!(pending.error.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finish_completed_freezes_verified_selections_and_retries_release() {
+    use stash_core::internal_api::{TorrentCompletion, TorrentFile, TorrentFileKind, TorrentFiles};
+    let env = env(Opts {
+        engine: true,
+        ..Default::default()
+    })
+    .await;
+    let download = env.add(MAGNET).await;
+    let folder = env.in_progress().join(&download.name);
+    let keep = format!("{}.mkv", download.name);
+    for name in ["unfinished", "shared"] {
+        std::fs::write(folder.join(name), [0u8; 9]).unwrap();
+    }
+    let file = |index, name: &str, size, verified_bytes, selected, complete| TorrentFile {
+        index,
+        path: name.into(),
+        size,
+        kind: TorrentFileKind::Other,
+        selected,
+        verified_bytes,
+        complete,
+    };
+    let files = TorrentFiles {
+        ready: true,
+        files: vec![
+            file(0, &keep, 1000, None, true, false),
+            file(1, "unfinished", 9, Some(8), true, false),
+            file(2, "shared", 9, Some(9), false, true),
+        ],
+        ..Default::default()
+    };
+    let snapshot = TorrentCompletion {
+        folder: download.name.clone(),
+        release_witness: super::torrents::torrent_manifest::fixture_witness(&folder, &files),
+        files,
+    };
+    env.engine().with(|e| e.completion = Some(snapshot));
+    let id = &download.id;
+    assert!(
+        env.manager
+            .finish_verified_files(id, None, &[])
+            .await
+            .is_err()
+    );
+    assert!(env.row(id).await.torrent_files_json.is_none());
+    assert!(env.engine().with(|e| e.removed.is_empty()));
+    env.engine().with(|e| {
+        let first = &mut e.completion.as_mut().unwrap().files.files[0];
+        first.verified_bytes = Some(1000);
+        first.complete = true;
+        e.remove_failures = 1;
+    });
+    // Another device changed an unfinished selection. Even when the complete
+    // indices still match, this request must leave the transfer untouched.
+    for stale in [vec![0], vec![0, 2], vec![]] {
+        let error = env
+            .manager
+            .finish_verified_files(id, Some(stale), &[0])
+            .await
+            .unwrap_err();
+        assert_eq!(error.code.status(), StatusCode::CONFLICT);
+        assert!(env.row(id).await.torrent_files_json.is_none());
+        assert!(env.engine().with(|e| e.removed.is_empty()));
+        assert!(env.sort_jobs().await.is_empty());
+    }
+    // A file that was complete in the confirmation cannot silently be discarded.
+    let error = env
+        .manager
+        .finish_verified_files(id, Some(vec![0, 1]), &[0, 1])
+        .await
+        .unwrap_err();
+    assert_eq!(error.code.status(), StatusCode::CONFLICT);
+    assert!(env.row(id).await.torrent_files_json.is_none());
+    assert!(env.engine().with(|e| e.removed.is_empty()));
+    // A temporary loss of progress for an unfinished file also leaves the decision open.
+    env.engine()
+        .with(|e| e.completion.as_mut().unwrap().files.files[1].verified_bytes = None);
+    assert!(
+        env.manager
+            .finish_verified_files(id, Some(vec![0, 1]), &[0])
+            .await
+            .is_err()
+    );
+    assert!(env.row(id).await.torrent_files_json.is_none());
+    env.engine()
+        .with(|e| e.completion.as_mut().unwrap().files.files[1].verified_bytes = Some(8));
+    // The reviewed selection still matches in either order; a file finishing
+    // since the review is eligible to be kept.
+    env.manager
+        .finish_verified_files(id, Some(vec![1, 0]), &[])
+        .await
+        .unwrap();
+    let decided = env.row(id).await;
+    assert_eq!(decided.total_bytes, Some(1000));
+    assert_eq!(decided.state, DownloadState::Completed);
+    assert!(env.manager.skip_torrent_file(id, 0).await.is_err());
+    assert!(env.manager.resume(id).await.is_err());
+    assert!(env.sort_jobs().await.is_empty());
+    assert!(folder.join("unfinished").exists());
+    // A restarted poller needs only the frozen DB manifest after engine release.
+    env.engine().with(|e| e.completion = None);
+    env.manager.start(env.cancel.clone());
+    wait_until!(
+        "verified files sorted",
+        env.row(id).await.state == DownloadState::Sorting
+    );
+    let destination = env.torrent_payload(id).await;
+    assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 1);
+    assert_eq!(
+        std::fs::read(destination.join(keep)).unwrap(),
+        vec![7u8; 1000]
+    );
+    let saved = env.manager.torrent_files(id).await.unwrap();
+    assert_eq!(saved.files.iter().filter(|f| f.selected).count(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2552,7 +2846,7 @@ async fn insert_row(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn finished_torrent_left_in_in_progress_is_moved_after_a_restart() {
+async fn unwitnessed_legacy_torrent_with_missing_engine_is_held_after_restart() {
     let env = env(Opts {
         engine: true,
         ..Default::default()
@@ -2573,29 +2867,288 @@ async fn finished_torrent_left_in_in_progress_is_moved_after_a_restart() {
         Some("t99"),
     )
     .await;
-    env.manager.start(env.cancel.clone());
-    wait_until!(
-        "the torrent to be sorting",
-        env.row(&id).await.state == DownloadState::Sorting
-    );
-    assert!(
-        env.completed()
-            .join("Big Buck Bunny/Big Buck Bunny.mkv")
-            .exists()
-    );
-    assert!(!folder.exists());
+    assert!(!super::torrents::finish_completed(&env.manager, &env.row(&id).await).await);
+    assert!(folder.exists());
+    assert!(env.row(&id).await.error.unwrap().contains("kept in place"));
+    assert!(env.engine().with(|e| e.removed.is_empty()));
+    assert!(env.sort_jobs().await.is_empty());
+    assert!(env.manager.remove(&id, true).await.is_err());
+}
+
+#[tokio::test]
+async fn remove_preserves_foreign_entries_when_a_frozen_completion_has_no_handoff_yet() {
+    let env = env(Opts {
+        engine: true,
+        ..Default::default()
+    })
+    .await;
+    let d = env.add(MAGNET).await;
+    let live = env.row(&d.id).await;
+    env.engine().finish(live.engine_id.as_deref().unwrap(), 0);
+    let foreign = env.in_progress().join(&d.name).join("unrelated");
+    std::fs::write(&foreign, b"keep").unwrap();
+    let error = env
+        .manager
+        .finish_verified_files(&d.id, Some(vec![0]), &[0])
+        .await
+        .unwrap_err();
+    assert_eq!(error.code.status(), StatusCode::CONFLICT);
+    let row = env.row(&d.id).await;
+    assert_eq!(row.state, DownloadState::Completed);
+    assert!(row.engine_id.is_some() && row.torrent_files_json.is_some());
+    assert!(env.manager.remove(&d.id, true).await.is_err());
+    assert!(env.engine().with(|e| e.removed.is_empty()));
+    assert_eq!(std::fs::read(&foreign).unwrap(), b"keep");
+    assert!(env.sort_jobs().await.is_empty());
+    // Once the unrelated entry is taken aside, retry consumes only the frozen payload.
+    std::fs::rename(&foreign, env.in_progress().join("aside")).unwrap();
+    assert!(super::torrents::finish_completed(&env.manager, &row).await);
+    assert_eq!(env.row(&d.id).await.state, DownloadState::Sorting);
+}
+
+/// Crash between successful release and clearing engine_id. The persisted row
+/// and real directory entries are all the retry has; the fake engine is empty.
+#[tokio::test]
+async fn release_before_handoff_holds_replaced_files_roots_and_unrelated_entries() {
+    for scenario in ["selected", "root", "extra"] {
+        let env = env(Opts {
+            engine: true,
+            ..Default::default()
+        })
+        .await;
+        let d = env.add(MAGNET).await;
+        let row = env.row(&d.id).await;
+        env.engine().finish(row.engine_id.as_deref().unwrap(), 0);
+        let source = env.in_progress().join(&d.name);
+        let leaf = format!("{}.mkv", d.name);
+        sqlx::query(
+            "CREATE TRIGGER interrupt_release BEFORE UPDATE OF engine_id ON downloads
+            WHEN NEW.engine_id IS NULL BEGIN SELECT RAISE(ABORT,'interrupted'); END",
+        )
+        .execute(&env.db)
+        .await
+        .unwrap();
+        env.manager
+            .finish_verified_files(&d.id, Some(vec![0]), &[0])
+            .await
+            .unwrap();
+        assert!(env.engine().with(|e| e.torrents.is_empty()));
+        let frozen = env.row(&d.id).await.torrent_files_json.unwrap();
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&frozen).unwrap()["release_witness"]
+                .is_object()
+        );
+        let held = env.in_progress().join("held-fixture");
+        let foreign = match scenario {
+            "root" => {
+                std::fs::rename(&source, &held).unwrap();
+                std::fs::create_dir(&source).unwrap();
+                // The selected inode is unchanged. The enclosing directory is not.
+                std::fs::rename(held.join(&leaf), source.join(&leaf)).unwrap();
+                source.join(&leaf)
+            }
+            "selected" => {
+                std::fs::rename(source.join(&leaf), &held).unwrap();
+                let new = source.join(&leaf);
+                std::fs::write(&new, [9; 1000]).unwrap();
+                new
+            }
+            _ => {
+                let extra = source.join("unrelated");
+                std::fs::write(&extra, b"keep").unwrap();
+                extra
+            }
+        };
+        let before = std::fs::read(&foreign).unwrap();
+        sqlx::query("DROP TRIGGER interrupt_release")
+            .execute(&env.db)
+            .await
+            .unwrap();
+        let pending = env.row(&d.id).await;
+        assert!(!super::torrents::finish_completed(&env.manager, &pending).await);
+        assert!(
+            env.row(&d.id)
+                .await
+                .error
+                .unwrap()
+                .contains("kept in place")
+        );
+        assert!(env.manager.remove(&d.id, true).await.is_err());
+        assert_eq!(std::fs::read(foreign).unwrap(), before);
+        assert!(env.sort_jobs().await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn legacy_completed_row_upgrades_from_the_verified_live_engine() {
+    let env = env(Opts {
+        engine: true,
+        ..Default::default()
+    })
+    .await;
+    let d = env.add(MAGNET).await;
+    let active = env.row(&d.id).await;
+    env.engine().finish(active.engine_id.as_deref().unwrap(), 0);
+    let rel = format!("Downloads/In Progress/{}", d.name);
+    sqlx::query(
+        "UPDATE downloads SET state='completed',rel_path=?,torrent_files_json=NULL WHERE id=?",
+    )
+    .bind(&rel)
+    .bind(&d.id)
+    .execute(&env.db)
+    .await
+    .unwrap();
+    assert!(super::torrents::finish_completed(&env.manager, &env.row(&d.id).await).await);
+    assert_eq!(env.row(&d.id).await.state, DownloadState::Sorting);
+    assert_eq!(env.sort_jobs().await.len(), 1);
+}
+
+/// Stop publication after the native rename but before SQLite can bind the
+/// destination or queue its sort. No engine, peers or background workers.
+async fn interrupted_handoff(env: &Env, directory: bool) -> (String, String, String) {
+    let name = "fixture.pdf";
+    let source = format!("Downloads/In Progress/{name}");
+    let src = env.root.join(&source);
+    if directory {
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("entry.pdf"), b"owned").unwrap();
+    } else {
+        std::fs::write(&src, b"owned").unwrap();
+    }
+    // A pre-existing unrelated entry forces a numbered destination.
+    std::fs::write(env.completed().join(name), b"occupied").unwrap();
+    let id = insert_row(
+        env,
+        "torrent",
+        name,
+        "fixture",
+        "completed",
+        Some(&source),
+        Some(5),
+        None,
+    )
+    .await;
+    let manifest: stash_core::internal_api::TorrentFiles =
+        serde_json::from_value(serde_json::json!({
+            "ready":true,"files":[{"index":0,"path":if directory {"entry.pdf"} else {name},
+            "size":5,"kind":"other","selected":true,"complete":true,"verified_bytes":5}]
+        }))
+        .unwrap();
+    let proof = super::torrents::torrent_manifest::fixture_witness(&src, &manifest);
+    let mut frozen = serde_json::to_value(manifest).unwrap();
+    frozen["release_witness"] = serde_json::to_value(proof).unwrap();
+    sqlx::query("UPDATE downloads SET torrent_files_json=? WHERE id=?")
+        .bind(frozen.to_string())
+        .bind(&id)
+        .execute(&env.db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER interrupt_handoff BEFORE INSERT ON jobs WHEN NEW.kind='sort'
+        BEGIN SELECT RAISE(ABORT,'interrupted'); END",
+    )
+    .execute(&env.db)
+    .await
+    .unwrap();
+    assert!(!super::torrents::finish_completed(&env.manager, &env.row(&id).await).await);
+    sqlx::query("DROP TRIGGER interrupt_handoff")
+        .execute(&env.db)
+        .await
+        .unwrap();
+    let dest: String =
+        sqlx::query_scalar("SELECT destination FROM torrent_handoffs WHERE download_id=?")
+            .bind(&id)
+            .fetch_one(&env.db)
+            .await
+            .unwrap();
+    assert_eq!(dest, "Downloads/Completed/fixture (2).pdf");
     assert_eq!(
-        env.engine().with(|e| e.removed.clone()),
-        vec![("t99".to_string(), false)],
-        "the engine is asked to let go (it no longer knows the torrent)"
+        env.row(&id).await.rel_path.as_deref(),
+        Some(source.as_str())
     );
+    assert_eq!(env.row(&id).await.state, DownloadState::Completed);
+    assert!(!src.exists());
+    assert!(env.root.join(&dest).exists());
+    assert!(env.sort_jobs().await.is_empty());
+    assert!(env.manager.library.enqueue_sort(&dest, None).await.is_err());
+    assert!(env.manager.library.sort_path(&dest, None).await.is_err());
+    assert!(env.manager.remove(&id, true).await.is_err());
+    (id, source, dest)
+}
+
+#[tokio::test]
+async fn interrupted_torrent_handoff_resumes_by_identity_and_keeps_provenance() {
+    for directory in [false, true] {
+        let env = env(Opts::default()).await;
+        let (id, source, dest) = interrupted_handoff(&env, directory).await;
+        // The engine has reused the old source name. Sorting must consume only
+        // the exact destination, for legacy single files as well as directories.
+        std::fs::write(env.root.join(&source), b"new transfer").unwrap();
+        let stale = env.row(&id).await;
+        assert!(super::torrents::finish_completed(&env.manager, &stale).await);
+        assert!(super::torrents::finish_completed(&env.manager, &stale).await);
+        assert_eq!(
+            env.sort_jobs().await,
+            vec![(dest.clone(), Some(id.clone()))]
+        );
+        assert_eq!(env.row(&id).await.state, DownloadState::Sorting);
+        assert_eq!(env.row(&id).await.rel_path.as_deref(), Some(dest.as_str()));
+        let items = env.manager.library.sort_path(&dest, None).await.unwrap();
+        assert_eq!(items.len(), 1);
+        let owner: String = sqlx::query_scalar("SELECT source_download_id FROM items WHERE id=?")
+            .bind(&items[0])
+            .fetch_one(&env.db)
+            .await
+            .unwrap();
+        assert_eq!(owner, id);
+        assert_eq!(env.row(&id).await.state, DownloadState::Sorted);
+        assert_eq!(
+            std::fs::read(env.root.join(&source)).unwrap(),
+            b"new transfer"
+        );
+        assert_eq!(
+            std::fs::read(env.completed().join("fixture.pdf")).unwrap(),
+            b"occupied"
+        );
+    }
+}
+
+#[tokio::test]
+async fn interrupted_torrent_handoff_refuses_reused_paths_before_and_after_publication() {
+    let env = env(Opts::default()).await;
+    let (id, source, dest) = interrupted_handoff(&env, false).await;
+    let src = env.root.join(&source);
+    let dst = env.torrent_payload(&id).await;
+    let held = env.root.join("original");
+    std::fs::rename(&dst, &held).unwrap();
+    // Identical names, contents and lengths do not establish ownership.
+    std::fs::write(&src, b"owned").unwrap();
+    let row = env.row(&id).await;
+    assert!(!super::torrents::finish_completed(&env.manager, &row).await);
+    assert!(!dst.exists());
+    std::fs::remove_file(&src).unwrap();
+    std::fs::rename(&held, &src).unwrap();
+    std::fs::write(&dst, b"owned").unwrap();
+    assert!(!super::torrents::finish_completed(&env.manager, &row).await);
+    assert!(src.exists() && dst.exists());
+    assert!(env.sort_jobs().await.is_empty());
+    // Recover the state just before rename: the exact source is present and
+    // its reserved destination is free. It must use the original reservation.
+    std::fs::remove_file(&dst).unwrap();
+    assert!(super::torrents::finish_completed(&env.manager, &row).await);
+    assert!(!src.exists());
     assert_eq!(
         env.sort_jobs().await,
-        vec![(
-            "Downloads/Completed/Big Buck Bunny".to_string(),
-            Some(id.clone())
-        )]
+        vec![(dest.clone(), Some(id.clone()))]
     );
+    std::fs::rename(&dst, &held).unwrap();
+    std::fs::write(&dst, b"owned").unwrap();
+    for request in [None, Some(id.as_str())] {
+        assert!(env.manager.library.sort_path(&dest, request).await.is_err());
+    }
+    assert_eq!(env.row(&id).await.state, DownloadState::Sorting);
+    assert_eq!(std::fs::read(&dst).unwrap(), b"owned");
+    assert_eq!(std::fs::read(&held).unwrap(), b"owned");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2612,11 +3165,10 @@ async fn finished_torrent_that_cannot_be_moved_yet_is_retried() {
     std::fs::remove_dir_all(env.completed()).unwrap();
     std::fs::write(env.completed(), b"in the way").unwrap();
     env.engine().finish(&engine_id, 0);
-    // Every attempt to finish takes the torrent out of the engine first, so a second
-    // removal means the first move failed (and said so) and the manager tried again.
+    // The persisted manifest can retry the move after the engine hash is released.
     wait_until!(
         "a failed move to be retried",
-        env.engine().with(|e| e.removed.len()) >= 2
+        env.engine().with(|e| e.removed.len()) == 1
             && env.row(&d.id).await.error.as_deref() == Some(MSG_MOVE_RETRY)
     );
     let row = env.row(&d.id).await;

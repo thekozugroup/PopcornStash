@@ -140,7 +140,8 @@ impl<'a> FileOps<'a> {
                 current_file.mark_processed_bytes(to_read_in_file as u64);
 
                 if current_file.is_broken {
-                    // no need to read.
+                    // Every piece spanning an unreadable file is unverified.
+                    some_files_broken = true;
                     continue;
                 }
 

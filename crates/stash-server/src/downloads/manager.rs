@@ -697,11 +697,20 @@ impl DownloadManager {
         &self,
         id: &str,
     ) -> ApiResult<stash_core::internal_api::TorrentFiles> {
+        let _controls = self.torrent_slots.lock().await;
         let row = self.load_row(id).await?;
         if row.kind != DownloadKind::Torrent {
             return Err(ApiError::bad_request(
                 "Only torrents have a file selection.",
             ));
+        }
+        if let Some(saved) = &row.torrent_files_json {
+            return serde_json::from_str(saved).map_err(|_| ApiError::internal());
+        }
+        if !torrent_in_engine(&row)
+            || matches!(row.state, DownloadState::Failed | DownloadState::Cancelled)
+        {
+            return Err(ApiError::conflict("This torrent is no longer active."));
         }
         let Some(engine_id) = row.engine_id else {
             return Ok(Default::default());
@@ -749,8 +758,9 @@ impl DownloadManager {
                 &["queued", "downloading", "paused"],
             )
             .await?;
+            self.resume_torrent_locked(id).await?;
         }
-        self.resume(id).await
+        self.publish_id(id).await
     }
 
     pub async fn select_torrent_files(&self, id: &str, indices: Vec<usize>) -> ApiResult<()> {
@@ -771,6 +781,18 @@ impl DownloadManager {
             .ok_or_else(|| ApiError::conflict("Wait for the torrent's file list."))?;
         self.torrentd
             .select_files(&engine_id, indices)
+            .await
+            .map_err(|e| engine_error(&e))?;
+        self.torrent_wake.notify_one();
+        Ok(())
+    }
+
+    pub async fn skip_torrent_file(&self, id: &str, index: usize) -> ApiResult<()> {
+        let _controls = self.torrent_slots.lock().await;
+        let row = self.load_row(id).await?;
+        let engine_id = active_engine_id(&row)?;
+        self.torrentd
+            .skip_file(engine_id, index)
             .await
             .map_err(|e| engine_error(&e))?;
         self.torrent_wake.notify_one();
@@ -888,16 +910,25 @@ impl DownloadManager {
                 DownloadState::Queued | DownloadState::Downloading => {}
                 _ => return Err(ApiError::conflict("This download has already finished.")),
             },
-            DownloadKind::Torrent => match (row.state, row.engine_id.as_deref()) {
-                (DownloadState::Paused, Some(engine_id)) => {
-                    let _slots = self.torrent_slots.lock().await;
-                    match self.torrent_slot(id).await? {
-                        Ok(()) => {
-                            self.torrentd
-                                .resume(engine_id)
-                                .await
-                                .map_err(|e| engine_error(&e))?;
-                            sqlx::query(
+            DownloadKind::Torrent => {
+                let _slots = self.torrent_slots.lock().await;
+                self.resume_torrent_locked(id).await?;
+            }
+        }
+        self.publish_id(id).await
+    }
+
+    async fn resume_torrent_locked(&self, id: &str) -> ApiResult<()> {
+        let row = self.load_row(id).await?;
+        match (row.state, row.engine_id.as_deref()) {
+            (DownloadState::Paused, Some(engine_id)) => {
+                match self.torrent_slot(id).await? {
+                    Ok(()) => {
+                        self.torrentd
+                            .resume(engine_id)
+                            .await
+                            .map_err(|e| engine_error(&e))?;
+                        sqlx::query(
                                 "UPDATE downloads SET state = 'downloading', error = NULL, updated_at = ?
                                  WHERE id = ? AND state = 'paused'",
                             )
@@ -905,25 +936,25 @@ impl DownloadManager {
                             .bind(id)
                             .execute(&self.db)
                             .await?;
-                        }
-                        // Every slot is taken: back in line; the poller resumes it later.
-                        Err(waiting) => {
-                            sqlx::query(
-                                "UPDATE downloads SET state = 'queued', error = ?, updated_at = ?
-                                 WHERE id = ? AND state = 'paused'",
-                            )
-                            .bind(waiting)
-                            .bind(now())
-                            .bind(id)
-                            .execute(&self.db)
-                            .await?;
-                        }
                     }
-                    self.torrent_wake.notify_one();
+                    // Every slot is taken: back in line; the poller resumes it later.
+                    Err(waiting) => {
+                        sqlx::query(
+                            "UPDATE downloads SET state = 'queued', error = ?, updated_at = ?
+                                 WHERE id = ? AND state = 'paused'",
+                        )
+                        .bind(waiting)
+                        .bind(now())
+                        .bind(id)
+                        .execute(&self.db)
+                        .await?;
+                    }
                 }
-                (DownloadState::Paused, None) => {
-                    let waiting = self.engine_wait_reason().await;
-                    sqlx::query(
+                self.torrent_wake.notify_one();
+            }
+            (DownloadState::Paused, None) => {
+                let waiting = self.engine_wait_reason().await;
+                sqlx::query(
                         "UPDATE downloads SET state = 'queued', error = ?, updated_at = ? WHERE id = ? AND state = 'paused'",
                     )
                     .bind(waiting)
@@ -931,20 +962,16 @@ impl DownloadManager {
                     .bind(id)
                     .execute(&self.db)
                     .await?;
-                    self.torrent_wake.notify_one();
-                }
-                (
-                    DownloadState::Queued | DownloadState::Downloading | DownloadState::Seeding,
-                    _,
-                ) => {}
-                _ => {
-                    return Err(ApiError::conflict(
-                        "This download cannot be resumed. Add it again.",
-                    ));
-                }
-            },
+                self.torrent_wake.notify_one();
+            }
+            (DownloadState::Queued | DownloadState::Downloading | DownloadState::Seeding, _) => {}
+            _ => {
+                return Err(ApiError::conflict(
+                    "This download cannot be resumed. Add it again.",
+                ));
+            }
         }
-        self.publish_id(id).await
+        Ok(())
     }
 
     pub async fn remove(&self, id: &str, delete_files: bool) -> ApiResult<()> {
@@ -956,6 +983,30 @@ impl DownloadManager {
             _ => None,
         };
         let row = self.load_row(id).await?;
+        // A frozen torrent still in staging can be held for a foreign entry or a
+        // replaced root before the core handoff exists. Never remove it by pathname.
+        if row.kind == DownloadKind::Torrent
+            && row.state == DownloadState::Completed
+            && row
+                .rel_path
+                .as_deref()
+                .is_some_and(|rel| StashLayout::zone(rel) == Zone::InProgress)
+        {
+            return Err(ApiError::conflict(MSG_BEING_SORTED));
+        }
+        // The durable intent may already own the destination while rel_path
+        // still points at a reused source. Neither path is disposable by name.
+        if row.kind == DownloadKind::Torrent
+            && matches!(row.state, DownloadState::Completed | DownloadState::Sorting)
+            && sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM torrent_handoffs WHERE download_id=?)",
+            )
+            .bind(id)
+            .fetch_one(&self.db)
+            .await?
+        {
+            return Err(ApiError::conflict(MSG_BEING_SORTED));
+        }
         if row.state == DownloadState::Sorting && self.sort_pending(&row).await? {
             return Err(ApiError::conflict(MSG_BEING_SORTED));
         }
@@ -1383,7 +1434,39 @@ pub(crate) fn is_deletable_download_path(rel: &str) -> bool {
 
 /// Map an engine failure to an API error.
 pub(crate) fn engine_error(e: &TorrentdError) -> ApiError {
-    e.api_error()
+    match e {
+        TorrentdError::Api {
+            status: 400,
+            message,
+        } => ApiError::bad_request(message.clone()),
+        TorrentdError::Api {
+            status: 409,
+            message,
+        } => ApiError::conflict(message.clone()),
+        TorrentdError::Api { status: 404, .. } => {
+            ApiError::conflict("The torrent is no longer available.")
+        }
+        _ => e.api_error(),
+    }
+}
+
+pub(super) fn active_engine_id(row: &DownloadRow) -> ApiResult<&str> {
+    if row.kind != DownloadKind::Torrent
+        || !matches!(
+            row.state,
+            DownloadState::Downloading
+                | DownloadState::Paused
+                | DownloadState::Queued
+                | DownloadState::Seeding
+        )
+    {
+        return Err(ApiError::conflict(
+            "This action requires an active torrent.",
+        ));
+    }
+    row.engine_id
+        .as_deref()
+        .ok_or_else(|| ApiError::conflict("Wait for the torrent's file list."))
 }
 
 /// The VPN download proxy only connects to ports 80 and 443.

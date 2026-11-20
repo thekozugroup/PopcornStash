@@ -33,7 +33,7 @@ Screenshots, screen recording, casting to insecure displays and Recents previews
 
 ## Download the current test APK
 
-The [current signed debug APK](https://github.com/thekozugroup/PopcornStash/releases/download/test-build-2026-10-22/popcornstash-debug.apk) and its SHA-256 checksum are attached to the [GitHub test release](https://github.com/thekozugroup/PopcornStash/releases/tag/test-build-2026-10-22). It includes legacy-video support, clearable conversion activity and storage savings. This is a manual test build, separate from `android-N` automatic releases. It can update an existing installation only when its signing certificate matches; keep app data and use `adb install -r`. Production release publishing still requires the original release signing identity.
+The [signed debug APK for build 182](https://github.com/thekozugroup/PopcornStash/releases/download/test-build-2026-11-20/popcornstash-debug.apk) and its checksum are on the [GitHub test release](https://github.com/thekozugroup/PopcornStash/releases/tag/test-build-2026-11-20). Install it manually over a build signed with the same debug certificate using `adb install -r`. Production updates use the original release signing identity.
 
 ## Build the app
 
@@ -213,3 +213,7 @@ Seek bar previews: while dragging, a small frame and target time appear above th
 ## Video discovery
 
 Home shows Continue watching and Suggested for you from your local library. Open a video library for its own resume, suggestions and recent shelves, followed by source-download collections. Tap See all on a collection to show every video inside it, including videos in nested source folders. The three-dot Library view menu switches between Feed, Folder view and All videos. Folder view keeps the existing rename, subfolder and organizing controls; changing a view never moves files. Photos retain their timeline. This feed requires the updated server. Suggestions and watch progress stay on your own server.
+
+### Viewing a transfer’s files
+
+Open Files on an active torrent to see the verified progress of each file. Use Skip to stop requesting a file, or edit the selection to change several choices. When at least one selected file is complete, Finish completed lets you review the count and send the verified files for sorting. Confirming discards the unfinished and skipped files. Keep downloading leaves the torrent running.

@@ -13,8 +13,20 @@ data class TorrentFile(
     val size: Long,
     val kind: TorrentFileKind,
     val selected: Boolean,
-)
+    val verifiedBytes: Long? = null,
+    val complete: Boolean? = null,
+) {
+    val isVerifiedComplete: Boolean get() = complete == true && size >= 0 && verifiedBytes == size
+    val isVerifiedIncomplete: Boolean get() = complete == false && verifiedBytes != null && verifiedBytes >= 0 && verifiedBytes < size
+}
 
 /** `PUT /api/downloads/:id/files`: the complete set of wanted file indices. */
 @Serializable
 data class TorrentFileSelection(val indices: List<Int>)
+
+/** Selection must match exactly. Confirmed complete files must still be complete. */
+@Serializable
+data class FinishCompletedRequest(
+    val expectedSelected: List<Int>? = null,
+    val expectedComplete: List<Int>? = null,
+)

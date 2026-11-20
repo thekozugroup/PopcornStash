@@ -2,6 +2,7 @@
  * An in-progress torrent or web download from the server, live through
  * `download` events.
  */
+import {Button} from '@astryxdesign/core/Button';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import {Badge} from '@astryxdesign/core/Badge';
 import {MoreMenu} from '@astryxdesign/core/MoreMenu';
@@ -77,20 +78,22 @@ export function DownloadRow({download, onFiles, onChanged, onRemove, onError}: D
       }
       actions={
         <>
-          {pausable || resumable ? (
+          {download.kind === 'torrent' && <Button label={review ? 'Review files' : 'Files'} variant="ghost"
+            aria-label={`${review ? 'Review files for' : 'Files for'} ${download.name}`} onClick={() => onFiles(download)} />}
+          {!review && (pausable || resumable) ? (
             <IconButton
-              label={review ? `Review files for ${download.name}` : resumable ? `Resume ${download.name}` : `Pause ${download.name}`}
-              tooltip={review ? 'Review files' : resumable ? 'Resume' : 'Pause'}
+              label={resumable ? `Resume ${download.name}` : `Pause ${download.name}`}
+              tooltip={resumable ? 'Resume' : 'Pause'}
               icon={resumable ? <Play size={18} strokeWidth={1.75} /> : <Pause size={18} strokeWidth={1.75} />}
               variant="ghost"
               isLoading={isBusy}
-              onClick={() => review ? onFiles(download) : void toggle()}
+              onClick={() => void toggle()}
             />
           ) : null}
           <MoreMenu
             label={`More for ${download.name}`}
             alignment="end"
-            items={[...(download.kind === 'torrent' ? [{label: 'Choose files…', onClick: () => onFiles(download)}] : []), {label: 'Remove…', variant: 'destructive', onClick: () => onRemove(download)}]}
+            items={[{label: 'Remove…', variant: 'destructive', onClick: () => onRemove(download)}]}
           />
         </>
       }

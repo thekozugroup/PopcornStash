@@ -1377,6 +1377,35 @@ mod tests {
             )
             .await;
         }
+        // A full shelf uses only its eight newest videos even when other groups
+        // share timestamps. Empty user-created shelves stay present.
+        for n in 1..12 {
+            let path = format!("Movies/Collection 1/nested/extra-{n}.mp4");
+            let item = app
+                .item(
+                    &path,
+                    MediaKind::Video,
+                    Category::Movie,
+                    ItemStatus::Ready,
+                    None,
+                )
+                .await;
+            sqlx::query("UPDATE items SET added_at=? WHERE id=?")
+                .bind(1_000_000_000_i64 + n)
+                .bind(item)
+                .execute(&app.state.db)
+                .await
+                .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO library_download_folders(library_id,group_key,name) VALUES(?,?,?)",
+        )
+        .bind(STARTING_MOVIES)
+        .bind("custom:empty")
+        .bind("An empty collection")
+        .execute(&app.state.db)
+        .await
+        .unwrap();
         let watched: String = sqlx::query_scalar(
             "SELECT id FROM items WHERE rel_path='Movies/Collection 0/nested/video.mp4'",
         )
@@ -1409,8 +1438,20 @@ mod tests {
         assert_eq!(first["collections"].as_array().unwrap().len(), 12);
         assert_eq!(first["next_cursor"], "12");
         for row in first["collections"].as_array().unwrap() {
-            assert_eq!(row["recent"].as_array().unwrap().len(), 1);
-            assert_eq!(row["recent"][0]["library_id"], STARTING_MOVIES);
+            let recent = row["recent"].as_array().unwrap();
+            match row["folder"]["name"].as_str().unwrap() {
+                "An empty collection" => assert!(recent.is_empty()),
+                "Collection 1" => {
+                    assert_eq!(recent.len(), 8);
+                    assert!(
+                        recent.windows(2).all(
+                            |pair| pair[0]["added_at"].as_i64() >= pair[1]["added_at"].as_i64()
+                        )
+                    );
+                }
+                _ => assert_eq!(recent.len(), 1),
+            }
+            assert!(recent.iter().all(|i| i["library_id"] == STARTING_MOVIES));
         }
         let (_, second) = app
             .json(
@@ -1418,7 +1459,7 @@ mod tests {
                 &token,
             )
             .await;
-        assert_eq!(second["collections"].as_array().unwrap().len(), 2);
+        assert_eq!(second["collections"].as_array().unwrap().len(), 3);
         assert!(second["next_cursor"].is_null());
         assert_eq!(second["continue_watching"], serde_json::json!([]));
         assert_eq!(second["suggested"], serde_json::json!([]));

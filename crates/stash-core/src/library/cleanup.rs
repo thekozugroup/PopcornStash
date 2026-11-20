@@ -370,6 +370,67 @@ impl Root {
         Ok(rel)
     }
 
+    /// Create an exclusive, owner-only destination and a per-intent witness.
+    pub(super) fn claim_handoff_directory(&self, rel: &str, marker: &str) -> Result<File> {
+        let (parent, leaf) = self.parent(rel, false)?;
+        nix::sys::stat::mkdirat(&parent, leaf.as_c_str(), nix::sys::stat::Mode::S_IRWXU)
+            .map_err(std::io::Error::from)?;
+        let dir = open_dir(&parent, &leaf)?;
+        validate_private_handoff(&dir)?;
+        let fd = nix::fcntl::openat(
+            &dir,
+            marker,
+            nix::fcntl::OFlag::O_WRONLY
+                | nix::fcntl::OFlag::O_CREAT
+                | nix::fcntl::OFlag::O_EXCL
+                | nix::fcntl::OFlag::O_NOFOLLOW,
+            nix::sys::stat::Mode::from_bits_truncate(0o600),
+        )
+        .map_err(std::io::Error::from)?;
+        File::from(fd).sync_all()?;
+        dir.sync_all()?;
+        parent.sync_all()?;
+        Ok(dir)
+    }
+
+    pub(super) fn private_handoff_directory(&self, rel: &str) -> Result<File> {
+        let dir = self.directory(rel)?;
+        validate_private_handoff(&dir)?;
+        Ok(dir)
+    }
+
+    /// Internal, owner-only directory for retiring torrent wrappers. It is
+    /// shared between handoffs; only the per-intent leaves are disposable.
+    pub(super) fn handoff_retirement_directory(&self, rel: &str) -> Result<File> {
+        let (parent, leaf) = self.parent(rel, false)?;
+        match nix::sys::stat::mkdirat(&parent, leaf.as_c_str(), nix::sys::stat::Mode::S_IRWXU) {
+            Ok(()) => parent.sync_all()?,
+            Err(nix::errno::Errno::EEXIST) => {}
+            Err(e) => return Err(std::io::Error::from(e).into()),
+        }
+        self.private_handoff_directory(rel)
+    }
+
+    /// The caller verified the private directory, witness and empty endpoint
+    /// using this same descriptor, under the library move lock.
+    pub(super) fn rename_into_handoff(&self, source: &str, dir: &File, leaf: &str) -> Result<()> {
+        validate_private_handoff(dir)?;
+        let (parent, name) = self.parent(source, false)?;
+        match nix::sys::stat::fstatat(dir, leaf, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW) {
+            Err(nix::errno::Errno::ENOENT) => {}
+            Err(e) => return Err(std::io::Error::from(e).into()),
+            Ok(_) => {
+                return Err(CoreError::conflict(
+                    "The private torrent destination is occupied.",
+                ));
+            }
+        }
+        nix::fcntl::renameat(&parent, name.as_c_str(), dir, leaf).map_err(std::io::Error::from)?;
+        dir.sync_all()?;
+        parent.sync_all()?;
+        Ok(())
+    }
+
     /// Only a verified private Trash endpoint permits a filesystem fallback.
     pub(super) fn rename_trash(&self, from: &str, to: &str) -> Result<()> {
         self.rename_trash_with(from, to, rename_exclusive)
@@ -476,6 +537,21 @@ fn rename_into_private(
 fn private_trash_leaf(rel: &str) -> bool {
     rel.strip_prefix(".popcornstash/Trash/")
         .is_some_and(|rest| rest.split('/').count() == 2)
+}
+
+// A setgid parent can pass the group-inheritance bit to a new directory.
+// Both modes exclude every other uid. Never chmod an existing public entry.
+fn validate_private_handoff(dir: &File) -> Result<()> {
+    let meta = dir.metadata()?;
+    if !meta.is_dir()
+        || meta.uid() != nix::unistd::geteuid().as_raw()
+        || !matches!(meta.mode() & 0o7777, 0o700 | 0o2700)
+    {
+        return Err(CoreError::conflict(
+            "The torrent destination must be private to the server.",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_private(dir: &File) -> Result<()> {

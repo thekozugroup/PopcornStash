@@ -7,7 +7,8 @@ import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
-import androidx.compose.ui.test.performClick
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.github.takahirom.roborazzi.captureRoboImage
@@ -48,7 +49,8 @@ class LibraryFeedScreenshotTest {
         }
         compose.waitForIdle()
         if (index != null) compose.onNodeWithTag("library feed").performScrollToIndex(index)
-        if (menu) compose.onNodeWithContentDescription("Library view").performClick()
+        // Open the menu without capturing a transient pressed ripple on its trigger.
+        if (menu) compose.onNodeWithContentDescription("Library view").performSemanticsAction(SemanticsActions.OnClick)
         compose.waitForIdle()
         // Record after the backdrop's placement and selection clip have drawn a fresh frame.
         compose.mainClock.advanceTimeByFrame()

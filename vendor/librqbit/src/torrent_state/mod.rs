@@ -212,6 +212,15 @@ pub struct ManagedTorrent {
 }
 
 impl ManagedTorrent {
+    /// Inspect the storage descriptor that backs a verified piece map, even
+    /// when the public path has since been replaced.
+    pub fn opened_file_metadata(&self, file_id: usize) -> anyhow::Result<std::fs::Metadata> {
+        self.with_state(|state| match state {
+            ManagedTorrentState::Paused(p) => p.files.opened_file_metadata(file_id),
+            ManagedTorrentState::Live(l) => l.files.opened_file_metadata(file_id),
+            _ => anyhow::bail!("torrent files are not ready"),
+        })
+    }
     pub fn id(&self) -> TorrentId {
         self.shared.id
     }

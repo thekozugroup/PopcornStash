@@ -7,7 +7,7 @@
 //! marked missing. A Scan job is queued every 30 minutes because inotify misses changes on
 //! some network shares, and if the watcher cannot start at all the rescans carry on alone.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -99,6 +99,12 @@ async fn run(lib: Arc<Library>, cancel: CancellationToken, options: WatchOptions
     let watcher = start_watcher(lib.layout.root().to_path_buf(), sink).await;
     let watching = watcher.is_some();
     let mut pending: HashMap<String, Pending> = HashMap::new();
+    let mut directories = HashMap::new();
+    poll_directories(&lib, &mut directories, &mut pending).await;
+    queue_scan(&lib).await;
+    let poll_every = Duration::from_secs(30);
+    let mut poll = tokio::time::interval_at(Instant::now() + poll_every, poll_every);
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut tick = tokio::time::interval(options.tick);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut rescan =
@@ -116,10 +122,75 @@ async fn run(lib: Arc<Library>, cancel: CancellationToken, options: WatchOptions
                 process_pending(&lib, &mut pending, options.stable_for).await;
             }
             _ = rescan.tick() => queue_scan(&lib).await,
+            _ = poll.tick() => poll_directories(&lib,&mut directories,&mut pending).await,
         }
     }
     drop(watcher);
     tracing::debug!("library watcher stopped");
+}
+
+/// Some shares never deliver rename notifications. Sample only directory entries
+/// at the stash and library roots. Walk a subtree only after its name changes.
+pub(super) async fn poll_directories(
+    lib: &Library,
+    previous: &mut HashMap<String, HashSet<String>>,
+    pending: &mut HashMap<String, Pending>,
+) {
+    let Ok(defs) = super::defs::load_all(&lib.db).await else {
+        return;
+    };
+    let parents: HashSet<String> = std::iter::once(String::new())
+        .chain(defs.into_iter().map(|d| d.row.folder))
+        .collect();
+    previous.retain(|parent, _| parents.contains(parent));
+    for parent in parents {
+        let base = lib.layout.root().join(&parent);
+        if !tokio::fs::symlink_metadata(&base)
+            .await
+            .is_ok_and(|m| m.is_dir())
+        {
+            continue;
+        }
+        let Ok(mut read) = tokio::fs::read_dir(base).await else {
+            continue;
+        };
+        let mut current = HashSet::new();
+        let complete = loop {
+            match read.next_entry().await {
+                Ok(Some(entry)) => {
+                    let Ok(kind) = entry.file_type().await else {
+                        break false;
+                    };
+                    if kind.is_dir()
+                        && let Ok(name) = entry.file_name().into_string()
+                        && !scanner::is_junk_name(&name)
+                    {
+                        current.insert(name);
+                    }
+                }
+                Ok(None) => break true,
+                Err(_) => break false,
+            }
+        };
+        if !complete {
+            continue;
+        }
+        if let Some(old) = previous.get(&parent) {
+            for name in old.symmetric_difference(&current) {
+                let rel = if parent.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{parent}/{name}")
+                };
+                note(pending, &rel);
+            }
+        }
+        previous.insert(parent, current);
+    }
+    if pending.len() > MAX_PENDING {
+        pending.clear();
+        queue_scan(lib).await;
+    }
 }
 
 async fn start_watcher(root: PathBuf, sink: EventSink) -> Option<notify::RecommendedWatcher> {
@@ -276,6 +347,13 @@ pub(crate) async fn process_pending(
     if pending.is_empty() {
         return;
     }
+    // A backend can report only a child of a renamed root. Resolve the root
+    // binding before any child can be indexed as an unrelated owner's folder.
+    if let Err(error) = observe_roots(lib).await {
+        tracing::warn!(%error,"could not observe library roots");
+        return;
+    }
+    let mut affected = HashSet::new();
     let now = Instant::now();
     let mut keys: Vec<String> = pending.keys().cloned().collect();
     keys.sort();
@@ -318,11 +396,21 @@ pub(crate) async fn process_pending(
             continue;
         }
         pending.remove(&rel);
-        act_on_stable(lib, &rel, &abs).await;
+        act_on_stable(lib, &rel, &abs, &mut affected).await;
+    }
+    if !affected.is_empty()
+        && let Err(error) = scanner::reconcile_collections(lib, &affected).await
+    {
+        tracing::warn!(%error,"could not refresh observed collection folders");
     }
 }
 
-async fn act_on_stable(lib: &Library, rel: &str, abs: &Path) {
+async fn observe_roots(lib: &Library) -> crate::Result<()> {
+    let _moves = lib.lock_moves().await?;
+    super::observed::roots(lib).await
+}
+
+async fn act_on_stable(lib: &Library, rel: &str, abs: &Path, affected: &mut HashSet<String>) {
     let zone = StashLayout::zone(rel);
     if zone.auto_sorts() {
         if top_level_entry(rel).as_deref() != Some(rel) {
@@ -345,8 +433,14 @@ async fn act_on_stable(lib: &Library, rel: &str, abs: &Path) {
         let Some(file_rel) = lib.layout.rel(&file) else {
             continue;
         };
-        if let Err(e) = lib.index_path(&file_rel).await {
-            tracing::warn!(error = %e, path = %file_rel, "could not index a changed file");
+        match scanner::index_inner(lib, &file_rel).await {
+            Ok(Some((row, change))) if change != scanner::Change::Unchanged => {
+                if let Some(id) = row.library_id {
+                    affected.insert(id);
+                }
+            }
+            Err(error) => tracing::warn!(%error,"could not index a changed file"),
+            _ => {}
         }
     }
 }

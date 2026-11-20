@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PageSize
 import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.DropdownMenu
@@ -35,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -51,6 +53,12 @@ import com.thekozugroup.popcornstash.ui.icons.LucideIcon
 import com.thekozugroup.popcornstash.ui.icons.PopcornIcons
 import com.thekozugroup.popcornstash.ui.media.LocalPictures
 import com.thekozugroup.popcornstash.ui.theme.Popcorn
+
+// Keep more than one landscape card in reach on an open foldable or tablet.
+private object ResumePageSize : PageSize {
+    override fun Density.calculateMainAxisPageSize(availableSpace: Int, pageSpacing: Int): Int =
+        availableSpace.coerceAtMost(440.dp.roundToPx())
+}
 
 /**
  * Continue watching (android/DESIGN.md, Home): a pager of 16:9 frames, each card the
@@ -78,8 +86,9 @@ fun ResumeCarousel(
     }
     HorizontalPager(
         state = state,
-        contentPadding = PaddingValues(start = gutter, end = gutter + carousel.peek),
+        contentPadding = PaddingValues(start = gutter, end = if (items.size > 1) gutter + carousel.peek else gutter),
         pageSpacing = carousel.gap,
+        pageSize = ResumePageSize,
         flingBehavior = fling,
         key = { items[it].id },
         verticalAlignment = Alignment.Top,

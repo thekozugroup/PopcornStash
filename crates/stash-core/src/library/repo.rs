@@ -886,24 +886,15 @@ pub async fn video_feed(
     }
     let total = groups.len();
     let end = (offset + 12).min(total);
-    let mut collections = Vec::new();
-    for folder in groups.into_iter().skip(offset).take(12) {
-        let page = list(
-            db,
-            &ItemQuery {
-                library_id: Some(id.to_string()),
-                download_group: Some(folder.key.clone()),
-                limit: Some(8),
-                ..Default::default()
-            },
-            viewer,
-        )
-        .await?;
-        collections.push(CollectionShelf {
+    let folders: Vec<_> = groups.into_iter().skip(offset).take(12).collect();
+    let mut previews = collection_previews(db, viewer, id, &folders).await?;
+    let collections = folders
+        .into_iter()
+        .map(|folder| CollectionShelf {
+            recent: previews.remove(&folder.key).unwrap_or_default(),
             folder,
-            recent: page.items,
-        });
-    }
+        })
+        .collect();
     let mut continue_watching = Vec::new();
     let mut suggested = Vec::new();
     let mut recent = Vec::new();
@@ -927,6 +918,76 @@ pub async fn video_feed(
         collections,
         next_cursor: (end < total).then(|| end.to_string()),
     })
+}
+
+/// One populated shelf can stop at the eighth match in the library's newest-first index.
+/// For multiple shelves, rank lightweight IDs together before fetching their full rows.
+async fn collection_previews(
+    db: &Db,
+    viewer: &Viewer,
+    library_id: &str,
+    folders: &[super::download_folders::DownloadFolder],
+) -> Result<HashMap<String, Vec<Item>>> {
+    let mut previews = HashMap::<String, Vec<Item>>::new();
+    let populated: Vec<_> = folders.iter().filter(|f| f.item_count > 0).collect();
+    match populated.as_slice() {
+        [] => return Ok(previews),
+        [folder] => {
+            let mut query = QueryBuilder::<Sqlite>::new(SELECT_ITEMS);
+            query
+                .push_bind(&viewer.user_id)
+                .push(" WHERE i.library_id=")
+                .push_bind(library_id)
+                .push(" AND i.status='ready' AND i.kind='video' AND ")
+                .push(super::download_folders::GROUP_KEY)
+                .push("=")
+                .push_bind(&folder.key);
+            push_visible(&mut query, viewer);
+            query.push(" ORDER BY i.added_at DESC,i.id DESC LIMIT 8");
+            let rows = query
+                .build_query_as::<ItemWithProgress>()
+                .fetch_all(db)
+                .await?;
+            previews.insert(
+                folder.key.clone(),
+                rows.into_iter().map(ItemWithProgress::into_item).collect(),
+            );
+            return Ok(previews);
+        }
+        _ => {}
+    }
+    #[derive(sqlx::FromRow)]
+    struct Preview {
+        group_key: String,
+        #[sqlx(flatten)]
+        item: ItemWithProgress,
+    }
+
+    let mut query =
+        QueryBuilder::<Sqlite>::new("WITH grouped AS MATERIALIZED (SELECT i.id,i.added_at,");
+    query
+        .push(super::download_folders::GROUP_KEY)
+        .push(
+            " AS group_key FROM items i JOIN libraries l ON l.id=i.library_id WHERE i.library_id=",
+        )
+        .push_bind(library_id)
+        .push(" AND i.kind='video' AND i.status='ready'");
+    push_visible(&mut query, viewer);
+    query.push("), ranked AS (SELECT id,group_key,row_number() OVER (PARTITION BY group_key ORDER BY added_at DESC,id DESC) AS position FROM grouped WHERE group_key IN (");
+    let mut keys = query.separated(",");
+    for folder in populated {
+        keys.push_bind(&folder.key);
+    }
+    query.push(")) SELECT r.group_key,i.*,p.position_s AS p_position_s,p.duration_s AS p_duration_s,p.finished AS p_finished FROM ranked r JOIN items i ON i.id=r.id LEFT JOIN item_progress p ON p.item_id=i.id AND p.user_id=")
+        .push_bind(&viewer.user_id)
+        .push(" WHERE r.position<=8 ORDER BY r.group_key,r.position");
+    for row in query.build_query_as::<Preview>().fetch_all(db).await? {
+        previews
+            .entry(row.group_key)
+            .or_default()
+            .push(row.item.into_item());
+    }
+    Ok(previews)
 }
 
 /// A series library's Home shelf: up to [`HOME_ROW`] shows, the one with the most recently
@@ -1320,6 +1381,88 @@ pub(crate) mod tests {
 
     async fn insert(db: &Db, row: &ItemRow) {
         assert!(insert_item(db, row).await.unwrap(), "insert {}", row.id);
+    }
+
+    #[tokio::test]
+    async fn one_populated_collection_among_empty_shelves_uses_a_bounded_preview() {
+        use crate::library::{defs::STARTING_MOVIES, download_folders::DownloadFolder};
+
+        let db = crate::db::open_memory().await.unwrap();
+        add_user(&db, "viewer").await;
+        add_user(&db, "other").await;
+        // The newest video is in a different collection. Pairs have equal timestamps.
+        sqlx::query(
+            "WITH RECURSIVE videos(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM videos WHERE n<1024)
+             INSERT INTO items (id,rel_path,library_id,place,kind,category,status,title,sort_title,size,mtime,added_at,updated_at)
+             SELECT printf('%04d',n),printf('Movies/%s/%d.mp4',CASE WHEN n=1024 THEN 'Other' ELSE 'Fixture' END,n),
+                    ?,'library','video','movie','ready','fixture','fixture',1,0,n/2,0 FROM videos",
+        )
+        .bind(STARTING_MOVIES)
+        .execute(&db)
+        .await
+        .unwrap();
+        set_progress(&db, "viewer", "1023", 42.0, 300.0)
+            .await
+            .unwrap();
+        set_progress(&db, "other", "1022", 80.0, 300.0)
+            .await
+            .unwrap();
+        let viewer = Viewer {
+            user_id: "viewer".into(),
+            role: Role::Member,
+            full: true,
+        };
+        let shelf = |key: &str, item_count| DownloadFolder {
+            key: key.into(),
+            name: key.into(),
+            item_count,
+            size: 0,
+            added_at: 0,
+            custom: key.starts_with("custom:"),
+        };
+        let key = "folder:Fixture";
+        let shelves = [shelf("custom:empty", 0), shelf(key, 1024)];
+
+        // open_memory uses one connection. This VM budget allows the indexed read but
+        // interrupts a query that materializes and ranks the entire collection.
+        db.acquire()
+            .await
+            .unwrap()
+            .lock_handle()
+            .await
+            .unwrap()
+            .set_progress_handler(20_000, || false);
+        let result = collection_previews(&db, &viewer, STARTING_MOVIES, &shelves).await;
+        db.acquire()
+            .await
+            .unwrap()
+            .lock_handle()
+            .await
+            .unwrap()
+            .remove_progress_handler();
+        let previews = result.expect("one populated shelf should fit the indexed read budget");
+        let items = &previews[key];
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "1023", "1022", "1021", "1020", "1019", "1018", "1017", "1016"
+            ]
+        );
+        assert_eq!(items[0].progress.unwrap().position_s, 42.0);
+        assert!(items[1].progress.is_none());
+
+        sqlx::query("UPDATE libraries SET visibility='selected' WHERE id=?")
+            .bind(STARTING_MOVIES)
+            .execute(&db)
+            .await
+            .unwrap();
+        let hidden = collection_previews(&db, &viewer, STARTING_MOVIES, &shelves)
+            .await
+            .unwrap();
+        assert!(hidden.values().all(Vec::is_empty));
     }
 
     fn episode(id: &str, show: &str, season: i64, ep: i64, added_at: i64) -> ItemRow {

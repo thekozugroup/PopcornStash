@@ -13,6 +13,7 @@ describe('torrent waiting states', () => {
   it('explains missing metadata and respects pause and queue states', () => {
     expect(fetchingTorrentDetails(magnet)).toBe(true);
     expect(activeStateWords(magnet)).toBe('Fetching torrent details');
+    expect(activeStateWords({...magnet, error: 'Checking downloaded files.'})).toBe('Checking downloaded files');
     expect(activeStateWords({...magnet, state: 'paused'})).toBe('Paused');
     expect(activeStateWords({...magnet, state: 'queued', error: 'Waiting for the VPN.'})).toBe('Waiting for the VPN.');
     expect(fetchingTorrentDetails({...magnet, kind: 'http'})).toBe(false);

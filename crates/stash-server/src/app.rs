@@ -244,10 +244,7 @@ pub async fn start_background(state: &AppState, cancel: CancellationToken) -> an
         (JobKind::Sort, (sort, JobKind::Sort.default_concurrency())),
     ]);
     state.jobs.start(handlers, cancel.clone());
-    state
-        .jobs
-        .enqueue(JobKind::Scan, None, serde_json::json!({}))
-        .await?;
+    // The watcher takes its initial directory snapshot before queueing the startup scan.
     state.library.spawn_watcher(cancel.clone());
     state.transcoder.spawn_reaper(cancel.clone());
     state.downloads.start(cancel.clone());

@@ -281,6 +281,13 @@ class ApiClient(val server: HttpUrl, private val http: OkHttpClient) {
 
     suspend fun torrentFiles(id: String): TorrentFiles = get("/api/downloads/${seg(id)}/files", TorrentFiles.serializer())
 
+    suspend fun skipTorrentFile(id: String, index: Int) = sendEmpty(
+        request("/api/downloads/${seg(id)}/files/$index/skip").post(EMPTY_JSON).build(),
+    )
+
+    suspend fun finishCompletedTorrentFiles(id: String, request: FinishCompletedRequest = FinishCompletedRequest()): Download =
+        post("/api/downloads/${seg(id)}/finish-completed", request, FinishCompletedRequest.serializer(), Download.serializer())
+
     suspend fun selectTorrentFiles(id: String, indices: List<Int>) = sendEmpty(
         request("/api/downloads/${seg(id)}/files")
             .put(json.encodeToString(TorrentFileSelection.serializer(), TorrentFileSelection(indices)).toRequestBody(JSON)).build(),

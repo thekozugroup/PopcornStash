@@ -6,8 +6,12 @@ import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
@@ -44,6 +48,8 @@ class TorrentFilesSheetTest {
                     onSave = { calls += "save" },
                     onCancel = { calls += "cancel" },
                     onRetry = { calls += "retry" },
+                    onSkip = { calls += "skip $it" },
+                    onFinish = { calls += "finish selected=${it.selected.sorted()} complete=${it.completed.sorted()}" },
                 )
             }
         }
@@ -95,5 +101,90 @@ class TorrentFilesSheetTest {
         compose.onNodeWithTag("torrent file 4").assertIsNotEnabled()
         compose.onNodeWithText("Save").assertIsNotEnabled()
         compose.onNodeWithText("Cancel").assertIsNotEnabled()
+    }
+
+    private fun showActiveFiles() {
+        val active = listOf(
+            files[0].copy(verifiedBytes = files[0].size, complete = true),
+            files[1].copy(selected = true, verifiedBytes = 27_000, complete = false),
+        )
+        shown.value = shown.value.copy(files = active, selected = setOf(4, 8))
+        show()
+    }
+
+    @Test
+    fun progressAndSkipNameEachFileAndCancelPreservesTheSelection() {
+        showActiveFiles()
+        compose.onNodeWithText("50%", substring = true).assertExists()
+        val skip = compose.onNodeWithContentDescription("Skip ${files[1].path}")
+        skip.performClick()
+        compose.onNodeWithText("Cancel").performClick()
+        assertEquals(emptyList<String>(), calls)
+        skip.performClick()
+        compose.onNodeWithText("Skip file").performClick()
+        assertEquals(listOf("skip 8"), calls)
+    }
+
+    @Test
+    fun finishConfirmsFileLossBeforeSendingAndEditSelectionRestoresFilters() {
+        showActiveFiles()
+        compose.onNodeWithText("Refresh").performClick()
+        compose.onNodeWithText("Finish completed").performClick()
+        compose.onNodeWithText("Skipped and unfinished files will be discarded.", substring = true).assertExists()
+        compose.onNode(hasText("Finish completed") and hasAnyAncestor(isDialog())).performClick()
+        assertEquals(listOf("retry", "finish selected=[4, 8] complete=[4]"), calls)
+        compose.onNodeWithText("Edit selection").performClick()
+        compose.onNodeWithText("File types").assertExists()
+        compose.onNodeWithText("Save").assertIsNotEnabled()
+    }
+
+    @Test
+    fun newCompletionWhileConfirmingPreservesTheDisplayedReview() {
+        showActiveFiles()
+        compose.onNodeWithText("Finish completed").performClick()
+        compose.runOnIdle {
+            val state = shown.value
+            shown.value = state.copy(files = state.files.map { it.copy(verifiedBytes = it.size, complete = true) })
+        }
+        compose.onNodeWithText("1 of 2 selected files verified", substring = true).assertExists()
+        compose.onNode(hasText("Finish completed") and hasAnyAncestor(isDialog())).performClick()
+        assertEquals(listOf("finish selected=[4, 8] complete=[4]"), calls)
+    }
+
+    @Test
+    fun aChangedManifestDismissesAnOpenFinishConfirmation() {
+        showActiveFiles()
+        compose.onNodeWithText("Finish completed").performClick()
+        compose.runOnIdle {
+            shown.value = shown.value.copy(files = shown.value.files.map { it.copy(verifiedBytes = 0, complete = false) })
+        }
+        compose.onNodeWithText("Finish completed files?").assertDoesNotExist()
+        compose.onNodeWithText("Finish completed").assertDoesNotExist()
+        assertEquals(emptyList<String>(), calls)
+    }
+
+    @Test
+    fun swappingAnUnfinishedFileDismissesConfirmationEvenWithIdenticalCounts() {
+        showActiveFiles()
+        compose.onNodeWithText("Finish completed").performClick()
+        compose.runOnIdle {
+            val current = shown.value
+            shown.value = current.copy(files = listOf(current.files[0], current.files[1].copy(index = 12)), selected = setOf(4, 12))
+        }
+        compose.onNodeWithText("Finish completed files?").assertDoesNotExist()
+        compose.onNodeWithText("Finish completed").assertIsEnabled()
+        assertEquals(emptyList<String>(), calls)
+    }
+
+    @Test
+    fun unknownProgressHidesDestructiveActionsForThatFile() {
+        showActiveFiles()
+        compose.runOnIdle {
+            val current = shown.value
+            shown.value = current.copy(files = listOf(current.files[0], current.files[1].copy(verifiedBytes = null)))
+        }
+        compose.onNodeWithContentDescription("Skip ${files[0].path}").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Skip ${files[1].path}").assertDoesNotExist()
+        compose.onNodeWithText("Finish completed").assertDoesNotExist()
     }
 }

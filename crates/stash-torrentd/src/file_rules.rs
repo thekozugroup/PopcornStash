@@ -141,7 +141,7 @@ impl Engine {
         let handle = session
             .get(TorrentIdOrHash::Hash(parse_id(&id)?))
             .ok_or(BackendError::NotFound)?;
-        let files = self.files(id.clone()).await?;
+        let files = self.files_locked(id.clone()).await?;
         let indices: HashSet<_> = files
             .files
             .iter()

@@ -9,7 +9,7 @@
 import * as stylex from '@stylexjs/stylex';
 import {colorVars, fontWeightVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {Skeleton} from '@astryxdesign/core/Skeleton';
-import {Clapperboard, Film, ImageIcon, type LucideIcon} from 'lucide-react';
+import {Clapperboard, Film, ImageIcon, Play, type LucideIcon} from 'lucide-react';
 import {useState, type MouseEvent} from 'react';
 import {Link} from 'react-router';
 import {formatPercent} from '../lib/format';
@@ -95,6 +95,18 @@ const styles = stylex.create({
     transitionDuration: {default: '160ms', '@media (prefers-reduced-motion: reduce)': '0s'},
     pointerEvents: 'none',
   },
+  resumePlay: {
+    position: 'absolute',
+    insetInlineStart: 12,
+    bottom: 14,
+    width: 34,
+    height: 34,
+    display: 'grid',
+    placeItems: 'center',
+    borderRadius: '50%',
+    backgroundColor: 'color-mix(in oklch, var(--popcorn-stage) 78%, transparent)',
+    color: colorVars['--color-on-dark'],
+  },
   progressTrack: {
     position: 'absolute',
     insetInline: 0,
@@ -159,6 +171,8 @@ const ratioStyles = stylex.create({
 
 export interface MediaTileProps {
   href: string;
+  resume?: boolean;
+  priority?: boolean;
   title: string;
   /** One metadata line: year, duration or date. */
   meta?: string;
@@ -195,6 +209,8 @@ export function MediaTile({
   isTextHidden = false,
   placeholderIcon,
   onActivate,
+  resume = false,
+  priority = false,
 }: MediaTileProps) {
   // Failure is remembered per source, so a refreshed thumbnail gets a new try.
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
@@ -205,7 +221,8 @@ export function MediaTile({
   return (
     <Link
       to={href}
-      aria-label={isTextHidden ? [title, meta].filter(Boolean).join(', ') : undefined}
+      state={resume ? {autoplay: true} : undefined}
+      aria-label={resume ? [`Resume ${title}`, meta].filter(Boolean).join(', ') : isTextHidden ? [title, meta].filter(Boolean).join(', ') : undefined}
       onClick={
         onActivate
           ? event => {
@@ -222,9 +239,10 @@ export function MediaTile({
             key={imageSrc ?? undefined}
             src={imageSrc ?? undefined}
             srcSet={imageSrcSet ?? undefined}
-            sizes={imageSrcSet ? SIZES[shape] : undefined}
+            sizes={imageSrcSet ? (resume ? '(max-width: 690px) 270px, (max-width: 1128px) 39vw, 440px' : SIZES[shape]) : undefined}
             alt=""
-            loading="lazy"
+            loading={priority ? "eager" : "lazy"}
+            fetchPriority={priority ? "high" : undefined}
             decoding="async"
             onError={() => setFailedSrc(imageSrc ?? null)}
             {...stylex.props(styles.image)}
@@ -235,6 +253,7 @@ export function MediaTile({
           </span>
         )}
         <span {...stylex.props(styles.hairline)} aria-hidden="true" />
+        {resume ? <span aria-hidden="true" {...stylex.props(styles.resumePlay)}><Play size={16} fill="currentColor" /></span> : null}
         {watched !== null ? (
           <span aria-hidden="true" {...stylex.props(styles.progressTrack)}>
             <span {...stylex.props(styles.progressFill, ratioStyles.width(`${watched * 100}%`))} />

@@ -44,7 +44,9 @@ fun Download.knownProgress(): Double? {
 }
 
 fun Download.fetchingTorrentDetails(): Boolean = kind == DownloadKind.Torrent && state == DownloadState.Downloading &&
-    (totalBytes ?: 0) <= 0 && doneBytes == 0L
+    !checkingDownloadedFiles() && (totalBytes ?: 0) <= 0 && doneBytes == 0L
+
+private fun Download.checkingDownloadedFiles(): Boolean = kind == DownloadKind.Torrent && error == "Checking downloaded files."
 
 /** One changing status; the icon already communicates the kind of transfer. */
 fun Download.activeStatus(): String = when (state) {
@@ -52,6 +54,7 @@ fun Download.activeStatus(): String = when (state) {
     DownloadState.Paused -> if (error == "Ready to choose files.") "Ready to choose files" else "Paused"
     DownloadState.Seeding -> "Sharing with peers"
     else -> when {
+        checkingDownloadedFiles() -> "Checking downloaded files"
         fetchingTorrentDetails() -> "Fetching torrent details"
         kind == DownloadKind.Torrent && (peers ?: 0) == 0L && downBps == 0L -> "Looking for peers"
         else -> "Downloading"
@@ -78,6 +81,7 @@ fun Download.progressFacts(locale: Locale = Locale.getDefault()): List<String> {
             if (upBps > 0) "Sharing at ${formatSpeed(upBps, locale)}" else null,
         )
         else -> {
+            if (checkingDownloadedFiles()) return listOfNotNull(percent, "Checking downloaded files")
             if (fetchingTorrentDetails()) return listOf("Fetching torrent details. Waiting for a peer.")
             val lookingForPeers = kind == DownloadKind.Torrent && (peers ?: 0) == 0L && downBps == 0L
             listOfNotNull(

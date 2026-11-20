@@ -119,7 +119,8 @@ export default function DownloadsPage() {
   const queue = useUploadQueue();
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [filesTarget, setFilesTarget] = useState<Download | null>(null);
+  const [filesTargetId, setFilesTargetId] = useState<string | null>(null);
+  const filesTarget = data.items.find(item => item.id === filesTargetId && isActive(item));
   const [libraryId, setLibraryId] = useState('');
   const [removeTarget, setRemoveTarget] = useState<Download | null>(null);
   const [cancelTarget, setCancelTarget] = useState<UploadEntry | null>(null);
@@ -156,7 +157,7 @@ export default function DownloadsPage() {
           try {
             const next = await downloadsApi.addTorrent(file, destination || undefined);
             upsert(next);
-            if (added === 0) setFilesTarget(next);
+            if (added === 0) setFilesTargetId(next.id);
             added += 1;
           } catch (error) {
             const fallback =
@@ -269,7 +270,16 @@ export default function DownloadsPage() {
         subtitle="New files land here first, then move into your library."
       />
 
-      {filesTarget ? <TorrentFilesDialog download={filesTarget} onClose={() => setFilesTarget(null)} onSaved={() => { data.reload(); showToast({body: 'File selection saved.'}); }} /> : null}
+      {filesTarget && <TorrentFilesDialog
+        key={filesTarget.id}
+        download={filesTarget}
+        onClose={() => setFilesTargetId(null)}
+        onSaved={(message, updated) => {
+          if (updated) upsert(updated);
+          else data.reload();
+          showToast({body: message});
+        }}
+      />}
       <AddPanel
         libraryId={libraryId} onLibrary={setLibraryId}
         isOwner={isOwner}
@@ -280,7 +290,7 @@ export default function DownloadsPage() {
         isAddingTorrents={isAddingTorrents}
         onAdded={download => {
           upsert(download);
-          if (download.kind === 'torrent') setFilesTarget(download);
+          if (download.kind === 'torrent') setFilesTargetId(download.id);
           showToast({body: `Added ${download.name}.`});
         }}
         onPickFiles={handleFiles}
@@ -326,7 +336,7 @@ export default function DownloadsPage() {
                   ))}
                   {active.map(download => (
                     <li key={download.id} {...stylex.props(rowStyles.item)}>
-                      <DownloadRow onFiles={setFilesTarget} download={download} onChanged={upsert} onRemove={setRemoveTarget} onError={toastError} />
+                      <DownloadRow onFiles={item => setFilesTargetId(item.id)} download={download} onChanged={upsert} onRemove={setRemoveTarget} onError={toastError} />
                     </li>
                   ))}
                 </ul>

@@ -58,6 +58,14 @@ impl FilesystemStorage {
 }
 
 impl TorrentStorage for FilesystemStorage {
+    fn opened_file_metadata(&self, file_id: usize) -> anyhow::Result<std::fs::Metadata> {
+        Ok(self
+            .opened_files
+            .get(file_id)
+            .context("no such file")?
+            .lock_read()?
+            .metadata()?)
+    }
     fn pread_exact(&self, file_id: usize, offset: u64, buf: &mut [u8]) -> anyhow::Result<()> {
         self.opened_files
             .get(file_id)

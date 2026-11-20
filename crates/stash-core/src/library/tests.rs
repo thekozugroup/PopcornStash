@@ -1,5 +1,7 @@
 //! Integration tests: a real `Library` over a temporary stash folder and an in-memory database.
 mod completed_download_import;
+mod observed_folders;
+mod torrent_handoff;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

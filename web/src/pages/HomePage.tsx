@@ -138,11 +138,13 @@ function continueTile(item: Item, version?: number): TileModel {
   };
 }
 
-function renderTiles(tiles: TileModel[], shape: MediaShape) {
-  return tiles.map(tile => (
+function renderTiles(tiles: TileModel[], shape: MediaShape, resume = false, leading = resume) {
+  return tiles.map((tile, index) => (
     <MediaTile
       key={tile.key}
       href={tile.href}
+      resume={resume}
+      priority={leading && index === 0}
       title={tile.title}
       meta={tile.meta}
       imageSrc={tile.image?.src}
@@ -243,6 +245,7 @@ export default function HomePage() {
     inbox: event => setReviewCount(event.count),
     download: download =>
       setDownloadStates(states => {
+        if ('removed' in download ? !(download.id in states) : states[download.id] === download.state) return states;
         const next = {...states};
         if ('removed' in download) delete next[download.id];
         else next[download.id] = download.state;
@@ -311,15 +314,16 @@ export default function HomePage() {
     body = (
       <>
         {data.continue_watching.length > 0 ? (
-          <Shelf title="Continue watching" headingLevel={2} shape="frame">
+          <Shelf title="Continue watching" headingLevel={2} shape="frame" resume>
             {renderTiles(
               data.continue_watching.map(item => continueTile(item, versions[item.id])),
               'frame',
+              true,
             )}
           </Shelf>
         ) : null}
         {data.suggested?.length ? <Shelf title="Suggested for you" headingLevel={2} shape="frame">
-          {renderTiles(data.suggested.map(item => ({key: item.id, href: itemHref(item), title: displayTitle(item), meta: itemMeta(item), image: thumbSources(item, versions[item.id])})), 'frame')}
+          {renderTiles(data.suggested.map(item => ({key: item.id, href: itemHref(item), title: displayTitle(item), meta: itemMeta(item), image: thumbSources(item, versions[item.id])})), 'frame', false, data.continue_watching.length === 0)}
         </Shelf> : null}
         <ShelfRuns shelves={shelves} />
         {data.other_files_count > 0 ? (

@@ -1,5 +1,6 @@
 //! Moving files: automatic sorting, explicit organize, review, trash.
 pub(super) mod download_import;
+mod torrent_import;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -134,6 +135,7 @@ fn component(s: &str) -> String {
 // Sort queue
 
 pub async fn enqueue_sort(lib: &Library, rel_path: &str, download_id: Option<&str>) -> Result<()> {
+    let _moves = lib.lock_moves().await?;
     enqueue_sort_inner(lib, rel_path, download_id)
         .await
         .map(|_| ())
@@ -151,9 +153,13 @@ pub(crate) async fn enqueue_sort_inner(
             "Only files in Inbox or Downloads/Completed are sorted automatically.",
         ));
     }
+    let owner = super::torrent_handoff::owner(lib, &rel, download_id).await?;
+    let download_id = owner.as_deref().or(download_id);
     let existing: Option<(i64, String, Option<String>)> = sqlx::query_as(
         "SELECT id, state, json_extract(payload, '$.download_id') FROM jobs
          WHERE kind = 'sort' AND state IN ('queued', 'running') AND json_extract(payload, '$.rel_path') = ?
+         AND NOT EXISTS(SELECT 1 FROM torrent_handoffs h WHERE h.download_id=json_extract(jobs.payload,'$.download_id')
+             AND h.retirement IN ('staged','retired'))
          ORDER BY id LIMIT 1",
     )
     .bind(&rel)
@@ -219,20 +225,32 @@ pub(crate) async fn sort_path_as_of(
         ));
     }
     let abs = lib.layout.abs(&rel)?;
-    let download_id = match download_id {
-        Some(id) => Some(id.to_string()),
-        None => {
-            download_for_path(
-                lib,
-                &super::watcher::top_level_entry(&rel).unwrap_or_else(|| rel.clone()),
-            )
-            .await?
+    let download_id = {
+        let _moves = lib.lock_moves().await?;
+        match (
+            super::torrent_handoff::owner(lib, &rel, download_id).await?,
+            download_id,
+        ) {
+            (Some(id), _) => Some(id),
+            (_, Some(id)) => Some(id.to_string()),
+            _ => {
+                download_for_path(
+                    lib,
+                    &super::watcher::top_level_entry(&rel).unwrap_or_else(|| rel.clone()),
+                )
+                .await?
+            }
         }
     };
     let download = match &download_id {
         Some(id) => download_row(lib, id).await?,
         None => None,
     };
+    if download_id.is_some() && download.is_none() {
+        // History was removed. Explicit item actions still have durable origin
+        // and file-journal checks. A delayed sort cannot re-import this root.
+        return Ok(Vec::new());
+    }
     let importing = download.as_ref().filter(|d| {
         d.rel_path
             .as_deref()
@@ -259,7 +277,10 @@ pub(crate) async fn sort_path_as_of(
         Err(e) if super::scanner::is_not_found(&e) => {
             tracing::info!(path = %rel, "nothing to sort: the path is gone");
             if let Some(id) = &download_id {
+                let _moves = lib.lock_moves().await?;
+                check_sort_owner(lib, &rel, Some(id)).await?;
                 download_files_gone(lib, id).await?;
+                super::torrent_handoff::remove_empty_wrapper(lib, &rel).await?;
             }
             return Ok(Vec::new());
         }
@@ -331,10 +352,11 @@ pub(crate) async fn sort_path_as_of(
     }
     {
         let _moves = lib.lock_moves().await?;
-        remove_empty_dirs(&lib.layout, &abs).await;
-    }
-    if let Some(id) = &download_id {
-        finish_download(lib, id, &linked).await?;
+        check_sort_owner(lib, &rel, download_id.as_deref()).await?;
+        if let Some(id) = &download_id {
+            finish_download(lib, id, &linked).await?;
+        }
+        remove_empty_dirs(lib, &abs).await?;
     }
     publish_inbox_if_changed(lib, review_before).await?;
     Ok(changed)
@@ -712,6 +734,18 @@ async fn analyze(
     }
 }
 
+// An anonymous job may have started before the torrent reserved this path.
+async fn check_sort_owner(lib: &Library, rel: &str, id: Option<&str>) -> Result<()> {
+    if let Some(owner) = super::torrent_handoff::owner(lib, rel, id).await?
+        && Some(owner.as_str()) != id
+    {
+        return Err(CoreError::conflict(
+            "This path now belongs to a completed torrent.",
+        ));
+    }
+    Ok(())
+}
+
 async fn sort_file(lib: &Library, abs: &Path, role: Role, job: &SortJob) -> Result<Sorted> {
     let Some(rel) = lib.layout.rel(abs) else {
         return Ok(Sorted::Skipped);
@@ -724,6 +758,11 @@ async fn sort_file(lib: &Library, abs: &Path, role: Role, job: &SortJob) -> Resu
     let mtime = mtime_secs(&meta);
     let existing = repo::get_by_path(&lib.db, &rel).await?;
     if let Some(item) = &existing {
+        if let Some(download) = &job.import
+            && item.status == ItemStatus::Ready
+        {
+            torrent_import::check_sort_file(lib, download, &rel).await?;
+        }
         // Unchanged files are not looked at again.
         if item.size == size
             && item.mtime == mtime
@@ -754,8 +793,10 @@ async fn sort_file(lib: &Library, abs: &Path, role: Role, job: &SortJob) -> Resu
     // Probing took a while without the lock. Only act if neither the file nor its row
     // changed meanwhile (an organize, review, trash or a new copy of the file).
     let _moves = lib.lock_moves().await?;
+    check_sort_owner(lib, &rel, job.download_id.as_deref()).await?;
     if let Some(download) = &job.import {
         download_import::released(lib, &download.id, download.rel_path.as_deref().unwrap()).await?;
+        torrent_import::check_sort_file(lib, download, &rel).await?;
     }
     let current = repo::get_by_path(&lib.db, &rel).await?;
     let same_row = match (&existing, &current) {
@@ -774,7 +815,10 @@ async fn sort_file(lib: &Library, abs: &Path, role: Role, job: &SortJob) -> Resu
     // path it held) is reused and its favorites and progress survive.
     let target = match existing {
         Some(item) => Some(item),
-        None => find_moved(lib, size, hash.as_deref()).await?,
+        None => match find_moved(lib, &rel, &meta, hash.as_deref(), Some(true)).await? {
+            super::scanner::MoveMatch::Found(id) => repo::get(&lib.db, &id).await?,
+            _ => None,
+        },
     };
     let own_id = target.as_ref().map(|t| t.id.clone());
 
@@ -1254,8 +1298,26 @@ async fn move_sidecars(src: &Path, dest: &Path) {
 
 /// Remove folders left empty under `start` and its parents, inside Inbox/ or the
 /// Downloads area only, never the zone roots themselves.
-async fn remove_empty_dirs(layout: &StashLayout, start: &Path) {
-    let layout = layout.clone();
+async fn remove_empty_dirs(lib: &Library, start: &Path) -> Result<()> {
+    let rel = lib.layout.rel(start);
+    if let Some(rel) = rel
+        .as_deref()
+        .filter(|r| StashLayout::zone(r) == Zone::Completed)
+    {
+        let Some(source) = super::watcher::top_level_entry(rel) else {
+            return Ok(());
+        };
+        let owner = match super::torrent_handoff::owner(lib, &source, None).await? {
+            Some(id) => Some(id),
+            None => download_for_path(lib, &source).await?,
+        };
+        if let Some(id) = owner
+            && torrent_import::cleanup_dirs(lib, &source, &id).await?
+        {
+            return super::torrent_handoff::remove_empty_wrapper(lib, rel).await;
+        }
+    }
+    let layout = lib.layout.clone();
     let start = start.to_path_buf();
     let _ = tokio::task::spawn_blocking(move || {
         let removable = |p: &Path| -> bool {
@@ -1270,8 +1332,9 @@ async fn remove_empty_dirs(layout: &StashLayout, start: &Path) {
             ];
             StashLayout::zone(&rel).auto_sorts() && !protected.contains(&rel.as_str())
         };
-        if start.is_dir() {
+        if removable(&start) && std::fs::symlink_metadata(&start).is_ok_and(|m| m.is_dir()) {
             for entry in WalkDir::new(&start)
+                .follow_root_links(false)
                 .follow_links(false)
                 .contents_first(true)
                 .into_iter()
@@ -1291,6 +1354,10 @@ async fn remove_empty_dirs(layout: &StashLayout, start: &Path) {
         }
     })
     .await;
+    if let Some(rel) = rel.filter(|r| StashLayout::zone(r) == Zone::Completed) {
+        super::torrent_handoff::remove_empty_wrapper(lib, &rel).await?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1299,8 +1366,9 @@ async fn remove_empty_dirs(layout: &StashLayout, start: &Path) {
 /// A finished download waiting for this path, when the caller did not name one.
 async fn download_for_path(lib: &Library, rel: &str) -> Result<Option<String>> {
     Ok(sqlx::query_scalar(
-        "SELECT id FROM downloads WHERE rel_path = ?
-         ORDER BY updated_at DESC LIMIT 1",
+        "SELECT d.id FROM downloads d WHERE rel_path = ?
+         AND NOT EXISTS(SELECT 1 FROM torrent_handoffs h WHERE h.download_id=d.id AND h.retirement IN ('staged','retired'))
+         ORDER BY updated_at DESC,d.rowid DESC LIMIT 1",
     )
     .bind(rel)
     .fetch_optional(&lib.db)
@@ -1796,7 +1864,11 @@ async fn organize_item(
     if zone.auto_sorts()
         && let Some(parent) = abs.parent()
     {
-        remove_empty_dirs(&lib.layout, parent).await;
+        remove_empty_dirs(lib, parent).await?;
+        // A legacy single-file torrent is itself the top-level entry.
+        if parent == lib.layout.completed() {
+            super::torrent_handoff::remove_empty_wrapper(lib, &item.rel_path).await?;
+        }
     }
     tracing::info!(item = %item.id, from = %item.rel_path, to = %new_rel, "organized an item");
     publish_moved(lib, LibraryChange::Updated, &item.id, item.facts());
@@ -2041,7 +2113,11 @@ async fn trash_selected_item(
         if zone.auto_sorts()
             && let Some(parent) = src.parent()
         {
-            remove_empty_dirs(&lib.layout, parent).await;
+            remove_empty_dirs(lib, parent).await?;
+            // A legacy single-file torrent is itself the top-level entry.
+            if parent == lib.layout.completed() {
+                super::torrent_handoff::remove_empty_wrapper(lib, &item.rel_path).await?;
+            }
         }
     } else {
         // Nothing on disk to move (the file was already missing).

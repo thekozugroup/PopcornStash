@@ -324,7 +324,7 @@ impl Library {
             sqlx::query("UPDATE conversion_jobs SET target_path=? WHERE item_id=? AND state='complete' AND target_path=?").bind(&primary.to).bind(id).bind(&primary.from).execute(&mut *tx).await?;
             if let Some((key, folder)) = group {
                 let name = Path::new(folder).file_name().and_then(|s| s.to_str()).ok_or(CoreError::NotFound)?;
-                sqlx::query("INSERT OR IGNORE INTO library_download_folders(library_id,group_key,name) VALUES(?,?,?)").bind(library_id).bind(key).bind(name).execute(&mut *tx).await?;
+                sqlx::query("INSERT OR IGNORE INTO library_download_folders(library_id,group_key,name,follows_directory) VALUES(?,?,?,1)").bind(library_id).bind(key).bind(name).execute(&mut *tx).await?;
                 sqlx::query("INSERT INTO library_download_members(item_id,library_id,group_key) VALUES(?,?,?) ON CONFLICT(item_id) DO UPDATE SET library_id=excluded.library_id,group_key=excluded.group_key").bind(id).bind(library_id).bind(key).execute(&mut *tx).await?;
             }
             Ok(())

@@ -320,7 +320,14 @@ fun DownloadRow(
                         busy = busy,
                     )
                 }
-                RowMoreMenu(download.name, (if (download.kind == DownloadKind.Torrent) listOf(MenuChoice("Choose files", onClick = onChooseFiles)) else emptyList()) + MenuChoice("Remove", destructive = true, onClick = onRemove), enabled = !busy)
+                val choices = buildList {
+                    if (download.canChooseTorrentFiles()) {
+                        val label = if (download.error == "Ready to choose files.") "Choose files" else "Files and progress"
+                        add(MenuChoice(label, onClick = onChooseFiles))
+                    }
+                    add(MenuChoice("Remove", destructive = true, onClick = onRemove))
+                }
+                RowMoreMenu(download.name, choices, enabled = !busy)
             }
             Text(download.activeStatus(), style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
             NetworkChips(download)

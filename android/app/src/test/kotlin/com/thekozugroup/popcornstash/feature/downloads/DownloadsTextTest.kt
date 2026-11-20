@@ -33,6 +33,7 @@ class DownloadsTextTest {
         val magnet = s.downloading.copy(totalBytes = null, doneBytes = 0, progress = 0.0, peers = null, downBps = 0, etaS = null)
         assertEquals(listOf("Fetching torrent details. Waiting for a peer."), magnet.progressFacts(us))
         assertEquals("Fetching torrent details", magnet.activeStatus())
+        assertEquals("Checking downloaded files", magnet.copy(error = "Checking downloaded files.").activeStatus())
         assertEquals("Paused", magnet.copy(state = DownloadState.Paused).activeStatus())
         assertEquals("Waiting for the VPN.", magnet.copy(state = DownloadState.Queued, error = "Waiting for the VPN.").activeStatus())
         assertEquals("Looking for peers", magnet.copy(totalBytes = 1024).activeStatus())

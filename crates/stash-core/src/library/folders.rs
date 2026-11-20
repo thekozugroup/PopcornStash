@@ -166,9 +166,12 @@ impl Library {
         root.directory(&target)?; // A destination must already exist.
         let group = if let Some(top) = body.folder.split('/').next().filter(|s| !s.is_empty()) {
             let groups = self.download_folders(id).await?;
+            let physical = super::download_folders::physical_group(self, id, top).await?;
             let matches: Vec<_> = groups
                 .iter()
-                .filter(|g| g.name.to_lowercase() == top.to_lowercase())
+                .filter(|g| {
+                    physical.as_ref() == Some(&g.key) || g.name.to_lowercase() == top.to_lowercase()
+                })
                 .collect();
             if matches.len() > 1 {
                 return Err(CoreError::conflict(

@@ -57,3 +57,16 @@ with multiple original trackers skipped the global list. The engine regression
 `private_torrents_never_announce_to_the_session_public_tracker` observes real local tracker
 requests for public/private metadata and asserts the private torrent only announces to
 its original tracker.
+
+## Unreadable files during the initial piece check
+
+In `src/file_ops.rs`, `FileOps::initial_check` remembers a read failure for the
+rest of that file. Each later piece that intersects its unreadable bytes must
+also be marked unreadable. Upstream skipped the failed file on subsequent pieces
+and could compare a digest computed from only the readable remainder against
+the torrent's expected digest. The patch leaves each affected piece unverified
+until its full contents can be checked, including pieces shared with another file.
+
+## Open-file identity during torrent release
+
+The filesystem storage adapter exposes metadata from the file handle the engine used to verify the pieces. The transfer supervisor compares that identity with the directory entry before release. A same-length replacement at the same path cannot inherit the previous file’s verification. Storage adapters without this capability fail the release check.

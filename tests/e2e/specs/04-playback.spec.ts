@@ -171,14 +171,11 @@ test('progress is saved while watching and Home offers to continue', async ({pag
   await page.goto('/');
   const shelf = page.getByRole('region', {name: 'Continue watching'});
   await expect(shelf).toBeVisible();
-  const tile = shelf.getByRole('link', {name: /^Tin Lighthouse/});
+  const tile = shelf.getByRole('link', {name: /^Resume Tin Lighthouse/});
   await expect(tile).toBeVisible();
 
-  // Opening it from the shelf offers to resume where it stopped (a short clip too: 33 s of 45).
+  // The Continue watching tile resumes in one action, including short clips.
   await tile.click();
-  const resume = page.getByRole('button', {name: /^Resume from 0:3\d/});
-  await expect(resume).toBeVisible();
-  await resume.click();
   await expect.poll(() => currentTime(page), {timeout: 15_000}).toBeGreaterThan(33);
 });
 

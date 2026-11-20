@@ -13,8 +13,9 @@ import {Skeleton} from '@astryxdesign/core/Skeleton';
 import {Text} from '@astryxdesign/core/Text';
 import {colorVars, typeScaleVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {ChevronLeft, ChevronRight, type LucideIcon} from 'lucide-react';
-import {Children, isValidElement, useCallback, useEffect, useId, useState, type ReactNode} from 'react';
+import {Children, isValidElement, useCallback, useEffect, useId, useState, type KeyboardEvent, type ReactNode} from 'react';
 import {MediaTileSkeleton, type MediaShape} from '../MediaTile';
+import {adjacentShelfTile} from './adjacentShelfTile';
 
 const styles = stylex.create({
   // Every shelf heading is Section type (the theme's third-level heading), whatever its
@@ -101,7 +102,10 @@ const styles = stylex.create({
     gridAutoColumns: {default: 168, '@media (max-width: 520px)': 132},
   },
   frame: {
-    gridAutoColumns: {default: 288, '@media (max-width: 520px)': 232},
+    gridAutoColumns: 'min(100%, clamp(232px, 24vw, 308px))',
+  },
+  resume: {
+    gridAutoColumns: 'min(100%, clamp(270px, 39vw, 440px))',
   },
   square: {
     gridAutoColumns: {default: 148, '@media (max-width: 520px)': 112},
@@ -113,7 +117,8 @@ const styles = stylex.create({
     flex: {default: '0 1 auto', '@media (max-width: 799px)': '1 1 100%'},
   },
   compactRow: {
-    overflowX: 'visible',
+    overflowX: 'auto',
+    maxWidth: '100%',
     marginInline: 0,
     paddingInline: 0,
     scrollPaddingInline: 0,
@@ -141,6 +146,8 @@ export interface ShelfProps {
   href?: string;
   linkLabel?: string;
   shape: MediaShape;
+  /** Wider landscape cards for the primary Continue watching shelf. */
+  resume?: boolean;
   /** One or two tiles: no scrolling, sized to its content. */
   isCompact?: boolean;
   children?: ReactNode;
@@ -156,6 +163,7 @@ export function Shelf({
   linkLabel = 'See all',
   shape,
   isCompact = false,
+  resume = false,
   children,
 }: ShelfProps) {
   const headingId = useId();
@@ -165,23 +173,55 @@ export function Shelf({
   const measure = useCallback(() => {
     if (!row) return;
     const max = row.scrollWidth - row.clientWidth;
-    setEdges({start: row.scrollLeft <= 2, end: row.scrollLeft >= max - 2});
+    const start = row.scrollLeft <= 2;
+    const end = row.scrollLeft >= max - 2;
+    setEdges(previous => previous.start === start && previous.end === end ? previous : {start, end});
   }, [row]);
 
+  const count = Children.count(children);
   useEffect(() => {
     if (!row) return;
-    const observer = new ResizeObserver(() => measure());
+    let frame = 0;
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => { frame = 0; measure(); });
+    };
+    const observer = new ResizeObserver(schedule);
     observer.observe(row);
-    row.addEventListener('scroll', measure, {passive: true});
+    // An SSE refresh can change tile count without resizing the container.
+    schedule();
+    row.addEventListener('scroll', schedule, {passive: true});
     return () => {
       observer.disconnect();
-      row.removeEventListener('scroll', measure);
+      row.removeEventListener('scroll', schedule);
+      cancelAnimationFrame(frame);
     };
-  }, [row, measure]);
+  }, [row, measure, count]);
+
+  const moveFocus = (event: KeyboardEvent<HTMLUListElement>) => {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+    const links = Array.from(event.currentTarget.querySelectorAll<HTMLAnchorElement>('li > a'));
+    const index = links.indexOf(event.target as HTMLAnchorElement);
+    if (index < 0) return;
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      const nearest = adjacentShelfTile(event.currentTarget, links[index]!, event.key);
+      if (nearest) { event.preventDefault(); nearest.focus(); }
+      return;
+    }
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? links.length - 1
+      : Math.max(0, Math.min(links.length - 1, index + (event.key === 'ArrowRight' ? 1 : -1)));
+    event.preventDefault();
+    links[next]?.focus();
+  };
 
   const page = (direction: 1 | -1) => {
     if (!row) return;
-    row.scrollBy({left: direction * row.clientWidth * 0.85});
+    const first = row.children[0];
+    const second = row.children[1];
+    if (!first || !second) return;
+    const step = second.getBoundingClientRect().left - first.getBoundingClientRect().left;
+    if (step > 0) row.scrollBy({left: direction * step * Math.max(1, Math.floor((row.clientWidth + 2) / step))});
   };
 
   const hasOverflow = !(edges.start && edges.end);
@@ -237,7 +277,7 @@ export function Shelf({
           {emptyText}
         </Text>
       ) : (
-        <ul ref={setRow} {...stylex.props(styles.row, styles[shape], isCompact && styles.compactRow)}>
+        <ul data-media-shelf="" ref={setRow} aria-labelledby={headingId} onKeyDown={moveFocus} {...stylex.props(styles.row, styles[shape], resume && styles.resume, isCompact && styles.compactRow)}>
           {Children.map(children, child =>
             isValidElement(child) ? <li {...stylex.props(styles.cell)}>{child}</li> : null,
           )}

@@ -36,12 +36,13 @@ fun PhotoTile(
     glyph: LucideGlyph,
     modifier: Modifier = Modifier,
     cornered: Boolean = true,
+    largeThumbnail: Boolean = false,
     onClick: () -> Unit,
 ) {
     val video = item.kind == MediaKind.Video
     val spoken = if (video) "Video, $label" else label
     MediaPicture(
-        url = LocalPictures.current.thumb(item),
+        url = LocalPictures.current.thumb(item, large = largeThumbnail),
         shape = TileShape.Square,
         glyph = glyph,
         cornered = cornered,

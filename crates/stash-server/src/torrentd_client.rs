@@ -221,6 +221,38 @@ impl TorrentdClient {
         .map(drop)
     }
 
+    pub async fn completion(
+        &self,
+        id: &str,
+        allow_direct_file: bool,
+    ) -> Result<stash_core::internal_api::TorrentCompletion, TorrentdError> {
+        decode_with_limit(
+            self.request(
+                Method::GET,
+                &["torrents", id, "completion"],
+                &[(
+                    "allow_direct_file",
+                    if allow_direct_file { "true" } else { "false" },
+                )],
+                None,
+            )
+            .await?,
+            MAX_ENGINE_RESPONSE * 4, // private FD evidence accompanies the normal manifest
+        )
+        .await
+    }
+
+    pub async fn skip_file(&self, id: &str, index: usize) -> Result<(), TorrentdError> {
+        self.request(
+            Method::POST,
+            &["torrents", id, "files", &index.to_string(), "skip"],
+            &[],
+            None,
+        )
+        .await
+        .map(drop)
+    }
+
     pub async fn approve(&self, id: &str, indices: Vec<usize>) -> Result<(), TorrentdError> {
         self.request(
             Method::POST,
@@ -257,6 +289,22 @@ impl TorrentdClient {
         self.request(Method::POST, &["torrents", id, "resume"], &[], None)
             .await
             .map(drop)
+    }
+
+    pub async fn release(
+        &self,
+        id: &str,
+        folder: &str,
+        indices: Vec<usize>,
+    ) -> Result<(), TorrentdError> {
+        self.request(
+            Method::POST,
+            &["torrents", id, "release"],
+            &[],
+            Some(&serde_json::json!({"folder":folder, "indices":indices})),
+        )
+        .await
+        .map(drop)
     }
 
     pub async fn remove(&self, id: &str, delete_files: bool) -> Result<(), TorrentdError> {
@@ -709,7 +757,7 @@ enum ErrorField {
 
 async fn error_from_response(response: reqwest::Response) -> TorrentdError {
     let status = response.status().as_u16();
-    let text = match read_capped(response).await {
+    let text = match read_capped(response, MAX_ENGINE_RESPONSE).await {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(e) => return e,
     };
@@ -746,7 +794,10 @@ async fn error_from_response(response: reqwest::Response) -> TorrentdError {
 }
 
 /// The body of an engine answer, refused past [`MAX_ENGINE_RESPONSE`] bytes.
-async fn read_capped(mut response: reqwest::Response) -> Result<Vec<u8>, TorrentdError> {
+async fn read_capped(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, TorrentdError> {
     let status = response.status().as_u16();
     let too_large = || {
         tracing::warn!("the torrent engine sent an answer larger than PopcornStash accepts");
@@ -757,13 +808,13 @@ async fn read_capped(mut response: reqwest::Response) -> Result<Vec<u8>, Torrent
     };
     if response
         .content_length()
-        .is_some_and(|len| len > MAX_ENGINE_RESPONSE as u64)
+        .is_some_and(|len| len > limit as u64)
     {
         return Err(too_large());
     }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
-        if body.len() + chunk.len() > MAX_ENGINE_RESPONSE {
+        if body.len() + chunk.len() > limit {
             return Err(too_large());
         }
         body.extend_from_slice(&chunk);
@@ -787,8 +838,15 @@ fn engine_message(text: &str) -> String {
 }
 
 async fn decode<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, TorrentdError> {
+    decode_with_limit(response, MAX_ENGINE_RESPONSE).await
+}
+
+async fn decode_with_limit<T: DeserializeOwned>(
+    response: reqwest::Response,
+    limit: usize,
+) -> Result<T, TorrentdError> {
     let status = response.status().as_u16();
-    let bytes = read_capped(response).await?;
+    let bytes = read_capped(response, limit).await?;
     serde_json::from_slice(&bytes).map_err(|e| {
         tracing::warn!(error = %e, "torrent engine response did not match the internal API");
         TorrentdError::Api {

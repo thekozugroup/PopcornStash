@@ -154,6 +154,10 @@ pub enum EngineTorrentState {
     Error,
 }
 
+/// Status reasons for resolved torrents without current verified transfer counters.
+pub const MSG_CHECKING_FILES: &str = "Checking downloaded files.";
+pub const MSG_WAITING_FOR_ENGINE: &str = "Waiting for the torrent engine.";
+
 /// One entry of `GET /torrents`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EngineTorrent {
@@ -235,6 +239,12 @@ pub struct TorrentFile {
     pub size: u64,
     pub kind: TorrentFileKind,
     pub selected: bool,
+    /// Bytes in this file covered by hash-verified pieces. Unknown during a recheck.
+    #[serde(default)]
+    pub verified_bytes: Option<u64>,
+    /// Independent of selection. A skipped file can share all its pieces with a selected file.
+    #[serde(default)]
+    pub complete: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -245,6 +255,60 @@ pub struct TorrentFiles {
     pub files: Vec<TorrentFile>,
     #[serde(default)]
     pub rules: Option<TorrentFileRules>,
+}
+
+/// Internal handoff snapshot. The folder is a direct, exclusive child of the
+/// engine download root, resolved from the same hash handle as the file manifest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TorrentCompletion {
+    pub folder: String,
+    pub files: TorrentFiles,
+    pub release_witness: ReleaseWitness,
+}
+
+/// Engine file-descriptor evidence. This travels only on the internal completion
+/// route and in the frozen SQLite manifest, never in public progress polling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseWitness {
+    pub root_dev: u64,
+    pub root_ino: u64,
+    pub files: std::collections::BTreeMap<usize, FileWitness>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileWitness {
+    pub dev: u64,
+    pub ino: u64,
+    pub size: u64,
+    pub mtime_sec: i64,
+    pub mtime_nsec: i64,
+    pub uid: u32,
+    pub ctime_sec: i64,
+    pub ctime_nsec: i64,
+}
+
+#[cfg(unix)]
+impl From<&std::fs::Metadata> for FileWitness {
+    fn from(meta: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            size: meta.len(),
+            mtime_sec: meta.mtime(),
+            mtime_nsec: meta.mtime_nsec(),
+            uid: meta.uid(),
+            ctime_sec: meta.ctime(),
+            ctime_nsec: meta.ctime_nsec(),
+        }
+    }
+}
+
+/// Release only the same output folder and only while these files remain verified.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseTorrent {
+    pub folder: String,
+    pub indices: Vec<usize>,
 }
 
 /// All specified conditions must match. Names match any listed term, ignoring
