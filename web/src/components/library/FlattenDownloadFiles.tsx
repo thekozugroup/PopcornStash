@@ -1,5 +1,5 @@
 import * as stylex from '@stylexjs/stylex';
-import {useState} from 'react';
+import {useEffect, useState} from 'react';
 import {Banner} from '@astryxdesign/core/Banner';
 import {Button} from '@astryxdesign/core/Button';
 import {VStack, HStack} from '@astryxdesign/core/Layout';
@@ -12,33 +12,54 @@ import {formatCount} from '../../lib/format';
 const styles = stylex.create({path: {overflowWrap: 'anywhere'}});
 
 /** The preview itself is the confirmation. No disk operation happens when opening it. */
-export function FlattenDownloadFiles({id, groupKey, onMoved}: {id: string; groupKey: string; onMoved: () => void}) {
-  const [preview, setPreview] = useState<FlattenPreview | null>(null);
+export function FlattenDownloadFiles({id, groupKey, onMoved, onBusy, onClose}: {
+  id: string;
+  groupKey: string;
+  onMoved: () => void;
+  onBusy: (busy: boolean) => void;
+  onClose: () => void;
+}) {
+  const [revision, setRevision] = useState(0);
+  const [loaded, setLoaded] = useState<{revision: number; value: FlattenPreview | null}>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
-  const load = async () => {
-    setBusy(true); setError(null); setResult(null); setPreview(null); setExpanded(false);
-    try { setPreview(await api.previewFlatten(id, groupKey)); }
-    catch (e) { setError(errorMessage(e, 'File moves could not be previewed. Try again.')); }
-    finally { setBusy(false); }
+  const preview = loaded?.revision === revision ? loaded.value : null;
+  useEffect(() => {
+    let current = true;
+    api.previewFlatten(id, groupKey).then(
+      value => { if (current) setLoaded({revision, value}); },
+      cause => {
+        if (!current) return;
+        setLoaded({revision, value: null});
+        setError(errorMessage(cause, 'File moves could not be previewed. Try again.'));
+      },
+    );
+    return () => { current = false; };
+  }, [id, groupKey, revision]);
+  const load = () => {
+    setRevision(value => value + 1); setError(null); setResult(null); setExpanded(false);
   };
   const move = async () => {
     if (!preview) return;
-    setBusy(true); setError(null);
+    setBusy(true); onBusy(true); setError(null);
     try {
       const value = await api.flattenDownload(id, groupKey, preview.token);
-      setPreview(null);
+      setLoaded({revision, value: null});
       setResult(`${formatCount(value.completed.length, 'video')} organized.`);
       if (value.failed.length) setError(value.failed.map(f => f.message).join(' '));
       onMoved();
-    } catch (e) { setPreview(null); setError(errorMessage(e, 'Files could not be moved. Review a fresh preview.')); }
-    finally { setBusy(false); }
+    } catch (e) { setLoaded({revision, value: null}); setError(errorMessage(e, 'Files could not be moved. Review a fresh preview.')); }
+    finally { setBusy(false); onBusy(false); }
   };
   const moves = preview?.files.filter(file => file.from !== file.to) ?? [];
   return <VStack gap={3}>
-    {!preview ? <HStack><Button label="Flatten files" variant="secondary" isLoading={busy} onClick={() => void load()} /></HStack> : <VStack gap={3}>
+    {!preview ? <HStack gap={2} wrap="wrap">
+      {loaded?.revision !== revision ? <Text role="status">Preparing preview…</Text> : null}
+      {error && !result ? <Button label="Retry preview" variant="secondary" onClick={load} /> : null}
+      <Button label={result ? 'Done' : 'Cancel'} variant="ghost" onClick={onClose} />
+    </HStack> : <VStack gap={3}>
       <Text weight="semibold">Move files into this download folder</Text>
       <Text type="supporting" color="secondary" xstyle={styles.path}>Destination: {preview.folder}</Text>
       <Text type="supporting" color="secondary">Videos and their matching sidecars move here, with filenames unchanged. Other files and folders stay in place. Nothing is overwritten.</Text>
@@ -51,8 +72,8 @@ export function FlattenDownloadFiles({id, groupKey, onMoved}: {id: string; group
       {!expanded && moves.length > 12 ? <Button label={`Show all ${moves.length} moves`} variant="ghost" onClick={() => setExpanded(true)} /> : null}
       <HStack gap={2} wrap="wrap">
         <Button label="Move files" variant="primary" isDisabled={!moves.length || !!preview.blocked.length} isLoading={busy} onClick={() => void move()} />
-        <Button label="Refresh preview" variant="secondary" isDisabled={busy} onClick={() => void load()} />
-        <Button label="Cancel" variant="ghost" isDisabled={busy} onClick={() => setPreview(null)} />
+        <Button label="Refresh preview" variant="secondary" isDisabled={busy} onClick={load} />
+        <Button label="Cancel" variant="ghost" isDisabled={busy} onClick={onClose} />
       </HStack>
     </VStack>}
     {result ? <Text role="status">{result}</Text> : null}

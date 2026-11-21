@@ -68,13 +68,15 @@ class DownloadFoldersTest {
     }
     @After fun cleanup() { scope.cancel(); server.close() }
     private fun waitFor(text: String) = compose.waitUntil(5_000) { compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty() }
-    private fun show(dark: Boolean = false, owner: Boolean = true, initialKey: String = "", collapsed: Boolean = false, onBack: () -> Unit = {}) {
+    private fun show(dark: Boolean = false, owner: Boolean = true, initialKey: String = "", onBack: () -> Unit = {}) {
         compose.setContent { PopcornTheme(darkTheme = dark, reduceMotion = true) { Box(Modifier.fillMaxSize().background(Popcorn.colors.page)) {
-            DownloadFoldersScreen("movies", "Movies", services, owner, 96.dp, onBack, {}, {}, {}, initialKey = initialKey, initialCollapsed = collapsed)
+            DownloadFoldersScreen("movies", "Movies", services, owner, 96.dp, onBack, {}, {}, {}, initialKey = initialKey)
         } } }
         waitFor("Harbor collection")
     }
     private fun open() { compose.onNodeWithText("Harbor collection").performClick(); waitFor("Harbor One") }
+    private fun libraryMenu() { compose.onNodeWithContentDescription("Library view").performClick() }
+    private fun action(label: String) { libraryMenu(); compose.onNodeWithText(label).performClick() }
     @Test fun flatSourceContentsUseTheScopedPagedQuery() {
         show(); open()
         compose.onNode(hasScrollAction()).performScrollToNode(hasText("Harbor Two"))
@@ -85,7 +87,8 @@ class DownloadFoldersTest {
     @Test fun bulkMoveSendsExactSelectedIdsAndFailureKeepsSelection() {
         failMove = true
         show(); open()
-        compose.onNodeWithText("Select videos").performClick()
+        compose.onNodeWithText("Select videos").assertDoesNotExist()
+        action("Select videos")
         compose.onNodeWithText("Select shown").performClick()
         compose.onNodeWithText("Move to folder").performClick()
         compose.onNodeWithText("Archive").performClick()
@@ -97,23 +100,29 @@ class DownloadFoldersTest {
     }
     @Test fun createFolderOpensTheNewEmptyCollection() {
         show()
-        compose.onNodeWithText("New folder").performClick()
+        action("New folder…")
         compose.onNodeWithText("Folder name").performTextInput("My collection")
         compose.onNodeWithText("Create folder").performClick()
         waitFor("My collection")
         assertTrue(writes.single().contains("My collection"))
         assertTrue(writes.single().contains("name"))
     }
-    @Test fun collapseRemovesTheDirectoryFilterWithoutMovingFiles() {
-        show();open()
-        assertTrue(paths.any{it.contains("download_folder=")})
-        compose.onNodeWithText("Collapse subfolders").performClick()
-        compose.waitUntil(5_000){paths.count{it.startsWith("GET /api/items?")}>1}
-        assertFalse(paths.last{it.startsWith("GET /api/items?")}.contains("download_folder="))
+    @Test fun collectionsDefaultToCollapsedAndCanRestoreFolderHierarchy() {
+        show(); open()
+        assertFalse(paths.last { it.startsWith("GET /api/items?") }.contains("download_folder="))
+        compose.onNodeWithText("Clips").assertDoesNotExist()
+        compose.onNodeWithText("Download folders").assertDoesNotExist()
+        action("Show subfolders")
+        waitFor("Clips")
+        assertTrue(paths.last { it.startsWith("GET /api/items?") }.contains("download_folder="))
+        val itemRequests = paths.count { it.startsWith("GET /api/items?") }
+        action("Collapse subfolders")
+        compose.waitUntil(5_000) { paths.count { it.startsWith("GET /api/items?") } > itemRequests }
+        assertFalse(paths.last { it.startsWith("GET /api/items?") }.contains("download_folder="))
         assertTrue(writes.isEmpty())
     }
     @Test fun renameRequiresTheExplicitPhysicalPreview() {
-        show();open();compose.onNodeWithText("Folder actions").performClick();compose.onNodeWithText("Rename folder").performClick()
+        show();open();action("Rename folder…")
         compose.onNodeWithText("Folder name").performTextReplacement("Renamed")
         compose.onNodeWithText("Preview rename").performClick();waitFor("Rename on Atlas")
         assertTrue(paths.none{it.endsWith("/rename")})
@@ -122,35 +131,37 @@ class DownloadFoldersTest {
         assertTrue(writes.last().contains("rename-proof"))
     }
     @Test fun nestedFolderUsesItsOwnScopedQuery() {
-        show();open();compose.onNodeWithText("Clips").performClick()
+        show(); open(); action("Show subfolders"); waitFor("Clips"); compose.onNodeWithText("Clips").performClick()
         compose.waitUntil(5_000){paths.any{it.contains("download_folder=Clips")}}
         assertTrue(writes.isEmpty())
     }
     @Test fun chosenCollectionIncludesNestedVideosAndBackExitsToTheFeed() {
         var returned = false
-        show(initialKey = "download:one", collapsed = true, onBack = { returned = true })
+        show(initialKey = "download:one", onBack = { returned = true })
         waitFor("Harbor One")
         val request = paths.last { it.startsWith("GET /api/items?") }
         assertTrue(request.contains("download_group=download%3Aone"))
         assertFalse(request.contains("download_folder="))
         assertTrue(paths.none { it.contains("/contents?") })
-        compose.onNodeWithText("Collapse subfolders").assertIsOn()
+        libraryMenu()
+        compose.onNodeWithText("Show subfolders").assertIsDisplayed().performClick()
+        action("Collapse subfolders")
         compose.onNodeWithContentDescription("Back").performClick()
         assertTrue(returned)
         assertTrue(writes.isEmpty())
     }
-    @Test fun collectionDescendantsLight() { show(initialKey = "download:one", collapsed = true); waitFor("Harbor One"); compose.onRoot().captureRoboImage("src/test/screenshots/collection-descendants-light.png") }
-    @Test fun collectionDescendantsDark() { show(dark = true, initialKey = "download:one", collapsed = true); waitFor("Harbor One"); compose.onRoot().captureRoboImage("src/test/screenshots/collection-descendants-dark.png") }
+    @Test fun collectionDescendantsLight() { show(initialKey = "download:one"); waitFor("Harbor One"); compose.onRoot().captureRoboImage("src/test/screenshots/collection-descendants-light.png") }
+    @Test fun collectionDescendantsDark() { show(dark = true, initialKey = "download:one"); waitFor("Harbor One"); compose.onRoot().captureRoboImage("src/test/screenshots/collection-descendants-dark.png") }
     @Test fun membersCanBrowseButCannotEdit() {
-        show(owner = false); open()
-        compose.onNodeWithText("New folder").assertDoesNotExist()
-        compose.onNodeWithText("Rename folder").assertDoesNotExist()
+        show(owner = false); open(); libraryMenu()
+        compose.onNodeWithText("New subfolder…").assertDoesNotExist()
+        compose.onNodeWithText("Rename folder…").assertDoesNotExist()
         compose.onNodeWithText("Select videos").assertDoesNotExist()
-        compose.onNodeWithText("Flatten files").assertDoesNotExist()
+        compose.onNodeWithText("Flatten files…").assertDoesNotExist()
     }
     @Test fun flattenRequiresPreviewAndExplicitConfirmation() {
         show(); open()
-        compose.onNodeWithText("Folder actions").performClick();compose.onNodeWithText("Flatten files").performClick()
+        action("Flatten files…")
         waitFor("Move files")
         assertTrue(paths.none { it.endsWith("/flatten") })
         compose.onNodeWithText("Destination: Movies/Harbor collection").assertExists()
@@ -161,12 +172,12 @@ class DownloadFoldersTest {
     }
     @Test fun blockedFlattenDisablesConfirmation() {
         blockFlatten = true; show(); open()
-        compose.onNodeWithText("Folder actions").performClick();compose.onNodeWithText("Flatten files").performClick(); waitFor("Move files")
+        action("Flatten files…"); waitFor("Move files")
         compose.onNodeWithText("Move files").assertIsNotEnabled()
         assertTrue(paths.none { it.endsWith("/flatten") })
     }
-    @Test fun flattenPreviewDark() { show(dark = true); open(); compose.onNodeWithText("Folder actions").performClick();compose.onNodeWithText("Flatten files").performClick(); waitFor("Move files"); compose.onRoot().captureRoboImage("src/test/screenshots/download-folder-flatten-dark.png") }
-    @Test fun flattenPreviewLight() { show(); open(); compose.onNodeWithText("Folder actions").performClick();compose.onNodeWithText("Flatten files").performClick(); waitFor("Move files"); compose.onRoot().captureRoboImage("src/test/screenshots/download-folder-flatten-light.png") }
+    @Test fun flattenPreviewDark() { show(dark = true); open(); action("Flatten files…"); waitFor("Move files"); compose.onRoot().captureRoboImage("src/test/screenshots/download-folder-flatten-dark.png") }
+    @Test fun flattenPreviewLight() { show(); open(); action("Flatten files…"); waitFor("Move files"); compose.onRoot().captureRoboImage("src/test/screenshots/download-folder-flatten-light.png") }
     @Test fun foldersLight() { show(); compose.onRoot().captureRoboImage("src/test/screenshots/download-folders-light.png") }
     @Test fun foldersDark() { show(dark = true); compose.onRoot().captureRoboImage("src/test/screenshots/download-folders-dark.png") }
     @Test fun contentsLight() { show(); open(); compose.onRoot().captureRoboImage("src/test/screenshots/download-folder-videos-light.png") }

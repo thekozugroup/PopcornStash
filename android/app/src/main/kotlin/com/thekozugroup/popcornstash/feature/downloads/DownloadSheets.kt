@@ -55,9 +55,11 @@ import com.thekozugroup.popcornstash.ui.theme.Popcorn
 /** A Popcorn bottom sheet: `surface`, 16dp top corners, the content clear of the keyboard and the navigation bar. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DownloadsSheet(onDismiss: () -> Unit, tag: String, content: @Composable ColumnScope.() -> Unit) {
+fun DownloadsSheet(onDismiss: () -> Unit, tag: String, gesturesEnabled: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
+        sheetGesturesEnabled = gesturesEnabled,
+        dragHandle = if (gesturesEnabled) ({ androidx.compose.material3.BottomSheetDefaults.DragHandle() }) else null,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = Popcorn.colors.surface,
         contentColor = Popcorn.colors.text,

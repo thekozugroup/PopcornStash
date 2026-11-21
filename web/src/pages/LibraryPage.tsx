@@ -16,7 +16,7 @@ import {MoreHorizontal, Search} from 'lucide-react';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import {VideoFeedView} from '../components/library/VideoFeedView';
 import {Skeleton} from '@astryxdesign/core/Skeleton';
-import {useEffect, useState} from 'react';
+import {useEffect, useState, type ComponentProps} from 'react';
 import {useParams, useSearchParams} from 'react-router';
 import {ApiError, libraries as librariesApi} from '../api/client';
 import type {Library} from '../api/types';
@@ -135,11 +135,27 @@ export default function LibraryPage() {
 
   const byDownload = library.content_type === 'video' && (params.get('view') === 'folders' || params.has('download'));
   const isFeed = library.content_type === 'video' && !byDownload && params.get('view') !== 'all';
+  const header = (folderActions: ComponentProps<typeof DropdownMenu>['items'] = []) => {
+    return <PageHeader title={library.name} subtitle={libraryCountLine(library)} keepActionsInline actions={<HStack gap={1}>
+      <Button label="Search this library" tooltip="Search this library" icon={<Search size={20} />} isIconOnly variant="ghost" href={`/search?library=${encodeURIComponent(library.id)}`} />
+      <DropdownMenu alignment="end" presentation="adaptive" renderTrigger={props => <IconButton {...props} label="Library options" icon={<MoreHorizontal size={20} />} variant="ghost" />} items={[
+        ...folderActions,
+        ...(folderActions.length ? [{type: 'divider'} as const] : []),
+        ...(library.content_type === 'video' ? [
+          {label: 'Video feed', onClick: () => setParams({})},
+          {label: 'Folder view', onClick: () => setParams({view: 'folders'})},
+          {label: 'All videos', onClick: () => setParams({view: 'all'})},
+        ] : []),
+        {label: isOwner ? 'Organize files' : 'Browse folders', href: `/libraries/${encodeURIComponent(library.id)}/folders`},
+        ...(isOwner ? [{label: 'Edit library', href: `/settings/libraries/${encodeURIComponent(library.id)}`}] : []),
+      ]} />
+    </HStack>} />;
+  };
+  if (byDownload) return <DownloadFoldersView key={library.id} id={library.id} isOwner={isOwner} renderHeader={header} />;
+
   let view;
   if (isFeed) {
     view = <VideoFeedView key={library.id} id={library.id} empty={empty} />;
-  } else if (byDownload) {
-    view = <DownloadFoldersView key={library.id} id={library.id} isOwner={isOwner} />;
   } else if (library.layout === 'series') {
     view = <SeriesView key={library.id} libraryId={library.id} libraryName={library.name} icon={Icon} empty={empty} />;
   } else if (library.layout === 'timeline') {
@@ -175,18 +191,7 @@ export default function LibraryPage() {
 
   return (
     <>
-      <PageHeader title={library.name} subtitle={libraryCountLine(library)} keepActionsInline actions={<HStack gap={1}>
-        <Button label="Search this library" tooltip="Search this library" icon={<Search size={20} />} isIconOnly variant="ghost" href={`/search?library=${encodeURIComponent(library.id)}`} />
-        <DropdownMenu alignment="end" presentation="adaptive" renderTrigger={props => <IconButton {...props} label="Library options" icon={<MoreHorizontal size={20} />} variant="ghost" />} items={[
-          ...(library.content_type === 'video' ? [
-            {label: 'Video feed', onClick: () => setParams({})},
-            {label: 'Folder view', onClick: () => setParams({view: 'folders'})},
-            {label: 'All videos', onClick: () => setParams({view: 'all'})},
-          ] : []),
-          {label: isOwner ? 'Organize files' : 'Browse folders', href: `/libraries/${encodeURIComponent(library.id)}/folders`},
-          ...(isOwner ? [{label: 'Edit library', href: `/settings/libraries/${encodeURIComponent(library.id)}`}] : []),
-        ]} />
-      </HStack>} />
+      {header()}
       {view}
     </>
   );

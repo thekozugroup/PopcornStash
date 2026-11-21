@@ -23,6 +23,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.thekozugroup.popcornstash.data.api.Library
 import com.thekozugroup.popcornstash.navigation.Tab
 import com.thekozugroup.popcornstash.navigation.TabPage
 import com.thekozugroup.popcornstash.testing.drawnTextColor
@@ -104,6 +105,29 @@ class DownloadsScreenTest {
         compose.onNodeWithContentDescription("More for ${s.paused.name}").performClick()
         compose.onNodeWithText("Remove").performClick()
         assertEquals(listOf("toggle d-lantern", "toggle d-trailer", "remove d-trailer"), calls)
+    }
+
+    @Test
+    fun downloadsCanBeGroupedByAnAssignedVisibleLibrary() {
+        val library = Library("movies", "Movies collection", "film")
+        show(s.content().copy(
+            inProgress = listOf(s.downloading.copy(libraryId = library.id), s.paused.copy(libraryId = "unavailable-id")),
+            uploads = emptyList(),
+            destinationLibraries = listOf(library),
+        ))
+        compose.onNodeWithText(library.name).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Download grouping").performClick()
+        compose.onNodeWithText("Group by library").performClick()
+        compose.onNodeWithText("In progress").assertIsDisplayed()
+        scrollTo("group active movies")
+        compose.onNodeWithText(library.name).assertIsDisplayed()
+        compose.onNodeWithText(s.downloading.name).assertExists()
+        scrollTo("group active ")
+        compose.onNodeWithText("Library unavailable").assertIsDisplayed()
+        compose.onNodeWithText("unavailable-id").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Download grouping").performClick()
+        compose.onNodeWithText("Show by status only").performClick()
+        compose.onNodeWithText(library.name).assertDoesNotExist()
     }
 
     @Test

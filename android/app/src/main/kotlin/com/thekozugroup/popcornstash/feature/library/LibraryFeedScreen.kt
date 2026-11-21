@@ -52,12 +52,20 @@ import kotlinx.coroutines.flow.filter
 enum class VideoLibraryView(val label: String) { Feed("Feed"), Folders("Folder view"), All("All videos") }
 
 @Composable
-fun VideoLibraryMenu(current: VideoLibraryView, onView: (VideoLibraryView) -> Unit) {
+fun VideoLibraryMenu(
+    current: VideoLibraryView,
+    onView: (VideoLibraryView) -> Unit,
+    folderActions: List<Pair<String, () -> Unit>> = emptyList(),
+) {
     var open by remember { mutableStateOf(false) }
     Box {
         TopBarAction(PopcornIcons.More, "Library view", { open = true })
         DropdownMenu(open, { open = false }, shape = Popcorn.shapes.panel, containerColor = Popcorn.colors.surface,
             border = BorderStroke(1.dp, Popcorn.colors.divider)) {
+            folderActions.forEach { (label, action) ->
+                PopcornMenuItem(text = { Text(label, style = Popcorn.type.body) }, onClick = { open = false; action() })
+            }
+            if (folderActions.isNotEmpty()) androidx.compose.material3.HorizontalDivider(color = Popcorn.colors.divider)
             VideoLibraryView.entries.forEach { view ->
                 PopcornMenuItem(
                     text = { Text(view.label, style = Popcorn.type.body) },

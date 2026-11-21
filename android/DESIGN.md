@@ -247,6 +247,8 @@ Its own activity (`PlayerActivity`), opened with `openPlayer(itemId)`, so it can
 
 ### Downloads
 
+The Downloads grouping control optionally groups both status sections by their assigned library. The Add link and torrent file sheets leave vertical gestures to their content. In video Folder view, search stays visible and the Library view menu holds folder actions, subfolder visibility and selection. Video collections open with subfolders collapsed.
+
 The tab where files come in: watch what is downloading, then put what finished into the right library.
 
 1. **The VPN line** under the top bar, one row in the web's words with the status dot (the 500 shade) beside the label in its status colour and one `metadata` sentence under it: "Protected · NordVPN · Netherlands" with "Torrents run only through the VPN. Public address 203.0.113.5.", "Torrents paused: VPN connecting", "No VPN: torrents use this network", "Torrents off" with the server's reason, the owner's and the member's sentences as on the web (`feature/downloads/VpnText.kt`). For the owner it opens the web VPN settings in a Custom Tab (trailing `external-link`); while the VPN connects there is nothing to open. While the live events are cut off, "Not connected to the server. Trying again." sits above it with the warning dot.

@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -25,12 +26,12 @@ import kotlinx.coroutines.launch
 /** Source download roots with optional collapsed browsing and explicit physical edits. */
 @Composable
 fun DownloadFoldersScreen(id: String, name: String, services: LibraryServices, isOwner: Boolean, bottomClearance: Dp,
-    onBack: () -> Unit, onAllVideos: () -> Unit, onFiles: () -> Unit, onOpen: (Item) -> Unit,
-    initialKey: String = "", initialCollapsed: Boolean = false, onFolderView: (() -> Unit)? = null,
-    onGone: () -> Unit = {}, viewActions: @Composable () -> Unit = {}) {
+    onBack: () -> Unit, onView: (VideoLibraryView) -> Unit, onFiles: () -> Unit, onOpen: (Item) -> Unit,
+    initialKey: String = "", view: VideoLibraryView = VideoLibraryView.Folders,
+    onGone: () -> Unit = {}) {
     var key by rememberSaveable(id, initialKey) { mutableStateOf(initialKey) }
     var folder by rememberSaveable(id, key) { mutableStateOf("") }
-    var collapsed by rememberSaveable(id, initialKey) { mutableStateOf(initialCollapsed) }
+    var collapsed by rememberSaveable(id, key) { mutableStateOf(true) }
     var tree by remember(id, key, folder) { mutableStateOf<DownloadTree?>(null) }
     var preview by remember(id, key, folder) { mutableStateOf<RenameFolderPreview?>(null) }
     var query by rememberSaveable(id, key) { mutableStateOf("") }
@@ -48,7 +49,7 @@ fun DownloadFoldersScreen(id: String, name: String, services: LibraryServices, i
     var generation by remember { mutableIntStateOf(0) }
     var editing by remember { mutableStateOf<String?>(null) }
     var newName by rememberSaveable { mutableStateOf("") }
-    var organizing by rememberSaveable(id,key) { mutableStateOf(false) }
+    var flattening by remember(id, key, folder) { mutableStateOf(false) }
     var targetMenu by remember { mutableStateOf(false) }
     var sortMenu by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -57,7 +58,12 @@ fun DownloadFoldersScreen(id: String, name: String, services: LibraryServices, i
     val group = groups?.firstOrNull { it.key == key }
     fun message(e: Exception): String { if (e is CancellationException) throw e; return (e as? ApiException)?.message ?: "PopcornStash did not answer. Try again." }
     fun request(after: String? = null) = ItemQuery(libraryId = id, downloadGroup = key, downloadFolder = if (collapsed) null else folder, q = query.trim(), sort = sort, order = if (sort == "title") "asc" else "desc", limit = 60, cursor = after)
-    fun up() { if (folder.isNotEmpty()) folder = folder.substringBeforeLast('/', "") else if (key.isNotEmpty() && key != initialKey) key = "" else onBack() }
+    fun up() {
+        selecting = false; selected = emptyList(); editing = null
+        if (folder.isNotEmpty()) folder = folder.substringBeforeLast('/', "")
+        else if (key.isNotEmpty() && key != initialKey) key = ""
+        else onBack()
+    }
     BackHandler(key.isNotEmpty() || busy) { if (!busy) up() }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { revision++ }
     LaunchedEffect(services) { services.events.collect { event -> if (event is StashEvent.LibraryChanged || event is StashEvent.LibrariesChanged) revision++ } }
@@ -89,7 +95,15 @@ fun DownloadFoldersScreen(id: String, name: String, services: LibraryServices, i
                     if(value==null) {preview=api.previewFolderRename(id,key,folder,newName.trim());return@launch}
                     api.renameDirectory(id,key,folder,newName.trim(),value.token)
                     if(folder.isNotEmpty()) {val parent=folder.substringBeforeLast('/',"");folder=if(parent.isEmpty())newName.trim() else "$parent/${newName.trim()}"}
-                } else {key=api.createDownloadDirectory(id,newName.trim(),key.ifEmpty{null},folder)}
+                } else {
+                    val existingGroup = key.isNotEmpty()
+                    val child = newName.trim()
+                    key = api.createDownloadDirectory(id, child, key.ifEmpty { null }, folder)
+                    if (existingGroup) {
+                        collapsed = false
+                        folder = if (folder.isEmpty()) child else "$folder/$child"
+                    }
+                }
                 editing=null;preview=null;revision++
             }
             catch (e: Exception) { preview = null; error = message(e) }
@@ -104,20 +118,36 @@ fun DownloadFoldersScreen(id: String, name: String, services: LibraryServices, i
             finally { busy = false }
         }
     }
+    fun editName(mode: String, name: String = "") {
+        flattening = false; editing = mode; newName = name; preview = null
+    }
+    val folderActions = buildList<Pair<String, () -> Unit>> {
+        if (group != null) {
+            add((if (collapsed) "Show subfolders" else "Collapse subfolders") to {
+                collapsed = !collapsed; folder = ""; selected = emptyList(); selecting = false; loading = true
+            })
+            if (isOwner) add((if (selecting) "Done selecting" else "Select videos") to {
+                selecting = !selecting; selected = emptyList()
+            })
+        }
+        if (isOwner && (key.isEmpty() || group != null)) {
+            add((if (group == null) "New folder…" else "New subfolder…") to { editName("create") })
+            if (group != null) {
+                add("Rename folder…" to { editName("rename", folder.substringAfterLast('/').ifEmpty { group.name }) })
+                add("Flatten files…" to { flattening = true })
+            }
+        }
+        add((if (isOwner) "Organize files" else "Browse files") to onFiles)
+        add("Refresh folders" to { revision++ })
+    }
     val gutter = Modifier.padding(vertical = Popcorn.spacing.s)
     Column(Modifier.fillMaxSize()) {
         PageTopBar(title = folder.substringAfterLast('/').ifEmpty { group?.name ?: name }, onBack = if (busy) null else ::up,
-            actions = { TopBarAction(PopcornIcons.StartAgain, "Refresh folders", { if (!busy) revision++ }); if (!busy) viewActions() })
+            actions = { if (!busy) VideoLibraryMenu(view, onView, folderActions) })
         LazyVerticalGrid(columns = GridCells.Adaptive(180.dp), contentPadding = PaddingValues(start = Popcorn.spacing.gutter, end = Popcorn.spacing.gutter, bottom = bottomClearance), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item("view", span = { GridItemSpan(maxLineSpan) }) {
                 Column(gutter, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        SecondaryButton(if (key.isEmpty()) "All videos" else "Download folders", { if (key.isEmpty()) onAllVideos() else if (onFolderView != null) onFolderView() else key = "" }, enabled = !busy)
-                        if(group!=null && isOwner) QuietButton(if(organizing) "Close folder actions" else "Folder actions",{organizing=!organizing},enabled=!busy)
-                        else QuietButton("Organize files", onFiles, enabled = !busy)
-                    }
-                    if(group==null) Text("Each download has its own folder. Open one to browse or organize its videos.", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
-                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(query, { query = it; selected = emptyList(); loading = true }, label = { Text(if (key.isEmpty()) "Find a download folder" else "Search this folder") }, singleLine = true,
                         enabled = !busy, colors = popcornFieldColors(), shape = Popcorn.shapes.control, modifier = Modifier.weight(1f))
                     Box {
@@ -134,33 +164,24 @@ fun DownloadFoldersScreen(id: String, name: String, services: LibraryServices, i
                                 QuietButton(part,{folder=folder.split('/').take(index+1).joinToString("/")},enabled=!busy && index<folder.split('/').lastIndex)
                             }
                         }
-                        CheckRow("Collapse subfolders",collapsed,{collapsed=!collapsed;folder="";selected=emptyList();loading=true},enabled=!busy)
                     }
-                    if (isOwner && (group==null || organizing)) {
+                    if (isOwner && group != null && flattening) {
+                        FlattenDownloadFiles(id, key, api, onMoved = { revision++ }, onBusy = { busy = it }, onClose = { flattening = false })
+                    }
+                    if (isOwner && group != null && selecting) {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            SecondaryButton(if(group==null) "New folder" else "New subfolder", { editing = "create"; newName = "";preview=null }, enabled = !busy)
-                            if (group != null) QuietButton("Rename folder", { editing = "rename"; newName = folder.substringAfterLast('/').ifEmpty {group.name};preview=null }, enabled = !busy)
+                            QuietButton("Select shown", { selected = files.map { it.id } }, enabled = !busy && !loading && files.size in 1..500)
+                            Text("${selected.size} selected", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
                         }
-                        if (group != null) {
-                            FlattenDownloadFiles(id, key, api, onMoved = { revision++ }, onBusy = { busy = it })
-                            QuietButton("Organize files",onFiles,enabled=!busy)
-                        }
-                    }
-                    if(isOwner && group!=null) {
-                            SecondaryButton(if (selecting) "Done selecting" else "Select videos", { selecting = !selecting; selected = emptyList() }, enabled = !busy)
-                            if (selecting) {
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    QuietButton("Select shown", { selected = files.map { it.id } }, enabled = !busy && !loading && files.size in 1..500)
-                                    Text("${selected.size} selected", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
+                        Box {
+                            SecondaryButton(groups?.firstOrNull { it.key == target }?.name ?: "Move to folder", { targetMenu = true }, enabled = !busy)
+                            DropdownMenu(targetMenu, { targetMenu = false }, shape = Popcorn.shapes.panel, containerColor = Popcorn.colors.surface) {
+                                groups.orEmpty().filter { it.key != key }.forEach { dest ->
+                                    PopcornMenuItem(text = { Text(dest.name) }, onClick = { target = dest.key; targetMenu = false })
                                 }
-                                Box {
-                                    SecondaryButton(groups?.firstOrNull { it.key == target }?.name ?: "Move to folder", { targetMenu = true }, enabled = !busy)
-                                    DropdownMenu(targetMenu, { targetMenu = false }, shape = Popcorn.shapes.panel, containerColor = Popcorn.colors.surface) {
-                                        groups.orEmpty().filter { it.key != key }.forEach { dest -> PopcornMenuItem(text = { Text(dest.name) }, onClick = { target = dest.key; targetMenu = false }) }
-                                    }
-                                }
-                                PrimaryButton("Move selected", ::move, enabled = !busy && !loading && target.isNotEmpty() && selected.size in 1..500, busy = busy)
                             }
+                        }
+                        PrimaryButton("Move selected", ::move, enabled = !busy && !loading && target.isNotEmpty() && selected.size in 1..500, busy = busy)
                     }
                     error?.let { Text(it, color = Popcorn.colors.error, style = Popcorn.type.body) }
                 }
@@ -177,7 +198,7 @@ fun DownloadFoldersScreen(id: String, name: String, services: LibraryServices, i
                 if (visible.isEmpty()) item("empty", span = { GridItemSpan(maxLineSpan) }) { Text(if (error != null) "Try Refresh folders." else "No download folders match. New downloads appear here after import.", modifier = gutter, color = Popcorn.colors.textMuted) }
             } else {
                 if(!collapsed) items(tree?.folders.orEmpty(),key={"folder:${it.folder}"},span={GridItemSpan(maxLineSpan)}) { child ->
-                    Column { ListRow(child.name,horizontalPadding=0.dp,supporting="${child.itemCount} videos · ${services.format.bytes(child.size)}",onClick=if(busy)null else ({folder=child.folder;selected=emptyList();loading=true}),leading={LucideIcon(PopcornIcons.Folder,null)});RowDivider(inset=false) }
+                    Column { ListRow(child.name,horizontalPadding=0.dp,supporting="${child.itemCount} videos · ${services.format.bytes(child.size)}",onClick=if(busy)null else ({folder=child.folder;selected=emptyList();selecting=false;loading=true}),leading={LucideIcon(PopcornIcons.Folder,null)});RowDivider(inset=false) }
                 }
                 items(files, key = { it.id }) { item ->
                     Column {
@@ -185,7 +206,7 @@ fun DownloadFoldersScreen(id: String, name: String, services: LibraryServices, i
                         MediaTile(item.title, services.format.tileLine(item), pictures.thumb(item, large = true), TileShape.Frame, com.thekozugroup.popcornstash.ui.icons.LibraryIcons.glyph("clapperboard"), { if (!busy) onOpen(item) }, progress = services.format.watchedFraction(item.progress))
                     }
                 }
-                if (files.isEmpty()) item("empty", span = { GridItemSpan(maxLineSpan) }) { Text(if (query.isBlank()) if(collapsed) "This download folder has no videos yet." else "Open a subfolder or turn on Collapse subfolders to see its videos." else "No videos match your search.", modifier = gutter, color = Popcorn.colors.textMuted) }
+                if (files.isEmpty()) item("empty", span = { GridItemSpan(maxLineSpan) }) { Text(if (query.isBlank()) if(collapsed) "This download folder has no videos yet." else "Open a subfolder or choose Collapse subfolders in Library view." else "No videos match your search.", modifier = gutter, color = Popcorn.colors.textMuted) }
                 if (cursor != null) item("more", span = { GridItemSpan(maxLineSpan) }) {
                     SecondaryButton("Load more videos", {
                         busy = true

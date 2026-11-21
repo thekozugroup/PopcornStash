@@ -15,11 +15,14 @@ import {Banner} from '@astryxdesign/core/Banner';
 import {Button} from '@astryxdesign/core/Button';
 import {Heading} from '@astryxdesign/core/Heading';
 import {Text} from '@astryxdesign/core/Text';
+import {ToggleButton} from '@astryxdesign/core/ToggleButton';
+import {Layers} from 'lucide-react';
 import {useToast} from '@astryxdesign/core/Toast';
-import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {useLocation, useNavigate} from 'react-router';
+import {useCallback, useEffect, useMemo, useRef, useState, type ReactNode} from 'react';
+import {useLocation, useNavigate, useSearchParams} from 'react-router';
 import {ApiError, downloads as downloadsApi} from '../api/client';
-import type {Download} from '../api/types';
+import type {Download, Library} from '../api/types';
+import {useLibraries} from '../app/LibrariesProvider';
 import {useAuth} from '../auth/AuthProvider';
 import {AddPanel} from '../components/downloads/AddPanel';
 import {TorrentFilesDialog} from '../components/downloads/TorrentFilesDialog';
@@ -63,12 +66,19 @@ const styles = stylex.create({
   },
   sectionHeader: {
     display: 'flex',
-    alignItems: 'baseline',
+    alignItems: 'center',
+    flexWrap: 'wrap',
     gap: 10,
   },
   count: {
     fontVariantNumeric: 'tabular-nums',
   },
+  layoutOptions: {marginInlineStart: 'auto'},
+  group: {
+    borderBottomWidth: 1, borderBottomStyle: 'solid', borderBottomColor: colorVars['--color-border'],
+    ':last-child': {borderBottomWidth: 0},
+  },
+  groupHeading: {paddingBlock: 8, paddingInline: 16, overflowWrap: 'anywhere'},
   panel: {
     borderWidth: 1,
     borderStyle: 'solid',
@@ -107,10 +117,53 @@ function byFinished(a: Download, b: Download): number {
   return (b.completed_at ?? b.created_at) - (a.completed_at ?? a.created_at);
 }
 
+interface TransferEntry {
+  key: string;
+  libraryId?: string | null;
+  row: ReactNode;
+}
+
+function TransferList({entries, libraries, grouped, label}: {
+  entries: TransferEntry[];
+  libraries: Library[];
+  grouped: boolean;
+  label: string;
+}) {
+  const rows = (items: TransferEntry[], labelledBy?: string) =>
+    <ul {...stylex.props(rowStyles.list)} aria-labelledby={labelledBy}>
+      {items.map(entry => <li key={entry.key} {...stylex.props(rowStyles.item)}>{entry.row}</li>)}
+    </ul>;
+  if (!grouped) return rows(entries, label);
+
+  const names = new Map(libraries.map(library => [library.id, library.name]));
+  const groups = new Map<string | null, TransferEntry[]>();
+  for (const entry of entries) {
+    const key = entry.libraryId ? (names.has(entry.libraryId) ? entry.libraryId : '') : null;
+    const group = groups.get(key);
+    if (group) group.push(entry);
+    else groups.set(key, [entry]);
+  }
+  const order = [...names.keys(), null, ''];
+  return order.map((key, index) => {
+    const list = groups.get(key);
+    if (!list?.length) return null;
+    const heading = `${label}-library-${index}`;
+    return <div key={heading} {...stylex.props(styles.group)}>
+      <Text as="h3" type="label" id={heading} weight="semibold" xstyle={styles.groupHeading}>
+        {key === null ? 'Automatic sorting' : names.get(key) ?? 'Library unavailable'}
+      </Text>
+      {rows(list, heading)}
+    </div>;
+  });
+}
+
 export default function DownloadsPage() {
   const {isOwner, user} = useAuth();
   const userId = user?.id ?? null;
   const location = useLocation();
+  const [params, setParams] = useSearchParams();
+  const grouped = params.get('group') === 'library';
+  const {libraries} = useLibraries();
   const navigate = useNavigate();
   const showToast = useToast();
   const vpn = useVpnStatus();
@@ -321,25 +374,28 @@ export default function DownloadsPage() {
                   {inProgressCount}
                 </Text>
               ) : null}
+              {hasAnything ? <div {...stylex.props(styles.layoutOptions)}>
+                <ToggleButton label="Group by library" icon={<Layers size={18} aria-hidden="true" />} isPressed={grouped}
+                  onPressedChange={pressed => setParams(current => {
+                    const next = new URLSearchParams(current);
+                    if (pressed) next.set('group', 'library');
+                    else next.delete('group');
+                    return next;
+                  }, {replace: true, preventScrollReset: true})}>Group by library</ToggleButton>
+              </div> : null}
             </div>
             <div {...stylex.props(styles.panel)}>
               {inProgressCount > 0 ? (
-                <ul {...stylex.props(rowStyles.list)} aria-labelledby="in-progress-title">
-                  {queue.map(entry => (
-                    <li key={entry.key} {...stylex.props(rowStyles.item)}>
-                      <UploadRow
-                        entry={entry}
-                        onChooseAgain={() => uploadInputRef.current?.click()}
-                        onCancel={setCancelTarget}
-                      />
-                    </li>
-                  ))}
-                  {active.map(download => (
-                    <li key={download.id} {...stylex.props(rowStyles.item)}>
-                      <DownloadRow onFiles={item => setFilesTargetId(item.id)} download={download} onChanged={upsert} onRemove={setRemoveTarget} onError={toastError} />
-                    </li>
-                  ))}
-                </ul>
+                <TransferList grouped={grouped} libraries={libraries ?? []} label="in-progress-title" entries={[
+                  ...queue.map(entry => ({
+                    key: `upload-${entry.key}`, libraryId: entry.libraryId,
+                    row: <UploadRow entry={entry} onChooseAgain={() => uploadInputRef.current?.click()} onCancel={setCancelTarget} />,
+                  })),
+                  ...active.map(download => ({
+                    key: download.id, libraryId: download.library_id,
+                    row: <DownloadRow onFiles={item => setFilesTargetId(item.id)} download={download} onChanged={upsert} onRemove={setRemoveTarget} onError={toastError} />,
+                  })),
+                ]} />
               ) : data.status === 'loading' ? (
                 <ListSkeleton label="Loading downloads" rows={3} />
               ) : (
@@ -362,21 +418,11 @@ export default function DownloadsPage() {
               </Text>
             </div>
             <div {...stylex.props(styles.panel)}>
-              <ul {...stylex.props(rowStyles.list)} aria-labelledby="finished-title">
-                {visibleFinished.map(download => (
-                  <li key={download.id} {...stylex.props(rowStyles.item)}>
-                    <FinishedRow
-                      download={download}
-                      items={items}
-                      isOwner={isOwner}
-                      isRetrying={retrying.has(download.id)}
-                      onRetry={item => void retry(item)}
-                      onUploadAgain={() => uploadInputRef.current?.click()}
-                      onRemove={setRemoveTarget}
-                    />
-                  </li>
-                ))}
-              </ul>
+              <TransferList grouped={grouped} libraries={libraries ?? []} label="finished-title" entries={visibleFinished.map(download => ({
+                key: download.id, libraryId: download.library_id,
+                row: <FinishedRow download={download} items={items} isOwner={isOwner} isRetrying={retrying.has(download.id)}
+                  onRetry={item => void retry(item)} onUploadAgain={() => uploadInputRef.current?.click()} onRemove={setRemoveTarget} />,
+              }))} />
               {finished.length > visibleFinished.length ? (
                 <div {...stylex.props(styles.more)}>
                   <Button

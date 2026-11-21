@@ -49,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.dismiss
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -103,13 +104,22 @@ fun TorrentFilesSheet(
     }
     ModalBottomSheet(
         onDismissRequest = { if (!busy) onCancel() },
+        // Give the file list the entire vertical gesture, including the fling at its edges.
+        sheetGesturesEnabled = false,
+        dragHandle = null,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true, confirmValueChange = { it != SheetValue.Hidden || !busy }),
         containerColor = Popcorn.colors.surface,
         contentColor = Popcorn.colors.text,
         shape = Popcorn.shapes.sheet,
         scrimColor = Popcorn.colors.stage.copy(alpha = 0.4f),
     ) {
-        TorrentFilesContent(state, onToggle, onSave, onCancel, onRetry, onDraft = onDraft, onType = onType, onFilter = onFilter, onFinish = onFinish, onSkip = onSkip)
+        TorrentFilesContent(
+            state, onToggle, onSave, onCancel, onRetry,
+            modifier = Modifier.semantics {
+                if (!busy) dismiss { onCancel(); true }
+            },
+            onDraft = onDraft, onType = onType, onFilter = onFilter, onFinish = onFinish, onSkip = onSkip,
+        )
     }
 }
 
@@ -197,7 +207,12 @@ fun TorrentFilesContent(
                 QuietButton("Check again", onClick = onRetry)
             }
             else -> {
-                val bytes = state.files.filter { it.index in state.selected }.sumOf { it.size }
+                val bytes = remember(state.files, state.selected) {
+                    state.files.sumOf { if (it.index in state.selected) it.size else 0L }
+                }
+                val visible = remember(state.files, search) {
+                    state.files.filter { it.path.contains(search, ignoreCase = true) }
+                }
                 Text("${state.selected.size} of ${state.files.size} selected · ${formatBytes(bytes)}", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted)
                 Spacer(Modifier.height(Popcorn.spacing.s))
                 LazyColumn(Modifier.weight(1f, fill = false).testTag("torrent file list")) {
@@ -244,9 +259,8 @@ fun TorrentFilesContent(
                         }
                         RuleField("Find files in this torrent", search, { search = it }, !state.busy)
                     }
-                    val visible = state.files.filter { it.path.contains(search, ignoreCase = true) }
                     if (visible.isEmpty()) item { Text("No matching files.", style = Popcorn.type.body, color = Popcorn.colors.textMuted) }
-                    items(visible, key = { it.index }) { file ->
+                    items(visible, key = { it.index }, contentType = { managing }) { file ->
                         if (managing) {
                             TorrentFileProgressRow(file, canSkip = state.canSkip(file.index), onSkip = { skipIndex = file.index })
                         } else CheckRow(

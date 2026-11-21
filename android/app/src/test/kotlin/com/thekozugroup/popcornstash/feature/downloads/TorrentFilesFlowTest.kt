@@ -21,6 +21,9 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.test.swipeUp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.thekozugroup.popcornstash.data.api.TorrentFile
 import com.thekozugroup.popcornstash.data.api.TorrentFileKind
@@ -98,6 +101,10 @@ class TorrentFilesFlowTest {
         assertEquals(emptyList<String>(), writes)
 
         open("Choose files")
+        val list = compose.onNodeWithTag("torrent file list")
+        list.performTouchInput { swipeUp(durationMillis = 70) }
+        list.performTouchInput { swipeDown(durationMillis = 70) }
+        compose.onNodeWithText("Review torrent").assertIsDisplayed()
         compose.onNodeWithText("Filter").performScrollTo().performClick()
         compose.onNodeWithText("Start download").performClick()
         compose.onNodeWithText("Torrent files").assertIsDisplayed()

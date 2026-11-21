@@ -51,10 +51,9 @@ internal fun VideoLibraryPage(route: HomeRoute.Library, library: Library, bottom
         when {
             key != null || view == VideoLibraryView.Folders -> DownloadFoldersScreen(
                 route.id, if (key != null) collectionName else library.name, services, isOwner, bottomClearance,
-                onBack = ::back, onAllVideos = { showView(VideoLibraryView.All) }, onFiles = ::files, onOpen = ::open,
-                initialKey = key.orEmpty(), initialCollapsed = key != null,
-                onFolderView = if (key != null) ({ showView(VideoLibraryView.Folders) }) else null,
-                onGone = ::gone, viewActions = { VideoLibraryMenu(if (key != null) VideoLibraryView.Feed else view, ::showView) },
+                onBack = ::back, onView = ::showView, onFiles = ::files, onOpen = ::open,
+                initialKey = key.orEmpty(), view = if (key != null) VideoLibraryView.Feed else view,
+                onGone = ::gone,
             )
             view == VideoLibraryView.Feed -> {
                 val model: LibraryFeedViewModel = viewModel(key = "video-feed", factory = viewModelFactory {

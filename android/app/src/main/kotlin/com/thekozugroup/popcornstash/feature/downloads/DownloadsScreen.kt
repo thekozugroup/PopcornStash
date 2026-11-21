@@ -11,8 +11,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
@@ -28,6 +30,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.thekozugroup.popcornstash.data.api.Download
 import com.thekozugroup.popcornstash.navigation.TabPage
@@ -36,6 +40,7 @@ import com.thekozugroup.popcornstash.ui.components.ConnectionLostRow
 import com.thekozugroup.popcornstash.ui.components.EmptyState
 import com.thekozugroup.popcornstash.ui.components.LoadFailed
 import com.thekozugroup.popcornstash.ui.components.PageTopBar
+import com.thekozugroup.popcornstash.ui.components.PopcornMenuItem
 import com.thekozugroup.popcornstash.ui.components.PrimaryButton
 import com.thekozugroup.popcornstash.ui.components.QuietButton
 import com.thekozugroup.popcornstash.ui.components.TabSnackbarHost
@@ -86,6 +91,7 @@ private sealed class Entry(val key: String) {
     data class Failed(val message: String) : Entry("failed")
     data object Empty : Entry("empty")
     data class InProgressHeader(val count: Int) : Entry("in progress")
+    data class LibraryGroup(val scope: String, val id: String?, val title: String) : Entry("group $scope ${id ?: "automatic"}")
     data class Upload(val upload: UploadBatchProgress, val ruled: Boolean) : Entry("upload ${upload.id}")
     data class Transfer(val download: Download, val ruled: Boolean) : Entry("download ${download.id}")
     data class ImportsHeader(val count: Int, val acceptAll: Boolean) : Entry("imports")
@@ -98,7 +104,17 @@ private sealed class Entry(val key: String) {
     data object More : Entry("more finished")
 }
 
-private fun entries(state: DownloadsUiState, ignoredOpen: Boolean): List<Entry> = buildList {
+private fun entries(state: DownloadsUiState, ignoredOpen: Boolean, groupByLibrary: Boolean): List<Entry> = buildList {
+    val libraries = state.destinationLibraries.associateBy { it.id }
+    fun <T> addGroups(scope: String, rows: List<T>, libraryId: (T) -> String?, entry: (T, Boolean) -> Entry) {
+        val groups = rows.groupBy { row -> libraryId(row)?.let { id -> if (id in libraries) id else "" } }
+        for (id in libraries.keys.toList() + listOf(null, "")) {
+            val group = groups[id] ?: continue
+            val title = if (id == null) "Automatic sorting" else libraries[id]?.name ?: "Library unavailable"
+            add(Entry.LibraryGroup(scope, id, title))
+            group.forEachIndexed { index, row -> add(entry(row, index > 0)) }
+        }
+    }
     if (state.connectionLost) add(Entry.Connection)
     if (state.vpn != null) add(Entry.Vpn)
     when {
@@ -109,9 +125,20 @@ private fun entries(state: DownloadsUiState, ignoredOpen: Boolean): List<Entry> 
             val inProgress = state.uploads.size + state.inProgress.size
             if (inProgress > 0) {
                 add(Entry.InProgressHeader(inProgress))
-                state.uploads.forEachIndexed { index, upload -> add(Entry.Upload(upload, ruled = index > 0)) }
-                state.inProgress.forEachIndexed { index, download ->
-                    add(Entry.Transfer(download, ruled = index > 0 || state.uploads.isNotEmpty()))
+                if (groupByLibrary) {
+                    val transfers = state.uploads.map { Entry.Upload(it, false) } + state.inProgress.map { Entry.Transfer(it, false) }
+                    addGroups("active", transfers, { (it as? Entry.Transfer)?.download?.libraryId }) { row, ruled ->
+                        when (row) {
+                            is Entry.Upload -> row.copy(ruled = ruled)
+                            is Entry.Transfer -> row.copy(ruled = ruled)
+                            else -> row
+                        }
+                    }
+                } else {
+                    state.uploads.forEachIndexed { index, upload -> add(Entry.Upload(upload, ruled = index > 0)) }
+                    state.inProgress.forEachIndexed { index, download ->
+                        add(Entry.Transfer(download, ruled = index > 0 || state.uploads.isNotEmpty()))
+                    }
                 }
             }
             if (state.imports.isNotEmpty() || state.ignored.isNotEmpty() || state.importsError != null) {
@@ -125,7 +152,8 @@ private fun entries(state: DownloadsUiState, ignoredOpen: Boolean): List<Entry> 
             }
             if (state.finished.isNotEmpty()) {
                 add(Entry.FinishedHeader)
-                state.finished.forEachIndexed { index, row -> add(Entry.Finished(row, ruled = index > 0)) }
+                if (groupByLibrary) addGroups("finished", state.finished, { it.download.libraryId }, { row, ruled -> Entry.Finished(row, ruled) })
+                else state.finished.forEachIndexed { index, row -> add(Entry.Finished(row, ruled = index > 0)) }
                 if (state.moreFinished) add(Entry.More)
             }
         }
@@ -157,13 +185,27 @@ fun DownloadsPage(
     }
     var ignoredOpen by rememberSaveable { mutableStateOf(false) }
     var pulling by remember { mutableStateOf(false) }
-    val list = entries(state, ignoredOpen)
+    var groupByLibrary by rememberSaveable { mutableStateOf(false) }
+    var groupMenu by remember { mutableStateOf(false) }
+    val list = remember(state, ignoredOpen, groupByLibrary) { entries(state, ignoredOpen, groupByLibrary) }
     val locked = state.acceptAll?.running == true || state.imports.any { it.busy != null } || state.ignored.any { it.busy != null }
 
     Box(modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
             PageTopBar(title = "Downloads", scrolled = listState.canScrollBackward) {
                 if (state.isOwner) actions.onManageInbox?.let { TopBarAction(PopcornIcons.ReadyToImport, "Manage Inbox", it) }
+                if (state.inProgress.isNotEmpty() || state.finished.isNotEmpty() || state.uploads.isNotEmpty()) {
+                    Box {
+                        TopBarAction(PopcornIcons.Sort, "Download grouping", { groupMenu = true })
+                        DropdownMenu(groupMenu, { groupMenu = false },
+                            shape = Popcorn.shapes.panel, containerColor = Popcorn.colors.surface) {
+                            PopcornMenuItem(
+                                text = { Text(if (groupByLibrary) "Show by status only" else "Group by library") },
+                                onClick = { groupByLibrary = !groupByLibrary; groupMenu = false },
+                            )
+                        }
+                    }
+                }
                 TopBarAction(PopcornIcons.Add, "Add a link", actions.onOpenAdd)
             }
             val pullState = rememberPullToRefreshState()
@@ -218,7 +260,7 @@ fun DownloadsPage(
     }
 
     state.add?.let { add ->
-        DownloadsSheet(onDismiss = actions.onCloseAdd, tag = "add link sheet") {
+        DownloadsSheet(onDismiss = actions.onCloseAdd, tag = "add link sheet", gesturesEnabled = false) {
             AddLinkContent(add, viaVpn = !state.noVpnMode, onText = actions.onAddText, onAdd = actions.onSubmitAdd, onCancel = actions.onCloseAdd, libraries = state.destinationLibraries, onLibrary = actions.onAddLibrary, onFileType = actions.onAddFileType, onRules = actions.onAddRules)
         }
     }
@@ -262,6 +304,8 @@ private fun EntryView(
             action = { PrimaryButton("Add a link", onClick = actions.onOpenAdd, glyph = PopcornIcons.Add) },
         )
         is Entry.InProgressHeader -> DownloadsSectionHeader("In progress", entry.count)
+        is Entry.LibraryGroup -> Text(entry.title, style = Popcorn.type.item, color = Popcorn.colors.text,
+            modifier = Modifier.padding(horizontal = Popcorn.spacing.gutter, vertical = Popcorn.spacing.s).semantics { heading() })
         is Entry.Upload -> {
             if (entry.ruled) RowRule()
             UploadRow(entry.upload, onStop = { actions.onStopUpload(entry.upload.id) })

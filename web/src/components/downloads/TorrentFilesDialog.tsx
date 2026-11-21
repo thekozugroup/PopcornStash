@@ -8,7 +8,7 @@ import {HStack, Layout, LayoutContent, LayoutFooter, VStack} from '@astryxdesign
 import {Divider} from '@astryxdesign/core/Divider';
 import {Text} from '@astryxdesign/core/Text';
 import {TextInput} from '@astryxdesign/core/TextInput';
-import {useEffect, useId, useRef, useState, type ReactNode} from 'react';
+import {useEffect, useId, useMemo, useRef, useState, type ReactNode} from 'react';
 import {downloads as api} from '../../api/client';
 import {finishCompletedFiles, getTransferFiles, skipTransferFile, type TransferFiles} from '../../api/downloadFiles';
 import type {Download, TorrentFileKind} from '../../api/types';
@@ -22,6 +22,7 @@ import {useTransferFiles} from './useTransferFiles';
 
 const PAGE_SIZE = 100;
 const styles = stylex.create({
+  scroll: {overscrollBehaviorY: 'contain', touchAction: 'pan-y pinch-zoom'},
   fileRow: {display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingBlock: 6},
   fileInfo: {display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0, overflowWrap: 'anywhere'},
   file: {minWidth: 0, overflowWrap: 'anywhere', fontVariantNumeric: 'tabular-nums'},
@@ -87,12 +88,12 @@ function FilePicker({data, fresh, refresh, download, header, loadError, busy, se
   const [confirmation, setConfirmation] = useState<FinishPlan | null>(null);
   const [skipping, setSkipping] = useState<number | null>(null);
   const files = data.files;
-  const selected = selectedFiles(files, editing ? edits : undefined);
-  const dirty = files.some(file => selected.has(file.index) !== file.selected);
+  const selected = useMemo(() => selectedFiles(files, editing ? edits : undefined), [files, editing, edits]);
+  const dirty = useMemo(() => files.some(file => selected.has(file.index) !== file.selected), [files, selected]);
   const needle = search.trim().toLocaleLowerCase();
-  const matches = needle ? files.filter(file => file.path.toLocaleLowerCase().includes(needle)) : files;
+  const matches = useMemo(() => needle ? files.filter(file => file.path.toLocaleLowerCase().includes(needle)) : files, [files, needle]);
   const visible = matches.slice(0, shown);
-  const selectedBytes = files.reduce((sum, file) => sum + (selected.has(file.index) ? file.size : 0), 0);
+  const selectedBytes = useMemo(() => files.reduce((sum, file) => sum + (selected.has(file.index) ? file.size : 0), 0), [files, selected]);
   const plan = fresh && !loadError && data.review_required === false && !editing ? finishPlan(files) : null;
   if (confirmation && !stillMatchesConfirmation(confirmation, plan)) {
     setConfirmation(null);
@@ -191,7 +192,7 @@ function FilePicker({data, fresh, refresh, download, header, loadError, busy, se
   }
 
   return <>
-    <Layout header={header} content={<LayoutContent><VStack gap={3}>
+    <Layout header={header} content={<LayoutContent xstyle={styles.scroll} label="Torrent file review" role="region"><VStack gap={3}>
       {loadError}
       {actionError && <Banner status="error" title="Action could not be completed" description={actionError} collapsible={false} />}
       {review && <Text as="p" color="secondary">Choose which files to download, then start the torrent.</Text>}

@@ -321,10 +321,8 @@ class HomeTabTest {
         waitFor(hasTestTag("library feed"))
         compose.onNodeWithTag("library feed").performScrollToIndex(3)
         waitFor(hasText("Collection 1")).performClick()
-        waitFor(hasText("Collapse subfolders"))
         waitFor(hasText("Northbound"))
         restoration.emulateSavedInstanceStateRestore()
-        waitFor(hasText("Collapse subfolders"))
         waitFor(hasText("Northbound"))
         val scoped = paths.filter { it.startsWith("GET /api/items?") && it.contains("download_group=") }
         assertTrue(scoped.isNotEmpty())
