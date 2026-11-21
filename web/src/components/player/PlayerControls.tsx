@@ -93,6 +93,8 @@ export function PlayerControls({videoRef, itemId, durationHint, onSeek, onSkip}:
   const [volumeOpen, setVolumeOpen] = useState(false);
   const [fullscreenUnavailable, setFullscreenUnavailable] = useState(false);
   const timeline = useRef<HTMLDivElement>(null);
+  const volumeControl = useRef<HTMLDivElement>(null);
+  const volumePanel = useRef<HTMLDivElement>(null);
   const [track, setTrack] = useState({left: 0, width: 0, available: 0, headroom: 0, rtl: false});
   const drag = useRef<number | null>(null);
   const sleep = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -193,12 +195,24 @@ export function PlayerControls({videoRef, itemId, durationHint, onSeek, onSkip}:
     return positionAt(event.clientX, box.left, box.width, clock.duration, track.rtl);
   };
   const showPointerPosition = (event: PointerEvent<HTMLDivElement>) => {
-    if (volumeOpen && drag.current === null) return;
     if (previewTimer.current) clearTimeout(previewTimer.current);
     const value = pointerPosition(event);
-    setVolumeOpen(false);
     setPreview(value);
     if (drag.current !== null) setDraft(value);
+  };
+  const handleVolumeHover = (event: PointerEvent<HTMLDivElement>) => {
+    const control = volumeControl.current;
+    const panel = volumePanel.current;
+    if (!panel || !control || event.pointerType === 'touch' || event.buttons !== 0 || control.contains(event.target as Node)) return;
+    // Only the compact two-row layout has a gap between the button and panel.
+    const button = control.getBoundingClientRect();
+    if (event.clientX >= button.left && event.clientX < button.right &&
+        event.clientY >= panel.getBoundingClientRect().bottom && event.clientY < button.top) {
+      event.stopPropagation();
+      reveal();
+      return;
+    }
+    if (!panel.contains(document.activeElement)) setVolumeOpen(false);
   };
   const endDrag = (event: PointerEvent<HTMLDivElement>, commit: boolean) => {
     if (drag.current !== event.pointerId) return;
@@ -234,8 +248,9 @@ export function PlayerControls({videoRef, itemId, durationHint, onSeek, onSkip}:
   const placement = {...previewPlacement(preview ?? 0, clock.duration, track), maxHeight: track.headroom};
   return <MediaTheme mode="dark">
     <div role="group" aria-label="Playback controls" data-player-controls="true" {...stylex.props(styles.chrome, !visible && styles.hidden)} onPointerMove={reveal}
-      onPointerLeave={event => {
-        if (!event.currentTarget.querySelector('[data-player-volume]')?.contains(document.activeElement)) setVolumeOpen(false);
+      onPointerMoveCapture={handleVolumeHover}
+      onPointerLeave={() => {
+        if (!volumeControl.current?.contains(document.activeElement)) setVolumeOpen(false);
       }}
       onKeyDown={event => { if (event.key === 'Escape') { dismissPreview(); setVolumeOpen(false); } }}>
       <SeekPreview key={itemId} itemId={itemId} position={clock.duration > 0 ? preview : null}
@@ -256,6 +271,7 @@ export function PlayerControls({videoRef, itemId, durationHint, onSeek, onSkip}:
           event.stopPropagation();
           if (drag.current !== null || !event.isPrimary || event.button !== 0 || clock.duration <= 0) return;
           event.preventDefault();
+          setVolumeOpen(false);
           drag.current = event.pointerId;
           event.currentTarget.setPointerCapture(event.pointerId);
           event.currentTarget.querySelector<HTMLElement>('[role="slider"]')?.focus({preventScroll: true});
@@ -288,9 +304,9 @@ export function PlayerControls({videoRef, itemId, durationHint, onSeek, onSkip}:
       </div>
       <span aria-label="Duration" data-player-time="duration" {...stylex.props(styles.time)}>{formatClock(clock.duration)}</span>
       <div data-player-tools {...stylex.props(styles.actions)}>
-        <div data-player-volume {...stylex.props(styles.volume)} onPointerEnter={() => { dismissPreview(); setVolumeOpen(true); }}
+        <div ref={volumeControl} data-player-volume {...stylex.props(styles.volume)} onPointerEnter={() => { dismissPreview(); setVolumeOpen(true); }}
           onFocusCapture={() => setVolumeOpen(true)} onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) setVolumeOpen(false); }}>
-          {volumeOpen ? <div role="group" aria-label="Volume controls" {...stylex.props(styles.volumePanel)}>
+          {volumeOpen ? <div ref={volumePanel} role="group" aria-label="Volume controls" {...stylex.props(styles.volumePanel)}>
             <Slider label="Volume" isLabelHidden min={0} max={100} step={1} value={clock.muted ? 0 : Math.round(clock.volume * 100)}
               formatValue={v => `${v}%`} valueDisplay="none" width="100%" onChange={(value: number) => {
                 const video = videoRef.current; if (video) { video.volume = value / 100; video.muted = value === 0; } reveal();

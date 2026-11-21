@@ -373,6 +373,11 @@ for (const status of [403, 404]) {
     const item = await findItem(page.request, 'Tin Lighthouse');
     // Deliver a removal to the real event subscriber without deleting the shared fixture.
     await page.addInitScript(() => {
+      const revoke = URL.revokeObjectURL.bind(URL);
+      URL.revokeObjectURL = url => {
+        revoke(url);
+        window.dispatchEvent(new CustomEvent('fixture-preview-revoked', {detail: url}));
+      };
       window.EventSource = class extends EventSource {
         constructor(url: string | URL, init?: EventSourceInit) {
           super(url, init);
@@ -397,6 +402,14 @@ for (const status of [403, 404]) {
     )).toBe(true);
     const url = await frame.evaluate((image: HTMLImageElement) => image.currentSrc);
     expect(url).toMatch(/^blob:/);
+    await page.evaluate(src => {
+      document.documentElement.dataset.previewRevoked = 'false';
+      window.addEventListener('fixture-preview-revoked', event => {
+        if ((event as CustomEvent<string>).detail === src) {
+          document.documentElement.dataset.previewRevoked = 'true';
+        }
+      });
+    }, url);
 
     await page.route(`**/api/items/${item.id}`, route => route.fulfill({
       status, json: {error: {code: status === 403 ? 'forbidden' : 'not_found', message: 'Item unavailable.'}},
@@ -411,6 +424,6 @@ for (const status of [403, 404]) {
       level: 1, name: status === 403 ? 'This file could not be opened' : 'This file is not in your library',
     })).toBeAttached();
     await expect(page.getByRole('heading', {name: item.title, exact: true})).toHaveCount(0);
-    expect(await page.evaluate(src => fetch(src).then(() => true, () => false), url)).toBe(false);
+    await expect(page.locator('html')).toHaveAttribute('data-preview-revoked', 'true');
   });
 }
