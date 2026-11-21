@@ -12,7 +12,7 @@ import * as stylex from '@stylexjs/stylex';
 import {Button} from '@astryxdesign/core/Button';
 import {HStack} from '@astryxdesign/core/Layout';
 import {DropdownMenu} from '@astryxdesign/core/DropdownMenu';
-import {MoreHorizontal} from 'lucide-react';
+import {MoreHorizontal, Search} from 'lucide-react';
 import {IconButton} from '@astryxdesign/core/IconButton';
 import {VideoFeedView} from '../components/library/VideoFeedView';
 import {Skeleton} from '@astryxdesign/core/Skeleton';
@@ -175,8 +175,8 @@ export default function LibraryPage() {
 
   return (
     <>
-      <PageHeader title={library.name} subtitle={libraryCountLine(library)} actions={<HStack gap={2} wrap="wrap">
-        <Button label="Search" variant="ghost" href={`/search?library=${encodeURIComponent(library.id)}`} />
+      <PageHeader title={library.name} subtitle={libraryCountLine(library)} keepActionsInline actions={<HStack gap={1}>
+        <Button label="Search this library" tooltip="Search this library" icon={<Search size={20} />} isIconOnly variant="ghost" href={`/search?library=${encodeURIComponent(library.id)}`} />
         <DropdownMenu alignment="end" presentation="adaptive" renderTrigger={props => <IconButton {...props} label="Library options" icon={<MoreHorizontal size={20} />} variant="ghost" />} items={[
           ...(library.content_type === 'video' ? [
             {label: 'Video feed', onClick: () => setParams({})},

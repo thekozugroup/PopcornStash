@@ -1,6 +1,11 @@
 package com.thekozugroup.popcornstash.screenshots
 
+import android.graphics.Color
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -8,6 +13,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.geometry.Offset
+import com.thekozugroup.popcornstash.testing.SampleImages
 import com.thekozugroup.popcornstash.testing.WithSampleImages
 import com.thekozugroup.popcornstash.feature.player.PlayerItems
 import androidx.compose.ui.test.onRoot
@@ -24,10 +30,15 @@ import com.thekozugroup.popcornstash.feature.player.PlayerTheme
 import com.thekozugroup.popcornstash.feature.player.PlayerUiState
 import com.thekozugroup.popcornstash.feature.player.FlexHinge
 import com.thekozugroup.popcornstash.feature.player.SampleFrame
+import com.thekozugroup.popcornstash.feature.player.SeekPreviewContent
+import com.thekozugroup.popcornstash.feature.player.rememberSeekPreviewFrames
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import kotlin.math.roundToInt
 
 /**
  * The player as a phone shows it, sideways. The player is always dark (android/DESIGN.md,
@@ -108,6 +119,38 @@ class PlayerScreenshotTest {
         compose.mainClock.advanceTimeBy(500)
         compose.waitForIdle()
         compose.onNodeWithTag("seek preview", useUnmergedTree = true).assertIsDisplayed()
+    }
+
+    @Test @Config(qualifiers = "w393dp-h851dp-mdpi", fontScale = 1.5f)
+    fun seekPreviewPopupContent() {
+        compose.runOnUiThread { compose.activity.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE) }
+        // The full-window tests exercise the actual popup. Its software canvas is transparent in
+        // Robolectric, so capture the same production content in this activity's hardware window.
+        compose.setContent {
+            PlayerTheme {
+                WithSampleImages {
+                    val frames = rememberSeekPreviewFrames("seek-fixture")
+                    LaunchedEffect(frames) { frames?.load(12) }
+                    Box { SeekPreviewContent(frames?.imageAt(12), 12_345) }
+                }
+            }
+        }
+        compose.waitForIdle()
+        val bitmap = compose.onNodeWithTag("seek preview", useUnmergedTree = true).captureToImage().asAndroidBitmap()
+        assertEquals((160 * compose.density.density).roundToInt(), bitmap.width)
+        val frameHeight = (90 * compose.density.density).roundToInt()
+        val reference = SampleImages.paint("seek-fixture", 400, 300)
+        val hillside = reference.getPixel(200, 270)
+        reference.recycle()
+        assertEquals("Loaded fixture hillside", hillside, bitmap.getPixel(bitmap.width / 2, frameHeight * 9 / 10))
+        val captionHasInk = (frameHeight until bitmap.height).any { y ->
+            (bitmap.width / 4 until bitmap.width * 3 / 4).any { x ->
+                val color = bitmap.getPixel(x, y)
+                Color.alpha(color) > 200 && Color.red(color) > 200 && Color.green(color) > 200 && Color.blue(color) > 200
+            }
+        }
+        assertTrue("Timestamp is drawn below the frame", captionHasInk)
+        bitmap.captureRoboImage(screenshot("player-seek-preview-popup"))
     }
 
     @Test @Config(qualifiers = PHONE)

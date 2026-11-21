@@ -179,6 +179,51 @@ test('progress is saved while watching and Home offers to continue', async ({pag
   await expect.poll(() => currentTime(page), {timeout: 15_000}).toBeGreaterThan(33);
 });
 
+test('scrubbing previews the destination, reuses recent frames and seeks only on release', async ({page}) => {
+  const item = await findItem(page.request, 'Tin Lighthouse');
+  await openAndPlay(page, item.id);
+  await expect.poll(() => video(page).evaluate(element => (element as HTMLVideoElement).readyState)).toBeGreaterThanOrEqual(2);
+  const start = await video(page).evaluate((element: HTMLVideoElement) => {
+    element.pause();
+    return element.currentTime;
+  });
+
+  const controls = page.getByRole('group', {name: 'Playback controls'});
+  const timeline = controls.locator('.astryx-slider-control').first();
+  await timeline.scrollIntoViewIfNeeded();
+  const track = await timeline.boundingBox();
+  if (!track) throw new Error('Position slider has no visible track');
+  const at = (fraction: number) => track.x + track.width * fraction;
+  const y = track.y + track.height / 2;
+  const frame = controls.locator('img');
+  let requests = 0;
+  page.on('request', request => {
+    if (request.url().includes(`/api/items/${item.id}/preview?`)) requests++;
+  });
+
+  const frameAt = async (fraction: number, previous?: string) => {
+    await page.mouse.move(at(fraction), y);
+    await expect.poll(() => frame.evaluateAll((images, oldUrl) => {
+      const image = images[0] as HTMLImageElement | undefined;
+      return Boolean(image?.complete && image.naturalWidth && image.currentSrc !== oldUrl);
+    }, previous)).toBe(true);
+    return frame.evaluate((image: HTMLImageElement) => image.currentSrc);
+  };
+  const first = await frameAt(0.25);
+  const second = await frameAt(0.65, first);
+  const fetched = requests;
+  expect(await frameAt(0.25, second)).toBe(first);
+  expect(requests).toBe(fetched);
+  expect(await currentTime(page)).toBe(start);
+
+  await page.mouse.down();
+  await page.mouse.move(at(0.8), y, {steps: 5});
+  expect(await currentTime(page)).toBe(start);
+  await page.mouse.up();
+  const duration = await video(page).evaluate((element: HTMLVideoElement) => element.duration);
+  await expect.poll(() => currentTime(page)).toBeGreaterThan(duration * 0.7);
+});
+
 test('a show offers Resume only when the player will pick up part-way', async ({page, baseURL}) => {
   // A few seconds into the first episode: the player starts it over (under 15 s), so the
   // show page must not promise to resume it.
@@ -322,3 +367,50 @@ test('resuming a converted video starts at the resume point, even where the brow
   expect(fs.readFileSync(env.serverLog, 'utf8').slice(logBefore)).not.toContain('restarting ffmpeg');
   await page.goto('/');
 });
+
+for (const status of [403, 404]) {
+  test(`a ${status} item refresh removes the player and its cached preview`, async ({page}) => {
+    const item = await findItem(page.request, 'Tin Lighthouse');
+    // Deliver a removal to the real event subscriber without deleting the shared fixture.
+    await page.addInitScript(() => {
+      window.EventSource = class extends EventSource {
+        constructor(url: string | URL, init?: EventSourceInit) {
+          super(url, init);
+          window.addEventListener('fixture-item-removed', event => this.dispatchEvent(
+            new MessageEvent('library', {data: JSON.stringify({type: 'removed', item_id: (event as CustomEvent<string>).detail})}),
+          ), {once: true});
+        }
+      };
+    });
+    await openAndPlay(page, item.id);
+    const controls = page.getByRole('group', {name: 'Playback controls'});
+    await expect.poll(() => video(page).evaluate((element: HTMLVideoElement) => element.readyState)).toBeGreaterThanOrEqual(2);
+    await video(page).evaluate((element: HTMLVideoElement) => element.pause());
+    const timeline = controls.locator('.astryx-slider-control').first();
+    await timeline.scrollIntoViewIfNeeded();
+    const track = await timeline.boundingBox();
+    if (!track) throw new Error('Position slider has no visible track');
+    await page.mouse.move(track.x + track.width / 2, track.y + track.height / 2);
+    const frame = controls.locator('img');
+    await expect.poll(() => frame.evaluateAll(images =>
+      images.some(image => image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0),
+    )).toBe(true);
+    const url = await frame.evaluate((image: HTMLImageElement) => image.currentSrc);
+    expect(url).toMatch(/^blob:/);
+
+    await page.route(`**/api/items/${item.id}`, route => route.fulfill({
+      status, json: {error: {code: status === 403 ? 'forbidden' : 'not_found', message: 'Item unavailable.'}},
+    }));
+    const refresh = page.waitForResponse(response =>
+      new URL(response.url()).pathname === `/api/items/${item.id}` && response.request().method() === 'GET',
+    );
+    await page.evaluate(id => window.dispatchEvent(new CustomEvent('fixture-item-removed', {detail: id})), item.id);
+    expect((await refresh).status()).toBe(status);
+    await expect(video(page)).toHaveCount(0);
+    await expect(page.getByRole('heading', {
+      level: 1, name: status === 403 ? 'This file could not be opened' : 'This file is not in your library',
+    })).toBeAttached();
+    await expect(page.getByRole('heading', {name: item.title, exact: true})).toHaveCount(0);
+    expect(await page.evaluate(src => fetch(src).then(() => true, () => false), url)).toBe(false);
+  });
+}

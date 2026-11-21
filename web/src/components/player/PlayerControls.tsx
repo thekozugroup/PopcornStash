@@ -3,11 +3,11 @@ import {Button} from '@astryxdesign/core/Button';
 import {Slider} from '@astryxdesign/core/Slider';
 import {colorVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {MediaTheme} from '@astryxdesign/core/theme';
-import {Maximize, Minimize, Pause, Play, Volume2, VolumeX} from 'lucide-react';
-import {useCallback, useEffect, useRef, useState, type RefObject} from 'react';
-import {ApiError, notifyUnauthorized} from '../../api/client';
+import {Maximize, Minimize, Pause, Play, RotateCcw, RotateCw, Volume2, VolumeX} from 'lucide-react';
+import {useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type PointerEvent, type RefObject} from 'react';
 import {formatClock} from '../../lib/format';
-import {positionAt, previewSecond} from './seeking';
+import {PreviewFrames} from './previewFrames';
+import {positionAt, previewPlacement, previewSecond} from './seeking';
 import './PlayerControls.css';
 
 type SafariVideo = HTMLVideoElement & {webkitEnterFullscreen?: () => void};
@@ -15,7 +15,6 @@ type SafariVideo = HTMLVideoElement & {webkitEnterFullscreen?: () => void};
 const styles = stylex.create({
   chrome: {
     position: 'absolute', insetInline: 12, bottom: 12, paddingInline: 8,
-    paddingBlockStart: {default: 0, '@media (max-width: 599px)': 20},
     borderRadius: 'var(--radius-container)', color: colorVars['--color-on-dark'],
     backgroundColor: 'color-mix(in oklch, var(--popcorn-stage) 88%, transparent)',
     display: 'flex', alignItems: 'center', gap: 4,
@@ -24,8 +23,7 @@ const styles = stylex.create({
   hidden: {opacity: {default: 0, ':focus-within': 1}, pointerEvents: {default: 'none', ':focus-within': 'auto'}},
   timeline: {position: 'relative', flexGrow: 1, minWidth: 0},
   time: {fontSize: 12, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', paddingInline: 4},
-  elapsed: {position: {default: 'static', '@media (max-width: 599px)': 'absolute'}, top: 2, insetInlineStart: 8},
-  total: {position: {default: 'static', '@media (max-width: 599px)': 'absolute'}, top: 2, insetInlineEnd: 8},
+  actions: {display: 'flex', alignItems: 'center', flexShrink: 0},
   volume: {position: 'relative', flexShrink: 0},
   volumePanel: {
     position: 'absolute', bottom: '100%', insetInlineEnd: 0, width: 160,
@@ -33,55 +31,59 @@ const styles = stylex.create({
   },
   button: {color: 'inherit', flexShrink: 0, minWidth: 44, minHeight: 44},
   preview: {
-    position: 'absolute', bottom: '100%', marginBottom: 12, width: 160, maxWidth: '100%',
-    borderRadius: 'var(--radius-media)', overflow: 'hidden', pointerEvents: 'none',
+    position: 'absolute', bottom: '100%', marginBottom: 8, width: 160, maxWidth: '100%',
+    borderRadius: 'var(--popcorn-radius-media)', overflow: 'hidden', pointerEvents: 'none',
     backgroundColor: 'var(--popcorn-stage)', color: 'inherit', textAlign: 'center',
+    display: 'flex', flexDirection: 'column',
   },
-  frame: {width: '100%', aspectRatio: '16 / 9', display: 'grid', placeItems: 'center', fontSize: 12},
-  image: {width: '100%', height: '100%', objectFit: 'contain'},
-  stamp: {display: 'block', padding: 8, fontSize: 13, fontVariantNumeric: 'tabular-nums'},
+  frame: {position: 'relative', width: '100%', aspectRatio: '16 / 9', minHeight: 0, overflow: 'hidden', display: 'grid', placeItems: 'center', fontSize: 12},
+  stamp: {display: 'block', flexShrink: 0, padding: 8, fontSize: 13, fontVariantNumeric: 'tabular-nums'},
 });
 
-function SeekFrame({itemId, position, duration}: {itemId: string; position: number; duration: number}) {
-  const second = previewSecond(position, duration);
-  const key = `/api/items/${encodeURIComponent(itemId)}/preview?time_s=${second}`;
-  const [image, setImage] = useState<{key: string; url: string} | null>(null);
-  const [failed, setFailed] = useState<string | null>(null);
-  useEffect(() => {
-    const abort = new AbortController();
-    let url: string | null = null;
-    const timer = setTimeout(() => {
-      void (async () => {
-        try {
-          let response = await fetch(key, {signal: abort.signal, credentials: 'same-origin', cache: 'no-store'});
-          if (response.status === 409) {
-            await new Promise(resolve => setTimeout(resolve, 300));
-            if (abort.signal.aborted) return;
-            response = await fetch(key, {signal: abort.signal, credentials: 'same-origin', cache: 'no-store'});
-          }
-          if (response.status === 401) notifyUnauthorized(new ApiError('unauthorized', 'Sign in again.', 401));
-          if (!response.ok) throw new Error('Preview unavailable');
-          const blob = await response.blob();
-          if (abort.signal.aborted) return;
-          url = URL.createObjectURL(blob);
-          setImage({key, url});
-        } catch {
-          if (!abort.signal.aborted) setFailed(key);
-        }
-      })();
-    }, 180);
-    return () => { clearTimeout(timer); abort.abort(); if (url) URL.revokeObjectURL(url); };
-  }, [key]);
-  return <>
-    <div {...stylex.props(styles.frame)}>
-      {image?.key === key ? <img src={image.url} alt="" {...stylex.props(styles.image)} /> : failed === key ? 'Preview unavailable' : 'Loading preview'}
+function SeekPreview({itemId, position, sampleDuration, placement, dismiss}: {
+  itemId: string; position: number | null; sampleDuration: number;
+  placement: {left: number; width: number; maxHeight: number}; dismiss: () => void;
+}) {
+  const [frames] = useState(() => new PreviewFrames(itemId));
+  const second = position === null ? null : previewSecond(position, sampleDuration);
+  const frame = useSyncExternalStore(frames.subscribe, () => frames.read(second));
+  const attachFrame = useCallback((slot: HTMLDivElement | null) => {
+    if (!slot || !frame || frame === 'unavailable') return;
+    // Mount the actual decoded image, including on cache hits.
+    slot.append(frame);
+    return () => frame.remove();
+  }, [frame]);
+  useLayoutEffect(() => {
+    const clear = () => { frames.clear(); dismiss(); };
+    const visibility = () => { if (document.hidden) clear(); };
+    window.addEventListener('pagehide', clear);
+    document.addEventListener('visibilitychange', visibility);
+    return () => {
+      window.removeEventListener('pagehide', clear);
+      document.removeEventListener('visibilitychange', visibility);
+      frames.clear();
+    };
+  }, [frames, dismiss]);
+  useLayoutEffect(() => { frames.select(second); }, [frames, second]);
+  if (position === null || !placement.width) return null;
+
+  return <div aria-hidden="true" data-testid="seek-preview" {...stylex.props(styles.preview)} style={placement}>
+    <div ref={attachFrame} data-seek-frame {...stylex.props(styles.frame)}>
+      {frame === 'unavailable' ? 'Preview unavailable' : !frame ? 'Loading preview' : null}
     </div>
     <span {...stylex.props(styles.stamp)}>{formatClock(position)}</span>
-  </>;
+  </div>;
 }
 
-export function PlayerControls({videoRef, itemId, durationHint, onSeek}: {
-  videoRef: RefObject<HTMLVideoElement | null>; itemId: string; durationHint: number; onSeek: () => void;
+function SkipIcon({back = false}: {back?: boolean}) {
+  const Arrow = back ? RotateCcw : RotateCw;
+  return <Arrow size={24} strokeWidth={1.75} aria-hidden="true">
+    <text x="12" y="15.5" textAnchor="middle" fontSize="8.5" fontWeight="650" fill="currentColor" stroke="none">15</text>
+  </Arrow>;
+}
+
+export function PlayerControls({videoRef, itemId, durationHint, onSeek, onSkip}: {
+  videoRef: RefObject<HTMLVideoElement | null>; itemId: string; durationHint: number; onSeek: () => void; onSkip: (seconds: -15 | 15) => void;
 }) {
   const [clock, setClock] = useState({position: 0, duration: durationHint, paused: true, muted: false, volume: 1, canFullscreen: false});
   const [draft, setDraft] = useState<number | null>(null);
@@ -91,9 +93,8 @@ export function PlayerControls({videoRef, itemId, durationHint, onSeek}: {
   const [volumeOpen, setVolumeOpen] = useState(false);
   const [fullscreenUnavailable, setFullscreenUnavailable] = useState(false);
   const timeline = useRef<HTMLDivElement>(null);
-  const [track, setTrack] = useState({left: 0, width: 0, available: 0, rtl: false});
-  const pointer = useRef(false);
-  const cancelled = useRef(false);
+  const [track, setTrack] = useState({left: 0, width: 0, available: 0, headroom: 0, rtl: false});
+  const drag = useRef<number | null>(null);
   const sleep = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reveal = useCallback(() => {
@@ -101,23 +102,31 @@ export function PlayerControls({videoRef, itemId, durationHint, onSeek}: {
     if (sleep.current) clearTimeout(sleep.current);
     sleep.current = setTimeout(() => setAwake(false), 3000);
   }, []);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = timeline.current;
-    if (!element?.parentElement) return;
-    const parent = element.parentElement;
-    const observer = new ResizeObserver(() => {
-      const box = element.getBoundingClientRect(), outer = parent.getBoundingClientRect();
-      setTrack({left: box.left - outer.left, width: box.width, available: outer.width, rtl: getComputedStyle(element).direction === 'rtl'});
-    });
-    observer.observe(element); observer.observe(parent);
+    const controls = element?.parentElement;
+    const stage = videoRef.current?.parentElement;
+    if (!element || !controls || !stage) return;
+    const measure = () => {
+      const box = element.getBoundingClientRect();
+      const outer = controls.getBoundingClientRect();
+      setTrack({
+        left: box.left - outer.left, width: box.width, available: outer.width,
+        headroom: Math.max(0, outer.top - stage.getBoundingClientRect().top - 8),
+        rtl: getComputedStyle(element).direction === 'rtl',
+      });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    for (const node of [element, controls, stage]) observer.observe(node);
     return () => observer.disconnect();
-  }, []);
+  }, [videoRef]);
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
     const update = () => setClock({position: video.currentTime, duration: Number.isFinite(video.duration) && video.duration > 0 ? video.duration : durationHint, paused: video.paused, muted: video.muted, volume: video.volume,
       canFullscreen: (typeof video.parentElement?.requestFullscreen === 'function' && document.fullscreenEnabled !== false) || typeof (video as SafariVideo).webkitEnterFullscreen === 'function'});
-    const events = ['timeupdate', 'durationchange', 'loadedmetadata', 'play', 'pause', 'ended', 'volumechange'];
+    const events = ['timeupdate', 'seeking', 'seeked', 'durationchange', 'loadedmetadata', 'play', 'pause', 'ended', 'volumechange'];
     events.forEach(e => video.addEventListener(e, update));
     const wake = () => reveal();
     video.addEventListener('pointermove', wake);
@@ -139,13 +148,67 @@ export function PlayerControls({videoRef, itemId, durationHint, onSeek}: {
       if (previewTimer.current) clearTimeout(previewTimer.current);
     };
   }, [videoRef, durationHint, reveal]);
-  const seek = (value: number) => {
-    const video = videoRef.current;
-    if (video && !cancelled.current) { video.currentTime = Math.max(0, Math.min(value, clock.duration)); onSeek(); }
+  const dismissPreview = useCallback(() => {
+    const id = drag.current;
+    drag.current = null;
+    if (id !== null && timeline.current?.hasPointerCapture(id)) timeline.current.releasePointerCapture(id);
+    if (previewTimer.current) clearTimeout(previewTimer.current);
     setDraft(null);
-    if (pointer.current || cancelled.current) setPreview(null);
-    else { setPreview(value); previewTimer.current = setTimeout(() => setPreview(null), 900); }
-    pointer.current = false; cancelled.current = false;
+    setPreview(null);
+  }, []);
+
+  const hasPreview = preview !== null;
+  useEffect(() => {
+    if (!hasPreview) return;
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') dismissPreview(); };
+    window.addEventListener('keydown', escape);
+    window.addEventListener('blur', dismissPreview);
+    return () => {
+      window.removeEventListener('keydown', escape);
+      window.removeEventListener('blur', dismissPreview);
+    };
+  }, [hasPreview, dismissPreview]);
+
+  const commitSeek = (value: number) => {
+    const video = videoRef.current;
+    if (!video || clock.duration <= 0) return;
+    video.currentTime = Math.max(0, Math.min(value, clock.duration));
+    // Repeated keyboard steps can arrive before the next video timeupdate.
+    setClock(previous => ({...previous, position: video.currentTime}));
+    onSeek();
+  };
+  const showKeyboardPreview = (value: number) => {
+    if (previewTimer.current) clearTimeout(previewTimer.current);
+    setPreview(value);
+    previewTimer.current = setTimeout(() => setPreview(null), 900);
+    reveal();
+  };
+  const keyboardSeek = (value: number) => {
+    if (drag.current !== null) return;
+    commitSeek(value);
+    showKeyboardPreview(value);
+  };
+  const pointerPosition = (event: PointerEvent<HTMLDivElement>) => {
+    const box = event.currentTarget.getBoundingClientRect();
+    return positionAt(event.clientX, box.left, box.width, clock.duration, track.rtl);
+  };
+  const showPointerPosition = (event: PointerEvent<HTMLDivElement>) => {
+    if (volumeOpen && drag.current === null) return;
+    if (previewTimer.current) clearTimeout(previewTimer.current);
+    const value = pointerPosition(event);
+    setVolumeOpen(false);
+    setPreview(value);
+    if (drag.current !== null) setDraft(value);
+  };
+  const endDrag = (event: PointerEvent<HTMLDivElement>, commit: boolean) => {
+    if (drag.current !== event.pointerId) return;
+    if (commit) commitSeek(pointerPosition(event));
+    dismissPreview();
+  };
+  const skip = (seconds: -15 | 15) => {
+    dismissPreview();
+    onSkip(seconds);
+    reveal();
   };
   const toggle = () => {
     const video = videoRef.current;
@@ -168,49 +231,79 @@ export function PlayerControls({videoRef, itemId, durationHint, onSeek}: {
     }
   };
   const visible = awake || clock.paused || draft !== null || preview !== null || volumeOpen;
-  const fraction = preview === null ? 0 : preview / Math.max(1, clock.duration);
-  const previewWidth = track.available < 330 ? 96 : track.available < 600 ? 128 : 160;
-  const previewLeft = Math.max(0, Math.min(track.available - previewWidth, track.left + 10 + (track.rtl ? 1 - fraction : fraction) * Math.max(0, track.width - 20) - previewWidth / 2));
+  const placement = {...previewPlacement(preview ?? 0, clock.duration, track), maxHeight: track.headroom};
   return <MediaTheme mode="dark">
     <div role="group" aria-label="Playback controls" data-player-controls="true" {...stylex.props(styles.chrome, !visible && styles.hidden)} onPointerMove={reveal}
-      onKeyDown={event => { if (event.key === 'Escape') { cancelled.current = pointer.current; setPreview(null); setDraft(null); setVolumeOpen(false); } }}>
-      {preview !== null && clock.duration > 0 ? <div aria-hidden="true" data-testid="seek-preview" {...stylex.props(styles.preview)} style={{left: previewLeft, width: previewWidth}}>
-        <SeekFrame itemId={itemId} position={preview} duration={clock.duration} />
-      </div> : null}
-      <Button label={clock.paused ? 'Play' : 'Pause'} isIconOnly variant="ghost" onClick={toggle}
-        icon={clock.paused ? <Play size={18} aria-hidden="true" /> : <Pause size={18} aria-hidden="true" />} xstyle={styles.button} />
-      <span aria-label="Elapsed time" {...stylex.props(styles.time, styles.elapsed)}>{formatClock(draft ?? clock.position)}</span>
-      <div ref={timeline} {...stylex.props(styles.timeline)} onPointerDownCapture={() => { pointer.current = true; cancelled.current = false; }}
-        onPointerCancelCapture={() => { cancelled.current = true; }}
+      onPointerLeave={event => {
+        if (!event.currentTarget.querySelector('[data-player-volume]')?.contains(document.activeElement)) setVolumeOpen(false);
+      }}
+      onKeyDown={event => { if (event.key === 'Escape') { dismissPreview(); setVolumeOpen(false); } }}>
+      <SeekPreview key={itemId} itemId={itemId} position={clock.duration > 0 ? preview : null}
+        sampleDuration={durationHint > 0 ? durationHint : clock.duration} placement={placement} dismiss={dismissPreview} />
+      <div data-player-transport {...stylex.props(styles.actions)}>
+        <Button label="Back 15 seconds" isIconOnly variant="ghost" icon={<SkipIcon back />}
+          isDisabled={clock.duration <= 0} onClick={() => skip(-15)} xstyle={styles.button} />
+        <Button label={clock.paused ? 'Play' : 'Pause'} isIconOnly variant="ghost" onClick={toggle}
+          icon={clock.paused ? <Play size={18} aria-hidden="true" /> : <Pause size={18} aria-hidden="true" />} xstyle={styles.button} />
+        <Button label="Forward 15 seconds" isIconOnly variant="ghost" icon={<SkipIcon />}
+          isDisabled={clock.duration <= 0} onClick={() => skip(15)} xstyle={styles.button} />
+      </div>
+      <span aria-label="Elapsed time" data-player-time="elapsed" {...stylex.props(styles.time)}>{formatClock(draft ?? clock.position)}</span>
+      <div ref={timeline} data-player-timeline {...stylex.props(styles.timeline)} data-dragging={draft !== null || undefined}
+        onPointerDownCapture={event => {
+          // Astryx ends a cancelled pointer just like a release. Own the
+          // pointer gesture so only an intentional release changes playback.
+          event.stopPropagation();
+          if (drag.current !== null || !event.isPrimary || event.button !== 0 || clock.duration <= 0) return;
+          event.preventDefault();
+          drag.current = event.pointerId;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          event.currentTarget.querySelector<HTMLElement>('[role="slider"]')?.focus({preventScroll: true});
+          showPointerPosition(event);
+          reveal();
+        }}
         onPointerMove={event => {
-          if (event.pointerType === 'touch' || pointer.current || clock.duration <= 0) return;
-          if (previewTimer.current) clearTimeout(previewTimer.current);
-          setVolumeOpen(false);
-          const bounds = event.currentTarget.getBoundingClientRect();
-          setPreview(positionAt(event.clientX, bounds.left, bounds.width, clock.duration, getComputedStyle(event.currentTarget).direction === 'rtl'));
-        }} onPointerLeave={() => { if (!pointer.current) setPreview(null); }}
-        onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setPreview(null); }}>
-        <Slider label="Position" isLabelHidden value={draft ?? Math.min(clock.position, clock.duration)} min={0} max={Math.max(1, clock.duration)} step={1}
+          if (clock.duration <= 0) return;
+          if (drag.current !== null && drag.current !== event.pointerId) return;
+          if (drag.current === null && (event.pointerType === 'touch' || event.buttons !== 0)) return;
+          showPointerPosition(event);
+        }}
+        onPointerUp={event => endDrag(event, true)}
+        onPointerCancel={event => endDrag(event, false)}
+        onLostPointerCapture={event => { if (event.target === event.currentTarget) endDrag(event, false); }}
+        onPointerLeave={() => { if (drag.current === null) setPreview(null); }}
+        onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) dismissPreview(); }}
+        onKeyDownCapture={event => {
+          // Astryx snaps End to a whole step, even on a fractional last second.
+          if (event.key === 'End' && clock.duration > 0 && !Number.isInteger(clock.duration)) {
+            event.preventDefault();
+            event.stopPropagation();
+            keyboardSeek(clock.duration);
+          }
+        }}>
+        <Slider label="Position" isLabelHidden value={draft ?? Math.min(clock.position, clock.duration)} min={0}
+          max={clock.duration || 1} step={Math.min(1, clock.duration) || 1}
           valueDisplay="none" width="100%" isDisabled={clock.duration <= 0} formatValue={v => `${formatClock(v)} of ${formatClock(clock.duration)}`}
-          onChange={(v: number) => { setDraft(v); setPreview(v); if (previewTimer.current) clearTimeout(previewTimer.current); reveal(); }} onChangeEnd={seek} />
+          onChangeEnd={keyboardSeek} />
       </div>
-      <span aria-label="Duration" {...stylex.props(styles.time, styles.total)}>{formatClock(clock.duration)}</span>
-      <div {...stylex.props(styles.volume)} onPointerEnter={() => setVolumeOpen(true)}
-        onPointerLeave={event => { if (!event.currentTarget.contains(document.activeElement)) setVolumeOpen(false); }}
-        onFocusCapture={() => setVolumeOpen(true)} onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) setVolumeOpen(false); }}>
-        {volumeOpen ? <div role="group" aria-label="Volume controls" {...stylex.props(styles.volumePanel)}>
-          <Slider label="Volume" isLabelHidden min={0} max={100} step={1} value={clock.muted ? 0 : Math.round(clock.volume * 100)}
-            formatValue={v => `${v}%`} valueDisplay="none" width="100%" onChange={(value: number) => {
-              const video = videoRef.current; if (video) { video.volume = value / 100; video.muted = value === 0; } reveal();
-            }} />
-        </div> : null}
-        <Button label={clock.muted ? 'Unmute' : 'Mute'} isIconOnly variant="ghost" xstyle={styles.button}
-          icon={clock.muted ? <VolumeX size={18} aria-hidden="true" /> : <Volume2 size={18} aria-hidden="true" />}
-          onClick={() => { const video = videoRef.current; if (video) video.muted = !video.muted; setVolumeOpen(true); reveal(); }} />
+      <span aria-label="Duration" data-player-time="duration" {...stylex.props(styles.time)}>{formatClock(clock.duration)}</span>
+      <div data-player-tools {...stylex.props(styles.actions)}>
+        <div data-player-volume {...stylex.props(styles.volume)} onPointerEnter={() => { dismissPreview(); setVolumeOpen(true); }}
+          onFocusCapture={() => setVolumeOpen(true)} onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) setVolumeOpen(false); }}>
+          {volumeOpen ? <div role="group" aria-label="Volume controls" {...stylex.props(styles.volumePanel)}>
+            <Slider label="Volume" isLabelHidden min={0} max={100} step={1} value={clock.muted ? 0 : Math.round(clock.volume * 100)}
+              formatValue={v => `${v}%`} valueDisplay="none" width="100%" onChange={(value: number) => {
+                const video = videoRef.current; if (video) { video.volume = value / 100; video.muted = value === 0; } reveal();
+              }} />
+          </div> : null}
+          <Button label={clock.muted ? 'Unmute' : 'Mute'} isIconOnly variant="ghost" xstyle={styles.button}
+            icon={clock.muted ? <VolumeX size={18} aria-hidden="true" /> : <Volume2 size={18} aria-hidden="true" />}
+            onClick={() => { const video = videoRef.current; if (video) video.muted = !video.muted; setVolumeOpen(true); reveal(); }} />
+        </div>
+        {clock.canFullscreen ? <Button label={full ? 'Exit fullscreen' : 'Fullscreen'} isIconOnly variant="ghost" xstyle={styles.button}
+          isDisabled={fullscreenUnavailable} tooltip={fullscreenUnavailable ? 'Fullscreen is unavailable in this browser.' : undefined}
+          icon={full ? <Minimize size={18} aria-hidden="true" /> : <Maximize size={18} aria-hidden="true" />} onClick={() => { void fullscreen(); }} /> : null}
       </div>
-      {clock.canFullscreen ? <Button label={full ? 'Exit fullscreen' : 'Fullscreen'} isIconOnly variant="ghost" xstyle={styles.button}
-        isDisabled={fullscreenUnavailable} tooltip={fullscreenUnavailable ? 'Fullscreen is unavailable in this browser.' : undefined}
-        icon={full ? <Minimize size={18} aria-hidden="true" /> : <Maximize size={18} aria-hidden="true" />} onClick={() => { void fullscreen(); }} /> : null}
     </div>
   </MediaTheme>;
 }

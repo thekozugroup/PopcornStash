@@ -33,7 +33,7 @@ import {PlayerControls} from './PlayerControls';
 
 const styles = stylex.create({
   seekFeedback: {
-    position: 'absolute', top: '40%', padding: 16, borderRadius: 'var(--radius-control)',
+    position: 'absolute', top: '40%', padding: 16, borderRadius: 'var(--radius-element)',
     backgroundColor: 'color-mix(in oklch, var(--popcorn-stage) 80%, transparent)',
     color: colorVars['--color-on-dark'], pointerEvents: 'none',
   },
@@ -363,27 +363,30 @@ export function VideoPlayer({item, autoPlay = false, onNext = null}: VideoPlayer
   };
 
   const showQuality = qualities.length > 0;
-  const seekAt = (video: HTMLVideoElement, x: number, y: number) => {
-    if (phase !== 'ready') return;
-    const rect = video.getBoundingClientRect();
-    // Leave the browser's playback/volume/scrubber strip untouched.
-    if (y > rect.bottom - 64) return;
-    const side = x < rect.left + rect.width / 2 ? 'left' : 'right';
+  const skip = (seconds: -15 | 15) => {
+    const video = videoRef.current;
+    if (!video || phase !== 'ready') return;
     const duration = Number.isFinite(video.duration) ? video.duration : item.duration_s;
     if (!duration || duration <= 0) return;
-    video.currentTime = Math.max(0, Math.min(duration, video.currentTime + (side === 'left' ? -15 : 15)));
+    video.currentTime = Math.max(0, Math.min(duration, video.currentTime + seconds));
     setHasEnded(false);
-    setSeekFeedback({side, time: performance.now()});
+    setSeekFeedback({side: seconds < 0 ? 'left' : 'right', time: performance.now()});
     report();
   };
+  const seekAt = (video: HTMLVideoElement, x: number, y: number) => {
+    const rect = video.getBoundingClientRect();
+    // Leave the browser's native fullscreen controls untouched.
+    if (y > rect.bottom - 64) return;
+    skip(x < rect.left + rect.width / 2 ? -15 : 15);
+  };
   const showAudio = audioTracks.length > 1;
-  const showBar = phase === 'ready' || showQuality || showAudio || Boolean(onNext) || mode === 'hls';
+  const showBar = showQuality || showAudio || Boolean(onNext) || mode === 'hls';
   const qualityLabel = quality ? `${quality}p` : 'Original';
   const currentTrack = audioTracks.find(track => track.index === audioIndex) ?? audioTracks[0];
 
   return (
     <div>
-      <div {...stylex.props(styles.stage)}>
+      <div data-player-stage {...stylex.props(styles.stage)}>
         <video
           ref={node => {
             videoRef.current = node;
@@ -439,7 +442,13 @@ export function VideoPlayer({item, autoPlay = false, onNext = null}: VideoPlayer
           onError={onVideoError}
           {...stylex.props(styles.video)}
         />
-        {phase === 'ready' ? <PlayerControls videoRef={videoRef} itemId={item.id} durationHint={item.duration_s ?? 0} onSeek={() => { setHasEnded(false); report(); }} /> : null}
+        {phase === 'ready' ? (
+          <PlayerControls
+            key={JSON.stringify([item.id, item.thumb, item.size, item.duration_s, item.rel_path])}
+            videoRef={videoRef} itemId={item.id} durationHint={item.duration_s ?? 0}
+            onSeek={() => { setHasEnded(false); report(); }} onSkip={skip}
+          />
+        ) : null}
         {seekFeedback ? <div role="status" {...stylex.props(styles.seekFeedback, seekFeedback.side === 'left' ? styles.seekLeft : styles.seekRight)}>{seekFeedback.side === 'left' ? '−15 seconds' : '+15 seconds'}</div> : null}
         {phase !== 'ready' ? (
           <div {...stylex.props(styles.overlay, phase === 'error' && styles.overlaySolid)}>
@@ -507,10 +516,6 @@ export function VideoPlayer({item, autoPlay = false, onNext = null}: VideoPlayer
       {showBar ? (
         <div {...stylex.props(styles.bar)}>
           <div {...stylex.props(styles.barGroup, styles.barGroupStart)}>
-            {phase === 'ready' ? <>
-              <Button label="Back 15 seconds" variant="ghost" onClick={() => { const video = videoRef.current; if (video) { const r = video.getBoundingClientRect(); seekAt(video, r.left + r.width / 4, r.top); } }} />
-              <Button label="Forward 15 seconds" variant="ghost" onClick={() => { const video = videoRef.current; if (video) { const r = video.getBoundingClientRect(); seekAt(video, r.left + r.width * 3 / 4, r.top); } }} />
-            </> : null}
             {showAudio && currentTrack ? (
               <DropdownMenu
                 button={{

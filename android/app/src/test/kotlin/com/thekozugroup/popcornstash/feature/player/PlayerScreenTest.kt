@@ -1,5 +1,6 @@
 package com.thekozugroup.popcornstash.feature.player
 
+import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,7 +25,18 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
+import androidx.lifecycle.Lifecycle
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import coil3.ImageLoader
+import coil3.asImage
+import coil3.intercept.Interceptor
+import coil3.request.ImageResult
+import coil3.request.SuccessResult
+import com.thekozugroup.popcornstash.privacy.PrivateContent
+import com.thekozugroup.popcornstash.ui.media.LocalStashImages
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import java.util.concurrent.CopyOnWriteArrayList
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -123,6 +135,48 @@ class PlayerScreenTest {
         }
     }
 
+    @Test fun holdingTheTrackPreviewsBeforeMovingAndCommitsOnceOnRelease() {
+        show(PlayerSamples.film.copy(itemId = "seek-fixture"))
+        val bar = compose.onNodeWithTag("seek bar")
+        bar.performTouchInput { down(Offset(width * .75f, centerY)) }
+        compose.onNodeWithTag("seek preview", useUnmergedTree = true).assertIsDisplayed()
+        compose.runOnIdle { assertTrue(done.isEmpty()) }
+
+        bar.performTouchInput { up() }
+        compose.runOnIdle {
+            assertTrue(done.single().removePrefix("seek ").toLong() in 4_700_000..5_000_000)
+        }
+        compose.onNodeWithTag("seek preview", useUnmergedTree = true).assertDoesNotExist()
+    }
+
+    @Test fun cancellingAHeldPressDismissesThePreviewWithoutSeeking() {
+        show(PlayerSamples.film.copy(itemId = "seek-fixture"))
+        val bar = compose.onNodeWithTag("seek bar")
+        bar.performTouchInput { down(center) }
+        compose.onNodeWithTag("seek preview", useUnmergedTree = true).assertIsDisplayed()
+        bar.performTouchInput { cancel() }
+        compose.onNodeWithTag("seek preview", useUnmergedTree = true).assertDoesNotExist()
+        compose.runOnIdle { assertTrue(done.isEmpty()) }
+    }
+
+    @Test fun cancellingAMovingDragDiscardsTheDraftAndAllowsTheNextSeek() {
+        show(PlayerSamples.film.copy(itemId = "seek-fixture"))
+        val bar = compose.onNodeWithTag("seek bar")
+        val original = bar.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current
+        bar.performTouchInput {
+            down(Offset(width * .25f, centerY))
+            moveTo(Offset(width * .75f, centerY))
+        }
+        compose.onNodeWithTag("seek preview", useUnmergedTree = true).assertIsDisplayed()
+        assertTrue(bar.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current > original)
+        bar.performTouchInput { cancel() }
+        compose.onNodeWithTag("seek preview", useUnmergedTree = true).assertDoesNotExist()
+        assertEquals(original, bar.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current, 0f)
+        compose.runOnIdle { assertTrue(done.isEmpty()) }
+        bar.performSemanticsAction(SemanticsActions.SetProgress) { it(.5f) }
+        compose.runOnIdle { assertEquals(listOf("seek 3266000"), done) }
+    }
+
     @Test fun draggingShowsAPreviewAndDoesNotSeekUntilRelease() {
         show(PlayerSamples.film.copy(itemId = "seek-fixture"))
         compose.onNodeWithTag("seek bar").performTouchInput {
@@ -134,6 +188,120 @@ class PlayerScreenTest {
         compose.onNodeWithTag("seek bar").performTouchInput { up() }
         compose.runOnIdle { assertEquals(1, done.size); assertTrue(done.single().startsWith("seek ")) }
         assertTrue(compose.onAllNodesWithTag("seek preview").fetchSemanticsNodes().isEmpty())
+    }
+
+    private fun previewImages(onRequest: suspend (String) -> Unit): ImageLoader {
+        val image = Bitmap.createBitmap(16, 9, Bitmap.Config.ARGB_8888).asImage()
+        return ImageLoader.Builder(compose.activity).coroutineContext(Dispatchers.Unconfined)
+            .components {
+                add(object : Interceptor {
+                    override suspend fun intercept(chain: Interceptor.Chain): ImageResult {
+                        onRequest(chain.request.data.toString())
+                        return SuccessResult(image, chain.request)
+                    }
+                })
+            }.build()
+    }
+
+    @Test
+    @Config(qualifiers = "w393dp-h851dp-mdpi", fontScale = 1.5f)
+    fun rapidScrubbingOnlyRequestsTheFirstAndLatestFrameInRtlPortraitWithLargeText() {
+        val samples = CopyOnWriteArrayList<Long>()
+        val firstFrame = CompletableDeferred<Unit>()
+        val images = previewImages { url ->
+            samples += url.substringAfter("time_s=").toLong()
+            firstFrame.await()
+        }
+        val duration = 60_000L
+        try {
+            compose.setContent {
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl, LocalStashImages provides images) {
+                    PlayerTheme {
+                        PlayerScreen(PlayerSamples.film.copy(itemId = "seek-fixture", durationMs = duration),
+                            { PlayerClock(10_000, duration) }, actions, true, {}) { SampleFrame(it) }
+                    }
+                }
+            }
+            val bar = compose.onNodeWithTag("seek bar")
+            val preview = compose.onNodeWithTag("seek preview", useUnmergedTree = true)
+            bar.performTouchInput { down(Offset(width * .25f, centerY)) }
+            compose.waitForIdle()
+            preview.assertIsDisplayed()
+            compose.runOnIdle { assertTrue("samples=$samples", samples.single() in 42L..50L) }
+
+            for (fraction in listOf(.5f, .65f, .85f)) {
+                bar.performTouchInput { moveTo(Offset(width * fraction, centerY)) }
+                compose.waitForIdle()
+            }
+            val lastFraction = bar.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current
+            val lastSample = previewSecond((lastFraction * duration).toLong(), duration)
+            compose.runOnIdle {
+                assertTrue(done.isEmpty())
+                assertEquals(1, samples.size)
+                assertTrue(lastSample < samples.first())
+                firstFrame.complete(Unit)
+            }
+            compose.waitForIdle()
+            compose.runOnIdle { assertEquals(listOf(samples.first(), lastSample), samples.toList()) }
+            bar.performTouchInput { up() }
+            compose.waitForIdle()
+            preview.assertDoesNotExist()
+            compose.runOnIdle { assertEquals(listOf("seek ${(lastFraction * duration).toLong()}"), done) }
+        } finally {
+            firstFrame.complete(Unit)
+            images.shutdown()
+        }
+    }
+
+    @Test fun revisitingAFrameReusesItOnlyWithinTheSameUnlockedForegroundItem() {
+        val requests = CopyOnWriteArrayList<String>()
+        val images = previewImages { requests += it.substringAfter("/api/items/") }
+        var itemId by mutableStateOf("clip-a")
+        var unlocked by mutableStateOf(true)
+        try {
+            compose.setContent {
+                PrivateContent(unlocked = unlocked, locked = {}) {
+                    CompositionLocalProvider(LocalStashImages provides images) {
+                        PlayerTheme {
+                            PlayerScreen(PlayerSamples.film.copy(itemId = itemId, durationMs = 60_000),
+                                { PlayerClock(10_000, 60_000) }, actions, true, {}) { SampleFrame(it) }
+                        }
+                    }
+                }
+            }
+            fun press(fraction: Float) {
+                val bar = compose.onNodeWithTag("seek bar")
+                bar.performTouchInput { down(Offset(width * fraction, centerY)) }
+                compose.onNodeWithTag("seek preview", useUnmergedTree = true).assertIsDisplayed()
+                bar.performTouchInput { up() }
+                compose.onNodeWithTag("seek preview", useUnmergedTree = true).assertDoesNotExist()
+            }
+
+            press(.25f)
+            val first = requests.single()
+            press(.75f)
+            val second = requests.last()
+            assertTrue(first != second)
+            press(.25f)
+            assertEquals(listOf(first, second), requests.toList())
+
+            compose.runOnIdle { itemId = "clip-b" }
+            press(.25f)
+            assertEquals(first.replace("clip-a/", "clip-b/"), requests.last())
+            compose.runOnIdle { itemId = "clip-a" }
+            press(.25f)
+
+            compose.activityRule.scenario.moveToState(Lifecycle.State.STARTED)
+            compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+            press(.25f)
+            compose.runOnIdle { unlocked = false }
+            compose.onNodeWithTag("seek bar").assertDoesNotExist()
+            compose.runOnIdle { unlocked = true }
+            press(.25f)
+            assertEquals(listOf(first, second, first.replace("clip-a/", "clip-b/"), first, first, first), requests.toList())
+        } finally {
+            images.shutdown()
+        }
     }
 
     @Test fun tappingTheThumbKeepsItsPositionAndDraggingStillSeeks() {

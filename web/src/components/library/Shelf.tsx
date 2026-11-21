@@ -1,7 +1,7 @@
 /**
  * A titled horizontal row of tiles (Home: continue watching, one shelf per
- * library). The row scrolls sideways with snap points; on wide screens with
- * a mouse, quiet arrow buttons page through it. Keyboard users tab through
+ * library). The row scrolls sideways with snap points and offers paging
+ * buttons whenever cards extend beyond the row. Keyboard users tab through
  * the tiles and the row follows focus. A library shelf leads with the
  * library's own icon; one with nothing yet keeps its heading and says so.
  */
@@ -11,11 +11,12 @@ import {IconButton} from '@astryxdesign/core/IconButton';
 import {Button} from '@astryxdesign/core/Button';
 import {Skeleton} from '@astryxdesign/core/Skeleton';
 import {Text} from '@astryxdesign/core/Text';
-import {colorVars, typeScaleVars} from '@astryxdesign/core/theme/tokens.stylex';
+import {colorVars, spacingVars, typeScaleVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {ChevronLeft, ChevronRight, type LucideIcon} from 'lucide-react';
-import {Children, isValidElement, useCallback, useEffect, useId, useState, type KeyboardEvent, type ReactNode} from 'react';
+import {Children, isValidElement, useId, useLayoutEffect, useState, type KeyboardEvent, type ReactNode} from 'react';
 import {MediaTileSkeleton, type MediaShape} from '../MediaTile';
 import {adjacentShelfTile} from './adjacentShelfTile';
+import {shelfPageOffset} from './shelfPageOffset';
 
 const styles = stylex.create({
   // Every shelf heading is Section type (the theme's third-level heading), whatever its
@@ -28,14 +29,15 @@ const styles = stylex.create({
   section: {
     display: 'flex',
     flexDirection: 'column',
-    gap: 14,
+    gap: spacingVars['--spacing-3'],
     minWidth: 0,
   },
   header: {
     display: 'flex',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-    gap: 16,
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    columnGap: spacingVars['--spacing-4'],
+    rowGap: spacingVars['--spacing-1'],
     minWidth: 0,
   },
   titleGroup: {
@@ -45,6 +47,7 @@ const styles = stylex.create({
     columnGap: 10,
     rowGap: 2,
     minWidth: 0,
+    maxWidth: '100%',
     overflowWrap: 'anywhere',
   },
   // Icon, name and count share one baseline row; the icon sits on the name's line.
@@ -57,7 +60,8 @@ const styles = stylex.create({
   titleIcon: {
     flexShrink: 0,
     color: colorVars['--color-icon-secondary'],
-    alignSelf: 'center',
+    alignSelf: 'flex-start',
+    marginBlockStart: spacingVars['--spacing-0-5'],
   },
   nothing: {
     margin: 0,
@@ -68,16 +72,25 @@ const styles = stylex.create({
   trailing: {
     display: 'flex',
     alignItems: 'center',
-    gap: 4,
-    flexShrink: 0,
-    // Optical alignment: the ghost button's label lines up with the row's edge.
-    marginInlineEnd: -10,
+    justifyContent: 'flex-end',
+    flexWrap: 'wrap',
+    gap: spacingVars['--spacing-2'],
+    maxWidth: '100%',
+    marginInlineStart: 'auto',
+  },
+  destination: {
+    color: colorVars['--color-text-accent'],
   },
   arrows: {
-    display: {default: 'none', '@media (hover: hover) and (pointer: fine) and (min-width: 800px)': 'flex'},
-    gap: 4,
+    display: 'flex',
+    gap: spacingVars['--spacing-1'],
+  },
+  arrowIcon: {
+    transform: {default: null, ':dir(rtl)': 'scaleX(-1)'},
   },
   row: {
+    // Contain offscreen tiles' absolutely positioned screen-reader text.
+    position: 'relative',
     display: 'grid',
     gridAutoFlow: 'column',
     gap: {default: 20, '@media (max-width: 520px)': 14},
@@ -89,14 +102,14 @@ const styles = stylex.create({
     overscrollBehaviorX: 'contain',
     scrollSnapType: 'x proximity',
     scrollbarWidth: 'none',
-    // Under 800px the row runs to the screen edge and keeps the page gutter.
-    marginInline: {default: 0, '@media (max-width: 799px)': -20},
-    paddingInline: {default: 0, '@media (max-width: 799px)': 20},
-    scrollPaddingInline: {default: 0, '@media (max-width: 799px)': 20},
-    // Room for the focus ring of the first and last tiles.
-    paddingBlock: 4,
-    marginBlock: -4,
-    scrollBehavior: {default: 'smooth', '@media (prefers-reduced-motion: reduce)': 'auto'},
+    // Let the 2px outline and its 3px offset paint outside the content gutter.
+    // On a phone the scrollport extends all the way to the edge of the page.
+    marginInline: {default: -6, '@media (max-width: 799px)': -20},
+    paddingInline: {default: spacingVars['--spacing-1-5'], '@media (max-width: 799px)': spacingVars['--spacing-5']},
+    scrollPaddingInline: {default: spacingVars['--spacing-1-5'], '@media (max-width: 799px)': spacingVars['--spacing-5']},
+    paddingBlock: spacingVars['--spacing-1-5'],
+    marginBlock: -6,
+    scrollBehavior: {default: 'auto', '@media (prefers-reduced-motion: no-preference)': 'smooth'},
   },
   poster: {
     gridAutoColumns: {default: 168, '@media (max-width: 520px)': 132},
@@ -110,18 +123,15 @@ const styles = stylex.create({
   square: {
     gridAutoColumns: {default: 148, '@media (max-width: 520px)': 112},
   },
-  // A short group (one or two tiles) sits beside other short groups instead
-  // of taking a whole row; it never scrolls. On phones each group takes the
-  // full width, so its "See all" lines up with the page edge like the others.
+  // Short shelves can share a line on desktop. Their cards still page when
+  // the available width is smaller than the group.
   compactSection: {
     flex: {default: '0 1 auto', '@media (max-width: 799px)': '1 1 100%'},
-  },
-  compactRow: {
-    overflowX: 'auto',
     maxWidth: '100%',
-    marginInline: 0,
-    paddingInline: 0,
-    scrollPaddingInline: 0,
+  },
+  compactFrame: {
+    // A percentage track cannot give a shrink-to-fit section its natural width.
+    gridAutoColumns: 'clamp(232px, 24vw, 308px)',
   },
   cell: {
     scrollSnapAlign: 'start',
@@ -148,7 +158,7 @@ export interface ShelfProps {
   shape: MediaShape;
   /** Wider landscape cards for the primary Continue watching shelf. */
   resume?: boolean;
-  /** One or two tiles: no scrolling, sized to its content. */
+  /** One or two tiles, sized to share a line with other short shelves. */
   isCompact?: boolean;
   children?: ReactNode;
 }
@@ -170,17 +180,16 @@ export function Shelf({
   const [row, setRow] = useState<HTMLUListElement | null>(null);
   const [edges, setEdges] = useState({start: true, end: true});
 
-  const measure = useCallback(() => {
-    if (!row) return;
-    const max = row.scrollWidth - row.clientWidth;
-    const start = row.scrollLeft <= 2;
-    const end = row.scrollLeft >= max - 2;
-    setEdges(previous => previous.start === start && previous.end === end ? previous : {start, end});
-  }, [row]);
-
   const count = Children.count(children);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!row) return;
+    const measure = () => {
+      const max = row.scrollWidth - row.clientWidth;
+      const offset = Math.abs(row.scrollLeft);
+      const start = offset <= 2;
+      const end = offset >= max - 2;
+      setEdges(previous => previous.start === start && previous.end === end ? previous : {start, end});
+    };
     let frame = 0;
     const schedule = () => {
       if (frame) return;
@@ -188,15 +197,16 @@ export function Shelf({
     };
     const observer = new ResizeObserver(schedule);
     observer.observe(row);
-    // An SSE refresh can change tile count without resizing the container.
-    schedule();
+    // Decide whether the header needs a second line before the cards paint.
+    // A feed refresh can also change tile count without resizing the row.
+    measure();
     row.addEventListener('scroll', schedule, {passive: true});
     return () => {
       observer.disconnect();
       row.removeEventListener('scroll', schedule);
       cancelAnimationFrame(frame);
     };
-  }, [row, measure, count]);
+  }, [row, count, shape, resume]);
 
   const moveFocus = (event: KeyboardEvent<HTMLUListElement>) => {
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -209,8 +219,9 @@ export function Shelf({
       if (nearest) { event.preventDefault(); nearest.focus(); }
       return;
     }
+    const forwardKey = getComputedStyle(event.currentTarget).direction === 'rtl' ? 'ArrowLeft' : 'ArrowRight';
     const next = event.key === 'Home' ? 0 : event.key === 'End' ? links.length - 1
-      : Math.max(0, Math.min(links.length - 1, index + (event.key === 'ArrowRight' ? 1 : -1)));
+      : Math.max(0, Math.min(links.length - 1, index + (event.key === forwardKey ? 1 : -1)));
     event.preventDefault();
     links[next]?.focus();
   };
@@ -220,11 +231,16 @@ export function Shelf({
     const first = row.children[0];
     const second = row.children[1];
     if (!first || !second) return;
-    const step = second.getBoundingClientRect().left - first.getBoundingClientRect().left;
-    if (step > 0) row.scrollBy({left: direction * step * Math.max(1, Math.floor((row.clientWidth + 2) / step))});
+    const firstBox = first.getBoundingClientRect();
+    const stride = second.getBoundingClientRect().left - firstBox.left;
+    if (stride === 0) return;
+    const style = getComputedStyle(row);
+    const contentWidth = row.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const left = shelfPageOffset({scrollLeft: row.scrollLeft, contentWidth, cardWidth: firstBox.width, stride}, direction);
+    row.scrollTo({left});
   };
 
-  const hasOverflow = !(edges.start && edges.end);
+  const hasOverflow = !emptyText && count > 1 && !(edges.start && edges.end);
 
   return (
     <section {...stylex.props(styles.section, isCompact && styles.compactSection)} aria-labelledby={headingId}>
@@ -248,36 +264,44 @@ export function Shelf({
             </Text>
           ) : null}
         </div>
-        <div {...stylex.props(styles.trailing)}>
-          {hasOverflow && !isCompact ? (
-            <div {...stylex.props(styles.arrows)}>
-              <IconButton
-                label={`Scroll ${title} back`}
-                icon={<ChevronLeft size={18} strokeWidth={1.75} aria-hidden="true" />}
-                variant="ghost"
-                size="sm"
-                isDisabled={edges.start}
-                onClick={() => page(-1)}
-              />
-              <IconButton
-                label={`Scroll ${title} forward`}
-                icon={<ChevronRight size={18} strokeWidth={1.75} aria-hidden="true" />}
-                variant="ghost"
-                size="sm"
-                isDisabled={edges.end}
-                onClick={() => page(1)}
-              />
-            </div>
-          ) : null}
-          {href ? <Button label={linkLabel} variant="ghost" href={href} /> : null}
-        </div>
+        {href || hasOverflow ? (
+          <div {...stylex.props(styles.trailing)}>
+            {href ? (
+              <Button label={`${linkLabel}, ${title}`} variant="ghost" href={href} xstyle={styles.destination}>
+                {linkLabel}
+              </Button>
+            ) : null}
+            {hasOverflow ? (
+              <div {...stylex.props(styles.arrows)}>
+                <IconButton
+                  label={`Scroll ${title} back`}
+                  icon={<ChevronLeft size={18} strokeWidth={1.75} aria-hidden="true" {...stylex.props(styles.arrowIcon)} />}
+                  variant="ghost"
+                  tooltip={edges.start ? 'Beginning of shelf' : 'Previous cards'}
+                  isDisabled={edges.start}
+                  tabIndex={edges.start ? -1 : undefined}
+                  onClick={() => page(-1)}
+                />
+                <IconButton
+                  label={`Scroll ${title} forward`}
+                  icon={<ChevronRight size={18} strokeWidth={1.75} aria-hidden="true" {...stylex.props(styles.arrowIcon)} />}
+                  variant="ghost"
+                  tooltip={edges.end ? 'End of shelf' : 'Next cards'}
+                  isDisabled={edges.end}
+                  tabIndex={edges.end ? -1 : undefined}
+                  onClick={() => page(1)}
+                />
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       {emptyText ? (
         <Text as="p" type="supporting" color="secondary" xstyle={styles.nothing}>
           {emptyText}
         </Text>
       ) : (
-        <ul data-media-shelf="" ref={setRow} aria-labelledby={headingId} onKeyDown={moveFocus} {...stylex.props(styles.row, styles[shape], resume && styles.resume, isCompact && styles.compactRow)}>
+        <ul data-media-shelf="" ref={setRow} aria-labelledby={headingId} onKeyDown={moveFocus} {...stylex.props(styles.row, styles[shape], isCompact && shape === 'frame' && styles.compactFrame, resume && styles.resume)}>
           {Children.map(children, child =>
             isValidElement(child) ? <li {...stylex.props(styles.cell)}>{child}</li> : null,
           )}

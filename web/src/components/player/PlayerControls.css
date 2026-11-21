@@ -3,3 +3,61 @@
 [data-player-controls] .astryx-slider-control {
   min-height: 44px;
 }
+
+[data-player-controls] [data-dragging] .astryx-slider-thumb {
+  cursor: grabbing;
+  background-image: linear-gradient(var(--color-overlay-pressed), var(--color-overlay-pressed));
+}
+
+[data-seek-frame] > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+[data-player-transport] svg { flex-shrink: 0; }
+
+[data-player-stage] {
+  container: popcorn-player / inline-size;
+}
+
+/* Fit the player itself, including narrow columns on a wide display. */
+@container popcorn-player (max-width: 559px) {
+  [data-player-stage] [data-player-controls] {
+    inset-inline: 6px;
+    bottom: 4px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0;
+    padding-inline: 4px;
+  }
+
+  [data-player-timeline],
+  [data-player-time] {
+    grid-area: 1 / 1 / 2 / -1;
+  }
+
+  [data-player-time] {
+    align-self: start;
+    line-height: 16px;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  [data-player-time="elapsed"] { justify-self: start; }
+  [data-player-time="duration"] { justify-self: end; }
+
+  /* Make room for both clocks above the rail, within the same 44px target. */
+  [data-player-timeline] .astryx-slider-control > [aria-hidden="true"],
+  [data-player-timeline] .astryx-slider-thumb {
+    top: calc(50% + 6px);
+  }
+
+  [data-player-transport] { grid-area: 2 / 1; }
+  [data-player-tools] { grid-area: 2 / 2; }
+
+  /* Anchor the volume panel above both rows so the whole timeline stays usable. */
+  [data-player-tools] [data-player-volume] { position: static; }
+}

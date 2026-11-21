@@ -1,7 +1,6 @@
 package com.thekozugroup.popcornstash.feature.library
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -15,7 +14,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
@@ -27,7 +25,6 @@ import com.thekozugroup.popcornstash.ui.components.MediaTile
 import com.thekozugroup.popcornstash.ui.components.Shelf
 import com.thekozugroup.popcornstash.ui.components.TileShape
 import com.thekozugroup.popcornstash.ui.components.needsLargeThumbnail
-import com.thekozugroup.popcornstash.ui.components.shelfTileWidth
 import com.thekozugroup.popcornstash.ui.icons.LibraryIcons
 import com.thekozugroup.popcornstash.ui.media.LocalPictures
 import com.thekozugroup.popcornstash.ui.theme.Popcorn
@@ -45,7 +42,6 @@ fun VideoShelf(
     onSeeAll: (() -> Unit)? = null,
 ) {
     val pictures = LocalPictures.current
-    val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
     Column {
         Row(
             Modifier.fillMaxWidth().heightIn(min = 56.dp)
@@ -67,22 +63,18 @@ fun VideoShelf(
         if (items.isEmpty()) {
             Text("No videos yet", style = Popcorn.type.metadata, color = Popcorn.colors.textMuted, modifier = Modifier.padding(horizontal = Popcorn.spacing.gutter))
         } else {
-            BoxWithConstraints(Modifier.fillMaxWidth()) {
-                val width = (shelfTileWidth(shape) * fontScale).coerceAtMost(maxWidth - Popcorn.spacing.gutter * 2)
-                val tileWidthPx = with(LocalDensity.current) { width.roundToPx() }
-                Shelf(Modifier.testTag("shelf $title")) {
-                    items(items, key = { it.id }) { item ->
-                        MediaTile(
-                            title = format.displayTitle(item),
-                            line = format.tileLine(item),
-                            url = pictures.thumb(item, large = shape.needsLargeThumbnail(item, tileWidthPx)),
-                            shape = shape,
-                            glyph = LibraryIcons.glyph(libraryIcon(item) ?: "clapperboard"),
-                            onClick = { onOpen(item) },
-                            progress = format.watchedFraction(item.progress),
-                            modifier = Modifier.width(width),
-                        )
-                    }
+            Shelf(shape, Modifier.testTag("shelf $title")) { width, tileWidthPx ->
+                items(items, key = { it.id }) { item ->
+                    MediaTile(
+                        title = format.displayTitle(item),
+                        line = format.tileLine(item),
+                        url = pictures.thumb(item, large = shape.needsLargeThumbnail(item, tileWidthPx)),
+                        shape = shape,
+                        glyph = LibraryIcons.glyph(libraryIcon(item) ?: "clapperboard"),
+                        onClick = { onOpen(item) },
+                        progress = format.watchedFraction(item.progress),
+                        modifier = Modifier.width(width),
+                    )
                 }
             }
         }

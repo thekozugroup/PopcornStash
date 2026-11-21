@@ -1,3 +1,9 @@
+## Player and discovery refinement, 2026-11-20
+
+Refined web and Android scrubbing and library navigation. Both players request the latest scrub position, retain decoded frames only in memory and discard a cancelled gesture. Small web players give the timeline its own row. Overflowing shelves page by whole cards with touch, keyboard and right-to-left support. Android resume cards have separate playback and menu targets, with more room for titles at larger font sizes.
+
+On the same 160-request synthetic scrub trace, the native server needed 96 FFmpeg decodes versus 128 previously. Total service time fell from 13.61 s to 9.49 s. The isolated Atlas fixture uses generated media and a synthetic account. The repeated baseline Chrome run measured 316 ms for a fresh frame and 264 ms for a revisit (medians, seven and six samples respectively).
+
 ## Verified Atlas platform update, 2026-11-20
 
 - Deployed at 17:15 Eastern. Final readback and cleanup at 17:27 EST. Manually renamed collection and library directories are detected through filesystem events plus a 30-second top-level check. Files retain identity, access and watch history. Open feeds refresh automatically. Atlas corrected 10 stale collection labels. All 1,223 ready library files matched their physical identity, size and modification time.

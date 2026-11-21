@@ -113,6 +113,10 @@ class HomeScreenshotTest {
         }
 
     @Test
+    @Config(qualifiers = "w360dp-h800dp-xxhdpi", fontScale = 2f)
+    fun homeShelfWithLargeText() = scrolled("home-large-text-shelf", dark = false, index = 2)
+
+    @Test
     fun middleDark() = scrolled("home-middle-dark", dark = true, index = 3)
 
     /** Home scrolled to its end: Other files and its count sit above the bar. */

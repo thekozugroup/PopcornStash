@@ -12,17 +12,38 @@ use crate::{CoreError, Result};
 const CACHE_FRAMES: usize = 64;
 type Key = (String, String, i64, i64, Option<String>, u32, SystemTime);
 
+#[derive(Default)]
+struct FrameCache(VecDeque<(Key, Vec<u8>)>);
+
+impl FrameCache {
+    fn get(&mut self, key: &Key) -> Option<Vec<u8>> {
+        // A scrub often returns to the last few positions. Keep those frames warm.
+        let index = self.0.iter().rposition(|(cached, _)| cached == key)?;
+        let frame = self.0.remove(index)?;
+        let bytes = frame.1.clone();
+        self.0.push_back(frame);
+        Some(bytes)
+    }
+
+    fn insert(&mut self, key: Key, bytes: Vec<u8>) {
+        if self.0.len() == CACHE_FRAMES {
+            self.0.pop_front();
+        }
+        self.0.push_back((key, bytes));
+    }
+}
+
 pub(crate) struct SeekPreviews {
     // One low-resolution decode at a time, independently of conversion workers.
     pub(super) worker: Semaphore,
-    frames: Mutex<VecDeque<(Key, Vec<u8>)>>,
+    frames: Mutex<FrameCache>,
 }
 
 impl Default for SeekPreviews {
     fn default() -> Self {
         Self {
             worker: Semaphore::new(1),
-            frames: Mutex::new(VecDeque::new()),
+            frames: Mutex::default(),
         }
     }
 }
@@ -65,26 +86,19 @@ impl MediaService {
             second,
             modified,
         );
-        {
+        let _worker = {
             let _publication = self.publication.lock().await;
             if !thumbs::current_version(self, item).await? {
                 return Err(CoreError::NotFound);
             }
-            if let Some((_, bytes)) = self
-                .previews
-                .frames
-                .lock()
-                .await
-                .iter()
-                .find(|(k, _)| k == &key)
-            {
-                return Ok(bytes.clone());
+            if let Some(bytes) = self.previews.frames.lock().await.get(&key) {
+                return Ok(bytes);
             }
-        }
-        // Refuse excess work instead of building a queue from fast pointer movement.
-        let _worker = self.previews.worker.try_acquire().map_err(|_| {
-            CoreError::conflict("A video preview is being prepared. Try again shortly.")
-        })?;
+            // Claim the miss before another decoder can publish the same frame.
+            self.previews.worker.try_acquire().map_err(|_| {
+                CoreError::conflict("A video preview is being prepared. Try again shortly.")
+            })?
+        };
         let mut cmd = tools::command(tools::FFMPEG);
         let fit = format!(
             "{},scale=w='min(320,iw)':h='min(180,ih)':force_original_aspect_ratio=decrease",
@@ -147,11 +161,7 @@ impl MediaService {
         {
             return Err(CoreError::NotFound);
         }
-        let mut frames = self.previews.frames.lock().await;
-        if frames.len() == CACHE_FRAMES {
-            frames.pop_front();
-        }
-        frames.push_back((key, bytes.clone()));
+        self.previews.frames.lock().await.insert(key, bytes.clone());
         Ok(bytes)
     }
 }
@@ -159,6 +169,29 @@ impl MediaService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recently_viewed_frame_survives_cache_pressure() {
+        let key = |second| {
+            (
+                "item".into(),
+                "fixture.mkv".into(),
+                42,
+                1,
+                None,
+                second,
+                SystemTime::UNIX_EPOCH,
+            )
+        };
+        let mut cache = FrameCache::default();
+        for second in 0..CACHE_FRAMES as u32 {
+            cache.insert(key(second), vec![second as u8]);
+        }
+        assert_eq!(cache.get(&key(0)), Some(vec![0]));
+        cache.insert(key(CACHE_FRAMES as u32), vec![64]);
+        assert_eq!(cache.get(&key(0)), Some(vec![0]));
+        assert_eq!(cache.get(&key(1)), None);
+    }
 
     #[test]
     fn preview_positions_are_finite_bounded_and_quantized() {

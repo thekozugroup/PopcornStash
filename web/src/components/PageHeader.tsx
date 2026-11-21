@@ -27,6 +27,7 @@ const styles = stylex.create({
     minWidth: 0,
     flex: '1 1 320px',
   },
+  compactCopy: {flexBasis: 0, overflowWrap: 'anywhere'},
   // "pretty" keeps a lone word off the last line without narrowing the block
   // (balance would, and would break paths like /family-photos early).
   subtitle: {
@@ -50,6 +51,8 @@ export interface PageHeaderProps {
   subtitle?: ReactNode;
   /** Trailing actions. Keep to one primary action per view. */
   actions?: ReactNode;
+  /** Keep a small pair of icon actions alongside the heading on compact screens. */
+  keepActionsInline?: boolean;
   /** Overrides the document title (defaults to `title`). */
   documentTitle?: string;
   /** Content between the subtitle and the actions column, such as a status tag. */
@@ -64,14 +67,14 @@ export function useDocumentTitle(title: string | null | undefined) {
   }, [title]);
 }
 
-export function PageHeader({title, subtitle, actions, documentTitle, children, isActionBelow = false}: PageHeaderProps) {
+export function PageHeader({title, subtitle, actions, documentTitle, children, isActionBelow = false, keepActionsInline = false}: PageHeaderProps) {
   useDocumentTitle(documentTitle ?? title);
   const actionBlock = actions ? (
     <div {...stylex.props(styles.actions, isActionBelow && styles.actionsBelow)}>{actions}</div>
   ) : null;
   return (
     <div {...stylex.props(styles.header)}>
-      <div {...stylex.props(styles.copy)}>
+      <div {...stylex.props(styles.copy, keepActionsInline && styles.compactCopy)}>
         <Heading level={1} textWrap="balance" xstyle={styles.title}>
           {title}
         </Heading>

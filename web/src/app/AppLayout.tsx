@@ -126,9 +126,9 @@ const styles = stylex.create({
 });
 
 const columnStyles = stylex.create({
-  // Fewer libraries, fewer cells: the row always fills its width.
+  // Give the fixed Downloads label its full width, including on 320px phones.
   columns: (count: number) => ({
-    gridTemplateColumns: `repeat(${count}, minmax(0, 1fr))`,
+    gridTemplateColumns: `repeat(${count - 1}, minmax(0, 1fr)) minmax(max-content, 1fr)`,
   }),
 });
 

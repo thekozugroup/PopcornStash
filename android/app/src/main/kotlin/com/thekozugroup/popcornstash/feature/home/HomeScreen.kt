@@ -16,7 +16,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -51,7 +50,6 @@ import com.thekozugroup.popcornstash.ui.components.Shelf
 import com.thekozugroup.popcornstash.ui.components.TabRootScaffold
 import com.thekozugroup.popcornstash.ui.components.TileShape
 import com.thekozugroup.popcornstash.ui.components.needsLargeThumbnail
-import com.thekozugroup.popcornstash.ui.components.shelfTileWidth
 import com.thekozugroup.popcornstash.ui.icons.LibraryIcons
 import com.thekozugroup.popcornstash.ui.icons.LucideGlyph
 import com.thekozugroup.popcornstash.ui.icons.LucideIcon
@@ -173,9 +171,7 @@ private fun LibrarySection(entry: HomeLibrary, format: MediaFormat, actions: Hom
         // The header row's own padding already parts the name from the shelf.
         Spacer(Modifier.height(Popcorn.spacing.xxs))
         val shape = library.layout.tileShape()
-        val width = shelfTileWidth(shape)
-        val tileWidthPx = with(LocalDensity.current) { width.roundToPx() }
-        Shelf {
+        Shelf(shape) { width, tileWidthPx ->
             items(tiles, key = { it.key }) { tile ->
                 when (tile) {
                     is ShelfTile.Show -> {

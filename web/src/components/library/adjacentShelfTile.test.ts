@@ -1,5 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import {adjacentShelfTile} from './adjacentShelfTile';
+import {shelfPageOffset} from './shelfPageOffset';
 
 function tile(x: number, visible = true) {
   return {
@@ -66,5 +67,36 @@ describe('vertical shelf focus', () => {
     const right = shelf(200, 400, 640, [b]);
     expect(adjacentShelfTile(left, a, 'ArrowDown')).toBeUndefined();
     expect(adjacentShelfTile(right, b, 'ArrowUp')).toBeUndefined();
+  });
+});
+
+describe('shelf paging', () => {
+  const posters = {scrollLeft: 0, contentWidth: 400, cardWidth: 132, stride: 146};
+
+  it('advances past complete cards and starts with the poster peeking at the edge', () => {
+    // A 440px phone with two 20px gutters shows two posters and part of a third.
+    expect(shelfPageOffset(posters, 1)).toBe(292);
+    expect(shelfPageOffset({...posters, scrollLeft: 292}, -1)).toBe(0);
+  });
+
+  it('counts the last fully visible card without requiring a gap after it', () => {
+    expect(shelfPageOffset({...posters, contentWidth: 424}, 1)).toBe(438);
+  });
+
+  it('pages from a swipe between cards and from a fractional snap position', () => {
+    expect(shelfPageOffset({...posters, scrollLeft: 360}, 1)).toBe(584);
+    expect(shelfPageOffset({...posters, scrollLeft: 360}, -1)).toBe(146);
+    expect(shelfPageOffset({...posters, scrollLeft: 291.75}, 1)).toBe(584);
+    expect(shelfPageOffset({...posters, scrollLeft: 292.25}, -1)).toBe(0);
+  });
+
+  it('still moves one card on a narrow shelf', () => {
+    expect(shelfPageOffset({...posters, contentWidth: 120}, 1)).toBe(146);
+  });
+
+  it('pages from the right edge and back across an RTL shelf', () => {
+    const rtl = {...posters, stride: -146};
+    expect(shelfPageOffset(rtl, 1)).toBe(-292);
+    expect(shelfPageOffset({...rtl, scrollLeft: -360}, -1)).toBe(-146);
   });
 });

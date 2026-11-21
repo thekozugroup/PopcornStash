@@ -200,9 +200,13 @@ export default function ItemPage() {
   useEffect(() => {
     const controller = new AbortController();
     itemsApi.get(id, controller.signal).then(
-      item => setState({id, item, error: null}),
+      item => {
+        if (!controller.signal.aborted) setState({id, item, error: null});
+      },
       (error: unknown) => {
-        if (!controller.signal.aborted) setState(s => ({id, item: s.id === id ? s.item : null, error}));
+        if (controller.signal.aborted) return;
+        const denied = error instanceof ApiError && (error.status === 403 || error.status === 404);
+        setState(s => ({id, item: s.id === id && !denied ? s.item : null, error}));
       },
     );
     return () => controller.abort();
@@ -285,7 +289,9 @@ export default function ItemPage() {
   const hasStageDownload = !isVideo && !isPhoto && item.kind !== 'audio';
   const title = displayTitle(item);
 
-  const replaceItem = (next: ItemDetail) => setState({id, item: next, error: null});
+  const replaceItem = (next: ItemDetail) => setState(s =>
+    s.id === id && s.item ? {id, item: next, error: null} : s,
+  );
 
   const toggleFavorite = async (favorite: boolean) => {
     const previous = item;

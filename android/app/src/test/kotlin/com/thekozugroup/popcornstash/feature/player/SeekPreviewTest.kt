@@ -17,7 +17,7 @@ class SeekPreviewTest {
     }
 
     @Test fun previewStaysInsideTheWindowAtEitherEdgeAndInRtl() {
-        val provider = PreviewPosition(12)
+        val provider = PreviewPosition(12, 0.5f)
         for (direction in LayoutDirection.entries) {
             for (x in listOf(0, 180, 390)) {
                 val at = provider.calculatePosition(IntRect(x, 200, x + 16, 216), IntSize(400, 800), direction, IntSize(160, 120))
@@ -25,5 +25,15 @@ class SeekPreviewTest {
                 assertEquals(68, at.y)
             }
         }
+    }
+
+    @Test fun heldPreviewFollowsThePressOnTheTrackInEitherDirection() {
+        val provider = PreviewPosition(12, 0.25f)
+        val track = IntRect(40, 200, 360, 204)
+        val window = IntSize(400, 800)
+        val popup = IntSize(160, 120)
+
+        assertEquals(40, provider.calculatePosition(track, window, LayoutDirection.Ltr, popup).x)
+        assertEquals(200, provider.calculatePosition(track, window, LayoutDirection.Rtl, popup).x)
     }
 }

@@ -7,6 +7,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -14,6 +16,8 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.TextButton
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.changedToUp
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.customActions
@@ -60,6 +64,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,6 +74,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.testTag
@@ -84,6 +90,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.thekozugroup.popcornstash.ui.components.MediaDisc
 import com.thekozugroup.popcornstash.ui.components.MediaPlate
@@ -154,6 +161,7 @@ fun PlayerScreen(
     val phase = state.phase
     val ready = phase == PlayerPhase.Ready
     val playing = ready && state.playWhenReady
+    val previewFrames = rememberSeekPreviewFrames(state.itemId.takeIf { ready && !inPictureInPicture })
     var drawerOpen by remember { mutableStateOf(false) }
     val playerActions = actions.copy(onBrowse = { onChromeVisibleChange(true); drawerOpen = true })
     var menuOpen by remember { mutableStateOf(menuInitiallyOpen) }
@@ -245,6 +253,7 @@ fun PlayerScreen(
             Box(Modifier.offset(y = controlsTop).fillMaxWidth().height(maxHeight - controlsTop).background(colors.page).testTag("flex controls")) {
                 ControlPanel(
                     state = state,
+                    previewFrames = previewFrames,
                     clock = clock,
                     actions = playerActions,
                     waiting = phase == PlayerPhase.Loading || (ready && (state.buffering || state.switching)),
@@ -278,6 +287,7 @@ fun PlayerScreen(
         ) {
             Chrome(
                 state = state,
+                previewFrames = previewFrames,
                 clock = clock,
                 actions = playerActions,
                 waiting = waiting,
@@ -326,6 +336,7 @@ fun PlayerScreen(
 @OptIn(ExperimentalLayoutApi::class)
 private fun ControlPanel(
     state: PlayerUiState,
+    previewFrames: SeekPreviewFrames?,
     clock: () -> PlayerClock,
     actions: PlayerActions,
     waiting: Boolean,
@@ -347,7 +358,7 @@ private fun ControlPanel(
                 is PlayerPhase.Failed -> FailedMessage(phase, actions)
             }
             Spacer(Modifier.weight(1f).height(24.dp))
-            if (state.phase == PlayerPhase.Ready) BottomRow(state, clock, actions, { touched(); onSeeking(it) }, stacked = true)
+            if (state.phase == PlayerPhase.Ready) BottomRow(state, previewFrames, clock, actions, { touched(); onSeeking(it) }, stacked = true)
         }
     }
 }
@@ -356,6 +367,7 @@ private fun ControlPanel(
 @Composable
 private fun Chrome(
     state: PlayerUiState,
+    previewFrames: SeekPreviewFrames?,
     clock: () -> PlayerClock,
     actions: PlayerActions,
     waiting: Boolean,
@@ -388,7 +400,7 @@ private fun Chrome(
             is PlayerPhase.Failed -> FailedMessage(phase, actions, Modifier.align(Alignment.Center))
         }
         if (state.phase == PlayerPhase.Ready) {
-            BottomRow(state, clock, actions, onSeeking, Modifier.align(Alignment.BottomCenter), stacked = androidx.compose.ui.platform.LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT)
+            BottomRow(state, previewFrames, clock, actions, onSeeking, Modifier.align(Alignment.BottomCenter), stacked = androidx.compose.ui.platform.LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT)
         }
     }
 }
@@ -475,6 +487,7 @@ private fun CentreDisc(state: PlayerUiState, loading: Boolean, onClick: () -> Un
 @Composable
 private fun BottomRow(
     state: PlayerUiState,
+    previewFrames: SeekPreviewFrames?,
     clock: () -> PlayerClock,
     actions: PlayerActions,
     onSeeking: (Boolean) -> Unit,
@@ -495,7 +508,7 @@ private fun BottomRow(
     if (stacked) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(tokens.gap), horizontalAlignment = Alignment.End) {
             MediaPlate(Modifier.fillMaxWidth()) {
-                SeekBar(now.positionMs, now.bufferedMs, state.durationMs, actions.onSeek, onSeeking, state.itemId)
+                SeekBar(now.positionMs, now.bufferedMs, state.durationMs, actions.onSeek, onSeeking, state.itemId, previewFrames)
             }
             NextEpisodeButton(state, actions)
         }
@@ -513,6 +526,7 @@ private fun BottomRow(
                 onSeek = actions.onSeek,
                 onSeeking = onSeeking,
                 itemId = state.itemId,
+                previewFrames = previewFrames,
             )
         }
         NextEpisodeButton(state, actions)
@@ -541,6 +555,8 @@ private fun NextEpisodeButton(state: PlayerUiState, actions: PlayerActions) {
     }
 }
 
+private enum class SeekTouch { Idle, Pressed, Cancelled }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RowScope.SeekBar(
@@ -550,10 +566,17 @@ private fun RowScope.SeekBar(
     onSeek: (Long) -> Unit,
     onSeeking: (Boolean) -> Unit,
     itemId: String?,
+    previewFrames: SeekPreviewFrames?,
 ) {
     val tokens = LocalPlayerTokens.current
     val colors = Popcorn.colors
     var dragFraction by remember(itemId) { mutableStateOf<Float?>(null) }
+    var touch by remember(itemId) { mutableStateOf(SeekTouch.Idle) }
+    var pressFraction by remember(itemId) { mutableStateOf<Float?>(null) }
+    val previewFraction = dragFraction ?: pressFraction
+    val thumbRing = if (previewFraction == null) tokens.seekThumbRing else tokens.seekThumbRing * 1.5f
+    val direction = LocalLayoutDirection.current
+    val currentOnSeeking by rememberUpdatedState(onSeeking)
     val duration = durationMs.coerceAtLeast(0)
     val fraction = if (duration > 0) (positionMs.toFloat() / duration).coerceIn(0f, 1f) else 0f
     val buffered = if (duration > 0) (bufferedMs.toFloat() / duration).coerceIn(0f, 1f) else 0f
@@ -572,7 +595,9 @@ private fun RowScope.SeekBar(
     Slider(
         value = dragFraction ?: fraction,
         onValueChange = {
-            if (dragFraction == null) onSeeking(true)
+            // Keyboard and accessibility adjustments can follow a cancelled touch.
+            if (touch == SeekTouch.Cancelled) touch = SeekTouch.Idle
+            if (dragFraction == null && pressFraction == null) onSeeking(true)
             dragFraction = it
         },
         onValueChangeFinished = {
@@ -580,8 +605,8 @@ private fun RowScope.SeekBar(
             // current position instead of using an uninitialized/stale drag value.
             val target = dragFraction ?: fraction
             dragFraction = null
-            onSeeking(false)
-            onSeek((target * duration).toLong())
+            if (pressFraction == null) onSeeking(false)
+            if (touch == SeekTouch.Idle) onSeek((target * duration).toLong())
         },
         enabled = duration > 0,
         thumb = {
@@ -590,17 +615,55 @@ private fun RowScope.SeekBar(
                     .size(tokens.seekThumb)
                     .testTag("seek thumb")
                     .background(colors.accent, CircleShape)
-                    .border(tokens.seekThumbRing, colors.onMedia, CircleShape),
-            ) {
-                if (dragFraction != null && itemId != null) SeekPreview(itemId, shownMs, duration)
-            }
+                    .border(thumbRing, colors.onMedia, CircleShape),
+            )
         },
         track = {
-            SeekTrack(played = dragFraction ?: fraction, buffered = buffered)
+            Box {
+                SeekTrack(played = dragFraction ?: fraction, buffered = buffered)
+                if (previewFraction != null && itemId != null) SeekPreview(previewFrames, previewFraction, duration)
+            }
         },
         modifier = Modifier
             .weight(1f)
             .height(tokens.disc)
+            .pointerInput(itemId, duration > 0, tokens.seekThumb, direction) {
+                if (duration == 0L) return@pointerInput
+                // Material can finish a cancelled drag. A touch may commit only after a real up,
+                // observed before the slider receives it. Compose sends consumed ups for CANCEL.
+                awaitEachGesture {
+                    val down = awaitFirstDown(pass = PointerEventPass.Initial)
+                    touch = SeekTouch.Pressed
+                    val thumbWidth = tokens.seekThumb.roundToPx()
+                    val x = if (direction == LayoutDirection.Rtl) size.width - down.position.x else down.position.x
+                    pressFraction = ((x - thumbWidth / 2f) / (size.width - thumbWidth).coerceAtLeast(1)).coerceIn(0f, 1f)
+                    currentOnSeeking(true)
+                    try {
+                        do {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (event.changes.none { it.pressed }) {
+                                if (event.changes.any { it.changedToUp() }) touch = SeekTouch.Idle
+                                break
+                            }
+                            // A scroll in the flex pane takes the press away from the track.
+                            val change = event.changes.first()
+                            val delta = change.position - down.position
+                            if (pressFraction != null && dragFraction == null &&
+                                kotlin.math.abs(delta.y) > maxOf(viewConfiguration.touchSlop, kotlin.math.abs(delta.x))) {
+                                pressFraction = null
+                                currentOnSeeking(false)
+                            }
+                        } while (true)
+                    } finally {
+                        if (touch == SeekTouch.Pressed) {
+                            touch = SeekTouch.Cancelled
+                            dragFraction = null
+                        }
+                        pressFraction = null
+                        if (dragFraction == null) currentOnSeeking(false)
+                    }
+                }
+            }
             .semantics {
                 contentDescription = "Position"
                 stateDescription = "${PlayerFormat.spokenDuration(shownS)} of ${PlayerFormat.spokenDuration(totalS)}"

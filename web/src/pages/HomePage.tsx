@@ -12,6 +12,7 @@
  */
 import * as stylex from '@stylexjs/stylex';
 import {Button} from '@astryxdesign/core/Button';
+import {spacingVars} from '@astryxdesign/core/theme/tokens.stylex';
 import {FileText, Library as LibraryGlyph, type LucideIcon} from 'lucide-react';
 import {Fragment, useEffect, useMemo, useState, type ReactNode} from 'react';
 import {downloads as downloadsApi, home as homeApi} from '../api/client';
@@ -45,13 +46,13 @@ const styles = stylex.create({
   stack: {
     display: 'flex',
     flexDirection: 'column',
-    gap: 48,
+    gap: {default: spacingVars['--spacing-12'], '@media (max-width: 799px)': spacingVars['--spacing-8']},
   },
   smallShelves: {
     display: 'flex',
     flexWrap: 'wrap',
     columnGap: 56,
-    rowGap: 48,
+    rowGap: {default: spacingVars['--spacing-12'], '@media (max-width: 799px)': spacingVars['--spacing-8']},
   },
 });
 

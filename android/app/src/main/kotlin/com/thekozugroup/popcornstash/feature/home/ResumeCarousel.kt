@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PageSize
@@ -40,7 +39,6 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -113,7 +111,12 @@ private fun ResumeCard(
     val pictures = LocalPictures.current
     val description = format.resumeDescription(item)
     var menu by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth()) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clickable(role = Role.Button, onClickLabel = "Resume") { onResume(item) }
+            .semantics { contentDescription = description },
+    ) {
         MediaPicture(
             url = pictures.thumb(item, large = true),
             shape = TileShape.Frame,
@@ -122,11 +125,7 @@ private fun ResumeCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(Popcorn.shapes.media)
-                .clickable(role = Role.Button) { onResume(item) }
-                .clearAndSetSemantics {
-                    contentDescription = description
-                    role = Role.Button
-                },
+                .clearAndSetSemantics { },
         )
         Spacer(Modifier.height(Popcorn.media.captionGap))
         Row(verticalAlignment = Alignment.Top) {
@@ -135,7 +134,7 @@ private fun ResumeCard(
                     format.resumeTitle(item),
                     style = Popcorn.type.item,
                     color = colors.text,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
@@ -146,9 +145,8 @@ private fun ResumeCard(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            // The button takes no more room than the two lines beside it; its 48dp target reaches
-            // past them, and its glyph lines up with the frame's right edge.
-            Box(Modifier.size(width = 24.dp, height = 40.dp), contentAlignment = Alignment.Center) {
+            // Reserve the complete menu target inside this card, including at the end of the pager.
+            Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
                 TooltipBox(
                     positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
                     tooltip = { PlainTooltip { Text("More") } },
@@ -157,7 +155,7 @@ private fun ResumeCard(
                     IconButton(
                         onClick = { menu = true },
                         modifier = Modifier
-                            .requiredSize(48.dp)
+                            .size(48.dp)
                             .semantics { contentDescription = "More for ${format.resumeTitle(item)}" },
                     ) {
                         LucideIcon(PopcornIcons.More, contentDescription = null, tint = colors.textMuted, size = 20.dp)

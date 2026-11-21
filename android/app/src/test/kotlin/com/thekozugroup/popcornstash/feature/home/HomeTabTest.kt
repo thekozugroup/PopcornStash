@@ -1,6 +1,9 @@
 package com.thekozugroup.popcornstash.feature.home
 
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
@@ -260,6 +263,21 @@ class HomeTabTest {
         waitFor(hasText("Start from the beginning")).performClick()
         compose.waitUntil(5_000) { played.size == 2 }
         assertEquals(listOf("e-l102" to false, "e-l102" to true), played.toList())
+    }
+
+    @Test
+    fun resumeCaptionAndMenuHaveSeparateTouchTargets() {
+        show()
+        val card = waitFor(hasContentDescription("Resume The Lantern Keepers S01E02, 10 minutes left"))
+        val menu = compose.onNodeWithContentDescription("More for The Lantern Keepers")
+        val cardBounds = card.fetchSemanticsNode().boundsInRoot
+        val menuBounds = menu.fetchSemanticsNode().boundsInRoot
+        assertTrue(cardBounds.contains(menuBounds.center))
+        card.performTouchInput { click(Offset(width / 3f, menuBounds.center.y - cardBounds.top)) }
+        compose.waitUntil(5_000) { played.size == 1 }
+        menu.performClick()
+        waitFor(hasText("Details"))
+        assertEquals(listOf("e-l102" to false), played.toList())
     }
 
     @Test

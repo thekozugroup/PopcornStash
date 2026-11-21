@@ -1094,6 +1094,78 @@ mod tests {
         std::fs::remove_file(tmp).unwrap();
     }
 
+    /// Run the same trace on each revision. Holding the only decoder permit makes
+    /// a warm hit return a JPEG and a cold miss return Conflict, independent of timing.
+    #[tokio::test]
+    #[ignore = "manual seek-preview benchmark with a synthetic video"]
+    async fn benchmark_seek_preview_cache() {
+        let h = harness().await;
+        let media = &h.media;
+        let rel = "Movies/seek-fixture.mkv";
+        let abs = media.layout.abs(rel).unwrap();
+        ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=s=320x180:r=1:d=192",
+                "-c:v",
+                "ffv1",
+                "-g",
+                "1",
+                "-threads",
+                "1",
+            ],
+            &abs,
+        );
+        let id = insert_item(media, rel, MediaKind::Video, Category::Movie).await;
+        sqlx::query("UPDATE items SET size = ?, duration_s = 192 WHERE id = ?")
+            .bind(std::fs::metadata(abs).unwrap().len() as i64)
+            .bind(&id)
+            .execute(&media.db)
+            .await
+            .unwrap();
+        let item = row(media, &id).await;
+
+        let mut hits = 0;
+        let mut decodes = 0;
+        let mut warm_time = Duration::ZERO;
+        let mut cold_time = Duration::ZERO;
+        // Fill the cache, revisit its first half, jump ahead, then revisit that half again.
+        let trace = (0..64).chain(0..32).chain(64..96).chain(0..32);
+        for bucket in trace {
+            let position = f64::from(bucket * 2);
+            let permit = media.previews.worker.try_acquire().unwrap();
+            let start = std::time::Instant::now();
+            let result = media.seek_preview(&item, position).await;
+            let elapsed = start.elapsed();
+            drop(permit);
+            let frame = match result {
+                Ok(frame) => {
+                    hits += 1;
+                    warm_time += elapsed;
+                    frame
+                }
+                Err(CoreError::Conflict(_)) => {
+                    let start = std::time::Instant::now();
+                    let frame = media.seek_preview(&item, position).await.unwrap();
+                    cold_time += start.elapsed();
+                    decodes += 1;
+                    frame
+                }
+                Err(err) => panic!("unexpected preview error at {position}s: {err}"),
+            };
+            assert!(frame.starts_with(&[0xff, 0xd8]));
+        }
+        println!(
+            "requests={} hits={hits} decodes={decodes} mean_hit={:?} mean_decode={:?} service_time={:?}",
+            hits + decodes,
+            warm_time / hits,
+            cold_time / decodes,
+            warm_time + cold_time
+        );
+    }
+
     #[tokio::test]
     async fn video_probe_and_thumbnails() {
         let h = harness().await;
